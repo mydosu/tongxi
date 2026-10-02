@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+
+# 本机运行数据与验收证据
+artifacts/
+_tmp/
+__pycache__/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 凭据
+.env
+*.key
+
+# 本机构建产物与冻结版本
+release/
+
+# 内部开发记录（不公开）
+docs/internal/

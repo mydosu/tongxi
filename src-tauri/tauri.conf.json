@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "同席 Agent Hub",
+  "version": "0.12.14",
+  "identifier": "local.personal.agenthub",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main", "title": "同席 · Agent Hub", "create": false,
+      "width": 1260, "height": 850, "minWidth": 920, "minHeight": 640,
+      "center": true, "decorations": false, "shadow": true, "backgroundColor": "#F6F6F7"
+    }],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico"] }
+}
