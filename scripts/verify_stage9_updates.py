@@ -11,18 +11,19 @@ from pathlib import Path
 
 import smoke_desktop as d
 from playwright.sync_api import sync_playwright
+import local_paths
 
 SERVICES = {
     "dsh-win": {
         "installation_env": "AGENT_HUB_DSH_INSTALLATION",
-        "installation_default": "D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh",
+        "installation_default": local_paths.dsh_installation(),
         "connect_command": "connect_dsh",
         "package": "@deepseek-ai/dsh",
         "report": "stage9-updates-verification.json",
     },
     "codex-win": {
         "installation_env": "AGENT_HUB_CODEX_INSTALLATION",
-        "installation_default": "D:/AI/_tools/npm-global/node_modules/@openai/codex",
+        "installation_default": local_paths.codex_installation(),
         "connect_command": "connect_codex",
         "package": "@openai/codex",
         "report": "stage9-codex-updates-verification.json",

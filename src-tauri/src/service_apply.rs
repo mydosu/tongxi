@@ -236,7 +236,7 @@ pub(crate) fn rollback_member(
             // The external install is the anchor: if it changed, rolling back would
             // install something this receipt never described, so refuse instead.
             let (version, hash) =
-                service_updates::manifest_at(&service_install::external(layout), layout.package)?;
+                service_updates::manifest_at(&service_install::external(layout)?, layout.package)?;
             if hash != receipt.base_manifest_sha256 {
                 return Err(ERR_ROLLBACK_TARGET.to_string());
             }
@@ -250,7 +250,7 @@ pub(crate) fn rollback_member(
         Some(id) => service_updates::PreflightTarget::Slot(service_install::slot_root_for(
             &data, layout, id,
         )?),
-        None => service_updates::PreflightTarget::External(service_install::external(layout)),
+        None => service_updates::PreflightTarget::External(service_install::external(layout)?),
     };
     service_updates::preflight_target(&data, layout, preflight, &target_version)?;
     match &receipt.base_state.active {
@@ -259,7 +259,7 @@ pub(crate) fn rollback_member(
             service_updates::verify_receipt_for(&data, layout, &old)?;
         }
         None => {
-            let path = service_install::external(layout);
+            let path = service_install::external(layout)?;
             let (_, hash) = service_updates::manifest_at(&path, layout.package)?;
             if hash != receipt.base_manifest_sha256 {
                 return Err(ERR_ROLLBACK_TARGET.to_string());

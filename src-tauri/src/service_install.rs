@@ -37,8 +37,8 @@ pub(crate) struct Layout {
     pub(crate) scope: &'static str,
     /// 覆盖外部安装路径的环境变量名。
     pub(crate) installation_env: &'static str,
-    /// 未指定环境变量时的外部安装包目录。
-    pub(crate) default_installation: &'static str,
+    /// PATH 上用于反推外部安装目录的 CLI 壳名（`codex` / `dsh`）。
+    pub(crate) cli: &'static str,
     /// 从槽位根解析可执行文件的相对路径；`None` 表示这个成员没有独立可执行文件（走 node 跑包）。
     pub(crate) executable: Option<&'static str>,
 }
@@ -50,7 +50,7 @@ impl Layout {
         package: "@deepseek-ai/dsh",
         scope: "@deepseek-ai",
         installation_env: "AGENT_HUB_DSH_INSTALLATION",
-        default_installation: "D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh",
+        cli: "dsh",
         executable: None,
     };
 
@@ -60,7 +60,7 @@ impl Layout {
         package: "@openai/codex",
         scope: "@openai",
         installation_env: "AGENT_HUB_CODEX_INSTALLATION",
-        default_installation: "D:/AI/_tools/npm-global/node_modules/@openai/codex",
+        cli: "codex",
         executable: Some(
             "node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
         ),
@@ -152,13 +152,59 @@ pub(crate) fn slot_root_for(data: &Path, layout: &Layout, id: &str) -> Result<Pa
     Ok(slot)
 }
 
-/// 外部安装包路径：`layout.installation_env` 已是完整包目录，直接原样使用，不再拼接
-/// `node_modules`；未设置时回退到 `layout.default_installation`。
-pub(crate) fn external(layout: &Layout) -> PathBuf {
-    match std::env::var_os(layout.installation_env) {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
-        _ => PathBuf::from(layout.default_installation),
+/// 找 CLI 可执行文件的候选目录：`PATH` 的每一项，加上 Windows 上 npm -g 的默认前缀
+/// `%APPDATA%/npm`（`codex.rs` 的 PATH 扫描用同一组根）。
+fn path_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        roots.push(PathBuf::from(app_data).join("npm"));
     }
+    roots
+}
+
+/// 在这些目录里按顺序找第一个存在的文件。
+fn find_in(roots: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|root| names.iter().map(move |name| root.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// 在 PATH 上找一个存在的可执行文件（含 `.cmd` / `.exe` 壳）。
+pub(crate) fn on_path(names: &[&str]) -> Option<PathBuf> {
+    find_in(&path_roots(), names)
+}
+
+/// 从 CLI 壳反推 npm 式安装的包目录：壳所在目录下的 `node_modules/<scope>/<package>`。
+/// npm -g 全局前缀（`<prefix>/codex.cmd`）与自带 `node_modules` 的独立安装
+/// （`<dir>/bin/dsh.cmd`）两种布局都成立——所以默认值不是某个人的安装路径。
+fn installation_in(roots: &[PathBuf], layout: &Layout) -> Option<PathBuf> {
+    let names = [
+        format!("{}.cmd", layout.cli),
+        format!("{}.exe", layout.cli),
+        layout.cli.to_string(),
+    ];
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let shell = find_in(roots, &names)?;
+    let package = shell.parent()?.join(NODE_MODULES_DIR).join(layout.package);
+    package.is_dir().then_some(package)
+}
+
+/// 外部安装包路径：`layout.installation_env` 已是完整包目录，直接原样使用，不再拼接 `node_modules`；
+/// 未设置时按 PATH 上的 CLI 反推；都找不到就报错——不猜本机的安装位置。
+pub(crate) fn external(layout: &Layout) -> Result<PathBuf, String> {
+    if let Some(value) = std::env::var_os(layout.installation_env).filter(|value| !value.is_empty())
+    {
+        return Ok(PathBuf::from(value));
+    }
+    installation_in(&path_roots(), layout).ok_or_else(|| {
+        format!(
+            "没找到 {} 的安装目录：PATH 上没有 {}，也凑不出 node_modules 布局；请用 {} 指定",
+            layout.package, layout.cli, layout.installation_env
+        )
+    })
 }
 
 /// 当前包路径。`active` 为 `Some` 时必须指向受管槽位内合法包（缺失即报错，不偷偷回退）；
@@ -171,7 +217,7 @@ pub(crate) fn dsh_path(data: &Path) -> Result<PathBuf, String> {
 pub(crate) fn package_path_for(data: &Path, layout: &Layout) -> Result<PathBuf, String> {
     let state = read_state_for(data, layout)?;
     let Some(active) = state.active else {
-        return Ok(external(layout));
+        return external(layout);
     };
     let node_modules = slot_root_for(data, layout, &active)?.join(NODE_MODULES_DIR);
     ensure_no_reparse(&node_modules)?;
@@ -506,6 +552,51 @@ mod tests {
         let codex = read_state_for(data.path(), &Layout::CODEX).expect("读 Codex 状态");
         assert_eq!(codex.revision, 0);
         assert_eq!(codex.active, None);
+    }
+
+    /// 外部安装目录由 PATH 上的 CLI 壳反推：npm -g 前缀布局与自带 node_modules 的
+    /// 独立安装都要认，找不到就返回 None（而不是某个人的安装路径）。
+    #[test]
+    fn installation_is_derived_from_the_cli_on_path() {
+        let base = std::env::temp_dir().join(format!("agenthub-layout-{}", Uuid::new_v4()));
+        let prefix = base.join("prefix");
+        let standalone = base.join("standalone");
+        fs::create_dir_all(prefix.join(NODE_MODULES_DIR).join(Layout::CODEX.package))
+            .expect("建 npm -g 布局");
+        fs::create_dir_all(
+            standalone
+                .join("bin")
+                .join(NODE_MODULES_DIR)
+                .join(Layout::DSH.package),
+        )
+        .expect("建独立安装布局");
+        fs::write(prefix.join("codex.cmd"), "").expect("写 codex 壳");
+        fs::write(standalone.join("bin").join("dsh.cmd"), "").expect("写 dsh 壳");
+
+        assert_eq!(
+            installation_in(std::slice::from_ref(&prefix), &Layout::CODEX),
+            Some(prefix.join(NODE_MODULES_DIR).join(Layout::CODEX.package))
+        );
+        assert_eq!(
+            installation_in(&[standalone.join("bin")], &Layout::DSH),
+            Some(
+                standalone
+                    .join("bin")
+                    .join(NODE_MODULES_DIR)
+                    .join(Layout::DSH.package)
+            )
+        );
+        assert_eq!(
+            installation_in(&[base.join("nowhere")], &Layout::CODEX),
+            None
+        );
+        // 只有壳、没有包目录时不算数。
+        let shell_only = base.join("shellonly");
+        fs::create_dir_all(&shell_only).expect("建空布局");
+        fs::write(shell_only.join("codex.cmd"), "").expect("写壳");
+        assert_eq!(installation_in(&[shell_only], &Layout::CODEX), None);
+
+        fs::remove_dir_all(&base).ok();
     }
 
     #[test]

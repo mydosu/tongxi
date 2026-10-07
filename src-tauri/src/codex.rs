@@ -175,11 +175,13 @@ pub(crate) fn discover_executable() -> Option<PathBuf> {
     }
     // 配置的外部安装也优先于 PATH：回退到外部安装之后，跑的必须是**那一份**，
     // 而不是 PATH 上碰巧更新的另一份（否则版本对不上，回退会被判失败）。
-    if let Some(path) = crate::service_updates::local_or_nested_executable(
-        &crate::service_install::external(&crate::service_install::Layout::CODEX),
-        &crate::service_install::Layout::CODEX,
-    ) {
-        return Some(path);
+    if let Ok(external) = crate::service_install::external(&crate::service_install::Layout::CODEX) {
+        if let Some(path) = crate::service_updates::local_or_nested_executable(
+            &external,
+            &crate::service_install::Layout::CODEX,
+        ) {
+            return Some(path);
+        }
     }
     let mut roots: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect())

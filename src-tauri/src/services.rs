@@ -670,13 +670,16 @@ fn managed_update_status(
                 }
                 // 第一次受管激活：被换掉的是外部安装。
                 // 只有它的 manifest 指纹仍与 receipt 记录一致，退回的才是原来那一份。
-                None => crate::service_updates::manifest_at(
-                    &crate::service_install::external(layout),
-                    layout.package,
-                )
-                .ok()
-                .filter(|(_, sha256)| *sha256 == receipt.base_manifest_sha256)
-                .and_then(|(version, _)| (!version.trim().is_empty()).then_some(version)),
+                None => crate::service_install::external(layout)
+                    .ok()
+                    .and_then(|external| {
+                        crate::service_updates::manifest_at(&external, layout.package)
+                            .ok()
+                            .filter(|(_, sha256)| *sha256 == receipt.base_manifest_sha256)
+                            .and_then(|(version, _)| {
+                                (!version.trim().is_empty()).then_some(version)
+                            })
+                    }),
             };
             // 读不出来就只有 None / false：绝不把读失败的槽标成可回滚。
             if let Some(version) = previous {

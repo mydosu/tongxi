@@ -10,11 +10,12 @@ import threading
 import time
 import uuid
 from probe_project_tools import ToolSession, fixture
+import local_paths
 
 ROOT=Path(__file__).resolve().parents[1]
 context=fixture();DATA=context['project'];helper=ToolSession(context)
 exe=os.environ.get('AGENT_HUB_CODEX_EXE') or shutil.which('codex.exe')
-if not exe:exe=r'D:\AI\codex\bin\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+if not exe:exe=local_paths.codex_executable()
 listed=subprocess.run([exe,'mcp','list','--json'],capture_output=True,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW,timeout=20)
 if listed.returncode:raise RuntimeError('Cannot enumerate native MCP names safely')
 names=[item['name'] for item in json.loads(listed.stdout)]

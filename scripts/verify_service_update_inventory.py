@@ -12,17 +12,16 @@ import traceback
 from playwright.sync_api import sync_playwright
 
 import smoke_desktop as desktop
+import local_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "artifacts" / "service-update-inventory-verification.json"
 PACKAGES = {
     "dsh-win": (
-        os.environ.get("AGENT_HUB_DSH_INSTALLATION")
-        or "D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh"
+        local_paths.dsh_installation()
     ),
     "codex-win": (
-        os.environ.get("AGENT_HUB_CODEX_INSTALLATION")
-        or "D:/AI/_tools/npm-global/node_modules/@openai/codex"
+        local_paths.codex_installation()
     ),
 }
 EXPECTED_SOURCES = {

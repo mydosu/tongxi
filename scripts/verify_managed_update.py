@@ -15,6 +15,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 import smoke_desktop as desktop
+import local_paths
 
 checks = []
 errors = []
@@ -22,7 +23,7 @@ errors = []
 REAL_INSTALL = Path(
     os.environ.get(
         "AGENT_HUB_CODEX_REAL_INSTALLATION",
-        "D:/AI/_tools/npm-global/node_modules/@openai/codex",
+        local_paths.codex_installation(),
     )
 )
 # 验收基线：一份真·旧版安装（含可执行文件），不是空壳——回退要回到它并真的能跑，

@@ -16,7 +16,6 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # DSH 安装位置与探针脚本保持一致；应用从环境变量取。
-os.environ.setdefault("AGENT_HUB_DSH_INSTALLATION", "D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh")
 
 import smoke_desktop as sd  # noqa: E402
 

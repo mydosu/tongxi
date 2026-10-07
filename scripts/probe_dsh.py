@@ -7,13 +7,14 @@ import subprocess
 import threading
 import uuid
 import sys
+import local_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 
 class Client:
     def __init__(self, data):
         script=(ROOT/'src-tauri/src/dsh_bridge.mjs').read_text(encoding='utf-8')
-        installation=os.environ.get('AGENT_HUB_DSH_INSTALLATION','D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh')
+        installation=local_paths.dsh_installation()
         env=os.environ.copy(); env['AGENT_HUB_DSH_DIAGNOSTICS']='1'
         env['AGENT_HUB_DSH_AUTH_BRIDGE']=(ROOT/'src-tauri/src/dsh_hermes_auth.py').read_text(encoding='utf-8')
         self.proc=subprocess.Popen(['node','--input-type=module','-e',script,installation,str(data)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',env=env,creationflags=subprocess.CREATE_NO_WINDOW)

@@ -81,7 +81,14 @@ fn dsh_web() -> Result<String, String> {
         );
     }
 
-    let cli = setting("AGENT_HUB_DSH_CLI", "D:/AI/dsh/bin/dsh.cmd");
+    let cli = match setting("AGENT_HUB_DSH_CLI", "") {
+        value if !value.is_empty() => value,
+        _ => crate::service_install::on_path(&["dsh.cmd", "dsh"])
+            .map(|path| path.to_string_lossy().to_string())
+            .ok_or(
+                "没找到 DSH 启动脚本：PATH 上没有 dsh.cmd，也没设 AGENT_HUB_DSH_CLI".to_string(),
+            )?,
+    };
     if !Path::new(&cli).is_file() {
         return Err(format!("没找到 DSH 启动脚本：{cli}"));
     }

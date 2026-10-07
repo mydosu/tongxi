@@ -21,7 +21,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ.setdefault("AGENT_HUB_DSH_INSTALLATION", "D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh")
 os.environ.pop("AGENT_HUB_DSH_HOME", None)  # 这一轮验的就是「共用真实家目录」
 
 import smoke_desktop as sd  # noqa: E402
