@@ -5,6 +5,10 @@ use serde_json::Value;
 pub struct ModelOption {
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
     pub efforts: Vec<String>,
     pub default_effort: Option<String>,
 }
@@ -21,6 +25,8 @@ pub fn codex_models(value: &Value) -> Vec<ModelOption> {
                     .as_str()
                     .unwrap_or(entry["model"].as_str()?)
                     .into(),
+                provider_id: None,
+                provider_name: None,
                 efforts: entry["supportedReasoningEfforts"]
                     .as_array()
                     .into_iter()

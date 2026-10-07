@@ -59,23 +59,44 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
         return vec![];
     };
     let mut choices = vec![];
-    fn collect(value: &Value, result: &mut Vec<ModelOption>) {
+    fn collect(
+        value: &Value,
+        provider_id: Option<&str>,
+        provider_name: Option<&str>,
+        result: &mut Vec<ModelOption>,
+    ) {
         if let Some(children) = value.as_array() {
             for child in children {
-                collect(child, result);
+                collect(child, provider_id, provider_name, result);
             }
         } else if let Some(id) = value["value"].as_str() {
+            let route_provider = serde_json::from_str::<Value>(id).ok().and_then(|route| {
+                route
+                    .as_array()
+                    .and_then(|parts| parts.first())
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            });
+            let provider_id = if provider_id == Some("provider") {
+                route_provider.as_deref().or(provider_id)
+            } else {
+                provider_id
+            };
             result.push(ModelOption {
                 id: id.into(),
                 name: value["name"].as_str().unwrap_or(id).into(),
+                provider_id: provider_id.map(String::from),
+                provider_name: provider_name.map(String::from),
                 efforts: vec![],
                 default_effort: None,
             });
         } else if value.is_object() {
-            collect(&value["options"], result);
+            let group_id = value["group"].as_str().or(provider_id);
+            let group_name = value["name"].as_str().or(provider_name);
+            collect(&value["options"], group_id, group_name, result);
         }
     }
-    collect(&model["options"], &mut choices);
+    collect(&model["options"], None, None, &mut choices);
     if let Some(selected) = choices
         .iter_mut()
         .find(|choice| Some(choice.id.as_str()) == model["currentValue"].as_str())
@@ -787,11 +808,13 @@ mod tests {
     #[test]
     fn native_catalog_keeps_opaque_routes_and_model_dependent_efforts() {
         let response = json!({"configOptions":[
-            {"id":"model","currentValue":"[\"provider\",\"flash\"]","options":[{"group":"provider","options":[{"value":"[\"provider\",\"flash\"]","name":"Flash"},{"value":"[\"provider\",\"pro\"]","name":"Pro"}]}]},
+            {"id":"model","currentValue":"[\"provider\",\"flash\"]","options":[{"group":"provider","options":[{"value":"[\"provider\",\"flash\"]","name":"Flash"},{"value":"[\"provider\",\"pro\"]","name":"Pro"},{"value":"[\"provider-two\",\"flash\"]","name":"Other Flash"}]},{"group":"provider","options":[{"value":"[\"provider-two\",\"pro\"]","name":"Other Pro"}]}]},
             {"id":"reasoning_effort","currentValue":"high","options":[{"value":"off"},{"value":"low"},{"value":"high"}]}
         ]});
         let models = models_from_response(&response);
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 4);
+        assert_eq!(models[0].provider_id.as_deref(), Some("provider"));
+        assert_eq!(models[2].provider_id.as_deref(), Some("provider-two"));
         assert_eq!(models[0].efforts, ["off", "low", "high"]);
         assert!(models[1].efforts.is_empty());
         assert_eq!(models[0].default_effort.as_deref(), Some("high"));

@@ -334,7 +334,7 @@ impl Runner {
             "codex-win" => {
                 codex_command(&crate::codex::discover_executable().ok_or("未找到 Codex 原生程序")?)?
             }
-            "hermes-win" => crate::acp_transport::Target::windows().command(&folder)?,
+            "hermes-win" => crate::acp_transport::Target::windows().project_command(&folder)?,
             "dsh-win" => {
                 let mut command =
                     Command::new(crate::dsh::discover().ok_or("未找到 DSH Node 环境")?);
@@ -637,8 +637,9 @@ impl Runner {
         client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")}}))?;
         let attempt = wire.lock().unwrap().attempt.clone();
         let dsh = attempt.agent_id == "dsh-win";
+        let project_tools = matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
         let db = self.store.lock().unwrap().path.clone();
-        let servers = if dsh {
+        let servers = if project_tools {
             json!([{"name":"agent_hub","command":std::env::current_exe().map_err(|_|"项目工具程序不可用")?,"args":["--project-tools",db.to_string_lossy(),attempt.id],"env":[]}])
         } else {
             json!([])
@@ -675,10 +676,7 @@ impl Runner {
                     json!({"sessionId":session,"modelId":model}),
                 )?;
             }
-            let applied=client.rpc("session/set_config_option",json!({"sessionId":session,"configId":"reasoning_effort","value":attempt.reasoning_effort.as_deref().unwrap_or("default")}))?;
-            if applied["_meta"]["agentHub"]["toolCount"].as_u64() != Some(0) {
-                return Err("管家项目会话工具关闭检查失败".into());
-            }
+            client.rpc("session/set_config_option",json!({"sessionId":session,"configId":"reasoning_effort","value":attempt.reasoning_effort.as_deref().unwrap_or("default")}))?;
         }
         if self.cancelled(&attempt.workflow_id) {
             return Err("项目协作已停止".into());

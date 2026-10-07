@@ -84,6 +84,18 @@ struct ActiveRun {
 fn busy(status: &str) -> bool {
     matches!(status, "starting" | "running" | "cancelling")
 }
+fn apply_reasoning_delta(run: &mut ActiveRun, method: &str, params: &Value) -> bool {
+    if !matches!(
+        method,
+        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta"
+    ) {
+        return false;
+    }
+    if let Some(delta) = params["delta"].as_str() {
+        run.thought(delta);
+    }
+    true
+}
 
 impl ActiveRun {
     /// 推理增量直接累加：思考块不分段、不参与正文拼接。
@@ -768,9 +780,7 @@ impl Runtime {
             }
             // codex 的推理流：正文增量和摘要增量都汇总到同一个思考块。
             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                if let Some(delta) = params["delta"].as_str() {
-                    run.thought(delta);
-                }
+                apply_reasoning_delta(run, method, params);
             }
             "item/agentMessage/delta" => {
                 if let (Some(item), Some(delta)) =
@@ -979,5 +989,25 @@ mod tests {
         assert_eq!(run.snapshot.text, "最终第一段\n\n第二段");
         run.text("z", "最终第一段", true);
         assert_eq!(run.snapshot.text, "最终第一段\n\n第二段");
+    }
+    #[test]
+    fn reasoning_and_summary_deltas_are_saved_in_the_codex_thought_block() {
+        let mut run = active();
+        assert!(!apply_reasoning_delta(
+            &mut run,
+            "item/agentMessage/delta",
+            &json!({"delta":"answer"})
+        ));
+        assert!(apply_reasoning_delta(
+            &mut run,
+            "item/reasoning/textDelta",
+            &json!({"delta":"先分析。"})
+        ));
+        assert!(apply_reasoning_delta(
+            &mut run,
+            "item/reasoning/summaryTextDelta",
+            &json!({"delta":"再归纳。"})
+        ));
+        assert_eq!(run.snapshot.thought, "先分析。再归纳。");
     }
 }

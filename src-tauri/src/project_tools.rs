@@ -148,7 +148,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 10 {
+        if version != 11 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -179,7 +179,7 @@ impl Broker {
             serde_json::from_str(&row.1).map_err(|_| "项目检查配置无效")?;
         let writable = EXECUTOR_AGENTS.contains(&row.8.as_str())
             && matches!(row.2.as_str(), "implement" | "repair");
-        let files: Vec<String> = if row.2 == "plan" && row.8 == "codex-win" && row.3.is_none() {
+        let files: Vec<String> = if row.2 == "plan" && row.3.is_none() {
             crate::projects::manifest(&root)?
         } else if let Some(text) = row.4 {
             serde_json::from_str(&text).map_err(|_| "任务范围无效")?
@@ -197,6 +197,15 @@ impl Broker {
             writable,
             checks,
         })
+    }
+
+    pub fn allowed_tool_specs(&self) -> Result<Vec<Value>> {
+        let scope = Self::scope(&self.connection, &self.attempt_id)?;
+        let mut tools = tool_specs();
+        if !scope.writable {
+            tools.retain(|tool| matches!(tool["name"].as_str(), Some("hub_list" | "hub_read")));
+        }
+        Ok(tools)
     }
 
     fn target(scope: &Scope, relative: &str, write: bool) -> Result<PathBuf> {
@@ -376,7 +385,7 @@ pub fn tool_specs() -> Vec<Value> {
     definitions.into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
 }
 
-/// Minimal stdio MCP transport used only by the dedicated DSH project harness.
+/// Minimal stdio MCP transport used only by dedicated project harness sessions.
 pub fn serve(db: &Path, attempt: &str) -> Result<()> {
     use std::io::BufRead;
     let mut broker = Broker::open(db, attempt)?;
@@ -409,7 +418,10 @@ pub fn serve(db: &Path, attempt: &str) -> Result<()> {
                 json!({"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"agent-hub-project-tools","version":env!("CARGO_PKG_VERSION")}}})
             }
             "ping" => json!({"result":{}}),
-            "tools/list" if initialized => json!({"result":{"tools":tool_specs()}}),
+            "tools/list" if initialized => match broker.allowed_tool_specs() {
+                Ok(tools) => json!({"result":{"tools":tools}}),
+                Err(_) => json!({"error":{"code":-32001,"message":"项目授权范围不可用"}}),
+            },
             "tools/call" if initialized => {
                 let result = broker.call(
                     value["params"]["name"].as_str().unwrap_or(""),

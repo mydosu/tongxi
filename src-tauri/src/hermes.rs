@@ -39,6 +39,16 @@ fn busy(run: &RunSnapshot) -> bool {
         "starting" | "running" | "cancelling"
     )
 }
+fn provider_label(model: &Value) -> Option<String> {
+    let description = model["description"].as_str()?;
+    let label = description
+        .split("Provider:")
+        .nth(1)?
+        .split('•')
+        .next()?
+        .trim();
+    (!label.is_empty()).then(|| label.to_owned())
+}
 fn models_from_response(response: &Value) -> Vec<ModelOption> {
     response["models"]["availableModels"]
         .as_array()
@@ -48,6 +58,29 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
             Some(ModelOption {
                 id: model["modelId"].as_str()?.into(),
                 name: model["name"].as_str().unwrap_or("模型").into(),
+                provider_id: model["providerId"]
+                    .as_str()
+                    .or_else(|| model["provider"].as_str())
+                    .map(String::from)
+                    .or_else(|| {
+                        let id = model["modelId"].as_str()?;
+                        if id.starts_with("custom:") {
+                            provider_label(model)
+                        } else {
+                            id.split_once(':').map(|(provider, _)| provider.to_owned())
+                        }
+                    })
+                    .or_else(|| {
+                        model["modelId"]
+                            .as_str()?
+                            .split_once('/')
+                            .map(|(provider, _)| provider.to_owned())
+                    }),
+                provider_name: model["providerName"]
+                    .as_str()
+                    .or_else(|| model["provider"].as_str())
+                    .map(String::from)
+                    .or_else(|| provider_label(model)),
                 efforts: [
                     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
                 ]
@@ -58,6 +91,24 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod model_catalog_tests {
+    use super::models_from_response;
+    use serde_json::json;
+
+    #[test]
+    fn model_catalog_keeps_provider_routes_for_grouped_selection() {
+        let models = models_from_response(&json!({"models":{"availableModels":[
+            {"modelId":"openai:gpt-6","name":"GPT 6","description":"Provider: OpenAI • current"},
+            {"modelId":"custom:private:sonnet","name":"Sonnet","description":"Provider: My Private API"}
+        ]}}));
+        assert_eq!(models[0].provider_id.as_deref(), Some("openai"));
+        assert_eq!(models[0].provider_name.as_deref(), Some("OpenAI"));
+        assert_eq!(models[1].provider_id.as_deref(), Some("My Private API"));
+        assert_eq!(models[1].provider_name.as_deref(), Some("My Private API"));
+    }
 }
 impl Runtime {
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。

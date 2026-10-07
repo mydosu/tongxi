@@ -74,6 +74,8 @@ impl Brain {
                 .map(|id| ModelOption {
                     id: id.clone(),
                     name: id.clone(),
+                    provider_id: None,
+                    provider_name: None,
                     efforts: Vec::new(),
                     default_effort: None,
                 })

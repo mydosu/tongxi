@@ -1,9 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Conversation, ExecutionChoice, ModelOption, Project, ProjectAttempt, ProjectTask, RoleChoice, Roles, Workflow } from './types';
+import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 
 type Escape = (value: string | number) => string;
 export const workflowBusy = (job: Workflow | null | undefined) => !!job && ['queued', 'planning', 'running', 'verifying', 'reviewing', 'cancelling'].includes(job.status);
-export const projectLabels: Record<string, string> = { queued: '等待项目空闲', planning: '方案与任务分发', running: '正在实现', verifying: '正在实际验收', reviewing: 'Hermes 功能校验', cancelling: '正在停止', completed: '协作完成', failed: '协作失败', interrupted: '协作已中断', starting: '准备会话', skipped: '未执行' };
+export const projectLabels: Record<string, string> = { queued: '等待项目空闲', planning: '方案与任务分发', running: '正在实现', verifying: '正在实际验收', reviewing: '功能验收中', cancelling: '正在停止', completed: '协作完成', failed: '协作失败', interrupted: '协作已中断', starting: '准备会话', skipped: '未执行' };
 const stages: Record<string, string> = { implement: '项目实现', verify: '实际检查', review: '功能校验', repair: '复杂修复' };
 const stageLabel = (attempt: ProjectAttempt) => attempt.stage === 'plan' ? attempt.agent_id === 'codex-win' ? '项目方案' : attempt.agent_id === 'hermes-win' ? '任务分发' : '项目方案' : attempt.stage === 'repair' && attempt.agent_id === 'codex-win' ? '疑难诊断' : attempt.stage === 'repair' && attempt.agent_id === 'dsh-win' ? '实际修复' : stages[attempt.stage] || attempt.stage;
 const effortLabels: Record<string, string> = { none: '关闭思考', off: '关闭思考', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最大', ultra: 'Ultra' };
@@ -11,19 +12,27 @@ const roleNames: Record<'plan' | 'implement' | 'review', string> = { plan: '规�
 const effortOptions = (models: ModelOption[], modelId: string) => models.find(item => item.id === modelId)?.efforts || Object.keys(effortLabels);
 
 /// 逐任务确认区的一行：标题、执行者、授权文件，加模型与强度两个下拉（预填规划给出的选型建议）。
-function confirmRow(task: ProjectTask, suggestion: ExecutionChoice | null | undefined, models: ModelOption[], escape: Escape, name: (id: string) => string) {
-  const model = task.model || suggestion?.model || '';
-  const effort = task.effort || suggestion?.reasoning_effort || '';
+function confirmRow(task: ProjectTask, suggestion: ExecutionChoice | null | undefined, models: ModelOption[], eligibleAgents: string[], escape: Escape, name: (id: string) => string) {
+  const suggestedModel = suggestion && models.some(item => item.id === suggestion.model) ? suggestion.model : '';
+  const model = task.model || suggestedModel;
+  const effort = task.effort || (suggestedModel ? suggestion?.reasoning_effort : null) || '';
+  const provider = selectedProvider(models, model);
+  const providers = modelProviders(models);
+  const candidates = [...new Set([task.agent_id, ...eligibleAgents])];
+  const agentOptions = candidates.map(agent => `<option value="${escape(agent)}" ${agent === task.agent_id ? 'selected' : ''} ${eligibleAgents.includes(agent) ? '' : 'disabled'}>${escape(name(agent))}${eligibleAgents.includes(agent) ? '' : ' · 未连接'}</option>`).join('');
   const files = task.files.length ? ` · ${task.files.map(escape).join(' · ')}` : '';
-  return `<div class="task-confirm-row" data-task-position="${task.position}" data-task-agent="${escape(task.agent_id)}"><div class="task-confirm-title"><strong>${escape(task.title)}</strong><span>${escape(name(task.agent_id))}${files}</span></div><label>模型<select data-task-model aria-label="任务模型"><option value="">自动选型</option>${models.map(item => `<option value="${escape(item.id)}" ${item.id === model ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></label><label>强度<select data-task-effort aria-label="任务思考强度"><option value="">自动</option>${effortOptions(models, model).map(value => `<option value="${escape(value)}" ${value === effort ? 'selected' : ''}>${escape(effortLabels[value] || value)}</option>`).join('')}</select></label></div>`;
+  return `<div class="task-confirm-row ${providers.length > 1 ? 'multi-provider' : ''}" data-task-position="${task.position}" data-task-agent="${escape(task.agent_id)}"><div class="task-confirm-title"><strong>${escape(task.title)}</strong><span>${escape(name(task.agent_id))}${files}</span></div><label>执行者<select data-task-agent-select aria-label="任务执行成员">${agentOptions}</select></label><label data-task-provider-wrap ${providers.length > 1 ? '' : 'hidden'}>提供商<select data-task-provider aria-label="任务模型提供商">${providerOptionsHtml(models, provider, escape)}</select></label><label>模型<select data-task-model aria-label="任务模型">${modelOptionsHtml(models, provider, model || null, escape, '自动选型')}${model && !models.some(item => item.id === model) ? `<option value="${escape(model)}" selected>${escape(model)} · 当前目录不可用</option>` : ''}</select></label><label>强度<select data-task-effort aria-label="任务思考强度"><option value="">自动</option>${effortOptions(models, model).map(value => `<option value="${escape(value)}" ${value === effort ? 'selected' : ''}>${escape(effortLabels[value] || value)}</option>`).join('')}</select></label></div>`;
 }
 
-function confirmBlock(job: Workflow, escape: Escape, name: (id: string) => string, catalog: (id: string) => ModelOption[]) {
-  return `<div class="task-confirm"><div class="task-confirm-heading">规划完成 · 确认每个任务的模型与思考强度后开始执行</div>${job.tasks.map(task => confirmRow(task, job.plan?.tasks[task.position]?.execution, catalog(task.agent_id), escape, name)).join('')}<button type="button" class="primary" data-confirm-project>确认并开始执行</button></div>`;
+function confirmBlock(job: Workflow, escape: Escape, name: (id: string) => string, catalog: (id: string) => ModelOption[], eligibleAgents: string[]) {
+  return `<div class="task-confirm"><div class="task-confirm-heading">规划完成 · 为每项任务选择 Codex、Hermes 或 DSH，并确认模型与思考强度</div>${job.tasks.map(task => {
+    const planned = job.plan?.tasks[task.position];
+    return confirmRow(task, planned?.agent_id === task.agent_id ? planned.execution : null, catalog(task.agent_id), eligibleAgents, escape, name);
+  }).join('')}<button type="button" class="primary" data-confirm-project>确认并开始执行</button></div>`;
 }
 
-export function workflowCard(job: Workflow, escape: Escape, name: (id: string) => string, model: (id: string, value: string | null) => string, catalog: (id: string) => ModelOption[]) {
-  return `<article class="workflow-card" data-workflow-id="${escape(job.id)}"><div class="workflow-heading"><strong>项目协作</strong><span class="workflow-status ${escape(job.status)}">${escape(projectLabels[job.status] || job.status)}</span>${workflowBusy(job) ? `<button type="button" class="text-button" data-stop-project="${escape(job.id)}" ${job.status === 'cancelling' ? 'disabled' : ''}>停止协作</button>` : ''}</div>${job.plan ? `<p class="workflow-summary">${escape(job.plan.summary)}</p><ol class="task-list">${job.tasks.map(task => `<li data-task-id="${escape(task.id)}"><div><strong>${escape(task.title)}</strong><span>${escape(name(task.agent_id))} · ${escape(projectLabels[task.status] || task.status)}</span></div><small>${task.files.map(escape).join(' · ')}${task.depends_on.length ? ` · 依赖 ${task.depends_on.map(i => i + 1).join('、')}` : ''}</small><small>执行参数：${task.model ? escape(model(task.agent_id, task.model)) : '自动选型'}${task.effort ? ` · ${escape(task.effort)}` : ''}</small>${task.worktree || task.branch ? `<small>${task.worktree ? `工作树 ${escape(task.worktree)}` : ''}${task.worktree && task.branch ? ' · ' : ''}${task.branch ? `分支 ${escape(task.branch)}` : ''}</small>` : ''}${task.error ? `<p class="workflow-error">${escape(task.error)}</p>` : ''}</li>`).join('')}</ol>` : '<p class="workflow-summary">等待 Codex 拟定项目方案…</p>'}${job.status === 'planning' && job.plan ? confirmBlock(job, escape, name, catalog) : ''}
+export function workflowCard(job: Workflow, escape: Escape, name: (id: string) => string, model: (id: string, value: string | null) => string, catalog: (id: string) => ModelOption[], eligibleAgents: string[]) {
+  return `<article class="workflow-card" data-workflow-id="${escape(job.id)}"><div class="workflow-heading"><strong>项目协作</strong><span class="workflow-status ${escape(job.status)}">${escape(projectLabels[job.status] || job.status)}</span>${workflowBusy(job) ? `<button type="button" class="text-button" data-stop-project="${escape(job.id)}" ${job.status === 'cancelling' ? 'disabled' : ''}>停止协作</button>` : ''}</div>${job.plan ? `<p class="workflow-summary">${escape(job.plan.summary)}</p><ol class="task-list">${job.tasks.map(task => `<li data-task-id="${escape(task.id)}"><div><strong>${escape(task.title)}</strong><span>${escape(name(task.agent_id))} · ${escape(projectLabels[task.status] || task.status)}</span></div><small>${task.files.map(escape).join(' · ')}${task.depends_on.length ? ` · 依赖 ${task.depends_on.map(i => i + 1).join('、')}` : ''}</small><small>执行参数：${task.model ? escape(model(task.agent_id, task.model)) : '自动选型'}${task.effort ? ` · ${escape(task.effort)}` : ''}</small>${task.worktree || task.branch ? `<small>${task.worktree ? `工作树 ${escape(task.worktree)}` : ''}${task.worktree && task.branch ? ' · ' : ''}${task.branch ? `分支 ${escape(task.branch)}` : ''}</small>` : ''}${task.error ? `<p class="workflow-error">${escape(task.error)}</p>` : ''}</li>`).join('')}</ol>` : '<p class="workflow-summary">等待规划成员制定项目方案…</p>'}${job.status === 'planning' && job.plan ? confirmBlock(job, escape, name, catalog, eligibleAgents) : ''}
   <div class="attempt-list">${job.attempts.filter(attempt => attempt.stage !== 'verify' || attempt.checks.length > 0).map(attempt => `<details data-attempt-id="${escape(attempt.id)}" ${!['plan', 'review'].includes(attempt.stage) && ['starting', 'running', 'cancelling'].includes(attempt.status) ? 'open' : ''}><summary>${escape(name(attempt.agent_id))} · ${escape(stageLabel(attempt))}<span>${escape(projectLabels[attempt.status] || attempt.status)}</span></summary><small>${attempt.stage === 'verify' ? '本地检查程序 · 无模型调用' : `${escape(model(attempt.agent_id, attempt.model))}${attempt.reasoning_effort ? ` · ${escape(attempt.reasoning_effort)}` : ''}`}</small>${attempt.output ? `<pre class="attempt-output">${escape(attempt.output)}</pre>` : ''}${attempt.error ? `<p class="workflow-error">${escape(attempt.error)}</p>` : ''}${attempt.checks.map(check => `<div class="project-check ${check.exit_code === 0 && !check.timed_out ? 'passed' : 'failed'}"><strong>${escape(check.name)}</strong><span>${check.timed_out ? '超时' : check.exit_code === null ? '未完成' : `退出码 ${check.exit_code}`} · ${check.duration_ms} ms</span><code>${escape(check.program)} ${check.args.map(escape).join(' ')}</code>${check.output ? `<pre>${escape(check.output)}</pre>` : ''}</div>`).join('')}</details>`).join('')}</div>${job.changes.length ? `<details class="project-changes"><summary>实际文件记录 · ${new Set(job.changes.map(change => change.path)).size} 个文件</summary><ul>${job.changes.map(change => `<li><code>${escape(change.path)}</code><span>${change.operation === 'delete' ? '删除' : '写入'} · ${escape(change.after_hash?.slice(0, 12) || '无')}</span></li>`).join('')}</ul></details>` : ''}${job.summary ? `<p class="workflow-result">${escape(job.summary)}</p>` : ''}${job.error ? `<p class="workflow-error">${escape(job.error)}</p>` : ''}</article>`;
 }
 
@@ -79,12 +88,18 @@ export function planningDialog(host: PlanningHost): Promise<Roles | null> {
     return { agent: list.includes(preferred[role]) ? preferred[role] : list[0] || '', model: null, effort: null };
   };
   const state: Roles = { plan: pick('plan'), implement: pick('implement'), review: pick('review') };
-  const modelOptionsHtml = (models: ModelOption[], selected: string | null) => `<option value="">自动选型</option>${models.map(item => `<option value="${escape(item.id)}" ${item.id === selected ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}`;
+  const selectedProviders: Record<typeof roles[number], string> = {
+    plan: selectedProvider(host.catalog(state.plan.agent), null),
+    implement: selectedProvider(host.catalog(state.implement.agent), null),
+    review: selectedProvider(host.catalog(state.review.agent), null),
+  };
   const effortOptionsHtml = (models: ModelOption[], model: string | null, selected: string | null) => `<option value="">自动</option>${effortOptions(models, model || '').map(value => `<option value="${escape(value)}" ${value === selected ? 'selected' : ''}>${escape(effortLabels[value] || value)}</option>`).join('')}`;
-  host.open('配置项目角色', '为规划、执行、验收各选一位成员与参数；模型与强度留空即由该成员自动选型。确认后先出方案，逐项确认任务后再开始执行。', `<form id="role-form">${roles.map(role => {
+  host.open('配置项目角色', '规划、执行、验收三个阶段均可选择 Codex、Hermes 或 DSH。任务还可逐项调整执行成员。此处执行成员负责验收失败后的修复；若任务成员与此处相同，角色模型和强度可作为默认参数。模型和强度留空即由该成员自动选型。', `<form id="role-form">${roles.map(role => {
     const models = host.catalog(state[role].agent);
+    const provider = selectedProviders[role] || selectedProvider(models, state[role].model);
+    const providers = modelProviders(models);
     const options = host.members(role).map(id => `<option value="${escape(id)}" ${id === state[role].agent ? 'selected' : ''}>${escape(host.name(id))}</option>`).join('');
-    return `<div class="role-field"><span>${roleNames[role]}</span><label>成员<select data-role-agent="${role}">${options}</select></label><label>模型<select data-role-model="${role}">${modelOptionsHtml(models, state[role].model)}</select></label><label>强度<select data-role-effort="${role}">${effortOptionsHtml(models, state[role].model, state[role].effort)}</select></label></div>`;
+    return `<div class="role-field ${providers.length > 1 ? 'multi-provider' : ''}"><span>${roleNames[role]}</span><label>成员<select data-role-agent="${role}">${options}</select></label><label data-role-provider-wrap="${role}" ${providers.length > 1 ? '' : 'hidden'}>提供商<select data-role-provider="${role}">${providerOptionsHtml(models, provider, escape)}</select></label><label>模型<select data-role-model="${role}">${modelOptionsHtml(models, provider, state[role].model, escape, '自动选型')}</select></label><label>强度<select data-role-effort="${role}">${effortOptionsHtml(models, state[role].model, state[role].effort)}</select></label></div>`;
   }).join('')}<p class="model-setting-note">成员只列出当前会话里已连接、且能承担该角色的成员；“自动选型”表示由该成员按任务选择模型与强度。</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" id="role-cancel" class="secondary">取消</button><button class="primary" type="submit">开始规划</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#role-form')!;
   let settled = false;
@@ -102,14 +117,23 @@ export function planningDialog(host: PlanningHost): Promise<Roles | null> {
     state[role].effort = select.value || null;
   };
   const syncModels = (role: typeof roles[number]) => {
+    const models = host.catalog(state[role].agent);
+    const provider = selectedProviders[role] || selectedProvider(models, state[role].model);
+    const providers = modelProviders(models);
+    const providerSelect = form.querySelector<HTMLSelectElement>(`[data-role-provider="${role}"]`);
+    const providerWrap = form.querySelector<HTMLElement>(`[data-role-provider-wrap="${role}"]`)!;
+    providerWrap.hidden = providers.length < 2;
+    form.querySelector<HTMLElement>(`[data-role-agent="${role}"]`)!.closest('.role-field')!.classList.toggle('multi-provider', providers.length > 1);
+    if (providerSelect) providerSelect.innerHTML = providerOptionsHtml(models, provider, escape);
     const select = form.querySelector<HTMLSelectElement>(`[data-role-model="${role}"]`)!;
-    select.innerHTML = modelOptionsHtml(host.catalog(state[role].agent), state[role].model);
+    select.innerHTML = modelOptionsHtml(models, provider, state[role].model, escape, '自动选型');
     select.value = state[role].model || '';
     syncEfforts(role);
   };
   if (roles.some(role => !host.members(role).length)) form.querySelector<HTMLButtonElement>('.primary')!.disabled = true;
   roles.forEach(role => {
-    form.querySelector<HTMLSelectElement>(`[data-role-agent="${role}"]`)!.addEventListener('change', event => { state[role].agent = (event.target as HTMLSelectElement).value; state[role].model = null; state[role].effort = null; syncModels(role); });
+    form.querySelector<HTMLSelectElement>(`[data-role-agent="${role}"]`)!.addEventListener('change', event => { state[role].agent = (event.target as HTMLSelectElement).value; state[role].model = null; state[role].effort = null; selectedProviders[role] = selectedProvider(host.catalog(state[role].agent), null); syncModels(role); });
+    form.querySelector<HTMLSelectElement>(`[data-role-provider="${role}"]`)!.addEventListener('change', event => { selectedProviders[role] = (event.target as HTMLSelectElement).value; state[role].model = null; state[role].effort = null; syncModels(role); });
     form.querySelector<HTMLSelectElement>(`[data-role-model="${role}"]`)!.addEventListener('change', event => { state[role].model = (event.target as HTMLSelectElement).value || null; state[role].effort = null; syncEfforts(role); });
     form.querySelector<HTMLSelectElement>(`[data-role-effort="${role}"]`)!.addEventListener('change', event => { state[role].effort = (event.target as HTMLSelectElement).value || null; });
   });

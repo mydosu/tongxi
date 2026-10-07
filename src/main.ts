@@ -3,6 +3,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
 import { bindingDialog, planningDialog, workflowBusy, workflowCard } from './project_ui';
+import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import './styles.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -38,6 +39,7 @@ let listGeneration = 0;
 let detailGeneration = 0;
 let sending = false;
 let settingsAgentId = '';
+const liveProviderSelection: Record<string, string> = {};
 let settingsPending = 0;
 let settingsQueue: Promise<void> = Promise.resolve();
 const effortLabels: Record<string, string> = { none: '关闭思考', off: '关闭思考', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最大', ultra: 'Ultra' };
@@ -479,9 +481,9 @@ function updateProjectControls() {
   const busy = workflowBusy(job);
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
   const eligible = detail.conversation.kind === 'group' && detail.conversation.members.includes('hermes-win') && detail.conversation.members.includes('codex-win');
-  if (bind) { bind.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目' : '绑定项目'; }
+  if (bind) { bind.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
   const title = main.querySelector('#project-title');
-  if (title) title.textContent = detail.project ? `${detail.project.name} · ${detail.project.checks.length} 条验收` : eligible ? '绑定目录后可执行项目任务' : '项目协作需要 Hermes 与 Codex';
+  if (title) title.textContent = detail.project ? `${detail.project.name} · ${detail.project.checks.length} 条验收` : eligible ? '项目协作 · 先绑定项目目录' : '项目协作需要 Hermes 与 Codex';
   const send = main.querySelector<HTMLButtonElement>('#send-project');
   if (send) { send.hidden = !detail.project; send.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || sending || settingsPending > 0 || detail.conversation.archived || detail.conversation.members.filter(id => id !== 'albion-wsl').some(id => runtimes[id]?.connection !== 'connected'); }
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
@@ -504,18 +506,37 @@ function updateProjectControls() {
     let user = messages.querySelector<HTMLElement>(`[data-message-id="${workflow.user_message_id}"]`);
     if (!user) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', renderMessage({ id: workflow.user_message_id, conversation_id: workflow.conversation_id, sender_id: 'user', content: workflow.request, status: state, created_at: workflow.created_at })); user = messages.querySelector(`[data-message-id="${workflow.user_message_id}"]`)!; }
     const current = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
-    const stamp = `${workflow.updated_at}:${workflow.status}:${workflow.attempts.map(attempt => `${attempt.status}:${attempt.output.length}`).join('|')}:${workflow.changes.length}`;
+    const stamp = `${workflow.updated_at}:${workflow.status}:${workflow.tasks.map(task => task.agent_id).join(',')}:${workflow.attempts.map(attempt => `${attempt.status}:${attempt.output.length}`).join('|')}:${workflow.changes.length}`;
     if (user.dataset.projectDelivery !== state) { user.dataset.projectDelivery = state; const delivery = user.querySelector('.message-delivery'); if (delivery) delivery.innerHTML = `${icon('check')}${state === 'delivered' ? '已提交原生会话' : state === 'pending' ? '等待项目调度' : '项目请求未完成'}`; }
     if (current?.dataset.paint === stamp) continue;
     const open = new Map([...current?.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id]') || []].map(node => [node.dataset.attemptId!, node.open]));
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
-    const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || []);
+    const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || [], roleMembers('implement'));
     if (current) current.outerHTML = html; else user.insertAdjacentHTML('afterend', html);
     const card = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`)!;
     card.dataset.paint = stamp;
     card.querySelectorAll<HTMLDetailsElement>('[data-attempt-id]').forEach(node => { if (open.has(node.dataset.attemptId!)) node.open = open.get(node.dataset.attemptId!)!; });
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-confirm-project]')?.addEventListener('click', () => void confirmProject(workflow.id, card));
+    card.querySelectorAll<HTMLSelectElement>('[data-task-agent-select]').forEach(select => select.addEventListener('change', () => {
+      const row = select.closest<HTMLElement>('[data-task-position]')!;
+      const agent = select.value;
+      const models = runtimes[agent]?.models || [];
+      const providers = modelProviders(models);
+      const provider = selectedProvider(models, null);
+      row.dataset.taskAgent = agent;
+      row.classList.toggle('multi-provider', providers.length > 1);
+      row.querySelector<HTMLElement>('[data-task-provider-wrap]')!.hidden = providers.length < 2;
+      row.querySelector<HTMLSelectElement>('[data-task-provider]')!.innerHTML = providerOptionsHtml(models, provider, escape);
+      row.querySelector<HTMLSelectElement>('[data-task-model]')!.innerHTML = modelOptionsHtml(models, provider, null, escape, '自动选型');
+      row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = '<option value="">自动</option>';
+    }));
+    card.querySelectorAll<HTMLSelectElement>('[data-task-provider]').forEach(select => select.addEventListener('change', () => {
+      const row = select.closest<HTMLElement>('[data-task-position]')!;
+      const agent = row.dataset.taskAgent || '';
+      row.querySelector<HTMLSelectElement>('[data-task-model]')!.innerHTML = modelOptionsHtml(runtimes[agent]?.models || [], select.value, null, escape, '自动选型');
+      row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = '<option value="">自动</option>';
+    }));
     // 换模型后强度选项跟着该模型的可用档位走，旧选择作废。
     card.querySelectorAll<HTMLSelectElement>('[data-task-model]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
@@ -532,11 +553,11 @@ async function showProjectBinding() {
   catch (error) { toast(errorText(error), true); }
 }
 
-/// 角色可选成员：只能是当前会话里已连接、且能承担该角色的成员（执行角色只有带写工具的编码成员）。
-const roleMembers = (role: 'plan' | 'implement' | 'review') => {
+/// 角色可选成员：只列当前群中已连接、且有原生模型目录的 Windows 项目成员。
+const roleMembers = (_role: 'plan' | 'implement' | 'review') => {
   if (!detail) return [];
-  const capable = role === 'implement' ? ['codex-win', 'dsh-win'] : ['codex-win', 'hermes-win', 'dsh-win'];
-  return detail.conversation.members.filter(id => capable.includes(id) && runtimes[id]?.connection === 'connected');
+  const capable = ['codex-win', 'hermes-win', 'dsh-win'];
+  return detail.conversation.members.filter(id => capable.includes(id) && runtimes[id]?.connection === 'connected' && runtimes[id]?.models.length > 0);
 };
 
 async function sendProject() {
@@ -562,6 +583,7 @@ async function sendProject() {
 async function confirmProject(workflowId: string, card: HTMLElement) {
   const tasks: TaskChoice[] = [...card.querySelectorAll<HTMLElement>('[data-task-position]')].map(row => ({
     position: Number(row.dataset.taskPosition),
+    agent_id: row.querySelector<HTMLSelectElement>('[data-task-agent-select]')!.value,
     model: row.querySelector<HTMLSelectElement>('[data-task-model]')!.value || null,
     effort: row.querySelector<HTMLSelectElement>('[data-task-effort]')!.value || null,
   }));
@@ -617,10 +639,10 @@ function renderChat() {
   const name = directAgent?.name || ''; 
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : `<span class="avatar group-avatar">${icon('group')}</span>`}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout"><section class="chat-content"><div class="milestone-note"><span class="note-mark">07</span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}</div>
-      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊讨论设置"></div><div id="project-controls" class="project-controls"><span id="project-title"></span><button id="bind-project" type="button" class="text-button">绑定项目</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
+      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊讨论设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>描述需求后，点击“执行项目”配置角色并确认任务。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button id="send-project" type="button" class="primary" hidden>执行项目</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.map(renderMessage).join('')}` : `<div class="welcome"><div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div><span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
-      <form id="composer" class="composer"><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · ${key === 'hermes' ? '仅聊天' : '只读对话'}` : '群聊讨论 · 按轮次交流'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : 'Enter 开始讨论 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary" hidden>停止回复</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button><button id="send-project" type="button" class="secondary" hidden>执行项目</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>开始讨论${icon('arrow')}</button>`}</div></div></form>
+      <form id="composer" class="composer"><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · ${key === 'hermes' ? '仅聊天' : '只读对话'}` : '群聊讨论 · 按轮次交流'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : 'Enter 开始讨论 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary" hidden>停止回复</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>开始讨论${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
     </section><aside class="members-panel"><div class="panel-title"><span>会话成员</span>${conversation.kind === 'group' ? `<button class="text-button" id="edit-members">管理</button>` : ''}</div><div class="member-list">${roster.map(agent => `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small><span class="status-dot muted"></span>待接入 · ${escape(agent.location)}</small></div></div>`).join('')}</div><div class="workspace-note"><span class="eyebrow">会话边界</span><h3>各自的上下文<br>共同的讨论空间</h3><p>每位成员使用独立的会话映射。加入群聊不会合并已有私聊。</p>${conversation.kind === 'group' ? `<div class="tiny-rule"></div><p>阿尔比恩可以受邀参加，也保留与你单独交流的空间。</p>` : ''}</div><div class="phase-progress"><span>第一步 · 桌面与会话</span><div><i></i><i></i><i></i><i></i></div><small>接下来：开发摘要与更新管理</small></div></aside></div>`;
   renderDiscussionControls();
@@ -782,9 +804,13 @@ function renderLiveSettings(force = false) {
   if (!force && (host.dataset.signature === signature || settingsPending || host.contains(document.activeElement))) return;
   host.dataset.signature = signature;
   const selectedModel = session.model || snapshot?.default_model;
-  const modelHtml = `<select id="live-model" aria-label="当前会话模型"><option value="">${autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${escape(catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model)}` : ''}`}</option>${catalog.map(item => `<option value="${escape(item.id)}" ${item.id === session.model ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}${session.model && !catalog.some(item => item.id === session.model) ? `<option value="${escape(session.model)}" selected>${escape(session.model)} · 待验证</option>` : ''}</select>`;
+  const providers = modelProviders(catalog);
+  const providerKey = `${conversation.id}:${settingsAgentId}`;
+  const provider = liveProviderSelection[providerKey] || selectedProvider(catalog, session.model || snapshot?.default_model);
+  const providerHtml = providers.length > 1 ? `<label>提供商<select id="live-provider" aria-label="当前会话模型提供商">${providerOptionsHtml(catalog, provider, escape)}</select></label>` : '';
+  const modelHtml = `<select id="live-model" aria-label="当前会话模型">${modelOptionsHtml(catalog, provider, session.model, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`)}${session.model && !catalog.some(item => item.id === session.model) ? `<option value="${escape(session.model)}" selected>${escape(session.model)} · 待验证</option>` : ''}</select>`;
   const efforts = catalog.find(item => item.id === selectedModel)?.efforts || Object.keys(effortLabels);
-  host.innerHTML = `${conversation.kind === 'group' ? `<label>成员<select id="live-agent" aria-label="设置成员">${conversation.members.map(id => `<option value="${escape(id)}" ${id === settingsAgentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>` : ''}<label class="live-model-field">模型${modelHtml}</label><label>思考<select id="live-effort" aria-label="当前会话思考强度"><option value="">${autoProjectSetting ? '自动按任务 · 聊天默认' : '默认'}</option>${efforts.map(effort => `<option value="${escape(effort)}" ${session.reasoning_effort === effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><button type="button" id="live-reset" class="text-button">恢复默认</button>${connected ? '' : '<button type="button" id="live-connect" class="text-button">连接并读取模型</button>'}<span id="live-setting-status" role="status"></span>`;
+  host.innerHTML = `${conversation.kind === 'group' ? `<label>成员<select id="live-agent" aria-label="设置成员">${conversation.members.map(id => `<option value="${escape(id)}" ${id === settingsAgentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>` : ''}${providerHtml}<label class="live-model-field">模型${modelHtml}</label><label>思考<select id="live-effort" aria-label="当前会话思考强度"><option value="">${autoProjectSetting ? '自动按任务 · 聊天默认' : '默认'}</option>${efforts.map(effort => `<option value="${escape(effort)}" ${session.reasoning_effort === effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><button type="button" id="live-reset" class="text-button">恢复默认</button>${connected ? '' : '<button type="button" id="live-connect" class="text-button">连接并读取模型</button>'}<span id="live-setting-status" role="status"></span>`;
   host.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button').forEach(control => { control.disabled = conversation.archived; });
   host.querySelector('#live-agent')?.addEventListener('change', event => { settingsAgentId = (event.target as HTMLSelectElement).value; renderLiveSettings(true); });
   host.querySelector('#live-connect')?.addEventListener('click', async event => {
@@ -796,6 +822,7 @@ function renderLiveSettings(force = false) {
     renderLiveSettings(true);
   });
   const model = host.querySelector<HTMLInputElement | HTMLSelectElement>('#live-model')!;
+  const providerSelect = host.querySelector<HTMLSelectElement>('#live-provider');
   const effort = host.querySelector<HTMLSelectElement>('#live-effort')!;
   const queueSave = () => {
     const id = conversation.id, agentId = settingsAgentId;
@@ -816,14 +843,23 @@ function renderLiveSettings(force = false) {
     });
   };
   model.addEventListener('change', () => {
+    if (model.value) liveProviderSelection[providerKey] = selectedProvider(catalog, model.value);
     const available = catalog.find(item => item.id === (model.value || snapshot?.default_model))?.efforts || Object.keys(effortLabels);
     const prior = effort.value;
     effort.innerHTML = `<option value="">默认</option>${available.map(value => `<option value="${escape(value)}">${escape(effortLabels[value] || value)}</option>`).join('')}`;
     effort.value = available.includes(prior) ? prior : '';
     queueSave();
   });
+  providerSelect?.addEventListener('change', () => {
+    liveProviderSelection[providerKey] = providerSelect.value;
+    model.innerHTML = modelOptionsHtml(catalog, providerSelect.value, null, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`);
+    const available = catalog.find(item => item.id === model.value)?.efforts || Object.keys(effortLabels);
+    effort.innerHTML = `<option value="">默认</option>${available.map(value => `<option value="${escape(value)}">${escape(effortLabels[value] || value)}</option>`).join('')}`;
+    effort.value = '';
+    queueSave();
+  });
   effort.addEventListener('change', queueSave);
-  host.querySelector('#live-reset')!.addEventListener('click', () => { model.value = ''; effort.value = ''; queueSave(); });
+  host.querySelector('#live-reset')!.addEventListener('click', () => { delete liveProviderSelection[providerKey]; model.value = ''; effort.value = ''; queueSave(); });
   const nextStatus = host.querySelector('#live-setting-status')!;
   nextStatus.textContent = snapshot?.active?.conversation_id === conversation.id && busySnapshot(snapshot) ? '下一条生效 · 当前回复保留原参数' : snapshot?.connection === 'connected' ? '切换即保存 · 下一条消息生效' : '切换即保存 · 连接后应用';
 }
@@ -838,12 +874,15 @@ function showModelSettings(initialAgent?: string) {
   const catalog = connected ? snapshot.models : [];
   const labels: Record<string, string> = { none: '关闭思考', off: '关闭思考', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最大', ultra: 'Ultra' };
   const inherited = snapshot?.default_model;
-  const modelControl = `<select id="session-model" name="model"><option value="">沿用本机默认${inherited ? ` · ${escape(catalog.find(item => item.id === inherited)?.name || inherited)}` : ''}</option>${catalog.map(model => `<option value="${escape(model.id)}" ${settings.model === model.id ? 'selected' : ''}>${escape(model.name)}</option>`).join('')}${settings.model && !catalog.some(model => model.id === settings.model) ? `<option value="${escape(settings.model)}" selected>${escape(settings.model)} · 当前目录不可用</option>` : ''}</select>`;
+  const providers = modelProviders(catalog);
+  const provider = selectedProvider(catalog, settings.model || inherited);
+  const providerControl = providers.length > 1 ? `<label class="field">提供商<select id="session-provider">${providerOptionsHtml(catalog, provider, escape)}</select></label>` : '';
+  const modelControl = `<select id="session-model" name="model">${modelOptionsHtml(catalog, provider, settings.model, escape, `沿用本机默认${inherited ? ` · ${catalog.find(item => item.id === inherited)?.name || inherited}` : ''}`)}${settings.model && !catalog.some(model => model.id === settings.model) ? `<option value="${escape(settings.model)}" selected>${escape(settings.model)} · 当前目录不可用</option>` : ''}</select>`;
   // 模型目录来自该成员的原生进程，只有连接时读得到。没连接就给一个一键入口，别让人对着空下拉没法下手。
   const note = connected
     ? (agentId === 'codex-win' ? '选项来自本机 Codex 模型目录；实际调用成功才表示模型可用。' : '模型来自 Hermes 原生目录；思考强度传给当前 agent，由 Hermes 根据模型与提供商映射。')
     : `${snapshot ? '连接成员后可读取模型目录。当前设置只保存到本机会话，发送时再校验。' : '该成员尚未接入。设置仅保存在本机，接入后才能应用到真实会话。'} <button type="button" class="text-button" id="model-connect">连接并读取模型</button>`;
-  openModal('会话模型设置', '每位成员分别保存，从下一条消息开始使用。', `<form id="model-form"><label class="field">会话成员<select id="settings-agent">${conversation.members.map(id => `<option value="${escape(id)}" ${id === agentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label><label class="field">模型${modelControl}</label><label class="field">思考强度<select id="session-effort" name="effort"></select></label><p class="model-setting-note">${note}</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" class="secondary" id="reset-model">恢复默认</button><button class="primary" ${conversation.archived ? 'disabled' : ''}>保存设置${icon('check')}</button></div></form>`);
+  openModal('会话模型设置', '每位成员分别保存，从下一条消息开始使用。', `<form id="model-form"><label class="field">会话成员<select id="settings-agent">${conversation.members.map(id => `<option value="${escape(id)}" ${id === agentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>${providerControl}<label class="field">模型${modelControl}</label><label class="field">思考强度<select id="session-effort" name="effort"></select></label><p class="model-setting-note">${note}</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" class="secondary" id="reset-model">恢复默认</button><button class="primary" ${conversation.archived ? 'disabled' : ''}>保存设置${icon('check')}</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#model-form')!;
   const modelInput = form.querySelector<HTMLInputElement | HTMLSelectElement>('#session-model')!;
   const effortInput = form.querySelector<HTMLSelectElement>('#session-effort')!;
@@ -855,6 +894,11 @@ function showModelSettings(initialAgent?: string) {
   };
   updateEfforts(settings.reasoning_effort || '');
   modelInput.addEventListener('change', () => updateEfforts());
+  form.querySelector<HTMLSelectElement>('#session-provider')?.addEventListener('change', event => {
+    const selectedProviderId = (event.target as HTMLSelectElement).value;
+    modelInput.innerHTML = modelOptionsHtml(catalog, selectedProviderId, null, escape, `沿用本机默认${inherited ? ` · ${catalog.find(item => item.id === inherited)?.name || inherited}` : ''}`);
+    updateEfforts('');
+  });
   form.querySelector('#settings-agent')!.addEventListener('change', event => { modal.close(); showModelSettings((event.target as HTMLSelectElement).value); });
   form.querySelector('#reset-model')!.addEventListener('click', () => { modelInput.value = ''; updateEfforts(''); });
   form.querySelector('#model-connect')?.addEventListener('click', async () => {

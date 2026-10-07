@@ -19,16 +19,16 @@ def fixture(agent='codex-win'):
     base=ROOT/'artifacts'/('project-tools-probe-'+uuid.uuid4().hex[:10]);project=base/'project';data=base/'data'
     project.mkdir(parents=True);data.mkdir();db=data/'hub.db';attempt=str(uuid.uuid4());task=str(uuid.uuid4())
     with sqlite3.connect(db) as connection:
-        connection.executescript('''PRAGMA user_version=7;
+        connection.executescript('''PRAGMA user_version=11;
         CREATE TABLE projects(id TEXT PRIMARY KEY,root TEXT,checks TEXT);
         CREATE TABLE workflows(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,plan TEXT);
-        CREATE TABLE project_tasks(id TEXT PRIMARY KEY,files TEXT);
+        CREATE TABLE project_tasks(id TEXT PRIMARY KEY,files TEXT,worktree TEXT,assigned_agent TEXT);
         CREATE TABLE project_attempts(id TEXT PRIMARY KEY,workflow_id TEXT,task_id TEXT,agent_id TEXT DEFAULT 'codex-win',stage TEXT,status TEXT);
         CREATE TABLE project_leases(workflow_id TEXT PRIMARY KEY,root_key TEXT);
         CREATE TABLE project_changes(attempt_id TEXT,path TEXT,operation TEXT,before_hash TEXT,after_hash TEXT,PRIMARY KEY(attempt_id,path));''')
         connection.execute('INSERT INTO projects VALUES(?,?,?)',('project',str(project),json.dumps([{'name':'fixed test','program':'python','args':['check.py'],'timeout_seconds':10}])))
         connection.execute('INSERT INTO workflows VALUES(?,?,?,?)',('workflow','project','running',None))
-        connection.execute('INSERT INTO project_tasks VALUES(?,?)',(task,json.dumps(['hello.txt','calc.py','src/new.txt','check.py'])))
+        connection.execute('INSERT INTO project_tasks(id,files,worktree,assigned_agent) VALUES(?,?,?,?)',(task,json.dumps(['hello.txt','calc.py','src/new.txt','check.py']),None,None))
         connection.execute('INSERT INTO project_attempts VALUES(?,?,?,?,?,?)',(attempt,'workflow',task,'dsh-win','implement','running'))
         connection.execute('INSERT INTO project_leases VALUES(?,?)',('workflow',str(project).replace('\\','/').lower().rstrip('/')))
     (project/'check.py').write_text('# fixed verification script',encoding='utf-8')

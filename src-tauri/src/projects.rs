@@ -15,6 +15,28 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的源码；此步骤只读，不能修改文件或运行命令。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度；建议之后可由用户逐项修改。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 指向更早任务。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据，也不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_READONLY: &str = "你是本次项目协作的方案制定者，当前没有项目文件工具，只能依据提供的文件清单和需求制定方案；不要输出工具调用。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度，并会由用户逐项确认。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 指向更早任务。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+
+pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> Result<()> {
+    if let Some(task) = plan.tasks.iter().find(|task| {
+        !project_store::EXECUTOR_AGENTS.contains(&task.agent_id.as_str())
+            || !available_agents.iter().any(|agent| agent == &task.agent_id)
+    }) {
+        let name = match task.agent_id.as_str() {
+            "codex-win" => "Codex",
+            "hermes-win" => "Hermes",
+            "dsh-win" => "DSH",
+            _ => task.agent_id.as_str(),
+        };
+        return Err(format!(
+            "方案把任务「{}」分给了{}，但该成员当前未连接或不在本群；请连接后重试规划",
+            task.title, name
+        ));
+    }
+    Ok(())
+}
+
 pub struct Runtime {
     store: Arc<Mutex<Store>>,
     codex: Arc<codex::Runtime>,
@@ -34,6 +56,9 @@ struct Event {
 #[serde(deny_unknown_fields)]
 pub struct TaskChoice {
     pub position: u32,
+    /// Missing on legacy callers means keep the planner's selected member.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -299,6 +324,7 @@ impl Runtime {
                 .iter()
                 .map(|task| TaskChoice {
                     position: task.position,
+                    agent_id: Some(task.agent_id.clone()),
                     model: None,
                     effort: None,
                 })
@@ -345,6 +371,9 @@ impl Runtime {
         if workflow.tasks.is_empty() {
             return Err("方案还没有可确认的任务".into());
         }
+        if tasks.len() != workflow.tasks.len() {
+            return Err("请为方案中的每个任务确认执行成员与参数".into());
+        }
         if store
             .attempts(id)?
             .iter()
@@ -352,7 +381,9 @@ impl Runtime {
         {
             return Err("项目成员仍在运行，请等待当前步骤结束".into());
         }
+        let conversation = store.conversation(&workflow.conversation_id)?;
         let mut seen = Vec::new();
+        let mut confirmed = Vec::new();
         for choice in tasks {
             let task = workflow
                 .tasks
@@ -363,8 +394,31 @@ impl Runtime {
                 return Err("确认参数包含重复任务".into());
             }
             seen.push(choice.position);
+            let agent = choice.agent_id.as_deref().unwrap_or(&task.agent_id);
+            if !project_store::EXECUTOR_AGENTS.contains(&agent)
+                || !conversation.members.iter().any(|member| member == agent)
+            {
+                return Err("每项任务的执行成员必须是当前群中已连接的 Codex、Hermes 或 DSH".into());
+            }
+            let snapshot = self.snapshot(agent);
+            if snapshot.connection != "connected" {
+                return Err(format!("{} 已断开，请重新连接后确认任务", agent));
+            }
+            if snapshot.models.is_empty() {
+                return Err(format!("{} 没有可用模型目录，请先重新连接", agent));
+            }
+            crate::models::validate_selection(
+                &snapshot.models,
+                choice.model.as_deref(),
+                choice.effort.as_deref(),
+                snapshot.default_model.as_deref(),
+            )?;
+            confirmed.push((task.id.clone(), agent.to_owned(), choice));
+        }
+        for (task_id, agent, choice) in confirmed {
+            store.set_task_agent(&task_id, &agent)?;
             store.set_task_config(
-                &task.id,
+                &task_id,
                 choice.model.clone(),
                 choice.effort.clone(),
                 None,
@@ -421,19 +475,25 @@ impl Runtime {
                 // 任务级覆盖 > 角色配置 > 自动选型；规划给的 execution 只作兵底建议。
                 let overrides = task.and_then(|task_id| store.task(task_id).ok());
                 let role = match stage {
-                    "plan" => &roles.plan,
-                    "review" => &roles.review,
-                    "implement" | "repair" => &roles.implement,
+                    "plan" => Some(&roles.plan),
+                    "review" => Some(&roles.review),
+                    "repair" => Some(&roles.implement),
+                    "implement" => workflow
+                        .tasks
+                        .iter()
+                        .find(|candidate| Some(candidate.id.as_str()) == task)
+                        .filter(|candidate| candidate.agent_id == roles.implement.agent)
+                        .map(|_| &roles.implement),
                     _ => return Err("项目运行阶段或成员无效".into()),
                 };
                 let manual_model = overrides
                     .as_ref()
                     .and_then(|task| task.model.clone())
-                    .or_else(|| role.model.clone());
+                    .or_else(|| role.and_then(|role| role.model.clone()));
                 let manual_effort = overrides
                     .as_ref()
                     .and_then(|task| task.effort.clone())
-                    .or_else(|| role.effort.clone());
+                    .or_else(|| role.and_then(|role| role.effort.clone()));
                 let proposal = workflow
                     .tasks
                     .iter()
@@ -444,7 +504,11 @@ impl Runtime {
                             .as_ref()
                             .and_then(|plan| plan.tasks.get(candidate.position as usize))
                     })
-                    .and_then(|planned| planned.execution.as_ref());
+                    .and_then(|planned| {
+                        (planned.agent_id == agent)
+                            .then_some(planned.execution.as_ref())
+                            .flatten()
+                    });
                 let (model, effort) = crate::project_models::select(
                     &snapshot.models,
                     snapshot.default_model.as_deref(),
@@ -471,9 +535,18 @@ impl Runtime {
         &self,
         attempt: Attempt,
         root: &Path,
-        prompt: Value,
+        mut prompt: Value,
         deadline: Instant,
     ) -> Result<Attempt> {
+        if attempt.agent_id == "hermes-win"
+            && matches!(attempt.stage.as_str(), "plan" | "implement" | "repair")
+        {
+            if let Some(instruction) = prompt.get("instruction").and_then(Value::as_str) {
+                prompt["instruction"] = json!(format!(
+                    "{instruction}\n\n本项目工具通过 MCP 提供，调用名称为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。规划阶段只能调用 list/read；执行与修复阶段只可对当前任务授权文件调用工具。"
+                ));
+            }
+        }
         let result = self
             .native
             .run(attempt, root, &prompt.to_string(), deadline)?;
@@ -570,23 +643,57 @@ impl Runtime {
         let root = Path::new(&project.root);
         let files = manifest(root)?;
         let context = public_context(&self.store.lock().unwrap(), &workflow)?;
-        // 只有执行角色能实现，方案里可用的模型/强度建议也来自它。
-        let available_models = self
-            .snapshot(&roles.implement.agent)
-            .models
-            .into_iter()
-            .filter(|model| model.id != "gpt-6-astra")
-            .map(|mut model| {
+        // 规划只看本群已连接且具备写工具的成员；模型建议随各自目录一起给出。
+        let members = self
+            .store
+            .lock()
+            .unwrap()
+            .conversation(&workflow.conversation_id)?
+            .members;
+        let mut available_agents = Vec::new();
+        let mut available_agent_ids = Vec::new();
+        for agent in project_store::EXECUTOR_AGENTS {
+            if !members.iter().any(|member| member == agent) {
+                continue;
+            }
+            let mut snapshot = self.snapshot(agent);
+            if snapshot.connection != "connected" || snapshot.models.is_empty() {
+                continue;
+            }
+            snapshot.models.retain(|model| model.id != "gpt-6-astra");
+            for model in &mut snapshot.models {
                 model.efforts.retain(|effort| effort != "ultra");
-                model
-            })
-            .collect::<Vec<_>>();
+            }
+            available_agent_ids.push(agent.to_owned());
+            available_agents.push(json!({
+                "agent_id": agent,
+                "name": match agent {
+                    "codex-win" => "Codex",
+                    "hermes-win" => "Hermes",
+                    _ => "DSH",
+                },
+                "default_model": snapshot.default_model,
+                "models": snapshot.models,
+            }));
+        }
+        if available_agents.is_empty() {
+            return Err("本群没有已连接的 Codex、Hermes 或 DSH，无法规划实现任务".into());
+        }
         let attempt = self.begin(id, None, &roles.plan.agent, "plan", deadline)?;
-        // 规划者有没有文件工具，决定提示词怎么给：Hermes 这条路径没有，提了它会去编工具调用。
-        let planner_tools = matches!(attempt.agent_id.as_str(), "codex-win" | "dsh-win");
-        let planning=self.native(attempt,root,json!({"instruction": if planner_tools { "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的受保护范围内源码；此步骤只读，不能修改任何文件或运行命令。按需求生成可执行方案：所有实现任务只能由 available_agents 给出的执行角色承担，每项任务的 agent_id 必须填该成员。方案包含1-5项串行任务，每项明确要创建或修改的相对文件，每项限1至5个文件；depends_on是从0开始的更早位置。任务说明只写需求、目标、约束和验收要点，禁止给出完整代码或补丁，也不得粘贴成段实现。不要授权固定验收脚本、凭据、.git或框架数据；不要生成执行命令。可给出 execution 模型/强度建议，但它只是预填建议，用户会在确认面板里逐项调整。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[]}]}。用户确认任务参数后框架再串行执行，不能改动设计、范围或实现要求。" } else { "你是本次项目协作的方案制定者，负责制定项目方案：你这条路径没有文件工具，只能依据下面给出的文件清单与需求制定方案，不要输出任何工具调用。此步骤只读。按需求生成可执行方案：所有实现任务只能由 available_agents 给出的执行角色承担，每项任务的 agent_id 必须填该成员。方案包含1-5项串行任务，每项明确要创建或修改的相对文件，每项限1至5个文件；depends_on是从0开始的更早位置。任务说明只写需求、目标、约束和验收要点，禁止给出完整代码或补丁。不要授权固定验收脚本、凭据、.git或框架数据。可给出 execution 模型/强度建议，但用户会在确认面板里逐项调整。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[]}]}。" },"request":workflow.request,"public_group_context":context,"existing_files":files,"manifest_limit":"最多500文件，最大6层，构建/依赖/受保护目录已排除","fixed_checks":project.checks,"available_models":available_models,"available_agents":[roles.implement.agent]}),deadline)?;
+        // 三个 Windows 项目成员都能通过受限的项目 MCP 查看授权文件。
+        let planner_tools = project_store::EXECUTOR_AGENTS.contains(&attempt.agent_id.as_str());
+        let planning=self.native(attempt,root,json!({
+            "instruction": if planner_tools { PLAN_PROMPT_WITH_TOOLS } else { PLAN_PROMPT_READONLY },
+            "request":workflow.request,
+            "public_group_context":context,
+            "existing_files":files,
+            "manifest_limit":"最多500文件，最大6层，构建/依赖/受保护目录已排除",
+            "fixed_checks":project.checks,
+            "available_agents":available_agents,
+            "default_executor":roles.implement.agent,
+        }),deadline)?;
         let plan = project_store::parse_plan(&planning.output)?;
-        self.validate_plan(&workflow, &plan)?;
+        validate_plan_agents(&plan, &available_agent_ids)?;
         self.store.lock().unwrap().save_plan(id, &plan)?;
         (self.notify)(id);
         Ok(())
@@ -782,7 +889,7 @@ impl Runtime {
         cwd: &Path,
         task_checks: bool,
     ) -> Result<()> {
-        let agent = exec.roles.implement.agent.as_str();
+        let agent = task.agent_id.as_str();
         let attempt = self.begin(exec.id, Some(&task.id), agent, "implement", exec.deadline)?;
         let current = self.store.lock().unwrap().workflow(exec.id)?;
         self.native(attempt,cwd,json!({"instruction":"按当前任务实际修改文件，只使用框架文件工具。先 hub_list 确认范围，已有文件先 hub_read 获取 SHA256。任务内可创建文件或修改授权文件。不要修改验收脚本，不运行命令，不调用其他服务。完成文件修改后简短说明。只有框架后续的真实验收才决定协作是否完成。","request":current.request,"plan":current.plan,"task":task,"completed_tasks":current.tasks.iter().filter(|task|task.status=="completed").collect::<Vec<_>>()}),exec.deadline)?;
@@ -800,17 +907,6 @@ impl Runtime {
         Ok(())
     }
 
-    fn validate_plan(&self, workflow: &Workflow, plan: &Plan) -> Result<()> {
-        let roles = project_store::roles_of(workflow)?;
-        if plan
-            .tasks
-            .iter()
-            .any(|task| task.agent_id != roles.implement.agent)
-        {
-            return Err("实现任务必须由本次执行角色承担".into());
-        }
-        Ok(())
-    }
     /// 该成员是否正在执行项目任务（存在活动态 attempt）。供维护锁互斥判断使用。
     pub fn agent_project_busy(&self, agent: &str) -> bool {
         self.store

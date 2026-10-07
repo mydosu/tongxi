@@ -203,9 +203,12 @@ body.maximized .resize-edge { display: none; }
 .danger-button { background: #a36a58; border-radius: 8px; padding: 10px 15px; color: #fff; font-size: 11px; }
 .delete-notice { font-size: 11px; line-height: 1.8; color: #ad8b77; }
 .services-content { overflow-y: auto; padding: 30px 35px; }
-.project-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0 2px; flex-shrink: 0; font-size: 10px; color: #727c8b; }
-.project-controls > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-controls > button { flex-shrink: 0; }
+.project-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin: 3px 0 6px; flex-shrink: 0; font-size: 11px; color: #596371; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 10px; }
+.project-entry-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.project-entry-copy strong { color: #38414c; font-size: 12px; }
+.project-entry-copy small { color: #7b838d; font-size: 10px; }
+.project-entry-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.project-entry-actions > button { flex-shrink: 0; }
 /* 摘要开关是行内 label：覆盖 .field 的纵向排版，checkbox 保持原生大小，不占整行。 */
 .summary-toggle { flex-direction: row; align-items: center; }
 .summary-toggle input[type="checkbox"] { width: auto; padding: 0; flex: none; }
@@ -350,15 +353,17 @@ html[data-hud] #hud-exit:hover { background: #f1f2f4; color: #2c3036; }
 .native-session code { font-size: 10px; color: #a2a9b2; }
 
 /* 角色配置面板：规划 / 执行 / 验收各一行，成员与参数并排；沿用模态自带底色，不再加框。 */
-.role-field { display: grid; grid-template-columns: 38px minmax(0,1.1fr) minmax(0,1.4fr) minmax(0,1fr); gap: 8px; align-items: center; margin-bottom: 15px; }
-.role-field > span { font-size: 11px; color: #727c8b; }
+.role-field { display: grid; grid-template-columns: 58px repeat(4, minmax(75px, 1fr)); gap: 8px; align-items: center; margin-bottom: 15px; }
+.role-field:not(.multi-provider) { grid-template-columns: 58px repeat(3, minmax(75px, 1fr)); }
+.role-field > span { font-size: 10px; color: #727c8b; }
 .role-field label { display: flex; flex-direction: column; gap: 5px; font-size: 10px; color: #8b94a0; }
 .role-field select { width: 100%; padding: 8px; border: 1px solid #dbdee2; border-radius: 7px; background: #fff; color: #4d555f; font-size: 11px; }
 
 /* 逐任务确认区：接在任务列表下方，只用一条分隔线，不另起框也不加阴影。 */
 .task-confirm { margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid #dddfe3; }
 .task-confirm-heading { font-size: 10px; color: #7e8895; margin-bottom: 10px; }
-.task-confirm-row { display: grid; grid-template-columns: minmax(0,1fr) 126px 104px; gap: 8px; align-items: center; margin-bottom: 9px; }
+.task-confirm-row { display: grid; grid-template-columns: minmax(100px,1fr) 104px 116px 126px 96px; gap: 8px; align-items: center; margin-bottom: 9px; }
+.task-confirm-row:not(.multi-provider) { grid-template-columns: minmax(100px,1fr) 104px 126px 96px; }
 .task-confirm-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .task-confirm-title span { color: #818a98; font-size: 10px; overflow-wrap: anywhere; }
 .task-confirm-row label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #8b94a0; }
