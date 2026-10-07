@@ -527,8 +527,32 @@ pub fn task_path(root: &Path, relative: &str) -> Result<PathBuf> {
 
 pub fn parse_plan(raw: &str) -> Result<Plan> {
     let json = json_document(raw, 64_000)?;
-    let plan: Plan =
+    let mut plan: Plan =
         serde_json::from_str(json).map_err(|_| "管家未返回有效的结构化任务，请发送新需求重试")?;
+    // 模型偶尔会把“依赖第 N 项”按 1 基任务编号输出。若 0 基解释不成立、
+    // 但所有依赖都合法地指向更早的一基任务，则在入口统一换算为内部 0 基位置。
+    let zero_based = plan.tasks.iter().enumerate().all(|(index, task)| {
+        task.depends_on
+            .iter()
+            .all(|dependency| (*dependency as usize) < index)
+    });
+    let one_based = plan.tasks.iter().enumerate().all(|(index, task)| {
+        task.depends_on
+            .iter()
+            .all(|dependency| *dependency > 0 && (*dependency as usize) <= index)
+    });
+    if !zero_based && one_based {
+        for task in &mut plan.tasks {
+            for dependency in &mut task.depends_on {
+                *dependency -= 1;
+            }
+        }
+    }
+    validate_plan(&plan)?;
+    Ok(plan)
+}
+
+fn validate_plan(plan: &Plan) -> Result<()> {
     if plan.summary.trim().is_empty()
         || plan.summary.chars().count() > 2000
         || !(1..=5).contains(&plan.tasks.len())
@@ -570,7 +594,7 @@ pub fn parse_plan(raw: &str) -> Result<Plan> {
             }
         }
     }
-    Ok(plan)
+    Ok(())
 }
 
 /// 任务查询的列顺序与 `task_from_row` 一一对应。
@@ -1032,7 +1056,7 @@ impl Store {
         Ok(true)
     }
     pub fn save_plan(&mut self, id: &str, plan: &Plan) -> Result<Workflow> {
-        let plan = parse_plan(&serde_json::to_string(plan).map_err(|e| e.to_string())?)?;
+        validate_plan(plan)?;
         let workflow = self.workflow(id)?;
         if workflow.status != "planning" || !workflow.tasks.is_empty() {
             return Err("当前协作不能保存新分发结果".into());
@@ -1056,7 +1080,7 @@ impl Store {
         {
             return Err("保存方案前需要已完成的规划结果".into());
         }
-        if parse_plan(&plans[0].output)? != plan {
+        if parse_plan(&plans[0].output)? != *plan {
             return Err("保存的方案不能改变规划给出的任务或实现要求".into());
         }
         let project = self.project(&workflow.project_id)?;
@@ -1106,6 +1130,115 @@ impl Store {
             };
             tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,instructions,files,depends_on,status,assigned_agent) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',?9)",params![Uuid::new_v4().to_string(),id,index as u32,task.title,stored_agent,task.instructions,serde_json::to_string(&task.files).map_err(|e|e.to_string())?,serde_json::to_string(&task.depends_on).map_err(|e|e.to_string())?,assigned_agent]).map_err(|e|e.to_string())?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.workflow(id)
+    }
+
+    /// Reopen a failed workflow from its stored plan output without calling a planner again.
+    pub fn resume_workflow(&mut self, id: &str, plan: &Plan) -> Result<Workflow> {
+        validate_plan(plan)?;
+        let workflow = self.workflow(id)?;
+        if !matches!(workflow.status.as_str(), "failed" | "interrupted") {
+            return Err("只能继续失败或中断的协作".into());
+        }
+        if workflow.plan.as_ref().is_some_and(|saved| saved != plan) {
+            return Err("继续协作不能更改原方案".into());
+        }
+        let attempts = self.attempts(id)?;
+        if attempts.iter().any(|attempt| {
+            matches!(
+                attempt.status.as_str(),
+                "starting" | "running" | "cancelling"
+            )
+        }) {
+            return Err("项目成员尚未停止，不能继续协作".into());
+        }
+        let planning = attempts
+            .iter()
+            .filter(|attempt| attempt.stage == "plan")
+            .collect::<Vec<_>>();
+        if planning.len() != 1
+            || planning[0].status != "completed"
+            || parse_plan(&planning[0].output)? != *plan
+        {
+            return Err("找不到可复用的已完成方案，请重新规划".into());
+        }
+
+        let project = self.project(&workflow.project_id)?;
+        for task in &plan.tasks {
+            for file in &task.files {
+                task_path(Path::new(&project.root), file)?;
+            }
+        }
+        let root = Path::new(&project.root)
+            .canonicalize()
+            .map_err(|_| "项目目录不可用")?;
+        let root_key = key(&root);
+        let mut stmt = self
+            .connection
+            .prepare("SELECT root_key FROM project_leases")
+            .map_err(|e| e.to_string())?;
+        let leases = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+        if leases.iter().any(|other| overlaps(&root_key, other)) {
+            return Err("项目正被另一项协作占用，请稍后继续".into());
+        }
+        if !workflow.tasks.is_empty()
+            && (workflow.tasks.len() != plan.tasks.len()
+                || workflow.tasks.iter().zip(&plan.tasks).enumerate().any(
+                    |(position, (saved, planned))| {
+                        saved.position as usize != position
+                            || saved.title != planned.title
+                            || saved.instructions != planned.instructions
+                            || saved.files != planned.files
+                            || saved.depends_on != planned.depends_on
+                    },
+                ))
+        {
+            return Err("已保存任务与原方案不一致，不能安全继续".into());
+        }
+
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO project_leases VALUES(?1,?2,?3,?4)",
+            params![id, project.id, root_key, now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE workflows SET status='planning',plan=?1,summary='',error=NULL,updated_at=?2 WHERE id=?3",
+            params![serde_json::to_string(plan).map_err(|e| e.to_string())?, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        let task_count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM project_tasks WHERE workflow_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if task_count == 0 {
+            tx.execute(
+                "UPDATE messages SET status='pending' WHERE id=?1",
+                [&workflow.user_message_id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            return self.save_plan(id, plan);
+        }
+        tx.execute(
+            "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=NULL,branch=CASE WHEN status='completed' THEN branch ELSE NULL END WHERE workflow_id=?1",
+            [id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE messages SET status='pending' WHERE id=?1",
+            [&workflow.user_message_id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         self.workflow(id)
     }

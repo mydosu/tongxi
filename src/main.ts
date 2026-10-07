@@ -517,6 +517,7 @@ function updateProjectControls() {
     card.dataset.paint = stamp;
     card.querySelectorAll<HTMLDetailsElement>('[data-attempt-id]').forEach(node => { if (open.has(node.dataset.attemptId!)) node.open = open.get(node.dataset.attemptId!)!; });
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
+    card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
     card.querySelector('[data-confirm-project]')?.addEventListener('click', () => void confirmProject(workflow.id, card));
     card.querySelectorAll<HTMLSelectElement>('[data-task-agent-select]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
@@ -599,6 +600,19 @@ async function confirmProject(workflowId: string, card: HTMLElement) {
 async function cancelProject(id: string) {
   try { adoptProject(await invoke<Workflow>('cancel_project', { id })); updateRuntimeControls(); }
   catch (error) { toast(errorText(error), true); }
+}
+
+async function continueProject(id: string) {
+  const button = main.querySelector<HTMLButtonElement>(`[data-continue-project="${CSS.escape(id)}"]`);
+  if (button) { button.disabled = true; button.textContent = '正在恢复原方案…'; }
+  try {
+    adoptProject(await invoke<Workflow>('continue_project', { workflowId: id }));
+    updateRuntimeControls();
+    toast('已复用原方案，请确认任务执行成员与模型后继续');
+  } catch (error) {
+    toast(errorText(error), true);
+    if (button?.isConnected) { button.disabled = false; button.textContent = '继续协作（复用原方案）'; }
+  }
 }
 
 // 共享开关按项目范围生效：同一个项目在其他房间显示同一标记，不同项目之间互不覆盖。

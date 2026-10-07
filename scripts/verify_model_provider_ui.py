@@ -35,6 +35,7 @@ MOCK = r"""
   const detail={conversation:group,messages:[],discussions:[],project,workflows:[],sessions:group.members.map(agent_id=>({agent_id,session_key:agent_id,native_session_id:null,model:null,reasoning_effort:null}))};
   globalThis.__providerDemo={detail,models,group,project};
   globalThis.__confirmation=null;
+  globalThis.__continueCalls=0;
   const runtime=id=>({revision:1,connection:'connected',executable:null,version:'test',error:null,active:null,models:models[id],default_model:models[id][0]?.id||null,default_effort:models[id][0]?.default_effort||null});
   let callback=0;
   globalThis.isTauri=true;
@@ -53,6 +54,11 @@ MOCK = r"""
       const workflow=detail.workflows[0];
       for(const choice of args.tasks){const task=workflow.tasks.find(t=>t.position===choice.position);Object.assign(task,choice);}
       workflow.status='running';workflow.updated_at=Date.now();return workflow;
+    }
+    if(command==='continue_project'){
+      globalThis.__continueCalls++;
+      const workflow=detail.workflows.find(item=>item.id===args.workflowId);
+      workflow.status='planning';workflow.plan={summary:'复用原方案',tasks:workflow.tasks.map(task=>({...task}))};workflow.error=null;workflow.updated_at=Date.now();return workflow;
     }
     return null;
   }};
@@ -143,6 +149,17 @@ def main() -> None:
             confirmed=page.evaluate("() => __confirmation[0]")
             assert confirmed["agent_id"] == "hermes-win" and confirmed["model"] == "openai:gpt-6.1"
             print("PASS each project task submits Hermes as executor and its selected model")
+
+            recovery={**workflow,"status":"failed","plan":None,"error":"保存方案失败","attempts":[{"id":"plan-attempt","workflow_id":"workflow-1","agent_id":"codex-win","stage":"plan","status":"completed","native_thread_id":None,"native_turn_id":"turn-1","model":"gpt-6.1","reasoning_effort":"high","output":"saved plan output","checks":[],"error":None}],"updated_at":int(time.time()*1000)}
+            page.evaluate("job => { __providerDemo.detail.workflows=[job]; }", recovery)
+            page.locator('[data-conversation="provider-test"]').click()
+            resume=page.locator('[data-continue-project]')
+            expect(resume).to_be_visible()
+            assert "不重新调用规划模型" in resume.get_attribute("title")
+            resume.click()
+            expect(page.locator('[data-confirm-project]')).to_be_visible()
+            assert page.evaluate("() => __continueCalls") == 1
+            print("PASS failed project resumes from saved plan and returns to task confirmation")
             browser.close()
     finally:
         server.terminate()

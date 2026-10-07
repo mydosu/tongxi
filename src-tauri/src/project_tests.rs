@@ -173,6 +173,174 @@ fn project_plan_rejects_untrusted_roles_protected_files_and_forward_dependencies
 }
 
 #[test]
+fn project_plan_normalizes_obvious_one_based_dependencies_and_keeps_zero_based_ones() {
+    let first = plan(&["src/first.rs"]).tasks.remove(0);
+    let mut second = plan(&["src/second.rs"]).tasks.remove(0);
+    second.title = "第二项".into();
+    let mut value = serde_json::to_value(Plan {
+        summary: "两项串行任务".into(),
+        tasks: vec![first.clone(), second.clone()],
+    })
+    .unwrap();
+
+    value["tasks"][1]["depends_on"] = serde_json::json!([1]);
+    let normalized = parse_plan(&value.to_string()).unwrap();
+    assert_eq!(normalized.tasks[1].depends_on, [0]);
+
+    value["tasks"][1]["depends_on"] = serde_json::json!([0]);
+    let canonical = parse_plan(&value.to_string()).unwrap();
+    assert_eq!(canonical.tasks[1].depends_on, [0]);
+
+    value["tasks"][1]["depends_on"] = serde_json::json!([2]);
+    assert!(parse_plan(&value.to_string()).is_err());
+}
+
+#[test]
+fn failed_planning_can_resume_from_saved_plan_output_without_another_plan_attempt() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let proposed = plan(&["src/retry.rs"]);
+    let mut planning = f
+        .store
+        .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    planning.output = serde_json::to_string(&proposed).unwrap();
+    complete(&mut f.store, &planning);
+    f.store
+        .finish_workflow(&workflow.id, "failed", "", Some("plan validation"))
+        .unwrap();
+
+    let resumed = f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    assert_eq!(resumed.status, "planning");
+    assert_eq!(resumed.plan, Some(proposed));
+    assert_eq!(resumed.tasks.len(), 1);
+    assert_eq!(
+        resumed
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.stage == "plan")
+            .count(),
+        1,
+        "resume must reuse the original planner attempt"
+    );
+    assert!(f.store.acquire_project(&workflow.id).is_err());
+}
+
+#[test]
+fn failed_execution_can_reopen_its_plan_and_reset_tasks_for_confirmation() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let planned = f.plan_with(&workflow, &plan(&["src/retry.rs"]));
+    let running = f.store.begin_execution(&planned.id).unwrap();
+    f.store
+        .set_task_config(
+            &running.tasks[0].id,
+            Some("ds-v4.1".into()),
+            Some("low".into()),
+            None,
+            None,
+        )
+        .unwrap();
+    let mut attempt = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[0].id),
+            "dsh-win",
+            "implement",
+            Some("ds-v4.1".into()),
+            Some("low".into()),
+        )
+        .unwrap();
+    attempt.status = "failed".into();
+    attempt.error = Some("temporary failure".into());
+    f.store.checkpoint_attempt(&attempt).unwrap();
+    f.store
+        .finish_workflow(&workflow.id, "failed", "", Some("implementation"))
+        .unwrap();
+
+    let resumed = f
+        .store
+        .resume_workflow(&workflow.id, &plan(&["src/retry.rs"]))
+        .unwrap();
+    assert_eq!(resumed.status, "planning");
+    assert_eq!(resumed.tasks[0].status, "queued");
+    assert_eq!(resumed.tasks[0].model.as_deref(), Some("ds-v4.1"));
+    assert_eq!(resumed.tasks[0].effort.as_deref(), Some("low"));
+    assert!(resumed.tasks[0].error.is_none());
+    assert_eq!(resumed.attempts.len(), 2, "retry retains prior evidence");
+}
+
+#[test]
+fn retry_preserves_completed_tasks_and_only_requeues_unfinished_work() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let first = plan(&["src/first.rs"]).tasks.remove(0);
+    let mut second = plan(&["src/second.rs"]).tasks.remove(0);
+    second.title = "第二项".into();
+    second.depends_on = vec![0];
+    let proposed = Plan {
+        summary: "先完成第一项，再继续第二项".into(),
+        tasks: vec![first, second],
+    };
+    let planned = f.plan_with(&workflow, &proposed);
+    let running = f.store.begin_execution(&planned.id).unwrap();
+    f.store
+        .set_task_config(
+            &running.tasks[0].id,
+            None,
+            None,
+            None,
+            Some("hub/completed-task".into()),
+        )
+        .unwrap();
+    let completed = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[0].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    complete(&mut f.store, &completed);
+    let mut failed = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[1].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    failed.status = "failed".into();
+    f.store.checkpoint_attempt(&failed).unwrap();
+    f.store
+        .finish_workflow(&workflow.id, "failed", "", Some("second task failed"))
+        .unwrap();
+
+    let resumed = f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    assert_eq!(resumed.tasks[0].status, "completed");
+    assert_eq!(
+        resumed.tasks[0].branch.as_deref(),
+        Some("hub/completed-task")
+    );
+    assert_eq!(resumed.tasks[1].status, "queued");
+    assert_eq!(
+        resumed.attempts.len(),
+        3,
+        "all earlier attempts remain visible"
+    );
+}
+
+#[test]
 fn plan_tasks_can_be_split_between_connected_codex_hermes_and_dsh() {
     let mut codex_task = plan(&["src/complex.rs"]).tasks.remove(0);
     codex_task.agent_id = "codex-win".into();

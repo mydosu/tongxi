@@ -1,6 +1,6 @@
 [package]
 name = "local-agent-hub"
-version = "0.12.17"
+version = "0.12.18"
 edition = "2021"
 description = "Personal desktop agent collaboration workspace"
 

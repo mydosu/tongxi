@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
-const PLAN_PROMPT_WITH_TOOLS: &str = "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的源码；此步骤只读，不能修改文件或运行命令。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度；建议之后可由用户逐项修改。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 指向更早任务。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据，也不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
-const PLAN_PROMPT_READONLY: &str = "你是本次项目协作的方案制定者，当前没有项目文件工具，只能依据提供的文件清单和需求制定方案；不要输出工具调用。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度，并会由用户逐项确认。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 指向更早任务。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的源码；此步骤只读，不能修改文件或运行命令。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度；建议之后可由用户逐项修改。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据，也不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_READONLY: &str = "你是本次项目协作的方案制定者，当前没有项目文件工具，只能依据提供的文件清单和需求制定方案；不要输出工具调用。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度，并会由用户逐项确认。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、固定验收脚本、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
 pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> Result<()> {
     if let Some(task) = plan.tasks.iter().find(|task| {
@@ -359,6 +359,59 @@ impl Runtime {
             runtime.execute_work(&owned, deadline)
         });
         Ok(workflow)
+    }
+
+    /// Resume from the saved planner output; never spend another planning turn for this request.
+    fn continue_open(&self, id: &str) -> Result<Workflow> {
+        let workflow = self.store.lock().unwrap().workflow(id)?;
+        let plan = match workflow.plan.clone() {
+            Some(plan) => plan,
+            None => {
+                let attempts = self.store.lock().unwrap().attempts(id)?;
+                let attempt = attempts
+                    .iter()
+                    .find(|attempt| attempt.stage == "plan" && attempt.status == "completed")
+                    .ok_or("没有可复用的已完成方案")?;
+                project_store::parse_plan(&attempt.output)?
+            }
+        };
+        let conversation = self
+            .store
+            .lock()
+            .unwrap()
+            .conversation(&workflow.conversation_id)?;
+        let available = project_store::EXECUTOR_AGENTS
+            .iter()
+            .filter(|agent| conversation.members.iter().any(|member| member == **agent))
+            .filter(|agent| {
+                let snapshot = self.snapshot(agent);
+                snapshot.connection == "connected" && !snapshot.models.is_empty()
+            })
+            .map(|agent| (*agent).to_owned())
+            .collect::<Vec<_>>();
+        validate_plan_agents(&plan, &available)?;
+        let (root, worktree_root) = {
+            let store = self.store.lock().unwrap();
+            let project = store.project(&workflow.project_id)?;
+            let worktree_root = store
+                .path
+                .parent()
+                .ok_or("同席数据目录不可用")?
+                .join("worktrees");
+            (PathBuf::from(project.root), worktree_root)
+        };
+        for task in &workflow.tasks {
+            let Some(path) = task.worktree.as_deref() else {
+                continue;
+            };
+            let path = Path::new(path);
+            if path.parent() == Some(worktree_root.as_path()) && path.exists() {
+                crate::project_worktree::remove(&root, path)?;
+            }
+        }
+        let resumed = self.store.lock().unwrap().resume_workflow(id, &plan)?;
+        (self.notify)(id);
+        Ok(resumed)
     }
 
     /// 逐任务写入模型/强度覆盖，并把工作流从 planning 提到 running（同步）。
@@ -746,8 +799,33 @@ impl Runtime {
             let db = self.store.lock().unwrap().path.clone();
             let worktree_root = db.parent().ok_or("同席数据目录不可用")?.join("worktrees");
             let prefix = exec.id.chars().take(8).collect::<String>();
+            let retry_key = uuid::Uuid::new_v4().simple().to_string();
+            let retry_key = &retry_key[..8];
             let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
-            let mut pending: Vec<project_store::Task> = exec.tasks.to_vec();
+            for task in exec.tasks.iter().filter(|task| task.status == "completed") {
+                let branch = task
+                    .branch
+                    .as_deref()
+                    .ok_or("已完成任务缺少分支，不能安全继续原方案")?;
+                let name = format!("{prefix}-{retry_key}-{}", task.position);
+                let path =
+                    crate::project_worktree::attach(exec.root, &worktree_root, &name, branch)?;
+                self.store.lock().unwrap().set_task_config(
+                    &task.id,
+                    task.model.clone(),
+                    task.effort.clone(),
+                    Some(path.to_string_lossy().to_string()),
+                    Some(branch.to_owned()),
+                )?;
+                done.insert(task.position);
+                worktrees.push((task.id.clone(), path, branch.to_owned()));
+            }
+            let mut pending: Vec<project_store::Task> = exec
+                .tasks
+                .iter()
+                .filter(|task| task.status != "completed")
+                .cloned()
+                .collect();
             while !pending.is_empty() {
                 let batch = pending
                     .iter()
@@ -760,8 +838,8 @@ impl Runtime {
                 // 每轮才建这批任务的工作树。有依赖的以「它最后一个前置任务的分支」为基线，
                 // 否则工作树停在主分支、看不到依赖的成果（依赖就只剩排序意义）。
                 for task in &batch {
-                    let name = format!("{prefix}-{}", task.position);
-                    let branch = format!("hub/{prefix}-{}", task.position);
+                    let name = format!("{prefix}-{retry_key}-{}", task.position);
+                    let branch = format!("hub/{prefix}-{retry_key}-{}", task.position);
                     let path =
                         crate::project_worktree::create(exec.root, &worktree_root, &name, &branch)?;
                     if let Some(base) = task.depends_on.last().and_then(|position| {
@@ -1012,6 +1090,10 @@ pub fn confirm_project(
     tasks: Vec<TaskChoice>,
 ) -> Result<Workflow> {
     runtime.inner().confirm_open(&workflow_id, &tasks)
+}
+#[tauri::command]
+pub fn continue_project(runtime: State<'_, Arc<Runtime>>, workflow_id: String) -> Result<Workflow> {
+    runtime.inner().continue_open(&workflow_id)
 }
 #[tauri::command]
 pub fn cancel_project(runtime: State<'_, Arc<Runtime>>, id: String) -> Result<Workflow> {
