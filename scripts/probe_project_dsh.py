@@ -10,8 +10,9 @@ import threading
 import time
 import sys
 from probe_project_tools import ROOT, EXE, fixture
+import local_paths
 
-INSTALLATION=Path(os.environ.get('AGENT_HUB_DSH_INSTALLATION',r'D:\AI\dsh\bin\node_modules\@deepseek-ai\dsh'))
+INSTALLATION=Path(local_paths.dsh_installation())
 NODE=os.environ.get('AGENT_HUB_DSH_NODE') or shutil.which('node.exe')
 if not NODE:raise RuntimeError('Native Node executable unavailable')
 

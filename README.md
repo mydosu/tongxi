@@ -88,7 +88,7 @@ npm run desktop:build
 
 构建需要 Rust/MSVC、Node 和 WebView2，见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)。构建后自动复制程序至 `release/Agent Hub.exe`，生成大小和 SHA256 清单 `release/manifest.json`。依赖锁定于 package-lock.json、Cargo.lock。
 
-Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝对路径。Hermes 默认发现 `%LOCALAPPDATA%/hermes/hermes-agent/.venv/Scripts/python.exe`，也支持 `AGENT_HUB_HERMES_PYTHON`；该 Python 必须属于带有原生 ACP 模块的 Hermes 安装。DSH 默认安装目录 `D:/AI/dsh/bin/node_modules/@deepseek-ai/dsh`，可用 `AGENT_HUB_DSH_INSTALLATION` 指定；Node 从 PATH 查找，可用 `AGENT_HUB_DSH_NODE` 指定。两条 Hermes 路由必须存在，可用 `AGENT_HUB_DSH_HERMES_REPO` 指定 Hermes 仓库。软件自身不安装或更新这些 harness。
+Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝对路径。Hermes 默认发现 `%LOCALAPPDATA%/hermes/hermes-agent/.venv/Scripts/python.exe`，也支持 `AGENT_HUB_HERMES_PYTHON`；该 Python 必须属于带有原生 ACP 模块的 Hermes 安装。DSH 与 Codex 的安装目录默认从 PATH 上的 `dsh` / `codex` 反推（CLI 壳同级的 `node_modules/<scope>/<包名>`；npm -g 全局前缀与自带 `node_modules` 的独立安装都适用），也可用 `AGENT_HUB_DSH_INSTALLATION` / `AGENT_HUB_CODEX_INSTALLATION` 直接指定。Node 从 PATH 查找，可用 `AGENT_HUB_DSH_NODE` 指定。两条 Hermes 路由必须存在，可用 `AGENT_HUB_DSH_HERMES_REPO` 指定 Hermes 仓库。软件自身不安装或更新这些 harness。
 
 阿尔比恩默认连接本机 `127.0.0.1:8650` 的 OpenAI 兼容端点，可用 `AGENT_HUB_ALBION_ENDPOINT` 指定；该服务读取的 `.env` 可用 `AGENT_HUB_ALBION_ENV` 指定。服务由她自己的进程启停，同席只做客户端。
 

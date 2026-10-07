@@ -4,8 +4,11 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
+import local_paths
 
-exe = Path(r'D:\AI\codex\bin\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe')
+exe = Path(local_paths.codex_executable())
+if not exe.is_file():
+    raise SystemExit('没找到 codex.exe：请用 AGENT_HUB_CODEX_EXE 指定绝对路径')
 messages = queue.Queue()
 process = subprocess.Popen([str(exe), 'app-server', '--listen', 'stdio://'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW)
 threading.Thread(target=lambda: [messages.put(json.loads(line)) for line in process.stdout], daemon=True).start()
