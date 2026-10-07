@@ -183,6 +183,24 @@ pub fn create(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Re
     Ok(path)
 }
 
+/// Reattach a completed task branch after a failed workflow released its worktree directory.
+pub fn attach(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
+    if !is_repo(root) {
+        return Err("目标目录不是 git 仓库".into());
+    }
+    let path = worktree_root.join(name);
+    if path.exists() {
+        return Err(format!("工作树目录已存在：{name}"));
+    }
+    let reference = format!("refs/heads/{branch}");
+    git(root, &["rev-parse", "--verify", "--quiet", &reference])
+        .map_err(|_| "已完成任务分支不存在，不能从原方案继续".to_string())?;
+    std::fs::create_dir_all(worktree_root).map_err(|_| "工作树根目录创建失败".to_string())?;
+    let path_text = path.to_string_lossy().to_string();
+    git(root, &["worktree", "add", &path_text, branch])?;
+    Ok(path)
+}
+
 /// 删掉一个工作树（`--force`：任务分支上的改动已在别处保留，这里只清理现场）。
 pub fn remove(root: &Path, path: &Path) -> Result<()> {
     if !is_repo(root) {
@@ -334,6 +352,11 @@ mod tests {
 
         remove(&repo, &path).unwrap();
         assert!(!path.exists());
+
+        let resumed = attach(&repo, &worktree_root, "task-a-resumed", "hub/task-a").unwrap();
+        assert!(resumed.join("feature.txt").is_file());
+        assert!(merge(&repo, "hub/task-a").is_ok());
+        remove(&repo, &resumed).unwrap();
 
         let _ = std::fs::remove_dir_all(&base);
     }

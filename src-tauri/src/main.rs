@@ -881,6 +881,7 @@ fn main() {
             projects::start_project,
             projects::plan_project,
             projects::confirm_project,
+            projects::continue_project,
             projects::cancel_project,
             projects::set_project_summary,
             services::service_inventory,
