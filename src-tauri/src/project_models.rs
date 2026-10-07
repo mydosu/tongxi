@@ -128,6 +128,8 @@ mod tests {
         ModelOption {
             id: id.into(),
             name: id.into(),
+            provider_id: None,
+            provider_name: None,
             efforts: efforts.iter().map(|effort| (*effort).into()).collect(),
             default_effort: default_effort.map(str::to_owned),
         }

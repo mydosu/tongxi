@@ -139,11 +139,14 @@ fn project_plan_rejects_untrusted_roles_protected_files_and_forward_dependencies
         serde_json::to_string(&good).unwrap()
     ))
     .is_ok());
-    for agent in ["albion-wsl", "hermes-win", "unknown"] {
+    for agent in ["albion-wsl", "unknown"] {
         let mut p = good.clone();
         p.tasks[0].agent_id = agent.into();
         assert!(parse_plan(&serde_json::to_string(&p).unwrap()).is_err());
     }
+    let mut hermes_task = good.clone();
+    hermes_task.tasks[0].agent_id = "hermes-win".into();
+    assert!(parse_plan(&serde_json::to_string(&hermes_task).unwrap()).is_ok());
     for path in [
         "../escape.py",
         "C:/outside.txt",
@@ -167,6 +170,127 @@ fn project_plan_rejects_untrusted_roles_protected_files_and_forward_dependencies
     bad.tasks[0].files.clear();
     assert!(parse_plan(&serde_json::to_string(&bad).unwrap()).is_err());
     assert!(parse_plan("{\"summary\":\"a\",\"tasks\":[],\"run_shell\":true}").is_err());
+}
+
+#[test]
+fn plan_tasks_can_be_split_between_connected_codex_hermes_and_dsh() {
+    let mut codex_task = plan(&["src/complex.rs"]).tasks.remove(0);
+    codex_task.agent_id = "codex-win".into();
+    let mut dsh_task = plan(&["src/simple.rs"]).tasks.remove(0);
+    dsh_task.title = "简单实现".into();
+    let mut hermes_task = plan(&["src/reviewed.rs"]).tasks.remove(0);
+    hermes_task.agent_id = "hermes-win".into();
+    hermes_task.title = "独立实现".into();
+    let plan = Plan {
+        summary: "按任务难度分工".into(),
+        tasks: vec![codex_task, dsh_task, hermes_task],
+    };
+    let available = vec!["codex-win".into(), "hermes-win".into(), "dsh-win".into()];
+    assert!(crate::projects::validate_plan_agents(&plan, &available).is_ok());
+    assert!(crate::projects::validate_plan_agents(&plan, &["codex-win".into()]).is_err());
+}
+
+#[test]
+fn hermes_can_execute_a_task_when_codex_is_the_default_executor() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    let roles = Roles {
+        plan: RoleChoice {
+            agent: "codex-win".into(),
+            model: None,
+            effort: None,
+        },
+        implement: RoleChoice {
+            agent: "codex-win".into(),
+            model: None,
+            effort: None,
+        },
+        review: RoleChoice {
+            agent: "hermes-win".into(),
+            model: None,
+            effort: None,
+        },
+    };
+    f.store
+        .set_workflow_roles(&workflow.id, Some(&serde_json::to_string(&roles).unwrap()))
+        .unwrap();
+    f.store.acquire_project(&workflow.id).unwrap();
+    let mut proposed = plan(&["src/task.rs"]);
+    proposed.tasks[0].agent_id = "hermes-win".into();
+    let planned = f.plan_with(&workflow, &proposed);
+    let raw_roles = serde_json::to_string(&roles).unwrap();
+    assert_eq!(planned.roles.as_deref(), Some(raw_roles.as_str()));
+    let running = f.store.begin_execution(&planned.id).unwrap();
+    let task = &running.tasks[0];
+    assert_eq!(task.agent_id, "hermes-win");
+    let attempt = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&task.id),
+            "hermes-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    let mut broker = f.broker(&attempt);
+    assert!(broker
+        .allowed_tool_specs()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "hub_write"));
+    assert_eq!(
+        broker
+            .call(
+                "hub_write",
+                json!({"path":"src/task.rs","content":"hermes","expected_sha256":null})
+            )
+            .unwrap()["saved"],
+        true
+    );
+}
+
+#[test]
+fn hermes_planning_gets_read_only_project_tools() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    let roles = Roles {
+        plan: RoleChoice {
+            agent: "hermes-win".into(),
+            model: None,
+            effort: None,
+        },
+        implement: RoleChoice {
+            agent: "dsh-win".into(),
+            model: None,
+            effort: None,
+        },
+        review: RoleChoice {
+            agent: "codex-win".into(),
+            model: None,
+            effort: None,
+        },
+    };
+    f.store
+        .set_workflow_roles(&workflow.id, Some(&serde_json::to_string(&roles).unwrap()))
+        .unwrap();
+    f.store.acquire_project(&workflow.id).unwrap();
+    let attempt = f
+        .store
+        .begin_attempt(&workflow.id, None, "hermes-win", "plan", None, None)
+        .unwrap();
+    let mut broker = f.broker(&attempt);
+    let tools = broker.allowed_tool_specs().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "hub_list"));
+    assert!(tools.iter().any(|tool| tool["name"] == "hub_read"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "hub_write"));
+    assert!(broker
+        .call(
+            "hub_write",
+            json!({"path":"check.py","content":"changed","expected_sha256":null})
+        )
+        .is_err());
 }
 
 #[test]
@@ -327,12 +451,12 @@ fn project_codex_plan_tools_are_read_only_scoped_and_cancelled_reads_stop() {
 }
 
 #[test]
-fn project_non_codex_planner_has_no_project_file_tools() {
+fn hermes_planner_can_read_project_files_but_cannot_write() {
     let mut f = Fixture::new();
     std::fs::write(f.root.join("ordinary.txt"), "visible project input").unwrap();
     let workflow = f.queued();
     f.store.acquire_project(&workflow.id).unwrap();
-    // 把规划角色换成 Hermes：它能规划，但不开放项目文件工具（只有 Codex 规划器可读源码）。
+    // Hermes 规划器拿到只读项目工具，写操作仍由 Broker 拒绝。
     let roles = r#"{"plan":{"agent":"hermes-win","model":null,"effort":null},"implement":{"agent":"dsh-win","model":null,"effort":null},"review":{"agent":"hermes-win","model":null,"effort":null}}"#;
     f.store
         .set_workflow_roles(&workflow.id, Some(roles))
@@ -342,10 +466,17 @@ fn project_non_codex_planner_has_no_project_file_tools() {
         .begin_attempt(&workflow.id, None, "hermes-win", "plan", None, None)
         .unwrap();
     let mut broker = f.broker(&hermes);
-    assert!(broker.call("hub_list", json!({})).is_err());
-    assert!(broker
-        .call("hub_read", json!({"path":"ordinary.txt"}))
-        .is_err());
+    let tools = broker.allowed_tool_specs().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "hub_list"));
+    assert!(tools.iter().any(|tool| tool["name"] == "hub_read"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "hub_write"));
+    assert!(broker.call("hub_list", json!({})).is_ok());
+    assert_eq!(
+        broker
+            .call("hub_read", json!({"path":"ordinary.txt"}))
+            .unwrap()["content"],
+        "visible project input"
+    );
     assert!(broker
         .call(
             "hub_write",

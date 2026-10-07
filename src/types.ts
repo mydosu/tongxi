@@ -42,7 +42,7 @@ export interface NativeSession {
   id: string; title?: string | null; cwd?: string | null; updated_at?: string | null;
   occupied_by?: string | null; current?: boolean;
 }
-export interface ModelOption { id: string; name: string; efforts: string[]; default_effort: string | null; }
+export interface ModelOption { id: string; name: string; provider_id?: string | null; provider_name?: string | null; efforts: string[]; default_effort: string | null; }
 
 export interface Discussion {
   id: string; conversation_id: string; user_message_id: string; participants: string[]; rounds: number;
@@ -55,7 +55,7 @@ export interface Project { id: string; name: string; root: string; checks: Check
 export interface ExecutionChoice { model: string; reasoning_effort: string | null; rationale: string; }
 export type RoleChoice = { agent: string; model: string | null; effort: string | null };
 export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoice };
-export type TaskChoice = { position: number; model: string | null; effort: string | null };
+export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
 export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
 export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
 export interface ProjectCheck extends Omit<CheckCommand, 'timeout_seconds'> { exit_code: number | null; timed_out: boolean; duration_ms: number; output: string; }

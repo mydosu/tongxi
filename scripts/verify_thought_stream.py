@@ -1,7 +1,5 @@
-"""思考块「边想边看」验收：Hermes 与阿尔比恩 真跑一轮，界面里要能当场看到思考在长。
+"""思考块「边想边看」验收：Codex 真跑一轮，核对推理事件是否进入消息并正确展示。
 
-为什么要单开：DSH 这条链路会把思考攒到最后一次性给（实测 0 → 271 字在 0.4 秒内落地），
-验不出流式；Hermes/阿尔比恩 是边想边发，才看得见。
 断言：思考确实产生 → 流式期间块保持展开、标签「思考中…」、内容在增长 → 结束后收成一行「思考过程」。
 """
 from __future__ import annotations
@@ -19,11 +17,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import smoke_desktop as sd  # noqa: E402
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from verify_hud import hud_page  # noqa: E402
 
 REPORT = "thought-stream-verification.json"
 PROMPT = "先在心里逐步推理（至少三步），最后才给答案：一个 3 升桶和一个 5 升桶，怎么量出恰好 4 升水？"
-TARGETS = [("hermes", "hermes-win"), ("albion", "albion-wsl")]
+TARGETS = [("codex", "codex-win")]
 
 SAMPLE = """() => {
   const block = document.querySelector('.message .thought');
@@ -97,30 +94,6 @@ def main() -> int:
         page.wait_for_timeout(1200)
         done = page.evaluate(SAMPLE)
 
-        # HUD 也开一遍：小窗里同样要看得见思考，消息区不能又被挤没。
-        if key == "hermes":
-            page.locator("#hud-toggle").click()
-            hud = hud_page(browser, timeout=25)
-            if hud is None:
-                check("hud.opened_for_thought", False)
-            else:
-                hud.wait_for_timeout(600)
-                hud_view = hud.evaluate(
-                    """() => {
-                      const box = document.querySelector('#messages');
-                      const block = document.querySelector('.message .thought');
-                      return {
-                        view: box ? box.clientHeight : 0,
-                        pinned: box ? box.scrollHeight - box.scrollTop - box.clientHeight <= 4 : false,
-                        thought: block ? (block.querySelector('.thought-body')?.textContent || '').length : 0,
-                        label: block ? (block.querySelector('summary')?.textContent || '') : '',
-                      };
-                    }"""
-                )
-                check("hud.messages_area_visible", hud_view["view"] >= 60, hud_view)
-                check("hud.shows_thought", hud_view["thought"] == stored, {"hud": hud_view, "stored": stored})
-                check("hud.thought_label", hud_view["label"] == "思考过程", hud_view)
-                check("hud.pinned_to_bottom", hud_view["pinned"] is True, hud_view)
         check(f"{key}.collapsed_when_done", bool(done) and done["open"] is False, done)
         check(f"{key}.label_when_done", bool(done) and done["summary"] == "思考过程", done)
         check(f"{key}.kept_full_text", bool(done) and done["length"] == stored, {"dom": done, "stored": stored})

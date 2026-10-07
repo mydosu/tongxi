@@ -45,7 +45,7 @@ pub struct RoleChoice {
     pub effort: Option<String>,
 }
 
-/// 这次工作流的三个角色：规划 / 执行 / 验收。
+/// 这次工作流的角色：规划 / 执行与修复 / 验收；实现任务可逐项另选成员。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Roles {
@@ -54,9 +54,11 @@ pub struct Roles {
     pub review: RoleChoice,
 }
 
-/// 能承担实现角色的成员（只有它们具备写工具）；规划/验收多一个 Hermes。
-pub const EXECUTOR_AGENTS: [&str; 2] = ["codex-win", "dsh-win"];
-pub const REVIEWER_AGENTS: [&str; 3] = ["codex-win", "hermes-win", "dsh-win"];
+/// 可参与项目的 Windows 成员；阿尔比恩（WSL Pi）不加入项目工作流。
+pub const EXECUTOR_AGENTS: [&str; 3] = ["codex-win", "hermes-win", "dsh-win"];
+/// project_tasks.agent_id 的旧约束只允许 Codex/DSH，Hermes 用 assigned_agent 列存放。
+const TASK_ROW_BASE_AGENTS: [&str; 2] = ["codex-win", "dsh-win"];
+pub const REVIEWER_AGENTS: [&str; 3] = EXECUTOR_AGENTS;
 
 impl Roles {
     /// 缺省组合＝旧行为：Codex 规划、DSH 执行、Hermes 验收。
@@ -88,7 +90,7 @@ impl Roles {
             return Err("规划角色只能选 Codex、Hermes 或 DSH".into());
         }
         if !EXECUTOR_AGENTS.contains(&self.implement.agent.as_str()) {
-            return Err("执行角色只能选 Codex 或 DSH".into());
+            return Err("执行角色只能选 Codex、Hermes 或 DSH".into());
         }
         if !REVIEWER_AGENTS.contains(&self.review.agent.as_str()) {
             return Err("验收角色只能选 Codex、Hermes 或 DSH".into());
@@ -348,7 +350,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         position INTEGER NOT NULL,title TEXT NOT NULL,agent_id TEXT NOT NULL CHECK(agent_id IN ('codex-win','dsh-win')),
         instructions TEXT NOT NULL,files TEXT NOT NULL,depends_on TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','interrupted','skipped')),
-        output TEXT NOT NULL DEFAULT '',error TEXT,
+        output TEXT NOT NULL DEFAULT '',error TEXT,assigned_agent TEXT,
         model TEXT,effort TEXT,worktree TEXT,branch TEXT,UNIQUE(workflow_id,position));
       CREATE TABLE IF NOT EXISTS project_leases (
         workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE,
@@ -382,6 +384,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_tasks", "effort", "TEXT"),
         ("project_tasks", "worktree", "TEXT"),
         ("project_tasks", "branch", "TEXT"),
+        ("project_tasks", "assigned_agent", "TEXT"),
     ] {
         add_column(tx, table, column, definition)?;
     }
@@ -542,7 +545,9 @@ pub fn parse_plan(raw: &str) -> Result<Plan> {
             || task.files.len() > 5
             || task.depends_on.iter().any(|d| *d as usize >= index)
         {
-            return Err("新任务需为可执行的实现者（Codex 或 DSH）、1—5 个文件且依赖有效".into());
+            return Err(
+                "新任务需为可执行的实现者（Codex、Hermes 或 DSH）、1—5 个文件且依赖有效".into(),
+            );
         }
         // execution 是规划给出的选型建议，用户可以在确认面板里改成别的；这里不再拒收。
         for (i, file) in task.files.iter().enumerate() {
@@ -569,7 +574,7 @@ pub fn parse_plan(raw: &str) -> Result<Plan> {
 }
 
 /// 任务查询的列顺序与 `task_from_row` 一一对应。
-const TASK_COLUMNS: &str = "id,workflow_id,position,title,agent_id,instructions,files,depends_on,status,output,error,model,effort,worktree,branch";
+const TASK_COLUMNS: &str = "id,workflow_id,position,title,COALESCE(assigned_agent,agent_id) AS agent_id,instructions,files,depends_on,status,output,error,model,effort,worktree,branch";
 
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let files: String = row.get(6)?;
@@ -888,6 +893,31 @@ impl Store {
         self.task(task_id)
     }
 
+    /// Change a queued task's executor while its workflow is still waiting for user confirmation.
+    pub fn set_task_agent(&mut self, task_id: &str, agent: &str) -> Result<Task> {
+        if !EXECUTOR_AGENTS.contains(&agent) {
+            return Err("实现成员只能选择 Codex、Hermes 或 DSH".into());
+        }
+        let task = self.task(task_id)?;
+        let workflow = self.workflow(&task.workflow_id)?;
+        if workflow.status != "planning" || task.status != "queued" {
+            return Err("只能在确认阶段修改待执行任务的成员".into());
+        }
+        let update = if agent == "hermes-win" {
+            self.connection.execute(
+                "UPDATE project_tasks SET assigned_agent='hermes-win' WHERE id=?1",
+                [task_id],
+            )
+        } else {
+            self.connection.execute(
+                "UPDATE project_tasks SET agent_id=?1,assigned_agent=NULL WHERE id=?2",
+                params![agent, task_id],
+            )
+        };
+        update.map_err(|e| e.to_string())?;
+        self.task(task_id)
+    }
+
     /// 写这次工作流的角色配置：必须是一个 JSON 对象（规划/执行/验收的成员+模型+强度）。
     pub fn set_workflow_roles(&mut self, id: &str, roles: Option<&str>) -> Result<Workflow> {
         self.workflow(id)?;
@@ -1062,8 +1092,19 @@ impl Store {
             ],
         )
         .map_err(|e| e.to_string())?;
+        let fallback = roles_of(&workflow)?.implement.agent;
         for (index, task) in plan.tasks.iter().enumerate() {
-            tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,instructions,files,depends_on,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued')",params![Uuid::new_v4().to_string(),id,index as u32,task.title,task.agent_id,task.instructions,serde_json::to_string(&task.files).map_err(|e|e.to_string())?,serde_json::to_string(&task.depends_on).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+            let (stored_agent, assigned_agent) = if task.agent_id == "hermes-win" {
+                let stored = if TASK_ROW_BASE_AGENTS.contains(&fallback.as_str()) {
+                    fallback.as_str()
+                } else {
+                    "dsh-win"
+                };
+                (stored, Some("hermes-win"))
+            } else {
+                (task.agent_id.as_str(), None)
+            };
+            tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,instructions,files,depends_on,status,assigned_agent) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',?9)",params![Uuid::new_v4().to_string(),id,index as u32,task.title,stored_agent,task.instructions,serde_json::to_string(&task.files).map_err(|e|e.to_string())?,serde_json::to_string(&task.depends_on).map_err(|e|e.to_string())?,assigned_agent]).map_err(|e|e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         self.workflow(id)
@@ -1304,8 +1345,8 @@ impl Store {
                     && task_id.is_none()
                     && workflow.status == "planning"
                     && !attempts.iter().any(|a| a.stage == "plan") => {}
-            // 实现：成员必须是执行角色；模型与强度由调用方按任务给。
-            "implement" if agent == roles.implement.agent && workflow.status == "running" => {
+            // 实现：成员由用户逐任务确认；仍只允许 Codex/DSH，且必须匹配该任务的已确认成员。
+            "implement" if EXECUTOR_AGENTS.contains(&agent) && workflow.status == "running" => {
                 let task = workflow
                     .tasks
                     .iter()
@@ -1517,14 +1558,15 @@ mod tests {
                  ALTER TABLE project_tasks DROP COLUMN effort;
                  ALTER TABLE project_tasks DROP COLUMN worktree;
                  ALTER TABLE project_tasks DROP COLUMN branch;
+                 ALTER TABLE project_tasks DROP COLUMN assigned_agent;
                  PRAGMA user_version=9;",
             )
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 10);
+        assert_eq!(version(&store), 11);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
-        for column in ["model", "effort", "worktree", "branch"] {
+        for column in ["model", "effort", "worktree", "branch", "assigned_agent"] {
             assert!(
                 columns(&store, "project_tasks")
                     .iter()
@@ -1557,7 +1599,7 @@ mod tests {
         let tx = store.connection.transaction().unwrap();
         migrate(&tx).unwrap();
         tx.commit().unwrap();
-        for column in ["model", "effort", "worktree", "branch"] {
+        for column in ["model", "effort", "worktree", "branch", "assigned_agent"] {
             assert_eq!(
                 columns(&store, "project_tasks")
                     .iter()
@@ -1584,7 +1626,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 10);
+        assert_eq!(version(&store), 11);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 
@@ -1660,5 +1702,67 @@ mod tests {
         assert!(store
             .set_task_config(&task, Some("a\nb".into()), None, None, None)
             .is_err());
+    }
+
+    #[test]
+    fn task_executor_can_change_only_while_queued_for_confirmation() {
+        let mut store = memory();
+        let (workflow, task) = legacy_workflow(&mut store);
+        store
+            .connection
+            .execute(
+                "UPDATE workflows SET status='planning' WHERE id=?1",
+                [&workflow],
+            )
+            .unwrap();
+
+        let saved = store.set_task_agent(&task, "codex-win").unwrap();
+        assert_eq!(saved.agent_id, "codex-win");
+        assert_eq!(
+            store.workflow(&workflow).unwrap().tasks[0].agent_id,
+            "codex-win"
+        );
+        let saved = store.set_task_agent(&task, "hermes-win").unwrap();
+        assert_eq!(saved.agent_id, "hermes-win");
+        assert_eq!(
+            store.workflow(&workflow).unwrap().tasks[0].agent_id,
+            "hermes-win"
+        );
+
+        store
+            .connection
+            .execute(
+                "UPDATE workflows SET status='running' WHERE id=?1",
+                [&workflow],
+            )
+            .unwrap();
+        assert!(store.set_task_agent(&task, "dsh-win").is_err());
+    }
+
+    #[test]
+    fn all_three_windows_agents_can_fill_each_project_role() {
+        for agent in EXECUTOR_AGENTS {
+            let roles = Roles {
+                plan: RoleChoice {
+                    agent: agent.into(),
+                    model: None,
+                    effort: None,
+                },
+                implement: RoleChoice {
+                    agent: agent.into(),
+                    model: None,
+                    effort: None,
+                },
+                review: RoleChoice {
+                    agent: agent.into(),
+                    model: None,
+                    effort: None,
+                },
+            };
+            assert!(roles.validate().is_ok(), "{agent}");
+        }
+        let mut albion = Roles::defaults();
+        albion.plan.agent = "albion-wsl".into();
+        assert!(albion.validate().is_err());
     }
 }

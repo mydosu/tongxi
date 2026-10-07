@@ -190,10 +190,10 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 10 {
+        if version > 11 {
             return Err("数据由更新的软件版本创建，请使用对应版本打开".into());
         }
-        if version > 0 && version < 10 && path.is_absolute() {
+        if version > 0 && version < 11 && path.is_absolute() {
             let backups = path.parent().ok_or("数据库目录无效")?.join("backups");
             std::fs::create_dir_all(&backups).map_err(|_| "迁移前数据库备份目录创建失败")?;
             let snapshot = backups.join(format!("hub-schema-v{version}-{}.db", Uuid::new_v4()));
@@ -344,7 +344,7 @@ impl Store {
                     .map_err(|e| e.to_string())?;
             }
         }
-        tx.execute_batch("PRAGMA user_version=10;")
+        tx.execute_batch("PRAGMA user_version=11;")
             .map_err(|e| e.to_string())?;
         let seeded = tx
             .query_row("SELECT value FROM metadata WHERE key='seeded'", [], |row| {
@@ -1479,7 +1479,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         let room = direct(&mut store, "升级后");
         assert!(store
