@@ -637,7 +637,7 @@ impl Runtime {
         // ACP 把「思考」和「正文」分成两种 chunk：思考进可折叠的思考块，正文进气泡。
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_thought_chunk" => run.thought.push_str(text),
-            "agent_message_chunk" => append_message_chunk(&mut run.text, text),
+            "agent_message_chunk" => run.text.push_str(text),
             _ => return,
         }
         if checkpoint {
@@ -756,10 +756,6 @@ impl Runtime {
     }
 }
 
-fn append_message_chunk(output: &mut String, text: &str) {
-    output.push_str(text);
-}
-
 fn completion_from_stop_reason(reason: Option<&str>) -> (&'static str, Option<&'static str>) {
     match reason {
         Some("cancelled") => ("interrupted", None),
@@ -831,12 +827,11 @@ mod tests {
     }
 
     #[test]
-    fn message_chunks_are_not_clipped_at_the_old_output_budget() {
-        let mut output = String::new();
-        append_message_chunk(&mut output, &"x".repeat(16_384));
-        append_message_chunk(&mut output, "beyond-old-budget");
-        assert_eq!(output.len(), 16_384 + "beyond-old-budget".len());
-        assert!(output.ends_with("beyond-old-budget"));
+    fn project_bridge_does_not_publish_the_old_output_token_cap() {
+        let bridge = include_str!("dsh_bridge.mjs");
+        assert!(bridge.contains("contextWindow: 262144"));
+        assert!(bridge.contains("maxTokensField: 'max_tokens'"));
+        assert!(!bridge.contains("maxTokens: 16384"));
     }
 
     #[test]
@@ -848,7 +843,13 @@ mod tests {
                 Some("DSH 输出达到上游 token 上限，返回内容可能不完整")
             )
         );
-        assert_eq!(completion_from_stop_reason(Some("end_turn")), ("completed", None));
-        assert_eq!(completion_from_stop_reason(Some("cancelled")), ("interrupted", None));
+        assert_eq!(
+            completion_from_stop_reason(Some("end_turn")),
+            ("completed", None)
+        );
+        assert_eq!(
+            completion_from_stop_reason(Some("cancelled")),
+            ("interrupted", None)
+        );
     }
 }

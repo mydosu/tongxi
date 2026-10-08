@@ -2034,7 +2034,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-agent-hub"
-version = "0.12.25"
+version = "0.12.26"
 dependencies = [
  "rusqlite",
  "serde",
