@@ -313,8 +313,10 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     page.select_option('[data-role-model="implement"]', daily_one)
     page.select_option('[data-role-effort="implement"]', "high")
     page.select_option('[data-role-agent="review"]', "hermes-win")
-    review_providers = page.eval_on_selector_all('[data-role-provider="review"] option', "els => els.map(e => e.value).filter(Boolean)")
-    review_provider = next(provider for provider in review_providers if "command-code-daily-1" in provider)
+    review_providers = page.eval_on_selector_all('[data-role-provider="review"] option', "els => els.filter(e => e.value).map(e => ({value:e.value,label:e.textContent.trim()}))")
+    review_provider = next((provider["value"] for provider in review_providers if "daily one" in provider["label"].lower()), None)
+    if not review_provider:
+        raise AssertionError("Hermes provider list does not contain Daily One: " + repr([provider["label"] for provider in review_providers]))
     page.select_option('[data-role-provider="review"]', review_provider)
     review_models = page.eval_on_selector_all('[data-role-model="review"] option', "els => els.map(e => e.value).filter(Boolean)")
     review_model = next(model for model in review_models if "deepseek-v4.1-flash" in model)
