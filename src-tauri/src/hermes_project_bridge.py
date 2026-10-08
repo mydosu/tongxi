@@ -18,7 +18,8 @@ _setup_logging()
 _load_env()
 
 import acp
-from acp.schema import RequestError, SetSessionConfigOptionResponse
+from acp.exceptions import RequestError
+from acp.schema import SetSessionConfigOptionResponse
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 from hermes_constants import parse_reasoning_effort
