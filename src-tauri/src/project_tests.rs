@@ -18,7 +18,6 @@ impl Fixture {
         let base = std::env::temp_dir().join(format!("agent-hub-project-test-{}", Uuid::new_v4()));
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("check.py"), "# fixed verification script").unwrap();
         let mut store = Store::open(&base.join("data/hub.db")).unwrap();
         let room = store
             .create(
@@ -29,16 +28,7 @@ impl Fixture {
             .unwrap()
             .id;
         let project = store
-            .register_project(
-                "隔离项目",
-                root.to_str().unwrap(),
-                &[CheckCommand {
-                    name: "实际检查".into(),
-                    program: "python".into(),
-                    args: vec!["check.py".into()],
-                    timeout_seconds: 10,
-                }],
-            )
+            .register_project("隔离项目", root.to_str().unwrap())
             .unwrap()
             .id;
         store.bind_project(&room, Some(&project)).unwrap();
@@ -524,7 +514,7 @@ fn hermes_planning_gets_read_only_project_tools() {
     assert!(broker
         .call(
             "hub_write",
-            json!({"path":"check.py","content":"changed","expected_sha256":null})
+            json!({"path":"test.py","content":"changed","expected_sha256":null})
         )
         .is_err());
 }
@@ -759,24 +749,15 @@ fn project_save_plan_requires_exact_completed_plan_and_no_active_attempt() {
 fn project_registration_is_idempotent_and_excludes_app_data() {
     let mut f = Fixture::new();
     let p = f.store.project(&f.project).unwrap();
-    assert_eq!(
-        f.store
-            .register_project(&p.name, &p.root, &p.checks)
-            .unwrap()
-            .id,
-        p.id
-    );
+    assert_eq!(f.store.register_project(&p.name, &p.root).unwrap().id, p.id);
+    assert!(f.store.register_project("另一个名称", &p.root).is_err());
     assert!(f
         .store
-        .register_project("另一个名称", &p.root, &p.checks)
+        .register_project("应用数据", f.base.join("data").to_str().unwrap())
         .is_err());
     assert!(f
         .store
-        .register_project("应用数据", f.base.join("data").to_str().unwrap(), &[])
-        .is_err());
-    assert!(f
-        .store
-        .register_project("不存在", f.base.join("missing").to_str().unwrap(), &[])
+        .register_project("不存在", f.base.join("missing").to_str().unwrap())
         .is_err());
 }
 
@@ -832,10 +813,9 @@ fn project_lease_blocks_same_and_nested_roots_but_allows_another_project() {
     assert!(!f.store.acquire_project(&same.id).unwrap());
     let nested = f.root.join("nested");
     std::fs::create_dir_all(&nested).unwrap();
-    let checks = f.store.project(&f.project).unwrap().checks;
     let child = f
         .store
-        .register_project("子项目", nested.to_str().unwrap(), &checks)
+        .register_project("子项目", nested.to_str().unwrap())
         .unwrap();
     f.store
         .finish_workflow(&same.id, "interrupted", "", None)
@@ -854,7 +834,7 @@ fn project_lease_blocks_same_and_nested_roots_but_allows_another_project() {
     std::fs::create_dir_all(&other).unwrap();
     let p = f
         .store
-        .register_project("另项目", other.to_str().unwrap(), &checks)
+        .register_project("另项目", other.to_str().unwrap())
         .unwrap();
     f.store.bind_project(&room, Some(&p.id)).unwrap();
     let next = f
@@ -930,49 +910,31 @@ fn project_task_dependencies_and_agent_busy_are_enforced() {
 }
 
 #[test]
-fn project_completion_requires_matching_real_check_evidence() {
+fn project_completion_requires_functional_review_approval_only() {
     let mut f = Fixture::new();
-    let a = f.implement(&["a.py"]);
-    complete(&mut f.store, &a);
-    let mut verify = f
+    let implementation = f.implement(&["a.py"]);
+    complete(&mut f.store, &implementation);
+    let mut review = f
         .store
-        .begin_attempt(&a.workflow_id, None, "hermes-win", "verify", None, None)
-        .unwrap();
-    verify.status = "completed".into();
-    assert!(f.store.checkpoint_attempt(&verify).is_err());
-    verify.checks = vec![CheckResult {
-        name: "实际检查".into(),
-        program: "python".into(),
-        args: vec!["different.py".into()],
-        exit_code: Some(0),
-        timed_out: false,
-        duration_ms: 1,
-        output: "passed".into(),
-    }];
-    assert!(f.store.checkpoint_attempt(&verify).is_err());
-    verify.checks[0].args = vec!["check.py".into()];
-    verify.checks[0].timed_out = true;
-    assert!(f.store.checkpoint_attempt(&verify).is_err());
-    verify.checks[0].timed_out = false;
-    verify.checks[0].exit_code = Some(1);
-    assert!(f.store.checkpoint_attempt(&verify).is_err());
-    verify.checks[0].exit_code = Some(0);
-    f.store.checkpoint_attempt(&verify).unwrap();
-    let review = f
-        .store
-        .begin_attempt(&a.workflow_id, None, "hermes-win", "review", None, None)
+        .begin_attempt(
+            &implementation.workflow_id,
+            None,
+            "hermes-win",
+            "review",
+            None,
+            None,
+        )
         .unwrap();
     assert!(f
         .store
-        .finish_workflow(&a.workflow_id, "completed", "", None)
+        .finish_workflow(&implementation.workflow_id, "completed", "", None)
         .is_err());
-    let mut review = review;
     review.status = "completed".into();
     review.output = r#"{"approved":false,"summary":"需要修复","issues":["仍有问题"]}"#.into();
     f.store.checkpoint_attempt(&review).unwrap();
     assert!(f
         .store
-        .finish_workflow(&a.workflow_id, "completed", "", None)
+        .finish_workflow(&implementation.workflow_id, "completed", "", None)
         .is_err());
     f.store
         .connection
@@ -986,7 +948,7 @@ fn project_completion_requires_matching_real_check_evidence() {
         .unwrap();
     assert_eq!(
         f.store
-            .finish_workflow(&a.workflow_id, "completed", "通过", None)
+            .finish_workflow(&implementation.workflow_id, "completed", "通过", None)
             .unwrap()
             .status,
         "completed"
@@ -1174,19 +1136,23 @@ fn project_broker_rejects_hard_links_that_could_write_outside_the_project() {
 }
 
 #[test]
-fn project_broker_blocks_check_script_changes_large_files_and_binary_reads() {
+fn project_broker_allows_authorized_test_files_and_blocks_large_files_and_binary_reads() {
     let mut f = Fixture::new();
     std::fs::write(f.root.join("binary.dat"), [0xff, 0xfe]).unwrap();
     std::fs::write(f.root.join("large.txt"), vec![b'a'; 1_048_577]).unwrap();
-    let a = f.implement(&["check.py", "binary.dat", "large.txt", "new.txt"]);
+    let a = f.implement(&["test.py", "binary.dat", "large.txt", "new.txt"]);
     let mut b = f.broker(&a);
-    let check = b.call("hub_read", json!({"path":"check.py"})).unwrap();
-    assert!(b
+    let written = b
         .call(
             "hub_write",
-            json!({"path":"check.py","content":"pass","expected_sha256":check["sha256"]})
+            json!({"path":"test.py","content":"assert True","expected_sha256":null}),
         )
-        .is_err());
+        .unwrap();
+    assert!(!written["isError"].as_bool().unwrap_or(false));
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("test.py")).unwrap(),
+        "assert True"
+    );
     assert!(b.call("hub_read", json!({"path":"binary.dat"})).is_err());
     assert!(b.call("hub_read", json!({"path":"large.txt"})).is_err());
     assert!(b
@@ -1199,7 +1165,7 @@ fn project_broker_blocks_check_script_changes_large_files_and_binary_reads() {
 }
 
 #[test]
-fn project_helper_open_does_not_recover_live_workflow_and_verify_is_read_only() {
+fn project_helper_open_does_not_recover_live_workflow_and_review_is_read_only() {
     let mut f = Fixture::new();
     std::fs::write(f.root.join("a.py"), "source").unwrap();
     let a = f.implement(&["a.py"]);
@@ -1208,11 +1174,11 @@ fn project_helper_open_does_not_recover_live_workflow_and_verify_is_read_only() 
     assert_eq!(f.store.attempt(&a.id).unwrap().status, "starting");
     assert_eq!(f.store.workflow(&a.workflow_id).unwrap().status, "running");
     complete(&mut f.store, &a);
-    let verify = f
+    let review = f
         .store
-        .begin_attempt(&a.workflow_id, None, "hermes-win", "verify", None, None)
+        .begin_attempt(&a.workflow_id, None, "hermes-win", "review", None, None)
         .unwrap();
-    let mut b = f.broker(&verify);
+    let mut b = f.broker(&review);
     let read = b.call("hub_read", json!({"path":"a.py"})).unwrap();
     assert!(b
         .call(
@@ -1231,12 +1197,13 @@ fn project_repair_is_bounded_to_one_attempt() {
     let mut f = Fixture::new();
     let a = f.implement(&["a.py"]);
     complete(&mut f.store, &a);
-    let mut verify = f
+    let mut review = f
         .store
-        .begin_attempt(&a.workflow_id, None, "hermes-win", "verify", None, None)
+        .begin_attempt(&a.workflow_id, None, "hermes-win", "review", None, None)
         .unwrap();
-    verify.status = "failed".into();
-    f.store.checkpoint_attempt(&verify).unwrap();
+    review.status = "completed".into();
+    review.output = r#"{"approved":false,"summary":"需要修复","issues":["问题"]}"#.into();
+    f.store.checkpoint_attempt(&review).unwrap();
     let repair = f
         .store
         .begin_attempt(&a.workflow_id, None, "dsh-win", "repair", None, None)
@@ -1320,7 +1287,7 @@ fn structured_plan_and_review_accept_one_fence_with_brief_prose() {
     );
     let body = r#"{"approved":true,"summary":"实际检查通过","issues":[]}"#;
     assert!(
-        parse_review(&format!("```json\n{body}\n```\n已根据固定检查验收。"))
+        parse_review(&format!("```json\n{body}\n```\n已对照需求和源码完成复核。"))
             .unwrap()
             .approved
     );

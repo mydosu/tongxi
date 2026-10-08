@@ -1,5 +1,5 @@
 //! Shared, lease-checked file tools. Neither transport grants native shell access.
-use crate::project_store::{key, protected_relative, task_path, CheckCommand, EXECUTOR_AGENTS};
+use crate::project_store::{key, protected_relative, task_path, EXECUTOR_AGENTS};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,7 +22,6 @@ struct Scope {
     root: PathBuf,
     files: Vec<String>,
     writable: bool,
-    checks: Vec<CheckCommand>,
 }
 
 #[derive(Deserialize)]
@@ -159,33 +158,31 @@ impl Broker {
     }
 
     fn scope(connection: &Connection, attempt: &str) -> Result<Scope> {
-        let row=connection.query_row("SELECT p.root,p.checks,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','verifying','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
+        let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
         let project_root = Path::new(&row.0)
             .canonicalize()
             .map_err(|_| "项目目录不可用")?;
         // 有独立工作树的任务（实现）在自己的工作树里改文件；其它阶段仍用主仓库根。
-        let root = match row.5.as_deref() {
+        let root = match row.4.as_deref() {
             Some(worktree) => PathBuf::from(worktree)
                 .canonicalize()
                 .map_err(|_| "任务工作树不可用")?,
             None => {
-                if key(&project_root) != row.7 {
+                if key(&project_root) != row.6 {
                     return Err("项目目录身份已经改变".into());
                 }
                 project_root
             }
         };
-        let checks: Vec<CheckCommand> =
-            serde_json::from_str(&row.1).map_err(|_| "项目检查配置无效")?;
-        let writable = EXECUTOR_AGENTS.contains(&row.8.as_str())
-            && matches!(row.2.as_str(), "implement" | "repair");
-        let files: Vec<String> = if row.2 == "plan" && row.3.is_none() {
+        let writable = EXECUTOR_AGENTS.contains(&row.7.as_str())
+            && matches!(row.1.as_str(), "implement" | "repair");
+        let files: Vec<String> = if row.1 == "plan" && row.2.is_none() {
             crate::projects::manifest(&root)?
-        } else if let Some(text) = row.4 {
+        } else if let Some(text) = row.3 {
             serde_json::from_str(&text).map_err(|_| "任务范围无效")?
-        } else if matches!(row.2.as_str(), "repair" | "verify" | "review") {
+        } else if matches!(row.1.as_str(), "repair" | "review") {
             let plan: crate::project_store::Plan =
-                serde_json::from_str(row.6.as_deref().ok_or("任务范围缺失")?)
+                serde_json::from_str(row.5.as_deref().ok_or("任务范围缺失")?)
                     .map_err(|_| "任务范围无效")?;
             plan.tasks.into_iter().flat_map(|t| t.files).collect()
         } else {
@@ -195,7 +192,6 @@ impl Broker {
             root,
             files,
             writable,
-            checks,
         })
     }
 
@@ -222,21 +218,6 @@ impl Broker {
         }
         plain_parents(&scope.root, relative)?;
         let target = task_path(&scope.root, relative)?;
-        if write {
-            for command in &scope.checks {
-                for arg in std::iter::once(&command.program).chain(&command.args) {
-                    let path = Path::new(arg);
-                    let path = if path.is_absolute() {
-                        path.to_path_buf()
-                    } else {
-                        scope.root.join(path)
-                    };
-                    if path.canonicalize().is_ok_and(|p| p == target) {
-                        return Err("已配置的验收脚本受保护，不能由实现任务修改".into());
-                    }
-                }
-            }
-        }
         Ok(target)
     }
 

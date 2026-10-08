@@ -26,12 +26,12 @@ def fixture(agent='codex-win'):
         CREATE TABLE project_attempts(id TEXT PRIMARY KEY,workflow_id TEXT,task_id TEXT,agent_id TEXT DEFAULT 'codex-win',stage TEXT,status TEXT);
         CREATE TABLE project_leases(workflow_id TEXT PRIMARY KEY,root_key TEXT);
         CREATE TABLE project_changes(attempt_id TEXT,path TEXT,operation TEXT,before_hash TEXT,after_hash TEXT,PRIMARY KEY(attempt_id,path));''')
-        connection.execute('INSERT INTO projects VALUES(?,?,?)',('project',str(project),json.dumps([{'name':'fixed test','program':'python','args':['check.py'],'timeout_seconds':10}])))
+        connection.execute('INSERT INTO projects VALUES(?,?,?)',('project',str(project),'[]'))
         connection.execute('INSERT INTO workflows VALUES(?,?,?,?)',('workflow','project','running',None))
-        connection.execute('INSERT INTO project_tasks(id,files,worktree,assigned_agent) VALUES(?,?,?,?)',(task,json.dumps(['hello.txt','calc.py','src/new.txt','check.py']),None,None))
+        connection.execute('INSERT INTO project_tasks(id,files,worktree,assigned_agent) VALUES(?,?,?,?)',(task,json.dumps(['hello.txt','calc.py','src/new.txt','test.py']),None,None))
         connection.execute('INSERT INTO project_attempts VALUES(?,?,?,?,?,?)',(attempt,'workflow',task,'dsh-win','implement','running'))
         connection.execute('INSERT INTO project_leases VALUES(?,?)',('workflow',str(project).replace('\\','/').lower().rstrip('/')))
-    (project/'check.py').write_text('# fixed verification script',encoding='utf-8')
+    (project/'test.py').write_text('# authorized project test file',encoding='utf-8')
     return {'base':base,'project':project,'data':data,'db':db,'attempt':attempt,'agent':agent}
 
 class ToolSession:
@@ -67,8 +67,8 @@ def main():
         edited=helper.call('hub_edit',{'path':'hello.txt','old_text':'BEFORE','new_text':'AFTER','expected_sha256':contents['sha256']});check('guarded edit',not edited['isError'] and (context['project']/'hello.txt').read_text()=='AFTER')
         for path in ['../outside.txt','unscoped.txt','.env','hello.txt:stream']:
             response=helper.call('hub_write',{'path':path,'content':'NO','expected_sha256':None});check('deny '+path,response['isError'])
-        before=helper.call('hub_read',{'path':'check.py'});sha=json.loads(before['content'][0]['text'])['sha256']
-        response=helper.call('hub_write',{'path':'check.py','content':'PASS','expected_sha256':sha});check('fixed verification script protected',response['isError'])
+        before=helper.call('hub_read',{'path':'test.py'});sha=json.loads(before['content'][0]['text'])['sha256']
+        response=helper.call('hub_write',{'path':'test.py','content':'PASS','expected_sha256':sha});check('authorized project test files are editable',not response['isError'] and (context['project']/'test.py').read_text()=='PASS')
         backups=context['data']/'project-backups'/context['attempt']
         check('new-file backup records original absence',any(json.loads(path.read_text())['existed'] is False for path in backups.glob('*.json')))
         (context['project']/'calc.py').write_text('ORIGINAL',encoding='utf-8')
@@ -78,9 +78,9 @@ def main():
         with sqlite3.connect(context['db']) as db:db.execute("UPDATE workflows SET status='cancelling'")
         response=helper.call('hub_write',{'path':'src/new.txt','content':'STALE','expected_sha256':None});check('cancel rejects stale write',response['isError'] and not (context['project']/'src/new.txt').exists())
         with sqlite3.connect(context['db']) as db:
-            db.execute("UPDATE workflows SET status='verifying'");db.execute("UPDATE project_attempts SET stage='verify'")
-        response=helper.call('hub_write',{'path':'src/new.txt','content':'NO','expected_sha256':None});check('verify stage read only',response['isError'])
-        response=helper.call('hub_read',{'path':'hello.txt'});check('verify read allowed',not response['isError'])
+            db.execute("UPDATE workflows SET status='reviewing'");db.execute("UPDATE project_attempts SET stage='review'")
+        response=helper.call('hub_write',{'path':'src/new.txt','content':'NO','expected_sha256':None});check('review stage read only',response['isError'])
+        response=helper.call('hub_read',{'path':'hello.txt'});check('review read allowed',not response['isError'])
         with sqlite3.connect(context['db']) as db:db.execute('DELETE FROM project_leases')
         response=helper.call('hub_read',{'path':'hello.txt'});check('released lease rejects access',response['isError'])
         report={'passed':len(checks),'checks':checks,'fixture':str(context['base']),'fixture_scope':'minimal transport schema; full Store state tested in Rust','model_requests':0}

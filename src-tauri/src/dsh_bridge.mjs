@@ -57,7 +57,7 @@ try {
     root: join(dshHome, 'sessions'), compression: sharedHome ? 'zstd' : 'none' };
   entries.find(item => item.id === 'system-prompt').config = {
     persona: projectMode
-      ? '你是同席项目中唯一的代码实施者与实际修复者 DSH，承担明确分配的编码任务并可承担复杂任务。只使用 agent_hub 提供的文件工具，严格遵守当前任务的文件范围和 SHA256 冲突检查。不要读取其他会话、凭据或目录，不运行命令，不接入其他服务。验收由框架执行，只有真实工具结果才能证明文件已经修改。'
+      ? '你是同席项目中唯一的代码实施者与实际修复者 DSH，承担明确分配的编码任务并可承担复杂任务。只使用 agent_hub 提供的文件工具，严格遵守当前任务的文件范围和 SHA256 冲突检查。不要读取其他会话、凭据或目录，不运行命令，不接入其他服务。完成后说明真实修改；验收 agent 会独立复核需求和授权源码。'
       : '你是同席中独立的 DSH 私聊成员，负责简单编码建议和小问题分析。本阶段只聊天，没有绑定项目，工具执行关闭。直接回答用户，不读取其他会话或凭据。'
   };
   entries.find(item => item.id === 'agent-loop').config = { agents: [] };

@@ -50,16 +50,14 @@ export interface Discussion {
   created_at: number; updated_at: number; turns: RunRecord[];
 }
 
-export interface CheckCommand { name: string; program: string; args: string[]; timeout_seconds: number; }
-export interface Project { id: string; name: string; root: string; checks: CheckCommand[]; summary_enabled: boolean; created_at: number; }
+export interface Project { id: string; name: string; root: string; summary_enabled: boolean; created_at: number; }
 export interface ExecutionChoice { model: string; reasoning_effort: string | null; rationale: string; }
 export type RoleChoice = { agent: string; model: string | null; effort: string | null };
 export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoice };
 export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
 export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
 export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
-export interface ProjectCheck extends Omit<CheckCommand, 'timeout_seconds'> { exit_code: number | null; timed_out: boolean; duration_ms: number; output: string; }
-export interface ProjectAttempt { id: string; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; output: string; checks: ProjectCheck[]; error: string | null; }
+export interface ProjectAttempt { id: string; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; output: string; error: string | null; }
 export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; }
 
 export interface ServiceInfo {

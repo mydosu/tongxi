@@ -230,16 +230,10 @@ body.maximized .resize-edge { display: none; }
 .attempt-list summary, .project-changes summary { cursor: pointer; line-height: 1.6; }
 .attempt-list summary > span { float: right; color: #818a98; }
 .attempt-list small { display: block; color: #818a98; padding: 5px 0; overflow-wrap: anywhere; }
-.attempt-output, .project-check pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.8; background: #fff; border-radius: 5px; padding: 10px; user-select: text; }
-.project-check { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; margin-top: 8px; border: 1px solid #d9dbe0; border-radius: 7px; }
-.project-check > span { margin-left: auto; font-size: 10px; }
-.project-check.failed { border-color: #e8cfc7; color: #a56c5c; }
-.project-check code, .project-check pre { width: 100%; margin: 0; overflow-wrap: anywhere; }
+.attempt-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.8; background: #fff; border-radius: 5px; padding: 10px; user-select: text; }
 .project-changes ul { padding-left: 18px; }
 .project-changes li { margin: 6px 0; overflow-wrap: anywhere; }
 .project-changes li > span { color: #818a98; font-size: 9px; margin-left: 10px; }
-.check-config { padding: 12px; border-radius: 8px; background: #eef0f2; }
-.check-config .field { margin-bottom: 12px; }
 .field select { padding: 10px; border: 1px solid #dbdee2; border-radius: 8px; background: #fff; color: #4d555f; }
 .services-intro { margin-bottom: 30px; }
 .services-intro h2 { font-size: 29px; line-height: 1.6; font-weight: 500; margin: 11px 0; }

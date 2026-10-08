@@ -483,7 +483,7 @@ function updateProjectControls() {
   const eligible = detail.conversation.kind === 'group' && detail.conversation.members.includes('hermes-win') && detail.conversation.members.includes('codex-win');
   if (bind) { bind.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
   const title = main.querySelector('#project-title');
-  if (title) title.textContent = detail.project ? `${detail.project.name} · ${detail.project.checks.length} 条验收` : eligible ? '项目协作 · 先绑定项目目录' : '项目协作需要 Hermes 与 Codex';
+  if (title) title.textContent = detail.project ? `${detail.project.name} · 自动协作` : eligible ? '项目协作 · 先绑定项目目录' : '项目协作需要 Hermes 与 Codex';
   const send = main.querySelector<HTMLButtonElement>('#send-project');
   if (send) { send.hidden = !detail.project; send.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || sending || settingsPending > 0 || detail.conversation.archived || detail.conversation.members.filter(id => id !== 'albion-wsl').some(id => runtimes[id]?.connection !== 'connected'); }
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
@@ -498,7 +498,7 @@ function updateProjectControls() {
     share.title = enabled ? '停止把该项目的开发摘要共享给阿尔比恩（只影响该项目）' : '把该项目的开发摘要共享给阿尔比恩（只影响该项目，从之后的消息开始生效）';
   }
   const note = main.querySelector('#runtime-note');
-  if (note && eligible && detail.project) note.textContent = '项目已绑定 · “开始讨论”交流方案，“执行项目”授权修改任务文件并运行已配置的检查。';
+  if (note && eligible && detail.project) note.textContent = '项目已绑定 · “开始讨论”交流方案，“执行项目”由 agent 分工实现并对照需求复核。';
   const messages = main.querySelector('#messages');
   if (!messages) return;
   for (const workflow of roomProjects().reverse()) {

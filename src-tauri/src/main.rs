@@ -12,7 +12,6 @@ mod group_store;
 mod hermes;
 mod models;
 mod process_scope;
-mod project_checks;
 mod project_models;
 mod project_native;
 mod project_store;
