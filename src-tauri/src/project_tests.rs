@@ -1086,6 +1086,149 @@ fn project_recovery_interrupts_instead_of_replaying_and_releases_lease() {
     assert!(f.store.acquire_project(&w.id).unwrap());
 }
 
+/// 退出重启后「继续协作」要复用原方案：已完成的成果保留，未完成的重新排队，租约重新占住。
+#[test]
+fn project_continue_after_recovery_requeues_unfinished_work_and_regains_the_lease() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let first = plan(&["src/first.rs"]).tasks.remove(0);
+    let mut second = plan(&["src/second.rs"]).tasks.remove(0);
+    second.title = "第二项".into();
+    second.depends_on = vec![0];
+    let proposed = Plan {
+        summary: "先完成第一项，再继续第二项".into(),
+        tasks: vec![first, second],
+    };
+    let planned = f.plan_with(&workflow, &proposed);
+    let running = f.store.begin_execution(&planned.id).unwrap();
+    f.store
+        .set_task_config(
+            &running.tasks[0].id,
+            None,
+            None,
+            Some("C:\\worktrees\\crashed-0".into()),
+            Some("hub/completed-task".into()),
+        )
+        .unwrap();
+    let completed = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[0].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    complete(&mut f.store, &completed);
+    let live = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[1].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+
+    f.store.recover_projects().unwrap();
+    let interrupted = f.store.workflow(&workflow.id).unwrap();
+    assert_eq!(interrupted.status, "interrupted");
+    assert_eq!(interrupted.tasks[0].status, "completed");
+    assert_eq!(interrupted.tasks[1].status, "interrupted");
+    assert_eq!(f.store.attempt(&live.id).unwrap().status, "interrupted");
+    assert_eq!(
+        f.store.detail(&f.room).unwrap().messages[0].status,
+        "failed",
+        "中断后这条需求不能留在待投递状态"
+    );
+
+    let resumed = f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    assert_eq!(resumed.status, "planning");
+    assert_eq!(resumed.plan, Some(proposed));
+    assert_eq!(resumed.tasks[0].status, "completed");
+    assert_eq!(
+        resumed.tasks[0].branch.as_deref(),
+        Some("hub/completed-task"),
+        "已完成任务继续沿用原分支"
+    );
+    assert_eq!(resumed.tasks[1].status, "queued");
+    assert_eq!(resumed.tasks[1].branch, None);
+    assert_eq!(resumed.tasks[1].worktree, None);
+    assert_eq!(
+        f.store
+            .attempts(&workflow.id)
+            .unwrap()
+            .iter()
+            .filter(|attempt| attempt.stage == "plan")
+            .count(),
+        1,
+        "继续协作复用原规划，不重新调用规划模型"
+    );
+    // 继续成功后重新占住项目租约：同一个项目在别的群聊里不能再开新协作。
+    let other_room = f
+        .store
+        .create(
+            "项目群二",
+            "group",
+            &["codex-win".into(), "hermes-win".into(), "dsh-win".into()],
+        )
+        .unwrap()
+        .id;
+    f.store.bind_project(&other_room, Some(&f.project)).unwrap();
+    let another = f
+        .store
+        .start_workflow(&other_room, &Uuid::new_v4().to_string(), "另一个需求")
+        .unwrap()
+        .0;
+    assert!(!f.store.acquire_project(&another.id).unwrap());
+}
+
+/// 退出恰好发生在「纯答复方案已保存」与「协作收尾」之间时，继续协作要落到与首次规划相同的终态。
+#[test]
+fn project_continue_after_recovery_finishes_a_reply_only_plan_instead_of_parking_it() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let reply = Plan {
+        summary: "这个问题的答案是：讨论和实施现在共用同一个项目群。".into(),
+        tasks: vec![],
+    };
+    let mut planning = f
+        .store
+        .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    planning.output = serde_json::to_string(&reply).unwrap();
+    complete(&mut f.store, &planning);
+    f.store.save_plan(&workflow.id, &reply).unwrap();
+    // 这一段只回放重启后的恢复：方案已保存、任务表为空、消息仍待投递、租约还没释放。
+    f.store.recover_projects().unwrap();
+    assert_eq!(
+        f.store.workflow(&workflow.id).unwrap().status,
+        "interrupted"
+    );
+
+    let resumed = f.store.resume_workflow(&workflow.id, &reply).unwrap();
+    assert_eq!(
+        resumed.status, "completed",
+        "纯答复方案没有可确认的任务，继续协作必须直接收尾"
+    );
+    assert_eq!(resumed.summary, reply.summary);
+    assert!(resumed.tasks.is_empty());
+    assert_eq!(
+        f.store.detail(&f.room).unwrap().messages[0].status,
+        "delivered",
+        "收尾后这条需求要记为已投递"
+    );
+    // 收尾后不再占租约，同一个项目可以正常开下一轮协作。
+    let next = f.queued();
+    assert!(f.store.acquire_project(&next.id).unwrap());
+}
+
 #[test]
 fn project_attempt_thought_is_persisted_as_streaming_progress() {
     let mut f = Fixture::new();
