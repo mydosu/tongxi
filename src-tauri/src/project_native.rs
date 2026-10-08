@@ -5,9 +5,8 @@ use crate::rpc::Client;
 use crate::store::Store;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -170,106 +169,10 @@ fn persist(store: &Arc<Mutex<Store>>, notify: &Notify, wire: &mut Wire, force: b
     notify(&wire.attempt.workflow_id);
 }
 
-fn hidden(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-}
-
-/// Raw configuration stays in memory and is never emitted or written to reports.
 fn codex_command(executable: &Path) -> Result<Command> {
-    let mut listing = Command::new(executable);
-    // 插件会在运行时注入自己的 MCP 服务器（本机自带项在 codex 0.160 下不合法，逐个覆盖会
-    // 让 app-server 启动即退出）。项目运行本来就不该带插件，这里直接关掉插件系统。
-    listing
-        .args(["mcp", "list", "--json", "-c", "features.plugins=false"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    hidden(&mut listing);
-    let mut child = listing.spawn().map_err(|_| "Codex MCP 配置枚举失败")?;
-    let scope = match crate::process_scope::ProcessScope::attach(&child) {
-        Ok(scope) => scope,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    let output = Arc::new(Mutex::new(Vec::new()));
-    let captured = output.clone();
-    let mut stdout = child.stdout.take().ok_or("Codex 配置管道不可用")?;
-    let reader = std::thread::spawn(move || {
-        let mut chunk = [0; 4096];
-        while let Ok(count) = stdout.read(&mut chunk) {
-            if count == 0 {
-                break;
-            }
-            let mut data = captured.lock().unwrap();
-            let remaining = 262_145usize.saturating_sub(data.len());
-            data.extend_from_slice(&chunk[..count.min(remaining)]);
-        }
-    });
-    let started = Instant::now();
-    let success = loop {
-        if started.elapsed() > Duration::from_secs(20) {
-            scope.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            break false;
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
-            Err(_) => {
-                scope.terminate();
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    drop(scope);
-    let _ = reader.join();
-    let output = output.lock().unwrap();
-    if !success || output.len() > 262_144 {
-        return Err("Codex 配置枚举失败或超出限制".into());
-    }
-    let servers: Value = serde_json::from_slice(&output).map_err(|_| "Codex 配置枚举格式不支持")?;
-    let servers = servers.as_array().ok_or("Codex MCP 配置枚举格式不支持")?;
+    // 不关闭 Codex CLI 的原生工具、MCP 或插件；项目 turn 会显式启用完整工具权限。
     let mut command = Command::new(executable);
-    command.args([
-        "app-server",
-        "--listen",
-        "stdio://",
-        "--disable",
-        "shell_tool",
-        "--disable",
-        "unified_exec",
-        "--disable",
-        "plugins",
-    ]);
-    for server in servers {
-        // 已经关掉的服务器不用再覆盖：codex 会因此去校验该条目本身，
-        // 而本机自带插件项在当前 codex 版本下可能并不合法（本机已遇到，会让 app-server 启动即退出）。
-        if server["enabled"].as_bool() == Some(false) {
-            continue;
-        }
-        let name = server["name"]
-            .as_str()
-            .filter(|name| {
-                !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            })
-            .ok_or("Codex MCP 名称不支持安全的本次运行覆盖")?;
-        command
-            .arg("-c")
-            .arg(format!("mcp_servers.{name}.enabled=false"));
-    }
+    command.args(["app-server", "--listen", "stdio://"]);
     Ok(command)
 }
 
@@ -511,7 +414,7 @@ impl Runner {
         if !matches!(stage.as_str(), "plan" | "implement" | "repair" | "review") {
             return Err("当前项目步骤不支持此原生成员".into());
         }
-        // 真正改文件的只有实现与修复；规划与验收只读。
+        // Agent Hub 的附加文件工具按阶段区分；CLI 自带工具不受此集合限制。
         let writable = matches!(stage.as_str(), "implement" | "repair");
         client.rpc("initialize",json!({"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
         client.write(&json!({"method":"initialized","params":{}}))?;
@@ -551,41 +454,33 @@ impl Runner {
                 json!({"contentItems":[{"type":"inputText","text":text}],"success":success}),
             ))
         }));
-        let tools = if stage == "review" {
-            vec![]
-        } else {
-            tool_specs()
-                .into_iter()
-                .filter(|tool| {
-                    writable || matches!(tool["name"].as_str(), Some("hub_list" | "hub_read"))
-                })
-                .map(|mut tool| {
-                    tool["type"] = json!("function");
-                    tool["deferLoading"] = json!(false);
-                    tool
-                })
-                .collect::<Vec<_>>()
-        };
+        let tools = tool_specs()
+            .into_iter()
+            .filter(|tool| {
+                let name = tool["name"].as_str().unwrap_or("");
+                writable || matches!(name, "hub_list" | "hub_read" | "hub_message" | "hub_inbox")
+            })
+            .map(|mut tool| {
+                tool["type"] = json!("function");
+                tool["deferLoading"] = json!(false);
+                tool
+            })
+            .collect::<Vec<_>>();
         let instructions = match stage.as_str() {
             "plan" => {
-                "你是同席项目的方案制定者 Codex。当前步骤只读，先分析需求和必要源码，再输出指定结构化项目方案。只允许 hub_list/hub_read 查看绑定项目的非受保护文件；不能写文件、运行命令、调用内置工具、外部 MCP、网络、凭据或外部消息。代码实现与修复由执行角色承担，你只输出只读方案。用户随后确认任务参数，框架再串行执行。"
+                "你是本项目群的规划成员 Codex。先理解本轮明确目标，再分析需求和必要源码，之后输出结构化方案。可使用本机 Codex CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read 查看项目文件，使用 hub_message(to_agent,content) 联系项目成员、hub_inbox() 读取消息。框架会自动执行合格方案，不等待用户再次确认。"
             }
             "implement" => {
-                "你是本项目的实际实现者。按当前任务目标修改授权文件，只使用框架文件工具（hub_list/hub_read/hub_write/hub_edit/hub_delete）。先 hub_list 确认范围，已有文件先 hub_read 获取 SHA256。可以更新任务授权范围内的测试与文档。不要运行命令、不要调用其他服务。完成后简短说明实现内容；最终由验收角色对照需求与源码复核。"
+                "你是本项目的实现者。按当前任务目标完成实现，使用本机 Codex CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 操作项目文件，用 hub_message/hub_inbox 与其他项目成员直接沟通。完成后简短说明实现内容；最终由验收角色对照需求与源码复核。"
             }
             "review" => {
-                "你是本项目的验收者。当前步骤只读：先用 hub_list/hub_read 阅读需求涉及的源码与实现改动，独立判断项目是否达到目标。不能写文件、运行命令、调用内置工具、外部 MCP、网络、凭据或外部消息。按提示词要求的结构化 JSON 给出结论。"
+                "你是本项目的验收者。依据本轮目标、方案和源码独立判断项目是否达到目的。可使用本机 Codex CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与执行者直接沟通。按提示词要求的结构化 JSON 给出结论。"
             }
             _ => {
-                "你是本项目的实际修复者。验收角色对照用户需求和源码后指出了具体缺陷；据此读取必要源码并修复授权文件，只使用框架文件工具。可以更新授权范围内的相关测试与文档；不要运行命令、不读取凭据或其他会话。修复后由验收角色再次复核。"
+                "你是本项目的修复者。验收角色对照用户需求和源码后指出了具体缺陷；据此完成修复。可使用本机 Codex CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与验收者沟通。修复后由验收角色再次复核。"
             }
         };
-        let sandbox = if writable {
-            "workspace-write"
-        } else {
-            "read-only"
-        };
-        let thread=client.rpc("thread/start",json!({"cwd":root,"approvalPolicy":"never","sandbox":sandbox,"ephemeral":true,"model":attempt.model,"config":{"web_search":"disabled","model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":instructions,"dynamicTools":tools}))?;
+        let thread=client.rpc("thread/start",json!({"cwd":root,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":true,"model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":instructions,"dynamicTools":tools}))?;
         let thread_id = thread["thread"]["id"]
             .as_str()
             .ok_or("Codex 项目会话 ID 缺失")?
@@ -598,12 +493,7 @@ impl Runner {
         if self.cancelled(&attempt.workflow_id) {
             return Err("项目协作已停止".into());
         }
-        let sandbox_policy = if writable {
-            json!({"type":"workspaceWrite","networkAccess":false})
-        } else {
-            json!({"type":"readOnly","networkAccess":false})
-        };
-        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":sandbox_policy}))?;
+        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 项目运行 ID 缺失")?
@@ -659,9 +549,7 @@ impl Runner {
         client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")}}))?;
         let attempt = wire.lock().unwrap().attempt.clone();
         let dsh = attempt.agent_id == "dsh-win";
-        // Review receives the authorized source bundle directly and never needs a file MCP.
-        let project_tools = attempt.stage != "review"
-            && matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
+        let project_tools = matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
         let db = self.store.lock().unwrap().path.clone();
         let servers = if project_tools {
             json!([{"name":"agent_hub","command":std::env::current_exe().map_err(|_|"项目工具程序不可用")?,"args":["--project-tools",db.to_string_lossy(),attempt.id],"env":[]}])

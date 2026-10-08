@@ -67,9 +67,9 @@ def validate_native_evidence():
     expected={('command-code-daily','off'),('command-code-daily-2','low'),('command-code-daily','low')}
     if not expected.issubset({(c['provider'],c['reasoningEffort']) for c in contexts}) or any(c['model']!='deepseek/deepseek-v4.1-flash' for c in contexts):
         raise AssertionError('Native DSH request headers differ from settings')
-    if not contexts or any(count for e in evidence for count in e['tool_counts']): raise AssertionError('Unexpected native tools')
+    if not contexts or any(not isinstance(count, int) or count < 0 for e in evidence for count in e['tool_counts']): raise AssertionError('Native tool inventory could not be read')
     report['native_dsh_evidence']=evidence
-    name='native DSH request headers confirm both routes, off/low and no tools'
+    name='native DSH request headers confirm both routes, off/low and tool inventory'
     if name not in report['checks']: report['checks'].append(name); report['passed']+=1
     report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     print('PASS '+name,flush=True)

@@ -400,7 +400,7 @@ impl Runtime {
             // An ephemeral, unprompted thread reports the effective local defaults.
             let defaults = client.rpc(
                 "thread/start",
-                json!({"ephemeral":true,"approvalPolicy":"never","sandbox":"read-only"}),
+                json!({"ephemeral":true,"approvalPolicy":"never","sandbox":"danger-full-access"}),
             )?;
             let version = native_version(&executable);
             let mut inner = self.inner.lock().unwrap();
@@ -588,8 +588,8 @@ impl Runtime {
                 local
             }
         };
-        let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"read-only",
-            "developerInstructions":"你正在同席桌面软件的独立 Codex 会话中，可能是私聊或群内发言。本阶段仅交流和方案分析，没有绑定用户项目。按用户角色约定，Codex 只做方案与根因分析/复核，不输出完整实现或补丁，不自行写码；需要实际编码交 DSH 执行。不要读取凭据或其他会话，不发送外部消息。仅使用收到的公开讨论记录，不运行工具。"});
+        // 同席作为 CLI 外壳，不阻止 Codex 使用本机文件、命令、MCP、插件或网络工具。
+        let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access"});
         let (model, effort) = {
             let inner = self.inner.lock().unwrap();
             let settings = &inner
@@ -653,7 +653,7 @@ impl Runtime {
                 return Ok(());
             }
         }
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":[{"type":"text","text":content}],"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}}))?;
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":[{"type":"text","text":content}],"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?

@@ -35,8 +35,8 @@ def rpc(identifier, method, params):
 try:
     initialized = rpc(1, 'initialize', {'protocolVersion':1,'clientCapabilities':{'fs':{'readTextFile':False,'writeTextFile':False},'terminal':False},'clientInfo':{'name':'agent-hub-probe','version':'0.3.0'}})
     created = rpc(2, 'session/new', {'cwd':str(data),'mcpServers':[]})
-    rpc(3, 'session/set_config_option', {'sessionId':created['sessionId'],'configId':'reasoning_effort','value':'low'})
-    print(json.dumps({'handshake':'ok','version':initialized.get('agentInfo',{}).get('version'),'model_count':len(created.get('models',{}).get('availableModels',[])),'session_created':bool(created.get('sessionId')),'reasoning_setting_acknowledged':True}, ensure_ascii=False))
+    applied = rpc(3, 'session/set_config_option', {'sessionId':created['sessionId'],'configId':'reasoning_effort','value':'low'})
+    print(json.dumps({'handshake':'ok','version':initialized.get('agentInfo',{}).get('version'),'model_count':len(created.get('models',{}).get('availableModels',[])),'session_created':bool(created.get('sessionId')),'reasoning_setting_acknowledged':True,'native_tool_count':applied.get('_meta',{}).get('agentHub',{}).get('toolCount')}, ensure_ascii=False))
 finally:
     process.terminate()
     process.wait(timeout=10)

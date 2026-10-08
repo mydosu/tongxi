@@ -23,9 +23,9 @@ if not (_albion_profile/'config.yaml').is_file() or not (_albion_profile/'SOUL.m
     raise RuntimeError('Albion profile and SOUL are required')
 _albion_data.mkdir(parents=True,exist_ok=True)
 _albion_soul=(_albion_profile/'SOUL.md').read_text(encoding='utf-8').strip()
-_albion_relationship='同席会话：沿用 SOUL.md 里定义的人格与语气，不修改源人格文件。当前是独立会话，可能为私聊或受邀群内发言；只使用该会话收到的信息，不引用其他私人聊天，工具执行关闭。'
+_albion_relationship='同席会话：沿用 SOUL.md 里定义的人格与语气，不修改源人格文件。当前是独立会话，可能为私聊或受邀群内发言；只使用该会话收到的信息，不引用其他私人聊天；像在 Pi CLI 中一样按需使用已配置的工具。'
 _albion_identity_hash=hashlib.md5((_albion_profile/'SOUL.md').read_bytes()).hexdigest()
-_albion_info={'pid':os.getpid(),'profile':str(_albion_profile),'soul_md5':_albion_identity_hash,'identity_matched':False,'tool_count':0,'digest_injected':False}
+_albion_info={'pid':os.getpid(),'profile':str(_albion_profile),'soul_md5':_albion_identity_hash,'identity_matched':False,'digest_injected':False}
 
 def _albion_save_info():
     temporary=_albion_data/'runtime-info.json.tmp'

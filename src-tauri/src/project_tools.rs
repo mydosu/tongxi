@@ -22,6 +22,9 @@ struct Scope {
     root: PathBuf,
     files: Vec<String>,
     writable: bool,
+    workflow_id: String,
+    conversation_id: String,
+    agent_id: String,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +52,12 @@ struct EditArg {
 struct DeleteArg {
     path: String,
     expected_sha256: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentMessageArg {
+    to_agent: String,
+    content: String,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -158,7 +167,7 @@ impl Broker {
     }
 
     fn scope(connection: &Connection, attempt: &str) -> Result<Scope> {
-        let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
+        let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id,w.id,w.conversation_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
         let project_root = Path::new(&row.0)
             .canonicalize()
             .map_err(|_| "项目目录不可用")?;
@@ -192,6 +201,9 @@ impl Broker {
             root,
             files,
             writable,
+            workflow_id: row.8,
+            conversation_id: row.9,
+            agent_id: row.7,
         })
     }
 
@@ -199,7 +211,12 @@ impl Broker {
         let scope = Self::scope(&self.connection, &self.attempt_id)?;
         let mut tools = tool_specs();
         if !scope.writable {
-            tools.retain(|tool| matches!(tool["name"].as_str(), Some("hub_list" | "hub_read")));
+            tools.retain(|tool| {
+                matches!(
+                    tool["name"].as_str(),
+                    Some("hub_list" | "hub_read" | "hub_message" | "hub_inbox")
+                )
+            });
         }
         Ok(tools)
     }
@@ -229,6 +246,67 @@ impl Broker {
             .map_err(|_| "项目工具当前忙，请重试")?;
         let scope = Self::scope(&tx, &self.attempt_id)?;
         let result = match tool {
+            "hub_message" => {
+                let arg: AgentMessageArg =
+                    serde_json::from_value(args).map_err(|_| "成员消息参数无效")?;
+                let recipient = arg.to_agent.trim();
+                let content = arg.content.trim();
+                if !EXECUTOR_AGENTS.contains(&recipient)
+                    || recipient == scope.agent_id
+                    || content.is_empty()
+                    || content.chars().count() > 4000
+                    || content
+                        .chars()
+                        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+                {
+                    return Err("收件成员或消息内容无效".into());
+                }
+                let belongs: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM members WHERE conversation_id=?1 AND agent_id=?2)",
+                        params![scope.conversation_id,recipient],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| "收件成员校验失败")?;
+                if !belongs {
+                    return Err("收件 Agent 不属于当前项目群".into());
+                }
+                let message_count: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM project_agent_messages WHERE workflow_id=?1",
+                        [&scope.workflow_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| "项目成员消息计数失败")?;
+                if message_count >= 200 {
+                    return Err("本轮项目成员直发消息已达到 200 条上限".into());
+                }
+                let id = Uuid::new_v4().to_string();
+                let created_at = crate::store::now();
+                tx.execute(
+                    "INSERT INTO project_agent_messages(id,workflow_id,attempt_id,sender_agent,recipient_agent,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![id,scope.workflow_id,self.attempt_id,scope.agent_id,recipient,content,created_at],
+                )
+                .map_err(|_| "项目成员消息保存失败")?;
+                json!({"sent":true,"message_id":id,"to_agent":recipient})
+            }
+            "hub_inbox" => {
+                if args != json!({}) {
+                    return Err("hub_inbox 不接收参数".into());
+                }
+                let mut statement = tx
+                    .prepare("SELECT id,sender_agent,content,created_at FROM project_agent_messages WHERE workflow_id=?1 AND recipient_agent=?2 ORDER BY created_at,id LIMIT 100")
+                    .map_err(|_| "项目消息收件箱读取失败")?;
+                let messages = statement
+                    .query_map(params![scope.workflow_id,scope.agent_id], |row| {
+                        Ok(json!({"id":row.get::<_,String>(0)?,"from_agent":row.get::<_,String>(1)?,"content":row.get::<_,String>(2)?,"created_at":row.get::<_,i64>(3)?}))
+                    })
+                    .map_err(|_| "项目消息收件箱读取失败")?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|_| "项目消息收件箱读取失败")?;
+                drop(statement);
+                json!({"messages":messages})
+            }
             "hub_list" => {
                 if args != json!({}) {
                     return Err("hub_list 不接收参数".into());
@@ -359,6 +437,8 @@ pub fn tool_specs() -> Vec<Value> {
     let definitions=[
         ("hub_list","List files explicitly authorized for the current task.",json!({}),vec![]),
         ("hub_read","Read one authorized UTF-8 file and its SHA256.",json!({"path":string}),vec!["path"]),
+        ("hub_message","Send a direct message to another project agent in this group. The recipient can read it from their project inbox.",json!({"to_agent":string,"content":string}),vec!["to_agent","content"]),
+        ("hub_inbox","Read direct messages sent to you by other agents in this project workflow.",json!({}),vec![]),
         ("hub_write","Create or replace one authorized UTF-8 file. Existing files require the current SHA256.",json!({"path":string,"content":string,"expected_sha256":nullable_hash}),vec!["path","content","expected_sha256"]),
         ("hub_edit","Replace exactly one occurrence in an authorized file, guarded by its SHA256.",json!({"path":string,"old_text":string,"new_text":string,"expected_sha256":string}),vec!["path","old_text","new_text","expected_sha256"]),
         ("hub_delete","Delete one authorized file, guarded by its SHA256. The previous file is backed up.",json!({"path":string,"expected_sha256":string}),vec!["path","expected_sha256"]),
@@ -426,4 +506,85 @@ pub fn serve(db: &Path, attempt: &str) -> Result<()> {
             .map_err(|_| "项目工具输出中断")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod agent_message_tests {
+    use super::*;
+    use crate::project_store::Roles;
+
+    #[test]
+    fn project_agents_can_direct_message_each_other_through_the_scoped_inbox() {
+        let base = std::env::temp_dir().join(format!("hub-agent-messages-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = crate::store::Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store
+            .create(
+                "项目群",
+                "group",
+                &["codex-win".into(), "dsh-win".into(), "hermes-win".into()],
+            )
+            .unwrap();
+        let project = store
+            .register_project("测试项目", root.to_str().unwrap())
+            .unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let (workflow, _) = store
+            .start_workflow(&room.id, &Uuid::new_v4().to_string(), "实现一个功能")
+            .unwrap();
+        assert!(store.acquire_project(&workflow.id).unwrap());
+        let attempt = store
+            .begin_attempt(
+                &workflow.id,
+                None,
+                &Roles::defaults().plan.agent,
+                "plan",
+                None,
+                None,
+            )
+            .unwrap();
+
+        let mut sender = Broker::open(&store.path, &attempt.id).unwrap();
+        let tools = sender.allowed_tool_specs().unwrap();
+        assert!(tools.iter().any(|tool| tool["name"] == "hub_message"));
+        assert!(tools.iter().any(|tool| tool["name"] == "hub_inbox"));
+        let sent = sender
+            .call(
+                "hub_message",
+                json!({"to_agent":"dsh-win","content":"请优先检查这个函数的边界情况。"}),
+            )
+            .unwrap();
+        assert_eq!(sent["sent"], true);
+        assert!(sender
+            .call(
+                "hub_message",
+                json!({"to_agent":"albion-wsl","content":"项目消息"}),
+            )
+            .is_err());
+        drop(sender);
+
+        store
+            .connection
+            .execute(
+                "UPDATE project_attempts SET agent_id='dsh-win' WHERE id=?1",
+                [&attempt.id],
+            )
+            .unwrap();
+        let mut recipient = Broker::open(&store.path, &attempt.id).unwrap();
+        let inbox = recipient.call("hub_inbox", json!({})).unwrap();
+        assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(inbox["messages"][0]["from_agent"], "codex-win");
+        assert!(inbox["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("边界情况"));
+        drop(recipient);
+        let messages = store.workflow(&workflow.id).unwrap().agent_messages;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].sender_agent, "codex-win");
+        assert_eq!(messages[0].recipient_agent, "dsh-win");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
