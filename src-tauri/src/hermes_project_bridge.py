@@ -45,10 +45,11 @@ class ProjectSessions(SessionManager):
 
 
 class ProjectACP(HermesACPAgent):
-    async def _register_session_mcp_servers(self, state, mcp_servers, log, *args):
-        if {server.name for server in mcp_servers or []} != {"agent_hub"}:
+    async def _register_session_mcp_servers(self, state, mcp_servers):
+        server_names = {server.name for server in mcp_servers or []}
+        if server_names not in (set(), {"agent_hub"}):
             raise RequestError(-32602, "Project sessions allow only the scoped Agent Hub tools")
-        await super()._register_session_mcp_servers(state, mcp_servers, log, *args)
+        await super()._register_session_mcp_servers(state, mcp_servers)
 
     async def set_config_option(self, config_id, session_id, value, **kwargs):
         if config_id != "reasoning_effort":

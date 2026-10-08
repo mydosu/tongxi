@@ -1204,6 +1204,27 @@ fn project_repair_is_bounded_to_one_attempt() {
     review.status = "completed".into();
     review.output = r#"{"approved":false,"summary":"需要修复","issues":["问题"]}"#.into();
     f.store.checkpoint_attempt(&review).unwrap();
+    let failed = f
+        .store
+        .begin_attempt(&a.workflow_id, None, "dsh-win", "repair", None, None)
+        .unwrap();
+    let mut failed = failed;
+    failed.status = "failed".into();
+    failed.error = Some("上游额度限制".into());
+    f.store.checkpoint_attempt(&failed).unwrap();
+    f.store
+        .finish_workflow(&a.workflow_id, "failed", "", Some("上游额度限制"))
+        .unwrap();
+    let plan = f.store.workflow(&a.workflow_id).unwrap().plan.unwrap();
+    f.store.resume_workflow(&a.workflow_id, &plan).unwrap();
+    f.store.begin_execution(&a.workflow_id).unwrap();
+    let mut retry_review = f
+        .store
+        .begin_attempt(&a.workflow_id, None, "hermes-win", "review", None, None)
+        .unwrap();
+    retry_review.status = "completed".into();
+    retry_review.output = r#"{"approved":false,"summary":"仍需修复","issues":["问题"]}"#.into();
+    f.store.checkpoint_attempt(&retry_review).unwrap();
     let repair = f
         .store
         .begin_attempt(&a.workflow_id, None, "dsh-win", "repair", None, None)

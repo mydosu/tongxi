@@ -636,8 +636,8 @@ impl Runtime {
         let text = update["content"]["text"].as_str().unwrap_or("");
         // ACP 把「思考」和「正文」分成两种 chunk：思考进可折叠的思考块，正文进气泡。
         match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_thought_chunk" => run.thought.push_str(text),
-            "agent_message_chunk" => run.text.push_str(text),
+            "agent_thought_chunk" => append_stream_chunk(&mut run.thought, text),
+            "agent_message_chunk" => append_stream_chunk(&mut run.text, text),
             _ => return,
         }
         if checkpoint {
@@ -756,6 +756,10 @@ impl Runtime {
     }
 }
 
+fn append_stream_chunk(target: &mut String, chunk: &str) {
+    target.push_str(chunk);
+}
+
 fn completion_from_stop_reason(reason: Option<&str>) -> (&'static str, Option<&'static str>) {
     match reason {
         Some("cancelled") => ("interrupted", None),
@@ -827,11 +831,28 @@ mod tests {
     }
 
     #[test]
-    fn project_bridge_does_not_publish_the_old_output_token_cap() {
+    fn project_bridge_declares_token_field_without_setting_explicit_budget() {
         let bridge = include_str!("dsh_bridge.mjs");
         assert!(bridge.contains("contextWindow: 262144"));
         assert!(bridge.contains("maxTokensField: 'max_tokens'"));
         assert!(!bridge.contains("maxTokens: 16384"));
+        assert!(!bridge.contains("max_tokens: 16384"));
+        // This only checks our bridge configuration; the DSH adapter and provider
+        // can still apply runtime defaults that are not visible in this source.
+    }
+
+    #[test]
+    fn streamed_text_is_accumulated_past_the_legacy_numeric_threshold() {
+        let chunk = "text ".repeat(4096);
+        let mut streamed = String::new();
+        for _ in 0..5 {
+            append_stream_chunk(&mut streamed, &chunk);
+        }
+
+        // More than 16,384 characters cross the old configured value by size;
+        // this verifies local chunk accumulation, not a runtime token allowance.
+        assert!(streamed.chars().count() > 16_384);
+        assert_eq!(streamed, chunk.repeat(5));
     }
 
     #[test]

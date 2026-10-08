@@ -34,6 +34,8 @@ try {
   routes.forEach((route, index) => {
     const key = `AGENT_HUB_DSH_COMMAND_CODE_${index+1}`;
     process.env[key] = route.apiKey;
+    // This declares the compatible request field name only; no output budget is set here.
+    // DSH adapter and upstream route defaults are runtime behavior outside this bridge config.
     providers[route.id] = { displayName: route.name, api: 'openai-completions',
       baseURL: route.baseURL, apiKeyEnv: key, headers: route.headers, reasoning: 'low',
       compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false, maxTokensField: 'max_tokens' },
