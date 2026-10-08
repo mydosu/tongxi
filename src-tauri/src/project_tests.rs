@@ -163,6 +163,36 @@ fn project_plan_rejects_untrusted_roles_protected_files_and_forward_dependencies
 }
 
 #[test]
+fn project_group_can_answer_in_the_same_workspace_without_fabricating_an_implementation_task() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let reply = Plan {
+        summary: "这个问题的答案是：讨论和实施现在共用同一个项目群。".into(),
+        tasks: vec![],
+    };
+    assert_eq!(
+        parse_plan(&serde_json::to_string(&reply).unwrap()).unwrap(),
+        reply
+    );
+    let mut planning = f
+        .store
+        .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    planning.output = serde_json::to_string(&reply).unwrap();
+    complete(&mut f.store, &planning);
+    let saved = f.store.save_plan(&workflow.id, &reply).unwrap();
+    assert!(saved.tasks.is_empty());
+    let finished = f
+        .store
+        .finish_workflow(&workflow.id, "completed", &reply.summary, None)
+        .unwrap();
+    assert_eq!(finished.status, "completed");
+    assert_eq!(finished.summary, reply.summary);
+    assert!(finished.tasks.is_empty());
+}
+
+#[test]
 fn project_plan_normalizes_obvious_one_based_dependencies_and_keeps_zero_based_ones() {
     let first = plan(&["src/first.rs"]).tasks.remove(0);
     let mut second = plan(&["src/second.rs"]).tasks.remove(0);

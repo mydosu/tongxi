@@ -519,11 +519,9 @@ pub fn parse_plan(raw: &str) -> Result<Plan> {
 }
 
 fn validate_plan(plan: &Plan) -> Result<()> {
-    if plan.summary.trim().is_empty()
-        || plan.summary.chars().count() > 2000
-        || !(1..=5).contains(&plan.tasks.len())
+    if plan.summary.trim().is_empty() || plan.summary.chars().count() > 2000 || plan.tasks.len() > 5
     {
-        return Err("分发结果需包含摘要和 1—5 个任务".into());
+        return Err("协作结果需包含摘要，项目任务最多 5 项".into());
     }
     for (index, task) in plan.tasks.iter().enumerate() {
         if !EXECUTOR_AGENTS.contains(&task.agent_id.as_str())
@@ -1269,21 +1267,34 @@ impl Store {
             return Err("项目成员尚未停止，不能释放写入租约".into());
         }
         if status == "completed" {
-            if workflow.status != "reviewing"
-                || workflow.tasks.is_empty()
-                || workflow.tasks.iter().any(|t| t.status != "completed")
-            {
+            let reply_only = workflow.tasks.is_empty()
+                && workflow
+                    .plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.tasks.is_empty())
+                && workflow
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find(|attempt| attempt.stage == "plan")
+                    .is_some_and(|attempt| {
+                        attempt.status == "completed"
+                            && parse_plan(&attempt.output).is_ok_and(|plan| plan.tasks.is_empty())
+                    });
+            let implementation_complete = workflow.status == "reviewing"
+                && !workflow.tasks.is_empty()
+                && workflow.tasks.iter().all(|t| t.status == "completed")
+                && workflow
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find(|attempt| attempt.stage == "review")
+                    .is_some_and(|attempt| {
+                        attempt.status == "completed"
+                            && parse_review(&attempt.output).is_ok_and(|review| review.approved)
+                    });
+            if !(reply_only || implementation_complete) {
                 return Err("实现与验收尚未完成".into());
-            }
-            let review = self
-                .attempts(id)?
-                .into_iter()
-                .rev()
-                .find(|a| a.stage == "review");
-            if !review.is_some_and(|a| {
-                a.status == "completed" && parse_review(&a.output).is_ok_and(|r| r.approved)
-            }) {
-                return Err("管家的结构化验收尚未通过".into());
             }
         }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;

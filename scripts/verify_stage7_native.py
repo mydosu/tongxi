@@ -50,7 +50,9 @@ def run():
             catalogs={key:prior.wait_connection(page,key) for key in ['hermes','codex','dsh']}
             check('physical mouse connects all technical group members',all(c['connection']=='connected' for c in catalogs.values()))
             choose_option(control,'#live-agent','hermes-win');choose_option(control,'#live-effort','none')
-            choose_option(control,'#live-agent','codex-win');choose_option(control,'#live-effort','low')
+            codex_luna=next((model['id'] for model in catalogs['codex']['models'] if model['id']=='gpt-6-luna'),None)
+            if codex_luna is None:raise AssertionError('GPT-6 Luna is required for this test; Sol is never selected')
+            choose_option(control,'#live-agent','codex-win');choose_option(control,'#live-model',codex_luna);choose_option(control,'#live-effort','low')
             choose_option(control,'#live-agent','dsh-win');choose_option(control,'#live-effort','off')
             control.click('#message-input');control.type(PHYSICAL_REQUEST)
             expect(page.locator('#send-project')).to_be_enabled(timeout=10000);control.click('#send-project')
