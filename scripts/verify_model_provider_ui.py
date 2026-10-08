@@ -32,10 +32,10 @@ MOCK = r"""
     'albion-wsl':[{id:'qwen3',name:'qwen3',efforts:[],default_effort:null}]
   };
   const agents=[
-    {id:'hermes-win',name:'Hermes',subtitle:'管家',role:'协调与检查',location:'Windows',accent:'hermes',status:'not_connected'},
-    {id:'codex-win',name:'Codex',subtitle:'方案',role:'规划与诊断',location:'Windows',accent:'codex',status:'not_connected'},
-    {id:'dsh-win',name:'DSH',subtitle:'实现',role:'编码与修复',location:'Windows',accent:'dsh',status:'not_connected'},
-    {id:'albion-wsl',name:'阿尔比恩',subtitle:'陪伴',role:'交流支持',location:'WSL',accent:'albion',status:'not_connected'}
+    {id:'hermes-win',name:'Hermes',subtitle:'管家',role:'协调与检查',location:'Windows',accent:'amber',status:'not_connected'},
+    {id:'codex-win',name:'Codex',subtitle:'方案',role:'规划与诊断',location:'Windows',accent:'green',status:'not_connected'},
+    {id:'dsh-win',name:'DSH',subtitle:'实现',role:'编码与修复',location:'Windows',accent:'blue',status:'not_connected'},
+    {id:'albion-wsl',name:'阿尔比恩',subtitle:'陪伴',role:'交流支持',location:'WSL',accent:'rose',status:'not_connected'}
   ];
   const group={id:'provider-test',title:'模型选择回归',kind:'group',archived:false,created_at:now,updated_at:now,members:['hermes-win','codex-win','dsh-win'],message_count:0,preview:''};
   const project={id:'project-test',name:'隔离项目',root:'D:\\Demo',checks:[],summary_enabled:false,created_at:now};
@@ -127,6 +127,19 @@ def main() -> None:
             assert page.locator('#message-input').count() == 0, "agent module must replace the group composer with its own project conversation"
             expect(page.locator('[data-conversation="provider-test"]')).to_have_class(__import__('re').compile(r'\bactive\b'))
             print("PASS selecting an agent sidebar module opens its own project conversation outside the group timeline")
+            expect(page.locator('.project-agent-chat-empty')).to_be_visible()
+            artifacts = ROOT / 'artifacts'
+            artifacts.mkdir(exist_ok=True)
+            page.screenshot(path=str(artifacts / 'project-agent-empty-wide.png'))
+            page.set_viewport_size({"width": 980, "height": 760})
+            assert page.evaluate("""() => {
+              const host=document.querySelector('.project-agent-chat').getBoundingClientRect();
+              const controls=[...document.querySelectorAll('.project-agent-chat-settings select, .project-agent-chat-composer')];
+              return document.documentElement.scrollWidth<=innerWidth && controls.every(control=>{const rect=control.getBoundingClientRect();return rect.left>=host.left && rect.right<=host.right;});
+            }"""), "agent page controls must fit at the desktop minimum width"
+            page.screenshot(path=str(artifacts / 'project-agent-empty-narrow.png'))
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            print("PASS agent page empty state and provider/model/composer layout fit wide and narrow windows")
             page.locator('[data-project-module="team"]').click()
             expect(page.locator('#project-controls')).to_be_visible()
             assert page.locator('.project-tabs').count() == 0, "project navigation must not be embedded in the conversation"
