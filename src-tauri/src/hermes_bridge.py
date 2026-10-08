@@ -1,7 +1,7 @@
 """In-process extension of installed Hermes ACP; no changes to the installation.
 
 Stdio contains protocol only. Native auth remains owned by Hermes. Histories
-use the hub's own SessionDB; this milestone exposes a tool-free private chat.
+use the hub's own SessionDB; native Hermes tools and MCP remain enabled by their normal configuration.
 """
 import asyncio
 import copy
@@ -78,15 +78,7 @@ class ChatSessions(SessionManager):
 
     def _make_agent(self, **kwargs):
         self._relaxed_db()
-        kwargs['enabled_toolsets'] = []
-        kwargs['disabled_toolsets'] = []
         agent = super()._make_agent(**kwargs)
-        agent.tools = []
-        agent.valid_tool_names = set()
-        # Runtime tool execution is disabled as well as tool advertisement.
-        def tools_disabled(*args, **kw):
-            raise RuntimeError('Tools disabled in Agent Hub private chat')
-        agent._execute_tool_calls = tools_disabled
         agent._hub_default_reasoning = copy.deepcopy(agent.reasoning_config)
         # 思考块只从流式增量推给 ACP 客户端：profile 里 model.streaming=false 的会话
         # （例如阿尔比恩）非流式请求，Hermes 的非流式兜底又要求「未设 stream_delta_callback」，
@@ -96,10 +88,6 @@ class ChatSessions(SessionManager):
 
 
 class ChatACP(HermesACPAgent):
-    async def _attach_session_mcp(self, state, mcp_servers, log, *args):
-        if mcp_servers:
-            raise acp.RequestError(-32602, 'External MCP servers disabled in private chat')
-
     async def set_config_option(self, config_id, session_id, value, **kwargs):
         if config_id not in ('reasoning_effort', 'hub_development_digest'):
             raise acp.RequestError(-32602, 'Unsupported session setting')
@@ -134,22 +122,7 @@ class ChatACP(HermesACPAgent):
             'toolCount': len(state.agent.tools), 'digest_injected': digest_injected
         }}})
 
-    async def prompt(self, prompt, session_id, **kwargs):
-        # ACP slash commands can mutate state independently of UI settings.
-        if any(block.type == 'text' and block.text.lstrip().startswith('/') for block in prompt):
-            raise acp.RequestError(-32602, 'Slash commands disabled; use session settings')
-        state = await asyncio.to_thread(self.session_manager.get_session, session_id)
-        if state is None:
-            raise acp.RequestError(-32602, 'Unknown session')
-        state.agent.tools = []
-        state.agent.valid_tool_names = set()
-        return await super().prompt(prompt=prompt, session_id=session_id, **kwargs)
-
-
-# SessionManager normally discovers configured MCP processes before agent build.
-# This chat-only child has no MCP tools, so it skips discovery in its own process.
-import hermes_cli.mcp_startup
-hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build = lambda **kwargs: None
+# Keep Hermes' normal tools, MCP servers, slash commands, and configured permissions.
 data.mkdir(parents=True, exist_ok=True)
 # 会话库默认放同席自己的数据目录；给了 AGENT_HUB_HERMES_SESSION_DB 就用那份真实库
 # （这样能看到并接着聊她自己的历史会话；不设变量即回到隔离行为）。

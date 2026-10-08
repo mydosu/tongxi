@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import queue
-import re
 import shutil
 import subprocess
 import threading
@@ -16,16 +15,10 @@ ROOT=Path(__file__).resolve().parents[1]
 context=fixture();DATA=context['project'];helper=ToolSession(context)
 exe=os.environ.get('AGENT_HUB_CODEX_EXE') or shutil.which('codex.exe')
 if not exe:exe=local_paths.codex_executable()
-listed=subprocess.run([exe,'mcp','list','--json'],capture_output=True,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW,timeout=20)
-if listed.returncode:raise RuntimeError('Cannot enumerate native MCP names safely')
-names=[item['name'] for item in json.loads(listed.stdout)]
-args=[exe,'app-server','--listen','stdio://','--disable','shell_tool','--disable','unified_exec']
-for name in names:
-    if not re.fullmatch(r'[A-Za-z0-9_-]+',name):raise RuntimeError('Unsupported MCP name for safe child override')
-    args.extend(['-c','mcp_servers.'+name+'.enabled=false'])
+args=[exe,'app-server','--listen','stdio://']
 process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW)
 messages=queue.Queue();threading.Thread(target=lambda:[messages.put(json.loads(line)) for line in process.stdout],daemon=True).start()
-calls=[];unexpected=[];thread_id=None;success=False
+calls=[];native_tool_events=[];unexpected=[];thread_id=None;success=False
 
 def write(value):
     value['jsonrpc']='2.0'
@@ -45,7 +38,7 @@ def handle(value):
         else:
             unexpected.append(value['method']);write({'id':value['id'],'error':{'code':-32601,'message':'Unsupported request'}})
     elif value['method']=='item/started' and value['params'].get('item',{}).get('type') in ['commandExecution','mcpToolCall','fileChange']:
-        unexpected.append(value['params']['item']['type'])
+        native_tool_events.append(value['params']['item']['type'])
 
 def rpc(identifier,method,params):
     write({'id':identifier,'method':method,'params':params});deadline=time.monotonic()+60
@@ -59,20 +52,22 @@ def rpc(identifier,method,params):
 
 try:
     rpc(1,'initialize',{'clientInfo':{'name':'agent_hub_project_probe','version':'0.7.0'},'capabilities':{'experimentalApi':True}});write({'method':'initialized','params':{}})
-    models=rpc(2,'model/list',{})['data'];model=next((m for m in models if m.get('isDefault')),models[0])
+    models=rpc(2,'model/list',{})['data'];model=next((m for m in models if m.get('model')=='gpt-6-luna'),None)
+    if model is None: raise RuntimeError('GPT-6 Luna is required; this probe never uses Sol')
     effort='low' if any(e['reasoningEffort']=='low' for e in model['supportedReasoningEfforts']) else model.get('defaultReasoningEffort')
-    thread=rpc(3,'thread/start',{'cwd':str(DATA),'model':model['model'],'approvalPolicy':'never','sandbox':'read-only','ephemeral':True,'config':{'web_search':'disabled'},'developerInstructions':'仅使用 hub_write 工具写入此项目的 hello.txt。不要使用内置工具，不读取其他目录或凭据，不运行命令。','dynamicTools':[{'type':'function','name':'hub_write','description':'Write one authorized file in the bound project.','deferLoading':False,'inputSchema':{'type':'object','properties':{'path':{'type':'string'},'content':{'type':'string'}},'required':['path','content'],'additionalProperties':False}}]})
+    thread=rpc(3,'thread/start',{'cwd':str(DATA),'model':model['model'],'approvalPolicy':'never','sandbox':'danger-full-access','ephemeral':True,'developerInstructions':'请使用 hub_write 创建本测试指定文件。你也可以按需使用此 Codex CLI 已启用的工具。','dynamicTools':[{'type':'function','name':'hub_write','description':'Write one authorized file in the bound project.','deferLoading':False,'inputSchema':{'type':'object','properties':{'path':{'type':'string'},'content':{'type':'string'}},'required':['path','content'],'additionalProperties':False}}]})
     thread_id=thread['thread']['id']
-    turn=rpc(4,'turn/start',{'threadId':thread_id,'input':[{'type':'text','text':'请调用 hub_write，path 为 hello.txt，content 为 PROJECT_TOOL_OK，完成后简短回复。'}],'model':model['model'],'effort':effort,'approvalPolicy':'never','sandboxPolicy':{'type':'readOnly','networkAccess':False}})
+    turn=rpc(4,'turn/start',{'threadId':thread_id,'input':[{'type':'text','text':'请先使用 Codex CLI 原生 PowerShell 或 shell 工具，在当前工作目录创建 native-tool-probe.txt，内容精确为 NATIVE_TOOL_OK；然后再调用 hub_write，path 为 hello.txt，content 为 PROJECT_TOOL_OK。完成后简短回复。'}],'model':model['model'],'effort':effort,'approvalPolicy':'never','sandboxPolicy':{'type':'dangerFullAccess'}})
     deadline=time.monotonic()+180
     while time.monotonic()<deadline:
         value=messages.get(timeout=60);handle(value)
         if value.get('method')=='turn/completed' and value['params']['turn']['id']==turn['turn']['id']:
-            success=value['params']['turn']['status']=='completed' and calls==['hub_write'] and not unexpected and (DATA/'hello.txt').read_text(encoding='utf-8')=='PROJECT_TOOL_OK';break
-    if not success:raise AssertionError('Dynamic project write was not verified')
+            native_file=DATA/'native-tool-probe.txt'
+            success=value['params']['turn']['status']=='completed' and calls==['hub_write'] and (DATA/'hello.txt').read_text(encoding='utf-8')=='PROJECT_TOOL_OK' and native_file.is_file() and native_file.read_text(encoding='utf-8').strip()=='NATIVE_TOOL_OK' and bool(native_tool_events);break
+    if not success:raise AssertionError('Codex native and Agent Hub tools were not both verified')
 finally:
     process.terminate();process.wait(timeout=10)
     helper.close()
-    report={'success':success,'dynamic_tool_calls':calls,'unexpected_tool_count':len(unexpected),'disabled_mcp_count':len(names),'fixture':str(DATA),'broker':'real Rust stdio helper','native_policy':'readOnly; broker owns scoped writes; shell and unified exec disabled'}
+    report={'success':success,'dynamic_tool_calls':calls,'native_tool_events':native_tool_events,'unexpected_tool_count':len(unexpected),'fixture':str(DATA),'broker':'real Rust stdio helper','native_policy':'danger-full-access with no approval prompt; test uses explicit GPT-6 Luna and a disposable fixture'}
     (ROOT/'artifacts/project-codex-probe.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 print(json.dumps(report,ensure_ascii=False))

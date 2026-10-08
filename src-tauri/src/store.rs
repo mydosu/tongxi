@@ -109,6 +109,7 @@ pub struct ConversationDetail {
     pub sessions: Vec<Session>,
     pub discussions: Vec<crate::group_store::Discussion>,
     pub project: Option<crate::project_store::Project>,
+    pub project_roles: Option<crate::project_store::Roles>,
     pub workflows: Vec<crate::project_store::Workflow>,
 }
 
@@ -489,6 +490,7 @@ impl Store {
             sessions,
             discussions: self.discussions(id)?,
             project: self.conversation_project(id)?,
+            project_roles: self.conversation_project_roles(id)?,
             workflows: self.workflows(id)?,
         })
     }
@@ -656,6 +658,13 @@ impl Store {
         }
         valid_members("group", members)?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        if conversation.members != members {
+            tx.execute(
+                "UPDATE conversation_projects SET roles=NULL WHERE conversation_id=?1",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         for previous in &conversation.members {
             if !members.contains(previous) {
                 tx.execute(

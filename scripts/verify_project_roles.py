@@ -1,14 +1,18 @@
 """角色可配的两段式项目协作：隔离 fixture 上的真实桌面验收。
 
-场景 a-e 覆盖角色、UI、并行与依赖；f 覆盖一次修复；g 覆盖合并冲突；h 覆盖非 Git 拒绝；i 由 Codex 承担全部角色。
-除 h 外场景使用真实原生 agent，CDP 只观察和调用应用 IPC，不触碰用户项目。
+场景 a-e 覆盖角色、UI、并行与依赖；f 覆盖一次修复；g 覆盖合并冲突；h 覆盖无 Git 自动初始化与绑定；i 由 Codex 承担全部角色。
+场景使用隔离原生 Agent 会话，CDP 只观察和调用应用 IPC，不触碰用户项目。
 """
 import argparse
 import hashlib
 import importlib.util
 import json
+import os
+import stat
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -291,10 +295,30 @@ def parallel_round(page, root, title, roles, expect_plan, expect_implement):
 
 
 def ui_round(page, root, title, roles, expect_plan, expect_implement):
-    """绑定项目后的同一群聊入口：一条消息自动经过协调、实现与验收，不再弹执行模式或确认方案。"""
+    """配置群内阶段 Agent/模型后，用同一个输入入口自动实现、直发协作消息并验收。"""
     venue_dir = root / "ui"
     room, _, calc, _ = venue(page, title, venue_dir, roles, members=["codex-win", "dsh-win"])
     desktop.choose(page, room)
+    page.click("#project-roles")
+    page.locator("#role-form").wait_for(state="visible")
+    page.select_option('[data-role-agent="plan"]', "codex-win")
+    page.select_option('[data-role-model="plan"]', "gpt-6-luna")
+    page.select_option('[data-role-effort="plan"]', "low")
+    page.select_option('[data-role-agent="implement"]', "dsh-win")
+    page.select_option('[data-role-provider="implement"]', "command-code-daily")
+    dsh_models = page.eval_on_selector_all(
+        '[data-role-model="implement"] option', "els => els.map(e => e.value).filter(Boolean)"
+    )
+    daily_one = next(model for model in dsh_models if json.loads(model)[0] == "command-code-daily")
+    page.select_option('[data-role-model="implement"]', daily_one)
+    page.select_option('[data-role-effort="implement"]', "off")
+    page.select_option('[data-role-agent="review"]', "codex-win")
+    page.select_option('[data-role-model="review"]', "gpt-6-luna")
+    page.select_option('[data-role-effort="review"]', "low")
+    page.locator("#role-form .primary").click()
+    page.locator("#role-form").wait_for(state="hidden")
+    project_roles = desktop.ipc(page, "get_conversation", id=room)["project_roles"]
+    check(title + "：群聊持久化三个阶段的成员、模型与强度", project_roles["plan"]["model"] == "gpt-6-luna" and project_roles["implement"]["model"] == daily_one and project_roles["review"]["model"] == "gpt-6-luna")
     request = '请由 DSH 把 calc.py 里的 square(value) 改成返回平方（支持负数、零），只修改 calc.py，不改其他文件。'
     page.fill("#message-input", request)
     check(title + "：项目群没有独立执行按钮", page.locator("#send-project").count() == 0)
@@ -302,9 +326,16 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     page.click("#send-discussion")
     done = observe(page, room, lambda j: j["status"] in ("completed", "failed"))
     check(title + "：群聊消息自动跑完协作", done["status"] == "completed")
-    check(title + "：无需角色选择弹窗或方案确认", page.locator("#role-form").count() == 0 and page.locator("[data-confirm-project]").count() == 0)
+    check(title + "：全部实现任务使用阶段设置的执行成员", bool(done["tasks"]) and all(task["agent_id"] == roles["implement"]["agent"] for task in done["tasks"]))
+    commit_subjects = [
+        subprocess.run(["git", "log", "-1", "--format=%s", task["branch"]], cwd=str(venue_dir), check=True, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+        for task in done["tasks"]
+    ]
+    check(title + "：每项实现任务完成后先提交其工作树改动", len(commit_subjects) == len(done["tasks"]) and all(subject.startswith("hub: ") for subject in commit_subjects))
+    check(title + "：无需角色选择弹窗或方案确认", not page.locator("#role-form").is_visible() and not page.locator("[data-confirm-project]").is_visible())
     saved = json.loads(done["roles"])
-    check(title + "：阶段成员从群聊成员与当前模型设置自动继承", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
+    check(title + "：协作准确采用已保存的三阶段设置", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["implement"]["model"] == daily_one and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
+    check(title + "：DSH 向验收 Agent 发出直达协作消息", any(message["sender_agent"] == "dsh-win" and message["recipient_agent"] == "codex-win" for message in done.get("agent_messages", [])))
     check(title + "：本次改动出现在同一群聊工作区", any(change["path"] == "calc.py" for change in done["changes"]))
     calc_module = load_module(venue_dir / "calc.py", "unified_ui_calc")
     check(title + "：最终源码满足本轮明确目标", calc_module.square(3) == 9 and calc_module.square(-4) == 16 and calc_module.square(0) == 0)
@@ -449,11 +480,13 @@ def conflict_round(page, root, title):
     return done
 
 
-def non_git_bind_rejection(page, root, title):
-    """Binding an ordinary directory must fail before a project conversation is created."""
-    venue_dir = root / "not-a-repository"
+def non_git_bind_auto_init(page, root, title):
+    """Binding an ordinary folder automatically initializes and binds a safe Git baseline."""
+    venue_dir = root / "plain-folder"
     venue_dir.mkdir(parents=True)
-    (venue_dir / "calc.py").write_text("def square(value):\n    return value\n", encoding="utf-8")
+    (venue_dir / "calc.py").write_text("def square(value):\n    return value * value\n", encoding="utf-8")
+    (venue_dir / ".env").write_text("API_TOKEN=do-not-commit\n", encoding="utf-8")
+    (venue_dir / "credentials.json").write_text('{"token":"do-not-commit"}\n', encoding="utf-8")
     project = desktop.ipc(
         page,
         "register_project",
@@ -461,21 +494,22 @@ def non_git_bind_rejection(page, root, title):
         root=str(venue_dir),
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
-    rejected = False
-    try:
-        desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
-    except Exception as exc:
-        rejected = "git" in str(exc).lower()
-    check(title + "：非 Git 目录无法绑定项目", rejected)
+    desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
     detail = desktop.ipc(page, "get_conversation", id=room)
-    check(title + "：拒绝绑定后会话仍未关联项目", not detail.get("project"))
-    return {"project_id": project["id"], "conversation_id": room, "status": "rejected"}
+    check(title + "：绑定时自动创建 Git 仓库", (venue_dir / ".git").is_dir())
+    head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=str(venue_dir), check=True, capture_output=True, text=True).stdout.strip()
+    committed = subprocess.run(["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=str(venue_dir), check=True, capture_output=True, text=True).stdout.splitlines()
+    check(title + "：创建本地安全基线且包含项目源码", bool(head) and "calc.py" in committed)
+    check(title + "：凭据文件未进入基线提交", ".env" not in committed and "credentials.json" not in committed)
+    check(title + "：仓库保持干净且没有配置远程推送", not subprocess.run(["git", "status", "--porcelain"], cwd=str(venue_dir), check=True, capture_output=True, text=True).stdout.strip() and not subprocess.run(["git", "remote"], cwd=str(venue_dir), check=True, capture_output=True, text=True).stdout.strip())
+    check(title + "：群聊已绑定所选项目", bool(detail.get("project")) and detail["project"].get("id") == project["id"])
+    return {"project_id": project["id"], "conversation_id": room, "status": "bound", "head": head}
 
 
 def run(only=None):
     global REPORT
     desktop.DATA = desktop.ARTIFACTS / ("project-roles-" + uuid.uuid4().hex[:10])
-    root = desktop.ARTIFACTS / ("project-roles-fixture-" + uuid.uuid4().hex[:10])
+    root = Path(tempfile.mkdtemp(prefix="project-roles-fixture-")) if only == "h" else desktop.ARTIFACTS / ("project-roles-fixture-" + uuid.uuid4().hex[:10])
     report_suffix = {
         "a": "same-role",
         "b": "role-swap",
@@ -484,7 +518,7 @@ def run(only=None):
         "e": "dependencies",
         "f": "repair",
         "g": "conflict",
-        "h": "nongit",
+        "h": "nongit-auto-init",
         "i": "codex-all-roles",
     }.get(only, "")
     REPORT = desktop.ARTIFACTS / ("project-roles-" + report_suffix + "-verification.json" if report_suffix else "project-roles-verification.json")
@@ -564,7 +598,7 @@ def run(only=None):
             if only == "g":
                 evidence.append(conflict_round(page, root, "并行任务合并冲突"))
             if only == "h":
-                evidence.append(non_git_bind_rejection(page, root, "非 Git 项目拒绝绑定"))
+                evidence.append(non_git_bind_auto_init(page, root, "无 Git 项目自动建仓并绑定"))
             if only == "i":
                 evidence.append(
                     ui_round(
@@ -600,6 +634,13 @@ def run(only=None):
             ),
             encoding="utf-8",
         )
+        if only == "h" and root.exists():
+            expected_parent = Path(tempfile.gettempdir()).resolve()
+            if root.resolve().parent == expected_parent and root.name.startswith("project-roles-fixture-"):
+                def clear_readonly(func, path, _error):
+                    os.chmod(path, stat.S_IWRITE)
+                    func(path)
+                shutil.rmtree(root, onerror=clear_readonly)
 
 
 if __name__ == "__main__":

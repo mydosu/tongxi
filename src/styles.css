@@ -230,6 +230,11 @@ body.maximized .resize-edge { display: none; }
 .attempt-list summary, .project-changes summary { cursor: pointer; line-height: 1.6; }
 .attempt-list summary > span { float: right; color: #818a98; }
 .attempt-list small { display: block; color: #818a98; padding: 5px 0; overflow-wrap: anywhere; }
+.agent-message-list { border-top: 1px solid #dddfe3; padding: 10px 0; }
+.agent-message-list > strong { color: #687383; font-size: 11px; font-weight: 600; }
+.agent-message-row { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #f6f7f9; }
+.agent-message-row > span { color: #7e8793; font-size: 10px; }
+.agent-message-row > p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .attempt-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.8; background: #fff; border-radius: 5px; padding: 10px; user-select: text; }
 .project-changes ul { padding-left: 18px; }
 .project-changes li { margin: 6px 0; overflow-wrap: anywhere; }

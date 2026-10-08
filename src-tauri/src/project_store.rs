@@ -35,7 +35,7 @@ pub struct RoleChoice {
     pub effort: Option<String>,
 }
 
-/// 这次工作流的角色：规划 / 执行与修复 / 验收；实现任务可逐项另选成员。
+/// 这次工作流的角色：规划 / 所有实现任务与修复 / 验收。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Roles {
@@ -92,6 +92,21 @@ impl Roles {
 /// 工作流上取角色配置；没有就用缺省组合（老工作流照旧能续跑）。
 pub fn roles_of(workflow: &Workflow) -> Result<Roles> {
     Roles::parse(workflow.roles.as_deref())
+}
+
+/// New implementation plans always use the executor selected for this workflow.
+/// A model suggestion belongs to its original agent, so clear it when reassigned.
+pub fn bind_plan_to_executor(plan: &mut Plan, executor: &str) -> Result<()> {
+    if !EXECUTOR_AGENTS.contains(&executor) {
+        return Err("实现角色只能选 Codex、Hermes 或 DSH".into());
+    }
+    for task in &mut plan.tasks {
+        if task.agent_id != executor {
+            task.agent_id = executor.to_owned();
+            task.execution = None;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -262,6 +277,18 @@ pub struct Workflow {
     pub tasks: Vec<Task>,
     pub attempts: Vec<Attempt>,
     pub changes: Vec<Change>,
+    pub agent_messages: Vec<AgentMessage>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AgentMessage {
+    pub id: String,
+    pub workflow_id: String,
+    pub attempt_id: String,
+    pub sender_agent: String,
+    pub recipient_agent: String,
+    pub content: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -303,7 +330,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         checks TEXT NOT NULL,summary_enabled INTEGER NOT NULL DEFAULT 0 CHECK(summary_enabled IN (0,1)),created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS conversation_projects (
         conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
-        project_id TEXT NOT NULL REFERENCES projects(id));
+        project_id TEXT NOT NULL REFERENCES projects(id),roles TEXT);
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),
         conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -335,7 +362,14 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         PRIMARY KEY(attempt_id,path));
       CREATE TABLE IF NOT EXISTS project_sessions (
         project_id TEXT NOT NULL REFERENCES projects(id),agent_id TEXT NOT NULL,
-        stage TEXT NOT NULL,native_session_id TEXT,PRIMARY KEY(project_id,agent_id,stage));")
+        stage TEXT NOT NULL,native_session_id TEXT,PRIMARY KEY(project_id,agent_id,stage));
+      CREATE TABLE IF NOT EXISTS project_agent_messages (
+        id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
+        sender_agent TEXT NOT NULL CHECK(sender_agent IN ('hermes-win','codex-win','dsh-win')),
+        recipient_agent TEXT NOT NULL CHECK(recipient_agent IN ('hermes-win','codex-win','dsh-win')),
+        content TEXT NOT NULL,created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS project_agent_inbox ON project_agent_messages(workflow_id,recipient_agent,created_at);")
         .map_err(|e|e.to_string())?;
     // 每任务独立工作树后，同一成员会并行跑多条 attempt：旧的「同一成员只允许一条活动 attempt」
     // 唯一索引会挡住并行，独占改由 begin_attempt 的按任务软件判定负责，这里幂等删掉。
@@ -345,6 +379,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     // 加列前先查 PRAGMA table_info：同一份迁移重复跑（含 v9 降级升回来）也不会炸，
     // 全新库因为建表语句里已经带上了这些列，这里同样什么都不做。
     for (table, column, definition) in [
+        ("conversation_projects", "roles", "TEXT"),
         ("workflows", "roles", "TEXT"),
         ("project_tasks", "model", "TEXT"),
         ("project_tasks", "effort", "TEXT"),
@@ -700,15 +735,66 @@ impl Store {
             .map_err(|e| e.to_string())?;
         id.map(|id| self.project(&id)).transpose()
     }
+    pub fn conversation_project_roles(&self, room: &str) -> Result<Option<Roles>> {
+        let text = self
+            .connection
+            .query_row(
+                "SELECT roles FROM conversation_projects WHERE conversation_id=?1",
+                [room],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|_| "项目角色配置读取失败")?
+            .flatten();
+        text.map(|text| Roles::parse(Some(&text))).transpose()
+    }
+    pub fn set_conversation_project_roles(&mut self, room: &str, roles: &Roles) -> Result<()> {
+        roles.validate()?;
+        let conversation = self.conversation(room)?;
+        if conversation.archived || conversation.kind != "group" {
+            return Err("项目角色只能设置在未归档群聊中".into());
+        }
+        if [
+            &roles.plan.agent,
+            &roles.implement.agent,
+            &roles.review.agent,
+        ]
+        .iter()
+        .any(|agent| !conversation.members.contains(agent))
+        {
+            return Err("规划、执行、验收成员必须属于当前群聊".into());
+        }
+        self.guard_discussion(room)?;
+        self.guard_workflow(room)?;
+        if self.conversation_project(room)?.is_none() {
+            return Err("请先为群聊绑定一个 Git 项目".into());
+        }
+        let encoded = serde_json::to_string(roles).map_err(|_| "项目角色配置序列化失败")?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE conversation_projects SET roles=?1 WHERE conversation_id=?2",
+                params![encoded, room],
+            )
+            .map_err(|_| "项目角色配置保存失败")?;
+        if changed == 0 {
+            return Err("群聊项目绑定不存在".into());
+        }
+        Ok(())
+    }
     pub fn bind_project(&mut self, room: &str, project: Option<&str>) -> Result<()> {
-        if self.conversation(room)?.archived {
+        let conversation = self.conversation(room)?;
+        if conversation.kind != "group" {
+            return Err("只有群聊才能绑定项目".into());
+        }
+        if conversation.archived {
             return Err("先恢复归档会话再绑定项目".into());
         }
         self.guard_discussion(room)?;
         self.guard_workflow(room)?;
         if let Some(project) = project {
             self.project(project)?;
-            self.connection.execute("INSERT INTO conversation_projects VALUES(?1,?2) ON CONFLICT(conversation_id) DO UPDATE SET project_id=excluded.project_id",params![room,project]).map_err(|e|e.to_string())?;
+            self.connection.execute("INSERT INTO conversation_projects(conversation_id,project_id,roles) VALUES(?1,?2,NULL) ON CONFLICT(conversation_id) DO UPDATE SET project_id=excluded.project_id,roles=CASE WHEN conversation_projects.project_id=excluded.project_id THEN conversation_projects.roles ELSE NULL END",params![room,project]).map_err(|e|e.to_string())?;
         } else {
             self.connection
                 .execute(
@@ -781,7 +867,7 @@ impl Store {
         let mut workflow=self.connection.query_row("SELECT id,project_id,conversation_id,user_message_id,request,status,plan,summary,error,created_at,updated_at,roles FROM workflows WHERE id=?1",[id],|r| {
             let plan:Option<String>=r.get(6)?;
             let plan=plan.map(|text|serde_json::from_str(&text)).transpose().map_err(|e|rusqlite::Error::FromSqlConversionFailure(6,rusqlite::types::Type::Text,Box::new(e)))?;
-            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![]})
+            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![],agent_messages:vec![]})
         }).optional().map_err(|e|e.to_string())?.ok_or("项目协作不存在")?;
         let mut stmt = self
             .connection
@@ -809,8 +895,32 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        workflow.agent_messages = self.agent_messages(id)?;
         Ok(workflow)
     }
+
+    pub fn agent_messages(&self, workflow_id: &str) -> Result<Vec<AgentMessage>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id,workflow_id,attempt_id,sender_agent,recipient_agent,content,created_at FROM project_agent_messages WHERE workflow_id=?1 ORDER BY created_at,id")
+            .map_err(|_| "项目成员消息读取失败")?;
+        let rows = statement
+            .query_map([workflow_id], |row| {
+                Ok(AgentMessage {
+                    id: row.get(0)?,
+                    workflow_id: row.get(1)?,
+                    attempt_id: row.get(2)?,
+                    sender_agent: row.get(3)?,
+                    recipient_agent: row.get(4)?,
+                    content: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(|_| "项目成员消息读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "项目成员消息读取失败".into())
+    }
+
     /// 单独读一个任务：任务级 model/effort/worktree/branch 都在这里带出。
     pub fn task(&self, id: &str) -> Result<Task> {
         self.connection
@@ -918,7 +1028,42 @@ impl Store {
         if active {
             return Err("项目成员仍在运行，暂时不能调整阶段设置".into());
         }
-        self.set_workflow_roles(id, Some(roles))
+        let roles = Roles::parse(Some(roles))?;
+        let mut plan = workflow.plan.ok_or("暂停协作没有可复用方案")?;
+        if !EXECUTOR_AGENTS.contains(&roles.implement.agent.as_str()) {
+            return Err("执行角色只能选 Codex、Hermes 或 DSH".into());
+        }
+        for (planned, saved) in plan.tasks.iter_mut().zip(&workflow.tasks) {
+            if saved.status != "completed" && planned.agent_id != roles.implement.agent {
+                planned.agent_id = roles.implement.agent.clone();
+                planned.execution = None;
+            }
+        }
+        let encoded_roles = serde_json::to_string(&roles).map_err(|_| "角色配置序列化失败")?;
+        let encoded_plan = serde_json::to_string(&plan).map_err(|_| "方案序列化失败")?;
+        let (agent, assigned) = if roles.implement.agent == "hermes-win" {
+            ("dsh-win", Some("hermes-win"))
+        } else {
+            (roles.implement.agent.as_str(), None)
+        };
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE workflows SET roles=?1,plan=?2,updated_at=?3 WHERE id=?4",
+            params![encoded_roles, encoded_plan, now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE project_attempts SET output=?1 WHERE id=(SELECT id FROM project_attempts WHERE workflow_id=?2 AND stage='plan' AND status='completed' ORDER BY created_at DESC,rowid DESC LIMIT 1)",
+            params![serde_json::to_string(&plan).map_err(|_| "方案序列化失败")?, id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE project_tasks SET agent_id=?1,assigned_agent=?2,model=NULL,effort=NULL WHERE workflow_id=?3 AND status!='completed'",
+            params![agent, assigned, id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.workflow(id)
     }
 
     pub fn workflows(&self, room: &str) -> Result<Vec<Workflow>> {
@@ -1033,9 +1178,13 @@ impl Store {
         {
             return Err("保存方案前需要已完成的规划结果".into());
         }
-        if parse_plan(&plans[0].output)? != *plan {
+        let mut planned_output = parse_plan(&plans[0].output)?;
+        bind_plan_to_executor(&mut planned_output, &roles_of(&workflow)?.implement.agent)?;
+        if planned_output != *plan {
             return Err("保存的方案不能改变规划给出的任务或实现要求".into());
         }
+        let plan_output = serde_json::to_string(plan).map_err(|e| e.to_string())?;
+        let plan_attempt_id = plans[0].id.clone();
         let project = self.project(&workflow.project_id)?;
         for task in &plan.tasks {
             for file in &task.files {
@@ -1060,6 +1209,11 @@ impl Store {
         if current.0 != "planning" || current.1 != 0 || active {
             return Err("协作状态已变化或项目成员仍在运行，不能保存方案".into());
         }
+        tx.execute(
+            "UPDATE project_attempts SET output=?1 WHERE id=?2",
+            params![plan_output, plan_attempt_id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE workflows SET plan=?1,updated_at=?2 WHERE id=?3",
             params![
@@ -1720,6 +1874,60 @@ mod tests {
             .is_none());
         assert!(store.workflow(&workflow).unwrap().roles.is_none());
         assert!(store.set_workflow_roles("missing", Some(roles)).is_err());
+    }
+
+    #[test]
+    fn conversation_project_roles_round_trip_and_reset_after_member_changes() {
+        let mut store = memory();
+        let root = std::env::temp_dir().join(format!("hub-project-roles-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project = store
+            .register_project("角色配置项目", root.to_str().unwrap())
+            .unwrap();
+        let room = store
+            .create(
+                "项目群",
+                "group",
+                &["codex-win".into(), "hermes-win".into(), "dsh-win".into()],
+            )
+            .unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let roles = Roles {
+            plan: RoleChoice {
+                agent: "hermes-win".into(),
+                model: Some("custom:daily-one:deepseek/flash".into()),
+                effort: Some("high".into()),
+            },
+            implement: RoleChoice {
+                agent: "dsh-win".into(),
+                model: Some("[\"command-code-daily\",\"deepseek/deepseek-v4.1-flash\"]".into()),
+                effort: Some("off".into()),
+            },
+            review: RoleChoice {
+                agent: "codex-win".into(),
+                model: Some("gpt-6-luna".into()),
+                effort: Some("low".into()),
+            },
+        };
+        store
+            .set_conversation_project_roles(&room.id, &roles)
+            .unwrap();
+        assert_eq!(
+            store.conversation_project_roles(&room.id).unwrap(),
+            Some(roles.clone())
+        );
+        assert_eq!(
+            store.detail(&room.id).unwrap().project_roles,
+            Some(roles.clone())
+        );
+        store
+            .replace_members(&room.id, &["codex-win".into(), "dsh-win".into()])
+            .unwrap();
+        assert!(store
+            .conversation_project_roles(&room.id)
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

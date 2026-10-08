@@ -1,9 +1,10 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
+import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RoleChoice, Roles, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
 import { bindingDialog, planningDialog, workflowBusy, workflowCard, workflowRoles } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
+import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
 import './styles.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -357,10 +358,13 @@ function updateRuntimeControls() {
     if (active?.conversation_id !== selectedId) continue;
     const messages = main.querySelector('#messages')!;
     const old = messages.querySelector(`[data-message-id="${active.assistant_message_id}"]`);
+    const thoughtScroll = captureThoughtScroll(old as HTMLElement | null);
     const html = renderMessage({ id: active.assistant_message_id, conversation_id: selectedId, sender_id: active.agent_id, content: active.text, thought: active.thought, status: busySnapshot(snapshot) ? 'streaming' : active.status as Message['status'], created_at: detail.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now() });
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
     if (old) old.outerHTML = html;
     else { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
+    const updated = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
+    if (updated) restoreThoughtScroll(updated, thoughtScroll);
     if (nearBottom) pinToBottom(messages);
   }
 }
@@ -539,6 +543,12 @@ function updateProjectControls() {
     connect.disabled = !detail.project || groupConnecting || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived || ready;
     connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '项目成员已连接' : '连接项目成员';
   }
+  const roles = main.querySelector<HTMLButtonElement>('#project-roles');
+  if (roles) {
+    roles.hidden = !detail.project;
+    roles.disabled = !detail.project || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived;
+    roles.textContent = detail.project_roles ? '调整协作阶段' : '配置协作阶段';
+  }
   const title = main.querySelector('#project-title');
   if (title) title.textContent = detail.project ? `${detail.project.name} · 项目群聊` : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要两位 Windows 成员';
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
@@ -614,6 +624,60 @@ async function showProjectBinding() {
   catch (error) { toast(errorText(error), true); }
 }
 
+function defaultProjectRoles(): Roles | null {
+  if (!detail) return null;
+  const preferences = {
+    plan: detail.project_roles?.plan,
+    implement: detail.project_roles?.implement,
+    review: detail.project_roles?.review,
+  };
+  const preferred = {
+    plan: ['codex-win', 'hermes-win', 'dsh-win'],
+    implement: ['dsh-win', 'codex-win', 'hermes-win'],
+    review: ['hermes-win', 'codex-win', 'dsh-win'],
+  } as const;
+  const choose = (stage: 'plan' | 'implement' | 'review'): RoleChoice | null => {
+    const available = roleMembers(stage);
+    const prior = preferences[stage];
+    const agent = prior && available.includes(prior.agent)
+      ? prior.agent
+      : preferred[stage].find(candidate => available.includes(candidate)) || available[0];
+    if (!agent) return null;
+    const session = detail!.sessions.find(item => item.agent_id === agent);
+    return {
+      agent,
+      model: prior?.agent === agent ? prior.model : session?.model || null,
+      effort: prior?.agent === agent ? prior.effort : session?.reasoning_effort || null,
+    };
+  };
+  const plan = choose('plan'); const implement = choose('implement'); const review = choose('review');
+  return plan && implement && review ? { plan, implement, review } : null;
+}
+
+async function editProjectRoles() {
+  if (!detail?.project || workflowBusy(currentWorkflow()) || detail.conversation.archived) return;
+  const roles = await planningDialog({
+    modal, escape, name: id => member(id)?.name || id,
+    members: roleMembers,
+    catalog: id => runtimes[id]?.models || [],
+    settings: id => {
+      const session = detail?.sessions.find(item => item.agent_id === id);
+      return { model: session?.model || null, effort: session?.reasoning_effort || null };
+    },
+    open: openModal,
+    initial: defaultProjectRoles(),
+    title: '配置项目协作角色',
+    note: '规划、执行、验收成员和模型会保存在此群的项目设置中。发送项目目标后，Agent 将按这些设置自动协作；任务执行者仍可按目标选择。',
+    submitLabel: '保存角色设置',
+  });
+  if (!roles) return;
+  try {
+    detail = await invoke<ConversationDetail>('set_project_roles', { conversationId: detail.conversation.id, roles });
+    await selectConversation(detail.conversation.id);
+    toast('项目协作角色已保存');
+  } catch (error) { toast(errorText(error), true); }
+}
+
 /// 角色可选成员：只列当前群中已连接、且有原生模型目录的 Windows 项目成员。
 const roleMembers = (_role: 'plan' | 'implement' | 'review') => {
   if (!detail) return [];
@@ -662,6 +726,10 @@ async function editPausedProjectRoles(id: string) {
   const roles = await planningDialog({
     modal, escape, name: agentId => member(agentId)?.name || agentId,
     members: roleMembers, catalog: agentId => runtimes[agentId]?.models || [], open: openModal,
+    settings: agentId => {
+      const session = detail?.sessions.find(item => item.agent_id === agentId);
+      return { model: session?.model || null, effort: session?.reasoning_effort || null };
+    },
     initial: workflowRoles(workflow.roles), title: '调整暂停协作的阶段设置', submitLabel: '保存阶段设置',
     note: '可修改各阶段的成员、模型与思考强度。已生成的规划会保留，不会重新调用规划模型；继续时还可以为未完成任务逐项选择执行者和模型。',
   });
@@ -710,7 +778,7 @@ function renderChat() {
   const name = directAgent?.name || ''; 
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : `<span class="avatar group-avatar">${icon('group')}</span>`}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout"><section class="chat-content"><div class="milestone-note"><span class="note-mark">07</span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}</div>
-      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
+      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button id="project-roles" type="button" class="secondary" hidden>配置协作阶段</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.map(renderMessage).join('')}` : `<div class="welcome"><div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div><span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
       <form id="composer" class="composer"><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · ${key === 'hermes' ? '仅聊天' : '只读对话'}` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : detail.project ? 'Enter 发送给项目组 · Shift + Enter 换行' : 'Enter 开始群聊 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary" hidden>停止回复</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
@@ -718,6 +786,7 @@ function renderChat() {
     </section><aside class="members-panel"><div class="panel-title"><span>会话成员</span>${conversation.kind === 'group' ? `<button class="text-button" id="edit-members">管理</button>` : ''}</div><div class="member-list">${roster.map(agent => `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small><span class="status-dot muted"></span>待接入 · ${escape(agent.location)}</small></div></div>`).join('')}</div><div class="workspace-note"><span class="eyebrow">会话边界</span><h3>各自的上下文<br>共同的讨论空间</h3><p>每位成员使用独立的会话映射。加入群聊不会合并已有私聊。</p>${conversation.kind === 'group' ? `<div class="tiny-rule"></div><p>阿尔比恩可以受邀参加，也保留与你单独交流的空间。</p>` : ''}</div><div class="phase-progress"><span>第一步 · 桌面与会话</span><div><i></i><i></i><i></i><i></i></div><small>接下来：开发摘要与更新管理</small></div></aside></div>`;
   renderDiscussionControls();
   main.querySelector('#bind-project')?.addEventListener('click', () => void showProjectBinding());
+  main.querySelector('#project-roles')?.addEventListener('click', () => void editProjectRoles());
   main.querySelector('#connect-project-members')?.addEventListener('click', () => void connectProjectMembers());
   main.querySelector('#share-project-summary')?.addEventListener('click', () => void toggleProjectSummary());
   main.querySelector('#cancel-discussion')?.addEventListener('click', () => void cancelDiscussion());

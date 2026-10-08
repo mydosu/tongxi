@@ -1,4 +1,4 @@
-"""Hermes ACP bridge for project work; exposes only the per-attempt Agent Hub MCP tools."""
+"""Hermes ACP bridge for project work; keeps Hermes CLI tools and adds Agent Hub messaging."""
 import asyncio
 import copy
 import json
@@ -27,16 +27,11 @@ from hermes_state import SessionDB
 
 
 class ProjectSessions(SessionManager):
-    """Start every project session with no profile tools; ACP adds only its scoped MCP server."""
+    """Keep the installed Hermes tool profile while isolating private session memory."""
 
     def _make_agent(self, **kwargs):
-        kwargs["enabled_toolsets"] = []
-        kwargs["disabled_toolsets"] = []
         agent = super()._make_agent(**kwargs)
-        agent.tools = []
-        agent.valid_tool_names = set()
-        # Project sessions use only the current group's prompt and scoped project MCP;
-        # do not inject Hermes's private memory-provider context.
+        # Do not inject Hermes's private memory-provider context into project sessions.
         if hasattr(agent, "_memory_manager"):
             agent._memory_manager = None
         agent._hub_default_reasoning = copy.deepcopy(agent.reasoning_config)
@@ -45,12 +40,6 @@ class ProjectSessions(SessionManager):
 
 
 class ProjectACP(HermesACPAgent):
-    async def _register_session_mcp_servers(self, state, mcp_servers):
-        server_names = {server.name for server in mcp_servers or []}
-        if server_names not in (set(), {"agent_hub"}):
-            raise RequestError(-32602, "Project sessions allow only the scoped Agent Hub tools")
-        await super()._register_session_mcp_servers(state, mcp_servers)
-
     async def set_config_option(self, config_id, session_id, value, **kwargs):
         if config_id != "reasoning_effort":
             raise RequestError(-32602, "Unsupported project session setting")
@@ -69,16 +58,7 @@ class ProjectACP(HermesACPAgent):
                 state.agent.reasoning_config = config
         return SetSessionConfigOptionResponse(config_options=[])
 
-    async def prompt(self, prompt, session_id, **kwargs):
-        if any(block.type == "text" and block.text.lstrip().startswith("/") for block in prompt):
-            raise RequestError(-32602, "Slash commands are disabled in project sessions")
-        return await super().prompt(prompt=prompt, session_id=session_id, **kwargs)
-
-
-# The bridge intentionally skips global MCP discovery. Per-session project MCP is attached later.
-import hermes_cli.mcp_startup
-hermes_cli.mcp_startup.start_background_mcp_discovery = lambda **kwargs: None
-hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build = lambda **kwargs: None
+# Keep normal Hermes MCP discovery and slash-command behavior.
 
 sessions = ProjectSessions(db=SessionDB(db_path=data / "sessions.db"))
 agent = ProjectACP(sessions)

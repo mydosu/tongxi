@@ -206,8 +206,7 @@ impl Target {
         }
     }
 
-    /// Hermes project sessions use a project-only bridge: private chat stays tool-free,
-    /// while this subprocess can receive only the per-attempt Agent Hub MCP server.
+    /// Hermes project sessions keep the installed CLI tools and add Agent Hub's direct-message tools.
     pub fn project_command(&self, directory: &Path) -> Result<Command> {
         match self {
             Self::Windows(python) => {
@@ -225,9 +224,7 @@ impl Target {
                     .args(["-u", "-c", include_str!("hermes_project_bridge.py")])
                     .arg(repo)
                     .arg(directory.join("hermes-project"));
-                command
-                    .env("HERMES_HOME", home)
-                    .env("HERMES_ACP_SKIP_CONFIGURED_MCP", "1");
+                command.env("HERMES_HOME", home);
                 Ok(command)
             }
             Self::Albion { .. } => Err("WSL Pi 不属于 Hermes 项目 ACP 通道".into()),

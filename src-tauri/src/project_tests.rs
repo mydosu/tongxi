@@ -1,5 +1,5 @@
 //! Real file and state transitions in isolated fixtures, never user projects.
-use crate::project_store::*;
+use crate::project_store::{self, *};
 use crate::project_tools::Broker;
 use crate::store::Store;
 use serde_json::json;
@@ -53,13 +53,17 @@ impl Fixture {
         self.store.begin_execution(&planned.id).unwrap()
     }
     fn plan_with(&mut self, workflow: &Workflow, proposed: &Plan) -> Workflow {
+        let mut proposed = proposed.clone();
+        let current = self.store.workflow(&workflow.id).unwrap();
+        let executor = project_store::roles_of(&current).unwrap().implement.agent;
+        project_store::bind_plan_to_executor(&mut proposed, &executor).unwrap();
         let mut codex = self
             .store
             .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
             .unwrap();
-        codex.output = serde_json::to_string(proposed).unwrap();
+        codex.output = serde_json::to_string(&proposed).unwrap();
         complete(&mut self.store, &codex);
-        self.store.save_plan(&workflow.id, proposed).unwrap()
+        self.store.save_plan(&workflow.id, &proposed).unwrap()
     }
     fn implement(&mut self, files: &[&str]) -> Attempt {
         let workflow = self.planned(files);
@@ -311,12 +315,22 @@ fn failed_execution_can_reopen_its_plan_and_reset_tasks_for_confirmation() {
 }
 
 #[test]
-fn paused_workflow_role_models_can_change_without_regenerating_the_plan() {
+fn paused_workflow_role_changes_reassign_unfinished_tasks_and_use_the_new_stage_model() {
     let mut f = Fixture::new();
     let workflow = f.queued();
     assert!(f.store.acquire_project(&workflow.id).unwrap());
     let proposed = plan(&["src/retry.rs"]);
     f.plan_with(&workflow, &proposed);
+    let task_id = f.store.workflow(&workflow.id).unwrap().tasks[0].id.clone();
+    f.store
+        .set_task_config(
+            &task_id,
+            Some("ds-v4.1".into()),
+            Some("off".into()),
+            None,
+            None,
+        )
+        .unwrap();
     f.store
         .finish_workflow(&workflow.id, "failed", "", Some("paused for settings"))
         .unwrap();
@@ -343,7 +357,11 @@ fn paused_workflow_role_models_can_change_without_regenerating_the_plan() {
         .update_paused_workflow_roles(&workflow.id, &serde_json::to_string(&roles).unwrap())
         .unwrap();
     assert_eq!(updated.status, "failed");
-    assert_eq!(updated.plan, Some(proposed.clone()));
+    let resumed_plan = updated.plan.clone().unwrap();
+    assert_eq!(resumed_plan.tasks[0].agent_id, "codex-win");
+    assert_eq!(updated.tasks[0].agent_id, "codex-win");
+    assert_eq!(updated.tasks[0].model, None);
+    assert_eq!(updated.tasks[0].effort, None);
     assert_eq!(Roles::parse(updated.roles.as_deref()).unwrap(), roles);
     assert_eq!(
         updated
@@ -354,7 +372,9 @@ fn paused_workflow_role_models_can_change_without_regenerating_the_plan() {
         1
     );
     let role_json = updated.roles.as_deref().unwrap().to_owned();
-    f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    f.store
+        .resume_workflow(&workflow.id, &resumed_plan)
+        .unwrap();
     assert!(f
         .store
         .update_paused_workflow_roles(&workflow.id, &role_json)
@@ -429,25 +449,45 @@ fn retry_preserves_completed_tasks_and_only_requeues_unfinished_work() {
 }
 
 #[test]
-fn plan_tasks_can_be_split_between_connected_codex_hermes_and_dsh() {
+fn plan_implementation_tasks_follow_the_selected_executor_and_drop_other_agents_model_hints() {
     let mut codex_task = plan(&["src/complex.rs"]).tasks.remove(0);
     codex_task.agent_id = "codex-win".into();
+    codex_task.execution = Some(ExecutionChoice {
+        model: "gpt-6-luna".into(),
+        reasoning_effort: Some("low".into()),
+        rationale: "复杂任务".into(),
+    });
     let mut dsh_task = plan(&["src/simple.rs"]).tasks.remove(0);
     dsh_task.title = "简单实现".into();
+    dsh_task.execution = Some(ExecutionChoice {
+        model: "ds-v4.1".into(),
+        reasoning_effort: Some("off".into()),
+        rationale: "实现任务".into(),
+    });
     let mut hermes_task = plan(&["src/reviewed.rs"]).tasks.remove(0);
     hermes_task.agent_id = "hermes-win".into();
     hermes_task.title = "独立实现".into();
-    let plan = Plan {
+    hermes_task.execution = Some(ExecutionChoice {
+        model: "hermes-model".into(),
+        reasoning_effort: Some("high".into()),
+        rationale: "独立任务".into(),
+    });
+    let mut proposed = Plan {
         summary: "按任务难度分工".into(),
         tasks: vec![codex_task, dsh_task, hermes_task],
     };
+    project_store::bind_plan_to_executor(&mut proposed, "dsh-win").unwrap();
+    assert!(proposed.tasks.iter().all(|task| task.agent_id == "dsh-win"));
+    assert_eq!(proposed.tasks[0].execution, None);
+    assert!(proposed.tasks[1].execution.is_some());
+    assert_eq!(proposed.tasks[2].execution, None);
     let available = vec!["codex-win".into(), "hermes-win".into(), "dsh-win".into()];
-    assert!(crate::projects::validate_plan_agents(&plan, &available).is_ok());
-    assert!(crate::projects::validate_plan_agents(&plan, &["codex-win".into()]).is_err());
+    assert!(crate::projects::validate_plan_agents(&proposed, &available).is_ok());
+    assert!(crate::projects::validate_plan_agents(&proposed, &["codex-win".into()]).is_err());
 }
 
 #[test]
-fn hermes_can_execute_a_task_when_codex_is_the_default_executor() {
+fn selected_stage_executor_replaces_a_planners_alternate_task_assignment() {
     let mut f = Fixture::new();
     let workflow = f.queued();
     let roles = Roles {
@@ -478,13 +518,13 @@ fn hermes_can_execute_a_task_when_codex_is_the_default_executor() {
     assert_eq!(planned.roles.as_deref(), Some(raw_roles.as_str()));
     let running = f.store.begin_execution(&planned.id).unwrap();
     let task = &running.tasks[0];
-    assert_eq!(task.agent_id, "hermes-win");
+    assert_eq!(task.agent_id, "codex-win");
     let attempt = f
         .store
         .begin_attempt(
             &running.id,
             Some(&task.id),
-            "hermes-win",
+            "codex-win",
             "implement",
             None,
             None,
@@ -500,7 +540,7 @@ fn hermes_can_execute_a_task_when_codex_is_the_default_executor() {
         broker
             .call(
                 "hub_write",
-                json!({"path":"src/task.rs","content":"hermes","expected_sha256":null})
+                json!({"path":"src/task.rs","content":"codex-stage","expected_sha256":null})
             )
             .unwrap()["saved"],
         true

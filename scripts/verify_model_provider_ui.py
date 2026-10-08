@@ -21,7 +21,10 @@ MOCK = r"""
       {id:'gpt-6-luna',name:'GPT-6 Luna',efforts:['low','high'],default_effort:'low'},
       {id:'gpt-5.6-luna',name:'GPT-5.6 Luna',efforts:['low','high'],default_effort:'low'}
     ],
-    'hermes-win':[{id:'openai:gpt-6.1',name:'GPT-6.1',provider_id:'openai',provider_name:'OpenAI',efforts:['low','high'],default_effort:'low'}],
+    'hermes-win':[
+      {id:'custom:command-code-daily:deepseek/deepseek-v4.1-flash',name:'DeepSeek V4.1 Flash',provider_id:'command-code-daily',provider_name:'Command Code Daily One',efforts:['none','low','high'],default_effort:'low'},
+      {id:'openai:gpt-6.1',name:'GPT-6.1',provider_id:'openai',provider_name:'OpenAI',efforts:['low','high'],default_effort:'low'}
+    ],
     'dsh-win':[
       {id:'["route-a","model-one"]',name:'Model One',provider_id:'route-a',efforts:['off','low'],default_effort:'off'},
       {id:'["route-b","model-two"]',name:'Model Two',provider_id:'route-b',efforts:['off','low'],default_effort:'off'}
@@ -56,10 +59,12 @@ MOCK = r"""
     if(command==='project_status')return [];
     if(command.endsWith('_status')){const id=command.startsWith('hermes_')?'hermes-win':command.startsWith('dsh_')?'dsh-win':command.startsWith('albion_')?'albion-wsl':'codex-win';return runtime(id);}
     if(command==='set_session_settings')return detail;
+    if(command==='set_project_roles'){detail.project_roles=args.roles;return detail;}
     if(command==='start_project'){
       globalThis.__collaborationRequest=args;
       globalThis.__collaborationCalls++;
-      const workflow={id:'unified-workflow',project_id:project.id,conversation_id:group.id,user_message_id:args.messageId,request:args.content,status:'completed',plan:{summary:'这是一次普通讨论回复，不需要改文件。',tasks:[]},roles:null,summary:'这是一次普通讨论回复，不需要改文件。',error:null,created_at:now,updated_at:now,tasks:[],attempts:[{id:'planner',workflow_id:'unified-workflow',task_id:null,agent_id:'codex-win',stage:'plan',status:'completed',native_thread_id:'session-1',native_turn_id:'turn-1',model:'gpt-6-luna',reasoning_effort:'low',output:'{}',error:null}],changes:[]};
+      const roles=detail.project_roles;
+      const workflow={id:'unified-workflow',project_id:project.id,conversation_id:group.id,user_message_id:args.messageId,request:args.content,status:'completed',plan:{summary:'这是一次普通讨论回复，不需要改文件。',tasks:[]},roles:JSON.stringify(roles),summary:'这是一次普通讨论回复，不需要改文件。',error:null,created_at:now,updated_at:now,tasks:[],attempts:[{id:'planner',workflow_id:'unified-workflow',task_id:null,agent_id:roles.plan.agent,stage:'plan',status:'completed',native_thread_id:'session-1',native_turn_id:'turn-1',model:roles.plan.model,reasoning_effort:roles.plan.effort,output:'{}',error:null}],changes:[],agent_messages:[]};
       detail.workflows=[workflow];
       return workflow;
     }
@@ -103,15 +108,56 @@ def main() -> None:
             page.add_init_script(MOCK)
             page.goto(f"http://127.0.0.1:{PORT}",wait_until="networkidle")
             expect(page.locator("#project-controls")).to_be_visible()
+            page.locator("#project-roles").click()
+            expect(page.locator("#role-form")).to_be_visible()
+            page.locator('[data-role-agent="plan"]').select_option("hermes-win")
+            provider=page.locator('[data-role-provider="plan"]')
+            expect(provider).to_be_visible()
+            provider.select_option("command-code-daily")
+            model=page.locator('[data-role-model="plan"]')
+            model.select_option("custom:command-code-daily:deepseek/deepseek-v4.1-flash")
+            page.locator('[data-role-effort="plan"]').select_option("high")
+            page.locator("#role-form .primary").click()
+            page.wait_for_function("() => __providerDemo.detail.project_roles?.plan?.model === 'custom:command-code-daily:deepseek/deepseek-v4.1-flash'")
+            assert page.evaluate("() => __providerDemo.detail.project_roles.plan.effort") == "high"
+            print("PASS planning/execution/review agents and their models persist as project-group settings")
+            print("PASS a stage can route Hermes through Command Code Daily One")
             page.locator("#message-input").fill("test")
             assert page.locator("#send-project").count() == 0, "bound project rooms use one shared composer"
             page.locator("#send-discussion").click()
             page.wait_for_function("() => __collaborationCalls === 1")
             expect(page.locator(".workflow-card").first).to_be_visible()
             assert page.evaluate("() => __collaborationRequest.content") == "test"
-            assert page.locator("#role-form").count() == 0, "each message starts the unified collaboration automatically"
+            assert page.evaluate("() => __providerDemo.detail.workflows[0].roles") is not None
+            assert page.evaluate("() => __providerDemo.detail.workflows[0].attempts[0].model") == "custom:command-code-daily:deepseek/deepseek-v4.1-flash"
+            assert not page.locator("#modal").evaluate("el => el.open"), "each message starts the unified collaboration without another role prompt"
             print("PASS project-bound group uses one composer for discussion and implementation")
             print("PASS discussion-only intent returns in the project timeline without fake tasks")
+            scroll = page.evaluate("""async () => {
+              const {captureThoughtScroll, restoreThoughtScroll} = await import('/src/thought_scroll.ts');
+              const message=document.createElement('article');
+              message.innerHTML='<details class="thought" open><summary>思考中</summary><div class="thought-body"></div></details>';
+              document.body.append(message);
+              const body=message.querySelector('.thought-body');
+              body.style.height='44px'; body.style.maxHeight='44px'; body.style.overflow='auto'; body.style.whiteSpace='pre-wrap';
+              body.textContent=Array.from({length:30},(_,i)=>'推理内容 '+i).join('\\n');
+              body.scrollTop=body.scrollHeight;
+              const follow=captureThoughtScroll(message);
+              body.textContent += '\\n'+Array.from({length:20},(_,i)=>'新增推理 '+i).join('\\n');
+              restoreThoughtScroll(message,follow);
+              await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+              const follows = body.scrollHeight-body.scrollTop-body.clientHeight <= 2;
+              body.scrollTop=0;
+              const reading=captureThoughtScroll(message);
+              body.textContent += '\\n'+Array.from({length:20},(_,i)=>'后续推理 '+i).join('\\n');
+              restoreThoughtScroll(message,reading);
+              await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+              const keepsReading = body.scrollTop <= 2;
+              message.remove();
+              return {follows,keepsReading};
+            }""")
+            assert scroll == {"follows": True, "keepsReading": True}, scroll
+            print("PASS reasoning block follows new text at bottom and preserves manual scroll position")
 
             page.locator("#live-agent").select_option("dsh-win")
             expect(page.locator("#live-provider")).to_be_visible()
@@ -142,6 +188,7 @@ def main() -> None:
             first_agent.select_option("hermes-win")
             task_model=first_row.locator('[data-task-model]')
             expect(task_model.locator("option")).to_have_count(2)
+            first_row.locator('[data-task-provider]').select_option("openai")
             task_model.select_option("openai:gpt-6.1")
             first_agent.select_option("dsh-win")
             expect(first_row.locator('[data-task-provider-wrap]')).to_be_visible()
@@ -155,6 +202,7 @@ def main() -> None:
             assert first_row.locator('[data-task-effort]').input_value() == "high"
             task_model.select_option("gpt-6-luna")
             first_row.locator('[data-task-effort]').select_option("high")
+            page.locator('[data-task-position="1"] [data-task-provider]').select_option("openai")
             page.locator('[data-task-position="1"] [data-task-model]').select_option("openai:gpt-6.1")
             page.locator('[data-confirm-project]').click()
             page.wait_for_function("() => Array.isArray(__confirmation) && __confirmation.length === 2")

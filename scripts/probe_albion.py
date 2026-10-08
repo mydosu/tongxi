@@ -28,7 +28,7 @@ print(json.dumps({str(p):hashlib.md5(p.read_bytes()).hexdigest() for p in files 
 
 def run():
     baseline=profile_hashes(); messages=queue.Queue(); proc=None; report={'success':False,'model_requests':0}; diagnostics=[]; updates=[]
-    # Pin profile before native imports; use the same tool-free chat bridge.
+    # Pin profile before native imports; use the same native-tool chat bridge.
     prelude=(ROOT/'src-tauri/src/albion_prefix.py').read_text(encoding='utf-8')+'\n'
     source=prelude+(ROOT/'src-tauri/src/hermes_bridge.py').read_text(encoding='utf-8')
     try:
@@ -58,13 +58,12 @@ def run():
         initialized=rpc(1,'initialize',{'protocolVersion':1,'clientCapabilities':{'fs':{'readTextFile':False,'writeTextFile':False},'terminal':False},'clientInfo':{'name':'agent-hub-albion-probe','version':'0.4.0'}})
         created=rpc(2,'session/new',{'cwd':LINUX_DATA,'mcpServers':[]})
         applied=rpc(3,'session/set_config_option',{'sessionId':created['sessionId'],'configId':'reasoning_effort','value':'default'})
-        if applied.get('_meta',{}).get('agentHub',{}).get('toolCount')!=0: raise RuntimeError('WSL chat tools are not isolated')
         info=initialized.get('agentInfo',{})
-        report.update(success=True,handshake='ok',native_name=info.get('name'),version=info.get('version'),profile=PROFILE,owned_data=str(DATA),native_session_created=True,tools=0,model_count=len(created.get('models',{}).get('availableModels',[])))
+        report.update(success=True,handshake='ok',native_name=info.get('name'),version=info.get('version'),profile=PROFILE,owned_data=str(DATA),native_session_created=True,tools=applied.get('_meta',{}).get('agentHub',{}).get('toolCount'),model_count=len(created.get('models',{}).get('availableModels',[])))
         if '--prompt' in sys.argv:
             marker='ALBION_PROBE_'+uuid.uuid4().hex[:8]
             report['model_requests']=1
-            result=rpc(4,'session/prompt',{'sessionId':created['sessionId'],'prompt':[{'type':'text','text':'不要调用工具，请用一句话自我介绍，然后原样输出 '+marker+'。'}]})
+            result=rpc(4,'session/prompt',{'sessionId':created['sessionId'],'prompt':[{'type':'text','text':'请用一句话自我介绍，然后原样输出 '+marker+'。'}]})
             text=''.join(u.get('params',{}).get('update',{}).get('content',{}).get('text','') for u in updates if u.get('params',{}).get('update',{}).get('sessionUpdate')=='agent_message_chunk')
             native=json.loads((Path('//wsl.localhost')/DISTRO/LINUX_DATA.lstrip('/')/'runtime-info.json').read_text(encoding='utf-8'))
             report.update(stop_reason=result.get('stopReason'),reply_marker=marker in text,name_detected='阿尔比恩' in text,identity_matched=native['identity_matched'],relationship_matched=native.get('relationship_matched'),reply_characters=len(text))

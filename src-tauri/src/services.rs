@@ -1066,6 +1066,7 @@ mod tests {
             tasks: Vec::new(),
             attempts,
             changes: Vec::new(),
+            agent_messages: Vec::new(),
         }
     }
 

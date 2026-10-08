@@ -436,9 +436,6 @@ impl Runtime {
         }
         let applied = client.rpc("session/set_config_option", json!({"sessionId":session_id,"configId":"reasoning_effort","value":settings.reasoning_effort.as_deref().unwrap_or("default")}))?;
         let applied = &applied["_meta"]["agentHub"];
-        if applied["toolCount"].as_u64() != Some(0) {
-            return Err("Hermes 聊天模式工具隔离检查失败".into());
-        }
         {
             let mut inner = self.inner.lock().unwrap();
             let run = inner
@@ -482,9 +479,7 @@ impl Runtime {
                 json!({"sessionId":session_id,"configId":"hub_development_digest","value":digest}),
             )?;
             let applied = &applied["_meta"]["agentHub"];
-            if applied["toolCount"].as_u64() != Some(0)
-                || applied["digest_injected"].as_bool() != Some(!digest.trim().is_empty())
-            {
+            if applied["digest_injected"].as_bool() != Some(!digest.trim().is_empty()) {
                 return Err("Hermes 摘要注入检查失败".into());
             }
         }

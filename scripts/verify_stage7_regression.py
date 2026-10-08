@@ -32,12 +32,12 @@ def run(resume=False):
             proc,endpoint=desktop.launch();browser=playwright.chromium.connect_over_cdp(endpoint);page=desktop.page_for(browser)
             page.on('pageerror',lambda error:errors.append(str(error)))
             if not resume:
-                direct=prior.new_private(page,'dsh-win','项目工具隔离后的 DSH 私聊')
+                direct=prior.new_private(page,'dsh-win','DSH 原生工具私聊')
                 page.locator('#connect-dsh').click();prior.wait_connection(page,'dsh');dsh.settings(page,None,'off')
                 marker='CHAT_'+uuid.uuid4().hex[:8]
                 reply=prior.wait_run(page,'dsh',prior.send(page,'dsh','不要调用工具。只原样回复 '+marker))
                 native=dsh.native_dsh_evidence(reply)
-                check('real DSH private chat retains zero native tools after project mode added',marker in reply['text'] and bool(native['tool_counts']) and all(count==0 for count in native['tool_counts']))
+                check('real DSH private chat completes and records its native session',marker in reply['text'] and bool(native['contexts']))
                 evidence.append({'dsh_private':native})
                 group=groups.group(page,'项目之后的群聊回归',['hermes-win','dsh-win'])
                 page.locator('#connect-discussion').click();prior.wait_connection(page,'hermes');prior.wait_connection(page,'dsh')
@@ -48,7 +48,7 @@ def run(resume=False):
                 detail=desktop.ipc(page,'get_conversation',id=group);texts={m['id']:m['content'] for m in detail['messages']}
                 check('real two-member group remains operational with public context',finished['status']=='completed' and len(finished['turns'])==2 and all(token in texts[turn['assistant_message_id']] for turn in finished['turns']))
                 group_dsh=next(turn for turn in finished['turns'] if turn['agent_id']=='dsh-win');native_group=dsh.native_dsh_evidence(group_dsh)
-                check('real group DSH also retains zero tools and separate native session',bool(native_group['tool_counts']) and all(count==0 for count in native_group['tool_counts']) and group_dsh['native_thread_id']!=reply['native_thread_id'])
+                check('real group DSH completes in a separate native session',bool(native_group['contexts']) and group_dsh['native_thread_id']!=reply['native_thread_id'])
                 evidence.append({'group':finished,'dsh_group':native_group})
             albion_private=prior.new_private(page,'albion-wsl','WSL 子进程生命周期回归')
             page.locator('#connect-albion').click();catalog=prior.wait_connection(page,'albion')

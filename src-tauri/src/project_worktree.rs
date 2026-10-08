@@ -159,6 +159,168 @@ pub fn is_repo(root: &Path) -> bool {
     crate::project_store::key(Path::new(&top)) == crate::project_store::key(&root)
 }
 
+/// Initialize a local project repository for a newly bound folder without staging secrets,
+/// generated output, nested repositories, links, or files outside the selected root.
+pub fn initialize_safe_repository(root: &Path) -> Result<()> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| "项目目录不可用".to_string())?;
+    if !root.is_dir() || root.parent() == Some(root.as_path()) {
+        return Err("不能在文件系统根目录创建项目仓库".into());
+    }
+    let exe = discover().ok_or("未找到 git 可执行文件，请检查 PATH 或 AGENT_HUB_GIT_EXE")?;
+    let existing_top = git(&root, &["rev-parse", "--show-toplevel"]).ok();
+    match existing_top {
+        Some(top)
+            if crate::project_store::key(Path::new(&top)) == crate::project_store::key(&root) =>
+        {
+            if git(&root, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+                return Ok(());
+            }
+        }
+        Some(_) => return Err("项目目录位于其他 Git 仓库中，请选择仓库顶层目录".into()),
+        None => {
+            git(&root, &["init", "-q"])?;
+        }
+    }
+    let nested = git(&root, &["rev-parse", "--show-toplevel"])?;
+    if crate::project_store::key(Path::new(&nested)) != crate::project_store::key(&root) {
+        return Err("无法在所选项目目录建立独立 Git 仓库".into());
+    }
+
+    fn collect(
+        root: &Path,
+        path: &Path,
+        files: &mut Vec<String>,
+        excluded: &mut Vec<String>,
+    ) -> Result<()> {
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|_| "无法扫描项目目录".to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "项目目录扫描中断".to_string())?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| "项目目录越界".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let metadata =
+                std::fs::symlink_metadata(&path).map_err(|_| "无法检查项目目录项".to_string())?;
+            #[cfg(windows)]
+            let linked = {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes() & 0x400 != 0
+            };
+            #[cfg(not(windows))]
+            let linked = metadata.file_type().is_symlink();
+            if linked {
+                excluded.push(relative);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if metadata.is_dir() {
+                let skip = matches!(
+                    name.as_str(),
+                    ".git"
+                        | ".codex"
+                        | ".hermes"
+                        | ".ssh"
+                        | ".aws"
+                        | ".azure"
+                        | ".kube"
+                        | "target"
+                        | "dist"
+                        | "node_modules"
+                        | ".venv"
+                        | "venv"
+                        | "vendor"
+                        | ".cache"
+                );
+                if skip {
+                    excluded.push(format!("{relative}/"));
+                    continue;
+                }
+                collect(root, &path, files, excluded)?;
+            } else if metadata.is_file() {
+                if crate::project_store::protected_relative(&relative).is_ok()
+                    && !is_secret_filename(&relative)
+                {
+                    files.push(relative);
+                } else {
+                    excluded.push(relative);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    let mut excluded = Vec::new();
+    collect(&root, &root, &mut files, &mut excluded)?;
+    // Keep ignored credentials/generated folders out of every subsequent worktree too.
+    let exclude = root.join(".git").join("info").join("exclude");
+    let mut exclude_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .map_err(|_| "无法保护项目中的凭据与生成目录".to_string())?;
+    for path in excluded {
+        use std::io::Write as _;
+        writeln!(exclude_file, "/{path}")
+            .map_err(|_| "无法保护项目中的凭据与生成目录".to_string())?;
+    }
+    drop(exclude_file);
+
+    for batch in files.chunks(128) {
+        let mut args = vec!["add".to_string(), "--".to_string()];
+        args.extend(batch.iter().cloned());
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run(&exe, &root, &refs, GIT_TIMEOUT, || false)?;
+    }
+    run(
+        &exe,
+        &root,
+        &[
+            "-c",
+            "user.name=agent-hub",
+            "-c",
+            "user.email=hub@local",
+            "commit",
+            "--allow-empty",
+            "--no-verify",
+            "-q",
+            "-m",
+            "Initial safe project baseline",
+        ],
+        GIT_TIMEOUT,
+        || false,
+    )?;
+    if !git(&root, &["status", "--porcelain"])?.is_empty() {
+        return Err("安全文件基线已创建，但项目仍有未跟踪改动，请检查 .git/info/exclude".into());
+    }
+    Ok(())
+}
+
+fn is_secret_filename(name: &str) -> bool {
+    name.rsplit('/').next().is_some_and(|leaf| {
+        leaf == ".npmrc"
+            || leaf == ".pypirc"
+            || leaf == ".netrc"
+            || leaf.starts_with("credentials.")
+            || leaf.starts_with("auth.")
+            || leaf == "secrets.json"
+            || leaf == "token.json"
+            || leaf.ends_with(".pem")
+            || leaf.ends_with(".key")
+            || leaf.ends_with(".p12")
+            || leaf.ends_with(".pfx")
+            || leaf.ends_with(".jks")
+            || leaf.ends_with(".keystore")
+    })
+}
+
 /// 在 `worktree_root/name` 建一个新工作树，检出到新分支 `branch`，返回工作树路径。
 ///
 /// 安全默认：原仓库有未提交改动时拒绝开始。目标目录或分支已存在一律明确报错，不静默复用。
@@ -413,6 +575,41 @@ mod tests {
         assert!(!is_repo(&base));
         let error = create(&base, &base.join("wt"), "task", "hub/task").unwrap_err();
         assert!(error.contains("不是 git 仓库"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn binding_a_plain_folder_creates_a_safe_idempotent_git_baseline() {
+        if git_exe().is_none() {
+            return;
+        }
+        let base = temp_base();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(base.join(".env"), "TOKEN=private-value\n").unwrap();
+        std::fs::write(
+            base.join("credentials.json"),
+            "{\"secret\":\"private-value\"}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(base.join("target/debug")).unwrap();
+        std::fs::write(base.join("target/debug/generated.bin"), b"generated").unwrap();
+
+        initialize_safe_repository(&base).unwrap();
+        assert!(is_repo(&base));
+        let committed = git(&base, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap();
+        assert!(committed.lines().any(|path| path == "src/main.rs"));
+        assert!(!committed.lines().any(|path| matches!(
+            path,
+            ".env" | "credentials.json" | "target/debug/generated.bin"
+        )));
+        assert!(git(&base, &["status", "--porcelain"]).unwrap().is_empty());
+        let first_head = git(&base, &["rev-parse", "HEAD"]).unwrap();
+        initialize_safe_repository(&base).unwrap();
+        assert_eq!(git(&base, &["rev-parse", "HEAD"]).unwrap(), first_head);
+        let worktree = create(&base, &base.join("worktrees"), "task", "hub/task").unwrap();
+        assert!(worktree.join("src/main.rs").is_file());
+        remove(&base, &worktree).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
 

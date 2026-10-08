@@ -52,17 +52,66 @@ try {
   const dshHome = sharedHome ?? resolve(data);
   process.env.DSH_HOME = dshHome;
   mkdirSync(dshHome, { recursive: true });
-  const names = ['llm', 'session', 'agent', 'jobs-local', 'tools', 'system-prompt',
-    'session-persistence-jsonl', 'session-projection', 'llm-pi-ai', 'agent-loop'];
-  const entries = names.map(name => ({ id: name, name: requireNative.resolve(`@deepseek-ai/dsh-${name}`) }));
+  // Keep DSH's native coding tools instead of composing an ACP-only chat shell.
+  // These are the base CLI tools with the Windows PowerShell executor; Hermes still
+  // supplies the selected model route and credentials to this owned child process.
+  process.env.DSH_PERMISSION_MODE = 'danger-full-access';
+  const plugins = [
+    ['llm', 'dsh-llm'], ['session', 'dsh-session'], ['agent', 'dsh-agent'],
+    ['jobs-local', 'dsh-jobs-local'], ['tools', 'dsh-tools'], ['system-prompt', 'dsh-system-prompt'],
+    ['session-persistence-jsonl', 'dsh-session-persistence-jsonl'], ['session-projection', 'dsh-session-projection'],
+    ['llm-pi-ai', 'dsh-llm-pi-ai'], ['agent-loop', 'dsh-agent-loop'],
+    ['sandbox', 'dsh-sandbox-local'], ['sandbox-policy', 'dsh-sandbox-policy'],
+    ['subprocess', 'dsh-subprocess-local'], ['pwsh-sandbox', 'dsh-pwsh-sandbox'],
+    ['approval', 'dsh-user-approval'], ['permission', 'dsh-permission-presets'],
+    ['shell-env', 'dsh-shell-env'], ['tool-pwsh', 'dsh-tool-pwsh'],
+    ['tool-jobs', 'dsh-tool-jobs'], ['fs-observation-policy', 'dsh-fs-observation-policy'],
+    ['tool-fs', 'dsh-tool-fs'], ['tool-fs-search', 'dsh-tool-fs-search'], ['fs-sandbox', 'dsh-fs-sandbox'],
+    ['subagent', 'dsh-subagent'], ['subagent-spawn-in-process', 'dsh-subagent-spawn-in-process'],
+    ['subagent-fork-in-process', 'dsh-subagent-fork-in-process'],
+    ['tool-subagent-control', 'dsh-tool-subagent-control'],
+    ['tool-subagent-list-agents', 'dsh-tool-subagent-control/list-agents'],
+    ['tool-subagent', 'dsh-tool-subagent'], ['tool-subagent-fork', 'dsh-tool-subagent'],
+    ['tool-todo', 'dsh-tool-todo'], ['goal', 'dsh-goal'], ['goal-round-driver', 'dsh-goal-round-driver'],
+    ['command-goal', 'dsh-command-goal'], ['tool-goal', 'dsh-tool-goal'],
+    ['workflow-worker-thread', 'dsh-workflow-worker-thread'], ['tool-workflow', 'dsh-tool-workflow'],
+    ['tool-ralph', 'dsh-tool-ralph'], ['tool-str-replace-editor', 'dsh-tool-str-replace-editor'],
+    ['skill', 'dsh-skill'], ['skill-filesystem', 'dsh-skill-filesystem'], ['tool-skill', 'dsh-tool-skill'],
+    ['commands', 'dsh-commands'], ['agent-instructions', 'dsh-agent-instructions'],
+    ['web', 'dsh-web'], ['web-search-deepseek', 'dsh-web-search-deepseek'],
+    ['web-fetch-http', 'dsh-web-fetch-http'], ['tool-web', 'dsh-tool-web'],
+  ];
+  const entries = plugins.map(([id, packageName]) => ({ id, name: requireNative.resolve(`@deepseek-ai/${packageName}`) }));
   entries.find(item => item.id === 'session-persistence-jsonl').config = {
     root: join(dshHome, 'sessions'), compression: sharedHome ? 'zstd' : 'none' };
   entries.find(item => item.id === 'system-prompt').config = {
     persona: projectMode
-      ? '你是同席项目中唯一的代码实施者与实际修复者 DSH，承担明确分配的编码任务并可承担复杂任务。只使用 agent_hub 提供的文件工具，严格遵守当前任务的文件范围和 SHA256 冲突检查。不要读取其他会话、凭据或目录，不运行命令，不接入其他服务。完成后说明真实修改；验收 agent 会独立复核需求和授权源码。'
-      : '你是同席中独立的 DSH 私聊成员，负责简单编码建议和小问题分析。本阶段只聊天，没有绑定项目，工具执行关闭。直接回答用户，不读取其他会话或凭据。'
+      ? '你是同席项目群中的实现 Agent DSH，按规划承担分配的任务。使用你在 DSH CLI 中配置的工具处理工作，也可调用 hub_message 直接联系群内其他项目 Agent，并用 hub_inbox 读取发给你的消息；如果验收成员不同，完成前须给验收者发简短交接。验收 Agent 会独立复核项目结果。'
+      : '你是同席中独立的 DSH 私聊成员，负责简单编码建议和小问题分析。像在 DSH CLI 中一样，按需使用可用工具解决用户任务；直接回答用户，不引用其他会话内容。'
   };
-  entries.find(item => item.id === 'agent-loop').config = { agents: [] };
+  entries.find(item => item.id === 'sandbox-policy').config = {
+    mode: 'danger-full-access', workspaceRoot: process.cwd()
+  };
+  entries.find(item => item.id === 'approval').config = { policy: 'never' };
+  entries.find(item => item.id === 'permission').config = { presets: {
+    'read-only': { sandbox: 'read-only', approval: 'ask' },
+    'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+    'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' }
+  }};
+  entries.find(item => item.id === 'tool-fs-search').config = { sampleOverCapGlobResults: false };
+  entries.find(item => item.id === 'tool-subagent').config = {
+    provider: 'spawn', toolName: 'subagent', backgroundMode: 'continuable'
+  };
+  entries.find(item => item.id === 'tool-subagent-fork').config = {
+    provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'one-shot'
+  };
+  entries.find(item => item.id === 'tool-todo').config = { allowParallelInProgress: true };
+  entries.find(item => item.id === 'tool-ralph').config = { subagentProvider: 'spawn', maxRounds: 64 };
+  entries.find(item => item.id === 'tool-str-replace-editor').config = { maxOutputChars: 16000 };
+  entries.find(item => item.id === 'agent-instructions').config = { maxBytes: 65536 };
+  entries.find(item => item.id === 'web').config = { searchProvider: 'deepseek-official', fetchProvider: 'http' };
+  entries.find(item => item.id === 'web-search-deepseek').config = { apiKeyEnv: 'DEEPSEEK_API_KEY' };
+  entries.find(item => item.id === 'tool-web').config = { fetch: true, searchTimeoutMs: 60000 };
   entries.push({ id: 'acp', name: requireNative.resolve('@deepseek-ai/dsh-acp'), inject: ['agentLoop'], config: {
     provider: routes[0].id, model: routes[0].model
   }});
@@ -83,8 +132,8 @@ try {
   ctx = await boot('agent-hub-dsh', config, [{ id: 'llm-pi-ai', config: { providers } }], host => {
     host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment);
   }, pathToFileURL(join(installation, 'package.json')).href);
-  // No shell/fs/hooks/telemetry plugins. Dedicated project sessions mount only
-  // the hub's scoped MCP helper through native ACP; chat sessions remain empty.
+  // Keep DSH's native tool/plugin surface. Project sessions additionally mount
+  // the Agent Hub MCP server for direct messages between group members.
   process.stdin.on('end', () => {
     void ctx.fiber.dispose().finally(() => process.exit(0));
   });
