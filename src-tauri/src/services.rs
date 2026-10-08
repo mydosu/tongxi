@@ -1067,6 +1067,7 @@ mod tests {
             attempts,
             changes: Vec::new(),
             agent_messages: Vec::new(),
+            team_messages: Vec::new(),
         }
     }
 
@@ -1083,6 +1084,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             thought: String::new(),
+            tool_events: Vec::new(),
             output: String::new(),
             error: None,
         }

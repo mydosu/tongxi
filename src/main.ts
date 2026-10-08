@@ -60,6 +60,8 @@ const lastFinalRuns: Record<string, string> = {};
 let eventSubscribed = false;
 let latestDiscussion: Discussion | null = null;
 const projectJobs = new Map<string, Workflow>();
+const projectAgentChatDetails = new Map<string, ConversationDetail>();
+const projectTabsByWorkflow = new Map<string, string>();
 let projectRevision = 0;
 let pendingProject: { conversationId: string; messageId: string; content: string } | null = null;
 let pendingSummary: { projectId: string; enabled: boolean } | null = null;
@@ -328,7 +330,198 @@ function renderMessage(message: Message) {
   const thoughtHtml = thought
     ? `<details class="thought"${thinking ? ' open' : ''}><summary>${thinking ? '思考中…' : '思考过程'}</summary><div class="thought-body">${escape(thought)}</div></details>`
     : '';
-  return `<article class="message ${own ? 'own' : 'agent-message'}" data-message-id="${escape(message.id)}"><div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}<div class="bubble">${escape(message.content || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div></article>`;
+  const toolEvents = message.tool_events || [];
+  const eventStatus = (status: string) => status === 'running' ? '进行中' : status === 'failed' ? '失败' : '完成';
+  const toolsHtml = toolEvents.length ? `<details class="message-tool-trace" ${message.status === 'streaming' ? 'open' : ''}><summary>工具活动 · ${toolEvents.length}</summary>${toolEvents.map(event => `<details class="message-tool-event" ${event.status === 'running' ? 'open' : ''}><summary><span>${escape(event.title || event.kind)}</span><small>${eventStatus(event.status)}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</details>` : '';
+  return `<article class="message ${own ? 'own' : 'agent-message'}" data-message-id="${escape(message.id)}"><div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(message.content || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div></article>`;
+}
+
+function projectChatFor(agentId: string) {
+  return detail?.project_agent_chats?.find(chat => chat.agent_id === agentId);
+}
+
+function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string, workflowId: string) {
+  if (host.dataset.bound === 'true') return;
+  host.dataset.bound = 'true';
+  host.addEventListener('submit', event => {
+    if (!(event.target instanceof HTMLFormElement) || !event.target.matches('[data-project-agent-chat-form]')) return;
+    event.preventDefault();
+    void sendProjectAgentChat(host, agentId, chatId);
+  });
+  host.addEventListener('keydown', event => {
+    const target = event.target;
+    if (target instanceof HTMLTextAreaElement && target.matches('[data-project-agent-chat-input]') && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendProjectAgentChat(host, agentId, chatId);
+    }
+  });
+  host.addEventListener('change', event => {
+    const target = event.target as HTMLSelectElement;
+    if (target.matches('[data-project-chat-provider]')) {
+      const models = runtimes[agentId]?.models || [];
+      host.querySelector<HTMLSelectElement>('[data-project-chat-model]')!.innerHTML = modelOptionsHtml(models, target.value, null, escape, '默认模型');
+      host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')!.innerHTML = '<option value="">默认强度</option>';
+      return;
+    }
+    if (target.matches('[data-project-chat-model]')) {
+      const efforts = runtimes[agentId]?.models.find(model => model.id === target.value)?.efforts || Object.keys(effortLabels);
+      host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')!.innerHTML = `<option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}">${escape(effortLabels[effort] || effort)}</option>`).join('')}`;
+    }
+    if (target.matches('[data-project-chat-model], [data-project-chat-effort]')) void saveProjectAgentSettings(host, agentId, chatId);
+  });
+  host.addEventListener('click', event => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-project-agent-chat-share]');
+    if (!target) return;
+    target.disabled = true;
+    void invoke('share_project_agent_message', { groupId: detail?.conversation.id, agentChatId: chatId, messageId: target.dataset.projectAgentChatShare })
+      .then(async () => {
+        if (detail) detail = await invoke<ConversationDetail>('get_conversation', { id: detail.conversation.id });
+        target.textContent = '已分享到团队';
+        updateRuntimeControls();
+      })
+      .catch(error => { target.disabled = false; toast(errorText(error), true); });
+  });
+  host.addEventListener('click', event => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-stop-project-agent]');
+    if (!target) return;
+    target.disabled = true;
+    void invoke<Workflow>('cancel_project_agent', { workflowId, agentId })
+      .then(adoptProject)
+      .catch(error => { target.disabled = false; toast(errorText(error), true); });
+  });
+  host.addEventListener('click', event => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-stop-project-chat-run]');
+    if (!target) return;
+    target.disabled = true;
+    void invoke<RuntimeSnapshot>(`cancel_${harnessKey(agentId)}_run`, { conversationId: chatId })
+      .then(snapshot => adoptRuntime(snapshot, agentId))
+      .catch(error => { target.disabled = false; toast(errorText(error), true); });
+  });
+}
+
+function projectAgentChatMessageHtml(message: Message, agentId: string) {
+  let html = renderMessage(message);
+  if (message.sender_id === agentId && message.status === 'completed') {
+    html = html.replace('</article>', `<button type="button" class="agent-chat-share" data-project-agent-chat-share="${escape(message.id)}">分享到团队</button></article>`);
+  }
+  return html;
+}
+
+function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: ConversationDetail) {
+  const container = host.querySelector<HTMLElement>('.project-agent-chat-messages');
+  if (!container) return;
+  const messages = [...chat.messages];
+  const active = runtimes[agentId]?.active;
+  if (active?.conversation_id === chat.conversation.id) {
+    const virtual: Message = {
+      id: active.assistant_message_id, conversation_id: chat.conversation.id, sender_id: active.agent_id,
+      content: active.text, thought: active.thought, tool_events: active.tool_events, status: busySnapshot(runtimes[agentId]) ? 'streaming' : active.status as Message['status'],
+      created_at: chat.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now(),
+    };
+    const existing = messages.findIndex(message => message.id === virtual.id);
+    if (existing >= 0) messages[existing] = virtual; else messages.push(virtual);
+  }
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  for (const message of messages) {
+    const old = container.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`);
+    const stamp = `${message.status}:${message.content.length}:${(message.thought || '').length}:${(message.tool_events || []).map(event => `${event.event_id}:${event.status}:${(event.output || '').length}`).join('|')}`;
+    if (old?.dataset.paint === stamp) continue;
+    const block = projectAgentChatMessageHtml(message, agentId);
+    if (old) {
+      const scroll = captureThoughtScroll(old);
+      old.outerHTML = block;
+      const next = container.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`);
+      if (next) restoreThoughtScroll(next, scroll);
+      if (next) next.dataset.paint = stamp;
+    } else {
+      container.insertAdjacentHTML('beforeend', block);
+      const next = container.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`);
+      if (next) next.dataset.paint = stamp;
+    }
+  }
+  const stop = host.querySelector<HTMLButtonElement>('[data-stop-project-chat-run]');
+  if (active?.conversation_id === chat.conversation.id && busySnapshot(runtimes[agentId])) {
+    if (!stop) host.querySelector('.project-agent-chat-heading')?.insertAdjacentHTML('beforeend', `<button type="button" class="text-button" data-stop-project-chat-run>停止私聊</button>`);
+  } else stop?.remove();
+  const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
+  const send = host.querySelector<HTMLButtonElement>('[data-project-agent-chat-send]');
+  const blocked = busySnapshot(runtimes[agentId]) || projectAgentBusy(agentId) || runtimes[agentId]?.connection !== 'connected';
+  if (input) input.disabled = blocked;
+  if (send) send.disabled = blocked;
+  if (nearBottom) container.scrollTop = container.scrollHeight;
+}
+
+async function loadProjectAgentChat(card: HTMLElement, workflow: Workflow, agentId: string) {
+  const chat = projectChatFor(agentId);
+  if (!chat) return;
+  const host = card.querySelector<HTMLElement>(`[data-project-chat-id="${chat.conversation_id}"]`);
+  if (!host) return;
+  bindProjectChatHost(host, agentId, chat.conversation_id, workflow.id);
+  try {
+    const saved = projectAgentChatDetails.get(chat.conversation_id) || await invoke<ConversationDetail>('get_conversation', { id: chat.conversation_id });
+    projectAgentChatDetails.set(chat.conversation_id, saved);
+    if (!host.querySelector('.project-agent-chat-heading')) {
+      const settings = saved.sessions.find(session => session.agent_id === agentId);
+      const models = runtimes[agentId]?.models || [];
+      const providers = modelProviders(models);
+      const provider = selectedProvider(models, settings?.model);
+      const selectedModel = settings?.model || '';
+      const efforts = models.find(model => model.id === selectedModel)?.efforts || Object.keys(effortLabels);
+      host.innerHTML = `<div class="project-agent-chat-heading"><strong>${escape(member(agentId).name)} 私聊</strong><span class="project-chat-context">此对话属于当前项目，默认只对你和该 Agent 可见。</span></div><div class="project-agent-chat-settings ${providers.length > 1 ? 'multi-provider' : ''}">${providers.length > 1 ? `<label>提供商<select data-project-chat-provider>${providerOptionsHtml(models, provider, escape)}</select></label>` : ''}<label>模型<select data-project-chat-model>${modelOptionsHtml(models, provider, selectedModel, escape, '默认模型')}</select></label><label>思考<select data-project-chat-effort><option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}" ${effort === settings?.reasoning_effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label></div><div class="project-agent-chat-messages">${saved.messages.map(message => projectAgentChatMessageHtml(message, agentId)).join('')}</div><form class="project-agent-chat-composer" data-project-agent-chat-form><textarea data-project-agent-chat-input rows="2" placeholder="单独发消息给 ${escape(member(agentId).name)}，回复不会自动公开到团队"></textarea><button type="submit" class="primary" data-project-agent-chat-send>发送</button></form>`;
+      bindProjectChatHost(host, agentId, chat.conversation_id, workflow.id);
+    }
+    syncProjectAgentChat(host, agentId, saved);
+  } catch (error) { host.innerHTML = `<p class="workflow-error">${escape(errorText(error))}</p>`; }
+}
+
+async function saveProjectAgentSettings(host: HTMLElement, agentId: string, chatId: string) {
+  try {
+    const model = host.querySelector<HTMLSelectElement>('[data-project-chat-model]')?.value || null;
+    const effort = host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')?.value || null;
+    const saved = await invoke<ConversationDetail>('set_session_settings', { id: chatId, agentId, model, reasoningEffort: effort });
+    projectAgentChatDetails.set(chatId, saved);
+    toast(`${member(agentId).name} 项目私聊设置已保存`);
+  } catch (error) { toast(errorText(error), true); }
+}
+
+async function refreshProjectAgentChat(chatId: string) {
+  try {
+    const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
+    projectAgentChatDetails.set(chatId, saved);
+    if (!detail || saved.conversation.kind !== 'direct') return;
+    const groupId = detail.conversation.id;
+    const refreshedGroup = await invoke<ConversationDetail>('get_conversation', { id: groupId });
+    if (selectedId === groupId) { detail = refreshedGroup; updateRuntimeControls(); }
+    const mapping = detail.project_agent_chats?.find(chat => chat.conversation_id === chatId);
+    const workflow = currentWorkflow();
+    const card = workflow && main.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
+    if (mapping && workflow && card && projectTabsByWorkflow.get(workflow.id) === mapping.agent_id) {
+      const host = card.querySelector<HTMLElement>(`[data-project-chat-id="${chatId}"]`);
+      if (host) {
+        if (!host.querySelector('.project-agent-chat-heading')) await loadProjectAgentChat(card, workflow, mapping.agent_id);
+        else syncProjectAgentChat(host, mapping.agent_id, saved);
+      }
+    }
+  } catch { /* keep the persisted transcript visible on transient refresh errors */ }
+}
+
+async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: string) {
+  const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
+  const text = input?.value.trim();
+  if (!text || !detail) return;
+  if (runtimes[agentId]?.connection !== 'connected') { toast(`请先连接${member(agentId).name}`, true); return; }
+  if (projectAgentBusy(agentId)) { toast(`${member(agentId).name} 正在执行项目任务；可在该模块中断后再私聊`, true); return; }
+  if (busySnapshot(runtimes[agentId])) { toast(`${member(agentId).name} 正在私聊回复`, true); return; }
+  const button = host.querySelector<HTMLButtonElement>('[data-project-agent-chat-send]');
+  if (button) { button.disabled = true; button.textContent = '发送中…'; }
+  try {
+    await invoke<RunRecord>(`send_${harnessKey(agentId)}_message`, { conversationId: chatId, messageId: crypto.randomUUID(), content: text });
+    if (input) input.value = '';
+    const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
+    projectAgentChatDetails.set(chatId, saved);
+    syncProjectAgentChat(host, agentId, saved);
+  } catch (error) { toast(errorText(error), true); }
+  finally { if (button) { button.disabled = false; button.textContent = '发送'; } }
 }
 
 function updateRuntimeControls() {
@@ -360,7 +553,7 @@ function updateRuntimeControls() {
     const messages = main.querySelector('#messages')!;
     const old = messages.querySelector(`[data-message-id="${active.assistant_message_id}"]`);
     const thoughtScroll = captureThoughtScroll(old as HTMLElement | null);
-    const html = renderMessage({ id: active.assistant_message_id, conversation_id: selectedId, sender_id: active.agent_id, content: active.text, thought: active.thought, status: busySnapshot(snapshot) ? 'streaming' : active.status as Message['status'], created_at: detail.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now() });
+    const html = renderMessage({ id: active.assistant_message_id, conversation_id: selectedId, sender_id: active.agent_id, content: active.text, thought: active.thought, tool_events: active.tool_events, status: busySnapshot(snapshot) ? 'streaming' : active.status as Message['status'], created_at: detail.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now() });
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
     if (old) old.outerHTML = html;
     else { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
@@ -426,17 +619,24 @@ function updateDiscussionControls() {
   const groupSend = main.querySelector<HTMLButtonElement>('#send-discussion');
   if (detail.project) {
     if (host) host.hidden = true;
-    const ready = detail.conversation.members.filter(agent => agent !== 'albion-wsl').every(agent => runtimes[agent]?.connection === 'connected' && !busySnapshot(runtimes[agent]) && !projectAgentBusy(agent));
+    const members = detail.conversation.members.filter(agent => agent !== 'albion-wsl');
+    const connected = members.every(agent => runtimes[agent]?.connection === 'connected');
+    const activeWorkflow = workflowBusy(currentWorkflow());
+    const available = activeWorkflow || (connected && members.every(agent => !busySnapshot(runtimes[agent]) && !projectAgentBusy(agent)));
     if (groupSend) {
-      groupSend.textContent = '发送给项目组';
-      groupSend.disabled = !ready || workflowBusy(currentWorkflow()) || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion) || sending || groupConnecting || settingsPending > 0 || detail.conversation.archived;
+      groupSend.textContent = activeWorkflow ? '发到团队' : '开始项目协作';
+      groupSend.disabled = !available || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion) || sending || groupConnecting || settingsPending > 0 || detail.conversation.archived;
     }
+    const projectInput = main.querySelector<HTMLTextAreaElement>('#message-input');
+    if (projectInput) projectInput.placeholder = activeWorkflow ? '给团队追加消息、补充角色或调整任务方向…' : '描述目标；可写明“Codex规划、DSH实现、Hermes验收”…';
+    const composerHint = main.querySelector('.composer-bottom > span');
+    if (composerHint) composerHint.textContent = activeWorkflow ? 'Enter 发到团队 · Shift + Enter 换行' : 'Enter 发送需求并自动协作 · Shift + Enter 换行';
     const save = main.querySelector<HTMLButtonElement>('#save-message');
-    if (save) save.disabled = detail.conversation.archived || sending || workflowBusy(currentWorkflow());
+    if (save) save.disabled = detail.conversation.archived || sending || activeWorkflow;
     const note = main.querySelector('#runtime-note');
-    if (note) note.textContent = ready ? '项目群聊 · 直接发消息。Agent 会结合本轮目标讨论；需要改动时自动分工、实现并验收。' : '请连接项目群成员后开始协作。';
+    if (note) note.textContent = activeWorkflow ? '团队会话进行中 · 新消息会发给当前团队，Agent 的推理与工具过程在各自模块。' : available ? '项目群聊 · 发送需求后 Agent 会自动讨论、分工并执行。' : '请连接项目群成员后开始协作。';
     const badge = main.querySelector('.connection-badge');
-    if (badge) badge.innerHTML = `<span class="status-dot ${ready ? '' : 'muted'}"></span>${workflowBusy(currentWorkflow()) ? '项目协作中' : ready ? '项目组已连接' : '请连接项目成员'}`;
+    if (badge) badge.innerHTML = `<span class="status-dot ${connected ? '' : 'muted'}"></span>${activeWorkflow ? '项目协作中' : connected ? '项目组已连接' : '请连接项目成员'}`;
     return;
   }
   if (host) host.hidden = false;
@@ -485,13 +685,25 @@ async function connectProjectMembers() {
 
 async function sendGroupMessage() {
   await settingsQueue;
-  if (!detail || detail.conversation.kind !== 'group' || sending || detail.conversation.archived || workflowBusy(currentWorkflow()) || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion)) return;
+  if (!detail || detail.conversation.kind !== 'group' || sending || detail.conversation.archived || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion)) return;
   const id = detail.conversation.id;
   const content = main.querySelector<HTMLTextAreaElement>('#message-input')!.value.trim();
   if (!content) return;
   if (detail.project) {
+    const activeWorkflow = currentWorkflow();
+    if (workflowBusy(activeWorkflow)) {
+      sending = true; updateRuntimeControls();
+      try {
+        await invoke('post_project_team_message', { conversationId: id, content });
+        const refreshed = await invoke<ConversationDetail>('get_conversation', { id });
+        if (selectedId === id) detail = refreshed;
+        if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+      } catch (error) { toast(errorText(error), true); }
+      finally { sending = false; updateRuntimeControls(); }
+      return;
+    }
     const members = detail.conversation.members.filter(agent => agent !== 'albion-wsl');
-    if (members.some(agent => runtimes[agent]?.connection !== 'connected' || busySnapshot(runtimes[agent]) || projectAgentBusy(agent))) {
+    if (members.some(agent => runtimes[agent]?.connection !== 'connected')) {
       toast('请先连接项目群成员，并等待当前任务完成', true);
       return;
     }
@@ -570,6 +782,7 @@ function updateProjectControls() {
     let user = messages.querySelector<HTMLElement>(`[data-message-id="${workflow.user_message_id}"]`);
     if (!user) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', renderMessage({ id: workflow.user_message_id, conversation_id: workflow.conversation_id, sender_id: 'user', content: workflow.request, status: state, created_at: workflow.created_at })); user = messages.querySelector(`[data-message-id="${workflow.user_message_id}"]`)!; }
     const current = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
+    const teamMessages = [...new Map([...(detail.project_team_messages || []), ...(workflow.team_messages || [])].map(message => [message.id,message])).values()];
     const layoutStamp = JSON.stringify({
       status: workflow.status,
       plan: workflow.plan?.summary,
@@ -577,13 +790,19 @@ function updateProjectControls() {
       attempts: workflow.attempts.map(attempt => [attempt.id, attempt.stage, attempt.status, attempt.agent_id, attempt.model, attempt.reasoning_effort, !!attempt.thought, !!attempt.output, attempt.error]),
       changes: workflow.changes.map(change => [change.attempt_id, change.path, change.operation, change.after_hash]),
       messages: workflow.agent_messages?.map(message => message.id),
+      projectChats: (detail.project_agent_chats || []).map(chat => [chat.agent_id, chat.conversation_id]),
+      teamMessages: teamMessages.map(message => [message.id, message.content, message.kind]),
       summary: workflow.summary,
       error: workflow.error,
     });
     const paintStamp = `${workflow.updated_at}:${layoutStamp}:${workflow.attempts.map(attempt => `${(attempt.thought || '').length}:${attempt.output.length}`).join('|')}`;
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     if (user.dataset.projectDelivery !== state) { user.dataset.projectDelivery = state; const delivery = user.querySelector('.message-delivery'); if (delivery) delivery.innerHTML = `${icon('check')}${state === 'delivered' ? '已提交原生会话' : state === 'pending' ? '等待项目调度' : '项目请求未完成'}`; }
-    if (current?.dataset.paint === paintStamp) continue;
+    if (current?.dataset.paint === paintStamp) {
+      const selectedTab = projectTabsByWorkflow.get(workflow.id) || 'team';
+      if (selectedTab !== 'team') void loadProjectAgentChat(current, workflow, selectedTab);
+      continue;
+    }
     if (current?.dataset.layout === layoutStamp) {
       for (const attempt of workflow.attempts) {
         const row = current.querySelector<HTMLElement>(`[data-attempt-id="${attempt.id}"]`);
@@ -593,19 +812,25 @@ function updateProjectControls() {
         if (output && output.textContent !== attempt.output) output.textContent = attempt.output;
       }
       current.dataset.paint = paintStamp;
+      const selectedTab = projectTabsByWorkflow.get(workflow.id) || 'team';
+      if (selectedTab !== 'team') void loadProjectAgentChat(current, workflow, selectedTab);
       if (nearBottom) messages.scrollTop = messages.scrollHeight;
       continue;
     }
     const readDisclosureState = (selector: string) => new Map([...current?.querySelectorAll<HTMLDetailsElement>(selector) || []].map(node => [node.dataset.attemptId || node.dataset.thoughtAttemptId!, { open: node.open, userOpen: node.dataset.userOpen, status: node.dataset.attemptStatus || node.closest<HTMLDetailsElement>('[data-attempt-id]')?.dataset.attemptStatus || '' }]));
     const open = readDisclosureState('details[data-attempt-id]');
     const thoughtOpen = readDisclosureState('details[data-thought-attempt-id]');
+    const previousAccordion = current?.querySelector<HTMLDetailsElement>('[data-project-accordion]')?.open;
+    const selectedTab = current?.querySelector<HTMLElement>('.project-tab[aria-selected="true"]')?.dataset.projectTab || projectTabsByWorkflow.get(workflow.id) || 'team';
     const scrollTop = messages.scrollTop;
-    const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || [], roleMembers('implement'));
+    const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || [], roleMembers('implement'), detail.project_agent_chats || [], teamMessages, id => member(id) ? avatar(member(id), 'project-agent-avatar') : `<span class="system-avatar">·</span>`);
     if (current) unbindProjectThoughtFollow(current);
     if (current) current.outerHTML = html; else user.insertAdjacentHTML('afterend', html);
     const card = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`)!;
     card.dataset.layout = layoutStamp;
     card.dataset.paint = paintStamp;
+    const accordion = card.querySelector<HTMLDetailsElement>('[data-project-accordion]');
+    if (accordion && previousAccordion !== undefined) accordion.open = previousAccordion;
     const restoreDisclosure = (node: HTMLDetailsElement, previous: { open: boolean; userOpen?: string; status: string } | undefined, active: boolean) => {
       if (previous?.userOpen !== undefined) node.open = previous.userOpen === 'true';
       else if (previous && ['starting', 'running', 'cancelling'].includes(previous.status) && !active) node.open = false;
@@ -620,10 +845,27 @@ function updateProjectControls() {
       if (thought) restoreDisclosure(thought, thoughtOpen.get(id), active);
     });
     bindProjectThoughtFollow(card);
+    const activateProjectTab = (tab: string) => {
+      projectTabsByWorkflow.set(workflow.id, tab);
+      card.querySelectorAll<HTMLButtonElement>('[data-project-tab]').forEach(button => {
+        const selected = button.dataset.projectTab === tab;
+        button.setAttribute('aria-selected', String(selected));
+      });
+      card.querySelectorAll<HTMLElement>('[data-project-panel]').forEach(panel => { panel.hidden = panel.dataset.projectPanel !== tab; });
+      if (tab !== 'team') void loadProjectAgentChat(card, workflow, tab);
+    };
+    card.querySelectorAll<HTMLButtonElement>('[data-project-tab]').forEach(button => button.addEventListener('click', () => activateProjectTab(button.dataset.projectTab || 'team')));
+    activateProjectTab(selectedTab);
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
     card.querySelector('[data-edit-project-roles]')?.addEventListener('click', () => void editPausedProjectRoles(workflow.id));
     card.querySelector('[data-confirm-project]')?.addEventListener('click', () => void confirmProject(workflow.id, card));
+    card.querySelectorAll<HTMLButtonElement>('[data-stop-project-agent]').forEach(button => button.addEventListener('click', () => {
+      button.disabled = true;
+      void invoke<Workflow>('cancel_project_agent', { workflowId: workflow.id, agentId: button.dataset.stopProjectAgent })
+        .then(adoptProject)
+        .catch(error => { button.disabled = false; toast(errorText(error), true); });
+    }));
     card.querySelectorAll<HTMLSelectElement>('[data-task-agent-select]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
       const agent = select.value;
@@ -1470,6 +1712,9 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
           updateRuntimeControls();
           if (screen === 'services' && old.connection !== event.payload.connection) renderServices();
           const active = event.payload.active;
+          if (active && !busySnapshot(event.payload) && detail?.project_agent_chats?.some(chat => chat.conversation_id === active.conversation_id)) {
+            void refreshProjectAgentChat(active.conversation_id);
+          }
           if (active && !busySnapshot(event.payload) && `${active.id}:${active.status}` !== lastFinalRuns[agentId]) {
             lastFinalRuns[agentId] = `${active.id}:${active.status}`;
             void refreshList().then(() => { if (screen === 'chat' && selectedId === active.conversation_id) return selectConversation(selectedId); }).catch(error => toast(errorText(error), true));

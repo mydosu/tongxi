@@ -284,6 +284,7 @@ impl Runtime {
             record: record.clone(),
             text: String::new(),
             thought: String::new(),
+            tool_events: Vec::new(),
         });
         inner.wire_text.clear();
         drop(inner);
@@ -317,6 +318,7 @@ impl Runtime {
             record: record.clone(),
             text: String::new(),
             thought: String::new(),
+            tool_events: Vec::new(),
         });
         inner.wire_text.clear();
         drop(inner);
@@ -381,21 +383,25 @@ impl Runtime {
                 self.target.cwd(&local)?
             }
         };
+        let project_db = self.store.lock().unwrap().path.clone();
+        let mcp_servers =
+            crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
+                .map_or_else(|| json!([]), |server| json!([server]));
         // 绑着的历史会话在库里找不到时（例如刚切到共用真实库、旧绑定指向同席自己的库），
         // 直接开一条新的，别让整个会话发不出消息；bind_thread 会把新 id 写回。
         let response = match settings.native_session_id.as_ref() {
             Some(session_id) => client
                 .rpc(
                     "session/load",
-                    json!({"sessionId":session_id,"cwd":cwd,"mcpServers":[]}),
+                    json!({"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers.clone()}),
                 )
                 .or_else(|_| {
                     client.rpc(
                         "session/new",
-                        json!({"cwd":self.target.cwd(&self.directory.join(format!("{}-workspaces", self.target.key())).join(&conversation_id))?,"mcpServers":[]}),
+                        json!({"cwd":self.target.cwd(&self.directory.join(format!("{}-workspaces", self.target.key())).join(&conversation_id))?,"mcpServers":mcp_servers.clone()}),
                     )
                 })?,
-            None => client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?,
+            None => client.rpc("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers.clone()}))?,
         };
         let session_id = response["sessionId"]
             .as_str()
@@ -531,6 +537,17 @@ impl Runtime {
             return;
         };
         let update = &params["update"];
+        if let Some(event) = crate::codex::acp_tool_event(update) {
+            crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+            let _ = self
+                .store
+                .lock()
+                .unwrap()
+                .append_tool_event(&run.record, &event);
+            drop(inner);
+            self.emit();
+            return;
+        }
         if update["content"]["type"] != "text" {
             return;
         }

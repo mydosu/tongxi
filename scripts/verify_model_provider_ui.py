@@ -39,7 +39,7 @@ MOCK = r"""
   ];
   const group={id:'provider-test',title:'模型选择回归',kind:'group',archived:false,created_at:now,updated_at:now,members:['hermes-win','codex-win','dsh-win'],message_count:0,preview:''};
   const project={id:'project-test',name:'隔离项目',root:'D:\\Demo',checks:[],summary_enabled:false,created_at:now};
-  const detail={conversation:group,messages:[],discussions:[],project,workflows:[],sessions:group.members.map(agent_id=>({agent_id,session_key:agent_id,native_session_id:null,model:null,reasoning_effort:null}))};
+  const detail={conversation:group,messages:[],discussions:[],project,workflows:[],project_agent_chats:group.members.map(agent_id=>({agent_id,conversation_id:'project-chat-'+agent_id})),project_team_messages:[],sessions:group.members.map(agent_id=>({agent_id,session_key:agent_id,native_session_id:null,model:null,reasoning_effort:null}))};
   globalThis.__providerDemo={detail,models,group,project};
   globalThis.__confirmation=null;
   globalThis.__collaborationRequest=null;
@@ -138,7 +138,13 @@ def main() -> None:
               const {workflowCard}=await import('/src/project_ui.ts');
               const {bindProjectThoughtFollow,unbindProjectThoughtFollow}=await import('/src/project_thought_scroll.ts');
               const base=globalThis.__providerDemo.detail.workflows[0];
-              const render=job=>{const host=document.createElement('div');host.innerHTML=workflowCard(job,x=>String(x),x=>x==='hermes-win'?'Hermes':String(x),(_,value)=>value||'model',()=>[],[]);return host.firstElementChild;};
+              const render=job=>{const host=document.createElement('div');host.innerHTML=workflowCard(job,x=>String(x),x=>x==='hermes-win'?'Hermes':x==='dsh-win'?'DSH':String(x),(_,value)=>value||'model',()=>[],[],[{agent_id:'codex-win',conversation_id:'chat-codex'},{agent_id:'hermes-win',conversation_id:'chat-hermes'},{agent_id:'dsh-win',conversation_id:'chat-dsh'}]);return host.firstElementChild;};
+              const workspaceHost=document.createElement('div');
+              const workspaceJob=structuredClone(base);workspaceJob.status='running';workspaceJob.attempts[0].status='running';
+              workspaceHost.innerHTML=workflowCard(workspaceJob,x=>String(x),x=>x==='hermes-win'?'Hermes':x==='dsh-win'?'DSH':String(x),(_,value)=>value||'model',()=>[],[],[{agent_id:'codex-win',conversation_id:'chat-codex'},{agent_id:'hermes-win',conversation_id:'chat-hermes'},{agent_id:'dsh-win',conversation_id:'chat-dsh'}],[{id:'team-1',project_id:'p',conversation_id:'g',workflow_id:base.id,attempt_id:'planner',source_message_id:null,sender_agent:'hermes-win',kind:'agent',content:'已开始分工',created_at:Date.now()}],id=>'<i>'+id+'</i>');
+              const teamPanel=workspaceHost.querySelector('[data-project-panel=team]');
+              const workspace={collapsible:!!workspaceHost.querySelector('details[data-project-accordion]'),tabs:workspaceHost.querySelectorAll('[data-project-tab]').length,privatePanels:workspaceHost.querySelectorAll('[data-project-chat-id]').length,teamHasThought:!!teamPanel.querySelector('[data-thought-attempt-id]'),agentHasThought:!!workspaceHost.querySelector(`[data-project-panel="${workspaceJob.attempts[0].agent_id}"] [data-thought-attempt-id]`),teamMessage:teamPanel.textContent.includes('已开始分工')};
+              workspaceHost.remove();
               const settled=render(base);
               const settledClosed=!settled.querySelector('[data-thought-attempt-id=planner]').open;
               const approvedJob=structuredClone(base);approvedJob.summary='已对照需求和源码完成验收。';approvedJob.attempts.push({...approvedJob.attempts[0],id:'hermes-review',agent_id:'hermes-win',stage:'review',output:'{"approved":true}'});
@@ -160,11 +166,12 @@ def main() -> None:
               await new Promise(resolve=>setTimeout(resolve,60));
               const manualScrollKept=body.scrollTop<=2;
               unbindProjectThoughtFollow(card);card.remove();
-              return {settledClosed,reviewerLabel,activeOpen,firstFollows,sameBody,manualScrollKept};
+              return {workspace,settledClosed,reviewerLabel,activeOpen,firstFollows,sameBody,manualScrollKept};
             }""")
-            assert thought_ui == {"settledClosed":True,"reviewerLabel":True,"activeOpen":True,"firstFollows":True,"sameBody":True,"manualScrollKept":True}, thought_ui
+            assert thought_ui == {"workspace":{"collapsible":True,"tabs":4,"privatePanels":3,"teamHasThought":False,"agentHasThought":True,"teamMessage":True},"settledClosed":True,"reviewerLabel":True,"activeOpen":True,"firstFollows":True,"sameBody":True,"manualScrollKept":True}, thought_ui
             print("PASS project reasoning follows live growth, keeps manual scroll, and collapses completed thoughts")
             print("PASS completed project result visibly identifies Hermes as the reviewer")
+            print("PASS project workspace separates the shared team feed from per-agent thought modules")
             assert not page.locator("#modal").evaluate("el => el.open"), "each message starts the unified collaboration without another role prompt"
             print("PASS project-bound group uses one composer for discussion and implementation")
             print("PASS discussion-only intent returns in the project timeline without fake tasks")
@@ -276,9 +283,12 @@ def main() -> None:
             expect(page.locator('[data-task-position="0"] [data-task-agent-select]')).to_be_disabled()
             expect(page.locator('[data-task-position="1"] [data-task-agent-select]')).to_be_enabled()
             assert page.evaluate("() => __continueCalls") == 1
-            assert page.locator('[data-attempt-id="plan-attempt"] summary span').inner_text() == "方案完成"
-            assert "任务完成" in page.locator('[data-task-id="task-1"]').inner_text()
-            assert "待执行" in page.locator('[data-task-id="task-2"]').inner_text()
+            plan_status = (page.locator('[data-attempt-id="plan-attempt"] summary span').last.text_content() or '').strip()
+            assert plan_status == "方案完成", repr(plan_status)
+            completed_task_text=page.locator('[data-task-id="task-1"]').text_content() or ''
+            queued_task_text=page.locator('[data-task-id="task-2"]').text_content() or ''
+            assert "任务完成" in completed_task_text, repr(completed_task_text)
+            assert "待执行" in queued_task_text, repr(queued_task_text)
             print("PASS failed project resumes from saved plan and returns to task confirmation")
             print("PASS plan/task status labels do not claim the whole collaboration is complete")
             browser.close()

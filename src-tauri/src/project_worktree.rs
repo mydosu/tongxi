@@ -363,6 +363,40 @@ pub fn attach(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Re
     Ok(path)
 }
 
+/// Reuse an interrupted task's existing worktree without discarding uncommitted partial work.
+pub fn reuse(root: &Path, worktree_root: &Path, path: &Path, branch: &str) -> Result<PathBuf> {
+    let root = root.canonicalize().map_err(|_| "项目目录不可用")?;
+    let worktree_root = worktree_root
+        .canonicalize()
+        .map_err(|_| "工作树目录不可用")?;
+    let path = path.canonicalize().map_err(|_| "中断任务的工作树不存在")?;
+    if path.parent() != Some(worktree_root.as_path()) {
+        return Err("中断任务工作树不在同席授权目录内".into());
+    }
+    let top = git(&path, &["rev-parse", "--show-toplevel"])?;
+    let top = PathBuf::from(top.trim())
+        .canonicalize()
+        .map_err(|_| "工作树身份无效")?;
+    if top != path {
+        return Err("中断任务工作树身份不匹配".into());
+    }
+    let current = git(&path, &["branch", "--show-current"])?;
+    if current.trim() != branch {
+        return Err("中断任务工作树分支不匹配".into());
+    }
+    let listed = git(&root, &["worktree", "list", "--porcelain"])?;
+    if !listed.lines().any(|line| {
+        line.strip_prefix("worktree ").is_some_and(|entry| {
+            Path::new(entry)
+                .canonicalize()
+                .is_ok_and(|entry| entry == path)
+        })
+    }) {
+        return Err("Git 未登记此中断任务工作树".into());
+    }
+    Ok(path)
+}
+
 /// 删掉一个工作树（`--force`：任务分支上的改动已在别处保留，这里只清理现场）。
 pub fn remove(root: &Path, path: &Path) -> Result<()> {
     if !is_repo(root) {
@@ -521,6 +555,26 @@ mod tests {
         remove(&repo, &resumed).unwrap();
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn interrupted_worktree_reuse_preserves_partial_files_and_checks_identity() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let repo = base.join("repo");
+        let worktree_root = base.join("wt");
+        assert!(init_repo(&exe, &repo));
+        let path = create(&repo, &worktree_root, "task-resume", "hub/task-resume").unwrap();
+        std::fs::write(path.join("feat.txt"), "partial edit\n").unwrap();
+        let reused = reuse(&repo, &worktree_root, &path, "hub/task-resume").unwrap();
+        assert_eq!(reused, path.canonicalize().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(reused.join("feat.txt")).unwrap(),
+            "partial edit\n"
+        );
+        assert!(reuse(&repo, &worktree_root, &path, "hub/wrong-branch").is_err());
+        remove(&repo, &reused).unwrap();
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
