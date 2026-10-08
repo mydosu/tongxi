@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
+const MAX_REVIEW_SOURCE_BYTES: usize = 192 * 1024;
 const PLAN_PROMPT_WITH_TOOLS: &str = "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的源码；此步骤只读，不能修改文件或运行命令。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度；建议之后可由用户逐项修改。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、凭据路径、.git 或框架数据，也不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 const PLAN_PROMPT_READONLY: &str = "你是本次项目协作的方案制定者，当前没有项目文件工具，只能依据提供的文件清单和需求制定方案；不要输出工具调用。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度，并会由用户逐项确认。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
@@ -672,7 +673,7 @@ impl Runtime {
         let mut sources = Vec::new();
         for path in files {
             match broker.call("hub_read",json!({"path":path})) {
-                Ok(file)=>{total+=file["content"].as_str().unwrap_or("").len();if total>64_000{return Err("本轮项目源码超过验收上下文限制，请拆分任务".into());}sources.push(file);},
+                Ok(file)=>{total+=file["content"].as_str().unwrap_or("").len();if total>MAX_REVIEW_SOURCE_BYTES{return Err("本轮项目源码超过验收上下文限制，请拆分任务".into());}sources.push(file);},
                 Err(_)=>sources.push(json!({"path":path,"content":null,"note":"文件不存在、已删除或无法以授权文本方式读取"})),
             }
         }
