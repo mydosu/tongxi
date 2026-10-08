@@ -228,6 +228,23 @@ fn failed_planning_can_resume_from_saved_plan_output_without_another_plan_attemp
 }
 
 #[test]
+fn cancelling_idle_plan_finishes_immediately_and_preserves_resume_path() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let proposed = plan(&["src/retry.rs"]);
+    let planned = f.plan_with(&workflow, &proposed);
+    let cancelled = f.store.cancel_workflow(&workflow.id).unwrap();
+    assert_eq!(cancelled.status, "interrupted");
+    assert_eq!(cancelled.tasks[0].status, "skipped");
+
+    let resumed = f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    assert_eq!(resumed.status, "planning");
+    assert_eq!(resumed.tasks[0].status, "queued");
+    assert_eq!(resumed.plan, planned.plan);
+}
+
+#[test]
 fn failed_execution_can_reopen_its_plan_and_reset_tasks_for_confirmation() {
     let mut f = Fixture::new();
     let workflow = f.queued();

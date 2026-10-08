@@ -1281,6 +1281,17 @@ impl Store {
                     params![now(), id],
                 )
                 .map_err(|e| e.to_string())?;
+            let active: bool = self
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM project_attempts WHERE workflow_id=?1 AND status IN ('starting','running','cancelling'))",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if !active {
+                return self.finish_workflow(id, "interrupted", "", Some("用户停止了协作"));
+            }
         }
         self.workflow(id)
     }

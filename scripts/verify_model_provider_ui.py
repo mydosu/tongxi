@@ -159,7 +159,10 @@ def main() -> None:
             resume.click()
             expect(page.locator('[data-confirm-project]')).to_be_visible()
             assert page.evaluate("() => __continueCalls") == 1
+            assert page.locator('[data-attempt-id="plan-attempt"] summary span').inner_text() == "方案完成"
+            assert "待执行" in page.locator('[data-task-id="task-1"]').inner_text()
             print("PASS failed project resumes from saved plan and returns to task confirmation")
+            print("PASS plan/task status labels do not claim the whole collaboration is complete")
             browser.close()
     finally:
         server.terminate()
