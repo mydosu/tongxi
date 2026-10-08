@@ -5,6 +5,7 @@ import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Mess
 import { bindingDialog, planningDialog, workflowBusy, workflowCard, workflowRoles } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
+import { bindProjectThoughtFollow, unbindProjectThoughtFollow } from './project_thought_scroll';
 import './styles.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -569,18 +570,56 @@ function updateProjectControls() {
     let user = messages.querySelector<HTMLElement>(`[data-message-id="${workflow.user_message_id}"]`);
     if (!user) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', renderMessage({ id: workflow.user_message_id, conversation_id: workflow.conversation_id, sender_id: 'user', content: workflow.request, status: state, created_at: workflow.created_at })); user = messages.querySelector(`[data-message-id="${workflow.user_message_id}"]`)!; }
     const current = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
-    const stamp = `${workflow.updated_at}:${workflow.status}:${workflow.tasks.map(task => task.agent_id).join(',')}:${workflow.attempts.map(attempt => `${attempt.status}:${(attempt.thought || '').length}:${attempt.output.length}`).join('|')}:${workflow.changes.length}`;
-    if (user.dataset.projectDelivery !== state) { user.dataset.projectDelivery = state; const delivery = user.querySelector('.message-delivery'); if (delivery) delivery.innerHTML = `${icon('check')}${state === 'delivered' ? '已提交原生会话' : state === 'pending' ? '等待项目调度' : '项目请求未完成'}`; }
-    if (current?.dataset.paint === stamp) continue;
-    const open = new Map([...current?.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id]') || []].map(node => [node.dataset.attemptId!, node.open]));
-    const thoughtOpen = new Map([...current?.querySelectorAll<HTMLDetailsElement>('details[data-thought-attempt-id]') || []].map(node => [node.dataset.thoughtAttemptId!, node.open]));
+    const layoutStamp = JSON.stringify({
+      status: workflow.status,
+      plan: workflow.plan?.summary,
+      tasks: workflow.tasks.map(task => [task.id, task.status, task.agent_id, task.model, task.effort, task.worktree, task.branch, task.error]),
+      attempts: workflow.attempts.map(attempt => [attempt.id, attempt.stage, attempt.status, attempt.agent_id, attempt.model, attempt.reasoning_effort, !!attempt.thought, !!attempt.output, attempt.error]),
+      changes: workflow.changes.map(change => [change.attempt_id, change.path, change.operation, change.after_hash]),
+      messages: workflow.agent_messages?.map(message => message.id),
+      summary: workflow.summary,
+      error: workflow.error,
+    });
+    const paintStamp = `${workflow.updated_at}:${layoutStamp}:${workflow.attempts.map(attempt => `${(attempt.thought || '').length}:${attempt.output.length}`).join('|')}`;
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+    if (user.dataset.projectDelivery !== state) { user.dataset.projectDelivery = state; const delivery = user.querySelector('.message-delivery'); if (delivery) delivery.innerHTML = `${icon('check')}${state === 'delivered' ? '已提交原生会话' : state === 'pending' ? '等待项目调度' : '项目请求未完成'}`; }
+    if (current?.dataset.paint === paintStamp) continue;
+    if (current?.dataset.layout === layoutStamp) {
+      for (const attempt of workflow.attempts) {
+        const row = current.querySelector<HTMLElement>(`[data-attempt-id="${attempt.id}"]`);
+        const thought = row?.querySelector<HTMLElement>('.attempt-thought-content');
+        if (thought && thought.textContent !== attempt.thought) thought.textContent = attempt.thought;
+        const output = row?.querySelector<HTMLElement>('.attempt-output');
+        if (output && output.textContent !== attempt.output) output.textContent = attempt.output;
+      }
+      current.dataset.paint = paintStamp;
+      if (nearBottom) messages.scrollTop = messages.scrollHeight;
+      continue;
+    }
+    const readDisclosureState = (selector: string) => new Map([...current?.querySelectorAll<HTMLDetailsElement>(selector) || []].map(node => [node.dataset.attemptId || node.dataset.thoughtAttemptId!, { open: node.open, userOpen: node.dataset.userOpen, status: node.dataset.attemptStatus || node.closest<HTMLDetailsElement>('[data-attempt-id]')?.dataset.attemptStatus || '' }]));
+    const open = readDisclosureState('details[data-attempt-id]');
+    const thoughtOpen = readDisclosureState('details[data-thought-attempt-id]');
+    const scrollTop = messages.scrollTop;
     const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || [], roleMembers('implement'));
+    if (current) unbindProjectThoughtFollow(current);
     if (current) current.outerHTML = html; else user.insertAdjacentHTML('afterend', html);
     const card = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`)!;
-    card.dataset.paint = stamp;
-    card.querySelectorAll<HTMLDetailsElement>('[data-attempt-id]').forEach(node => { if (open.has(node.dataset.attemptId!)) node.open = open.get(node.dataset.attemptId!)!; });
-    card.querySelectorAll<HTMLDetailsElement>('[data-thought-attempt-id]').forEach(node => { if (thoughtOpen.has(node.dataset.thoughtAttemptId!)) node.open = thoughtOpen.get(node.dataset.thoughtAttemptId!)!; });
+    card.dataset.layout = layoutStamp;
+    card.dataset.paint = paintStamp;
+    const restoreDisclosure = (node: HTMLDetailsElement, previous: { open: boolean; userOpen?: string; status: string } | undefined, active: boolean) => {
+      if (previous?.userOpen !== undefined) node.open = previous.userOpen === 'true';
+      else if (previous && ['starting', 'running', 'cancelling'].includes(previous.status) && !active) node.open = false;
+      else node.open = previous?.open ?? active;
+      node.querySelector('summary')?.addEventListener('click', () => requestAnimationFrame(() => { node.dataset.userOpen = String(node.open); }));
+    };
+    card.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id]').forEach(node => {
+      const id = node.dataset.attemptId!;
+      const active = ['starting', 'running', 'cancelling'].includes(node.dataset.attemptStatus || '');
+      restoreDisclosure(node, open.get(id), active);
+      const thought = node.querySelector<HTMLDetailsElement>('details[data-thought-attempt-id]');
+      if (thought) restoreDisclosure(thought, thoughtOpen.get(id), active);
+    });
+    bindProjectThoughtFollow(card);
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
     card.querySelector('[data-edit-project-roles]')?.addEventListener('click', () => void editPausedProjectRoles(workflow.id));
@@ -617,6 +656,7 @@ function updateProjectControls() {
       row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = `<option value="">自动</option>${efforts.map(value => `<option value="${escape(value)}">${escape(effortLabels[value] || value)}</option>`).join('')}`;
     }));
     if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    else messages.scrollTop = scrollTop;
   }
 }
 
