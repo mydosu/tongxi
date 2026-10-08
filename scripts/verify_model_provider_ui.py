@@ -134,6 +134,34 @@ def main() -> None:
             thought.wait_for(state="attached")
             assert thought.count()==1 and '规划阶段思考增量' in thought.text_content()
             print("PASS project workflow displays persisted streaming thought separately from final output")
+            thought_ui=page.evaluate("""async () => {
+              const {workflowCard}=await import('/src/project_ui.ts');
+              const {bindProjectThoughtFollow,unbindProjectThoughtFollow}=await import('/src/project_thought_scroll.ts');
+              const base=globalThis.__providerDemo.detail.workflows[0];
+              const render=job=>{const host=document.createElement('div');host.innerHTML=workflowCard(job,x=>String(x),x=>String(x),(_,value)=>value||'model',()=>[],[]);return host.firstElementChild;};
+              const settled=render(base);
+              const settledClosed=!settled.querySelector('[data-thought-attempt-id=planner]').open;
+              const activeJob=structuredClone(base);activeJob.attempts[0].status='running';
+              const active=render(activeJob);
+              const activeOpen=active.querySelector('[data-thought-attempt-id=planner]').open;
+              const card=document.createElement('article');
+              card.innerHTML='<details class="attempt-thought" data-active="true" open><div class="attempt-thought-output" style="height:60px;overflow:auto"><div class="attempt-thought-content" style="white-space:pre-wrap"></div></div></details>';
+              document.body.append(card);
+              const body=card.querySelector('.attempt-thought-output'), content=card.querySelector('.attempt-thought-content');
+              content.textContent=Array.from({length:35},(_,i)=>'思考行 '+i).join('\\n');
+              bindProjectThoughtFollow(card);
+              await new Promise(resolve=>setTimeout(resolve,60));
+              const firstFollows=body.scrollHeight-body.scrollTop-body.clientHeight<=2;
+              const sameBody=body===card.querySelector('.attempt-thought-output');
+              body.scrollTop=0;body.dispatchEvent(new Event('scroll'));await new Promise(requestAnimationFrame);
+              content.textContent+='\\n'+Array.from({length:10},(_,i)=>'新增行 '+i).join('\\n');
+              await new Promise(resolve=>setTimeout(resolve,60));
+              const manualScrollKept=body.scrollTop<=2;
+              unbindProjectThoughtFollow(card);card.remove();
+              return {settledClosed,activeOpen,firstFollows,sameBody,manualScrollKept};
+            }""")
+            assert thought_ui == {"settledClosed":True,"activeOpen":True,"firstFollows":True,"sameBody":True,"manualScrollKept":True}, thought_ui
+            print("PASS project reasoning follows live growth, keeps manual scroll, opens only active thought by default")
             assert not page.locator("#modal").evaluate("el => el.open"), "each message starts the unified collaboration without another role prompt"
             print("PASS project-bound group uses one composer for discussion and implementation")
             print("PASS discussion-only intent returns in the project timeline without fake tasks")
