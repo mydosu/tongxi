@@ -1087,6 +1087,16 @@ fn project_recovery_interrupts_instead_of_replaying_and_releases_lease() {
 }
 
 #[test]
+fn project_attempt_thought_is_persisted_as_streaming_progress() {
+    let mut f = Fixture::new();
+    let mut attempt = f.implement(&["thought.py"]);
+    attempt.thought = "先检查任务文件，再验证调用路径。".into();
+    f.store.checkpoint_attempt(&attempt).unwrap();
+    let saved = f.store.attempt(&attempt.id).unwrap();
+    assert_eq!(saved.thought, attempt.thought);
+}
+
+#[test]
 fn project_broker_writes_edits_deletes_with_hashes_and_preserves_first_backup() {
     let mut f = Fixture::new();
     std::fs::write(f.root.join("a.py"), "before").unwrap();

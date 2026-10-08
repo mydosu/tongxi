@@ -156,7 +156,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 11 {
+        if version != 12 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {

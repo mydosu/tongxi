@@ -1082,6 +1082,7 @@ mod tests {
             native_turn_id: None,
             model: None,
             reasoning_effort: None,
+            thought: String::new(),
             output: String::new(),
             error: None,
         }

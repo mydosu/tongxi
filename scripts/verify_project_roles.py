@@ -311,7 +311,7 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     )
     daily_one = next(model for model in dsh_models if json.loads(model)[0] == "command-code-daily")
     page.select_option('[data-role-model="implement"]', daily_one)
-    page.select_option('[data-role-effort="implement"]', "off")
+    page.select_option('[data-role-effort="implement"]', "high")
     page.select_option('[data-role-agent="review"]', "codex-win")
     page.select_option('[data-role-model="review"]', "gpt-6-luna")
     page.select_option('[data-role-effort="review"]', "low")
@@ -327,6 +327,8 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     done = observe(page, room, lambda j: j["status"] in ("completed", "failed"))
     check(title + "：群聊消息自动跑完协作", done["status"] == "completed")
     check(title + "：全部实现任务使用阶段设置的执行成员", bool(done["tasks"]) and all(task["agent_id"] == roles["implement"]["agent"] for task in done["tasks"]))
+    dsh_attempts = [attempt for attempt in done["attempts"] if attempt["stage"] == "implement" and attempt["agent_id"] == "dsh-win"]
+    check(title + "：DSH 思考增量单独持久化", bool(dsh_attempts) and any(attempt.get("thought") for attempt in dsh_attempts))
     commit_subjects = [
         subprocess.run(["git", "log", "-1", "--format=%s", task["branch"]], cwd=str(venue_dir), check=True, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         for task in done["tasks"]
@@ -334,7 +336,7 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     check(title + "：每项实现任务完成后先提交其工作树改动", len(commit_subjects) == len(done["tasks"]) and all(subject.startswith("hub: ") for subject in commit_subjects))
     check(title + "：无需角色选择弹窗或方案确认", not page.locator("#role-form").is_visible() and not page.locator("[data-confirm-project]").is_visible())
     saved = json.loads(done["roles"])
-    check(title + "：协作准确采用已保存的三阶段设置", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["implement"]["model"] == daily_one and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
+    check(title + "：协作准确采用已保存的三阶段设置", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["implement"]["model"] == daily_one and saved["implement"]["effort"] == "high" and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
     check(title + "：DSH 向验收 Agent 发出直达协作消息", any(message["sender_agent"] == "dsh-win" and message["recipient_agent"] == "codex-win" for message in done.get("agent_messages", [])))
     check(title + "：本次改动出现在同一群聊工作区", any(change["path"] == "calc.py" for change in done["changes"]))
     calc_module = load_module(venue_dir / "calc.py", "unified_ui_calc")

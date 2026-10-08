@@ -236,6 +236,9 @@ body.maximized .resize-edge { display: none; }
 .agent-message-row > span { color: #7e8793; font-size: 10px; }
 .agent-message-row > p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .attempt-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.8; background: #fff; border-radius: 5px; padding: 10px; user-select: text; }
+.attempt-thought { margin: 8px 0; border: 1px solid #e6e8ec; border-radius: 7px; background: #fbfbfc; }
+.attempt-thought > summary { padding: 7px 10px; color: #7a8492; font-size: 10px; cursor: pointer; }
+.attempt-thought-output { margin: 0; padding: 8px 10px 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; color: #727d8c; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.7; user-select: text; }
 .project-changes ul { padding-left: 18px; }
 .project-changes li { margin: 6px 0; overflow-wrap: anywhere; }
 .project-changes li > span { color: #818a98; font-size: 9px; margin-left: 10px; }
