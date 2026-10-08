@@ -297,7 +297,7 @@ def parallel_round(page, root, title, roles, expect_plan, expect_implement):
 def ui_round(page, root, title, roles, expect_plan, expect_implement):
     """配置群内阶段 Agent/模型后，用同一个输入入口自动实现、直发协作消息并验收。"""
     venue_dir = root / "ui"
-    room, _, calc, _ = venue(page, title, venue_dir, roles, members=["codex-win", "dsh-win"])
+    room, _, calc, _ = venue(page, title, venue_dir, roles, members=["codex-win", "dsh-win", "hermes-win"])
     desktop.choose(page, room)
     page.click("#project-roles")
     page.locator("#role-form").wait_for(state="visible")
@@ -312,13 +312,18 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     daily_one = next(model for model in dsh_models if json.loads(model)[0] == "command-code-daily")
     page.select_option('[data-role-model="implement"]', daily_one)
     page.select_option('[data-role-effort="implement"]', "high")
-    page.select_option('[data-role-agent="review"]', "codex-win")
-    page.select_option('[data-role-model="review"]', "gpt-6-luna")
-    page.select_option('[data-role-effort="review"]', "low")
+    page.select_option('[data-role-agent="review"]', "hermes-win")
+    review_providers = page.eval_on_selector_all('[data-role-provider="review"] option', "els => els.map(e => e.value).filter(Boolean)")
+    review_provider = next(provider for provider in review_providers if "command-code-daily-1" in provider)
+    page.select_option('[data-role-provider="review"]', review_provider)
+    review_models = page.eval_on_selector_all('[data-role-model="review"] option', "els => els.map(e => e.value).filter(Boolean)")
+    review_model = next(model for model in review_models if "deepseek-v4.1-flash" in model)
+    page.select_option('[data-role-model="review"]', review_model)
+    page.select_option('[data-role-effort="review"]', "high")
     page.locator("#role-form .primary").click()
     page.locator("#role-form").wait_for(state="hidden")
     project_roles = desktop.ipc(page, "get_conversation", id=room)["project_roles"]
-    check(title + "：群聊持久化三个阶段的成员、模型与强度", project_roles["plan"]["model"] == "gpt-6-luna" and project_roles["implement"]["model"] == daily_one and project_roles["review"]["model"] == "gpt-6-luna")
+    check(title + "：群聊持久化三个阶段的成员、模型与强度", project_roles["plan"]["model"] == "gpt-6-luna" and project_roles["implement"]["model"] == daily_one and project_roles["review"]["agent"] == "hermes-win" and project_roles["review"]["model"] == review_model and project_roles["review"]["effort"] == "high")
     request = '请由 DSH 把 calc.py 里的 square(value) 改成返回平方（支持负数、零），只修改 calc.py，不改其他文件。'
     page.fill("#message-input", request)
     check(title + "：项目群没有独立执行按钮", page.locator("#send-project").count() == 0)
@@ -326,6 +331,9 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     page.click("#send-discussion")
     done = observe(page, room, lambda j: j["status"] in ("completed", "failed"))
     check(title + "：群聊消息自动跑完协作", done["status"] == "completed")
+    hermes_reviews = [attempt for attempt in done["attempts"] if attempt["stage"] == "review" and attempt["agent_id"] == "hermes-win"]
+    check(title + "：所有实现完成后自动启动 Hermes 验收", bool(hermes_reviews) and hermes_reviews[-1]["status"] == "completed")
+    check(title + "：Hermes 验收结论返回项目群协作结果", bool(done.get("summary")) and not done.get("error"))
     check(title + "：全部实现任务使用阶段设置的执行成员", bool(done["tasks"]) and all(task["agent_id"] == roles["implement"]["agent"] for task in done["tasks"]))
     dsh_attempts = [attempt for attempt in done["attempts"] if attempt["stage"] == "implement" and attempt["agent_id"] == "dsh-win"]
     check(title + "：DSH 思考增量单独持久化", bool(dsh_attempts) and any(attempt.get("thought") for attempt in dsh_attempts))
@@ -336,8 +344,8 @@ def ui_round(page, root, title, roles, expect_plan, expect_implement):
     check(title + "：每项实现任务完成后先提交其工作树改动", len(commit_subjects) == len(done["tasks"]) and all(subject.startswith("hub: ") for subject in commit_subjects))
     check(title + "：无需角色选择弹窗或方案确认", not page.locator("#role-form").is_visible() and not page.locator("[data-confirm-project]").is_visible())
     saved = json.loads(done["roles"])
-    check(title + "：协作准确采用已保存的三阶段设置", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["implement"]["model"] == daily_one and saved["implement"]["effort"] == "high" and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
-    check(title + "：DSH 向验收 Agent 发出直达协作消息", any(message["sender_agent"] == "dsh-win" and message["recipient_agent"] == "codex-win" for message in done.get("agent_messages", [])))
+    check(title + "：协作准确采用已保存的三阶段设置", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["implement"]["model"] == daily_one and saved["implement"]["effort"] == "high" and saved["review"]["agent"] == "hermes-win" and saved["review"]["model"] == review_model and saved["review"]["effort"] == "high")
+    check(title + "：DSH 向 Hermes 验收成员发出直达协作消息", any(message["sender_agent"] == "dsh-win" and message["recipient_agent"] == "hermes-win" for message in done.get("agent_messages", [])))
     check(title + "：本次改动出现在同一群聊工作区", any(change["path"] == "calc.py" for change in done["changes"]))
     calc_module = load_module(venue_dir / "calc.py", "unified_ui_calc")
     check(title + "：最终源码满足本轮明确目标", calc_module.square(3) == 9 and calc_module.square(-4) == 16 and calc_module.square(0) == 0)
