@@ -38,7 +38,7 @@ try {
       baseURL: route.baseURL, apiKeyEnv: key, headers: route.headers, reasoning: 'low',
       compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false, maxTokensField: 'max_tokens' },
       models: [{ id: route.model, name: `${route.name} · DS v4.1`, contextWindow: 262144,
-        maxTokens: 16384, reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' } }],
+        reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' } }],
       retryPolicy: { mode: 'normal', maxRetries: 0 } };
     route.apiKey = null;
   });

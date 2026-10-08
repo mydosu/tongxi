@@ -603,18 +603,8 @@ impl Runtime {
         );
         match result {
             Ok(value) => {
-                let status = match value["stopReason"].as_str() {
-                    Some("cancelled") => "interrupted",
-                    Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => {
-                        "completed"
-                    }
-                    _ => "failed",
-                };
-                self.finish(
-                    run_id,
-                    status,
-                    (status == "failed").then(|| "DSH 未返回正常完成状态".into()),
-                );
+                let (status, error) = completion_from_stop_reason(value["stopReason"].as_str());
+                self.finish(run_id, status, error.map(str::to_owned));
             }
             Err(error) => {
                 self.finish(run_id, "failed", Some(error.clone()));
@@ -647,7 +637,7 @@ impl Runtime {
         // ACP 把「思考」和「正文」分成两种 chunk：思考进可折叠的思考块，正文进气泡。
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_thought_chunk" => run.thought.push_str(text),
-            "agent_message_chunk" => run.text.push_str(text),
+            "agent_message_chunk" => append_message_chunk(&mut run.text, text),
             _ => return,
         }
         if checkpoint {
@@ -766,6 +756,22 @@ impl Runtime {
     }
 }
 
+fn append_message_chunk(output: &mut String, text: &str) {
+    output.push_str(text);
+}
+
+fn completion_from_stop_reason(reason: Option<&str>) -> (&'static str, Option<&'static str>) {
+    match reason {
+        Some("cancelled") => ("interrupted", None),
+        Some("end_turn" | "max_turn_requests" | "refusal") => ("completed", None),
+        Some("max_tokens") => (
+            "failed",
+            Some("DSH 输出达到上游 token 上限，返回内容可能不完整"),
+        ),
+        _ => ("failed", Some("DSH 未返回正常完成状态")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,5 +828,27 @@ mod tests {
             current_option(&response, "model").as_deref(),
             Some("[\"provider\",\"flash\"]")
         );
+    }
+
+    #[test]
+    fn message_chunks_are_not_clipped_at_the_old_output_budget() {
+        let mut output = String::new();
+        append_message_chunk(&mut output, &"x".repeat(16_384));
+        append_message_chunk(&mut output, "beyond-old-budget");
+        assert_eq!(output.len(), 16_384 + "beyond-old-budget".len());
+        assert!(output.ends_with("beyond-old-budget"));
+    }
+
+    #[test]
+    fn max_tokens_is_reported_as_incomplete_instead_of_success() {
+        assert_eq!(
+            completion_from_stop_reason(Some("max_tokens")),
+            (
+                "failed",
+                Some("DSH 输出达到上游 token 上限，返回内容可能不完整")
+            )
+        );
+        assert_eq!(completion_from_stop_reason(Some("end_turn")), ("completed", None));
+        assert_eq!(completion_from_stop_reason(Some("cancelled")), ("interrupted", None));
     }
 }
