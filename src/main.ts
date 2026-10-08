@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
-import { bindingDialog, planningDialog, workflowBusy, workflowCard } from './project_ui';
+import { bindingDialog, planningDialog, workflowBusy, workflowCard, workflowRoles } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import './styles.css';
 
@@ -518,19 +518,26 @@ function updateProjectControls() {
     card.querySelectorAll<HTMLDetailsElement>('[data-attempt-id]').forEach(node => { if (open.has(node.dataset.attemptId!)) node.open = open.get(node.dataset.attemptId!)!; });
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
+    card.querySelector('[data-edit-project-roles]')?.addEventListener('click', () => void editPausedProjectRoles(workflow.id));
     card.querySelector('[data-confirm-project]')?.addEventListener('click', () => void confirmProject(workflow.id, card));
     card.querySelectorAll<HTMLSelectElement>('[data-task-agent-select]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
       const agent = select.value;
       const models = runtimes[agent]?.models || [];
       const providers = modelProviders(models);
-      const provider = selectedProvider(models, null);
+      const rolePreset = agent === row.dataset.roleAgent && row.dataset.roleModel ? row.dataset.roleModel : '';
+      const planPreset = agent === row.dataset.planAgent && row.dataset.planModel ? row.dataset.planModel : '';
+      const presetModel = rolePreset || planPreset;
+      const presetEffort = rolePreset ? row.dataset.roleEffort || '' : planPreset ? row.dataset.planEffort || '' : '';
+      const provider = selectedProvider(models, presetModel);
       row.dataset.taskAgent = agent;
       row.classList.toggle('multi-provider', providers.length > 1);
       row.querySelector<HTMLElement>('[data-task-provider-wrap]')!.hidden = providers.length < 2;
       row.querySelector<HTMLSelectElement>('[data-task-provider]')!.innerHTML = providerOptionsHtml(models, provider, escape);
-      row.querySelector<HTMLSelectElement>('[data-task-model]')!.innerHTML = modelOptionsHtml(models, provider, null, escape, '自动选型');
-      row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = '<option value="">自动</option>';
+      const modelSelect = row.querySelector<HTMLSelectElement>('[data-task-model]')!;
+      modelSelect.innerHTML = modelOptionsHtml(models, provider, presetModel || null, escape, '自动选型');
+      const efforts = models.find(item => item.id === presetModel)?.efforts || Object.keys(effortLabels);
+      row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = `<option value="">自动</option>${efforts.map(value => `<option value="${escape(value)}" ${value === presetEffort ? 'selected' : ''}>${escape(effortLabels[value] || value)}</option>`).join('')}`;
     }));
     card.querySelectorAll<HTMLSelectElement>('[data-task-provider]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
@@ -613,6 +620,22 @@ async function continueProject(id: string) {
     toast(errorText(error), true);
     if (button?.isConnected) { button.disabled = false; button.textContent = '继续协作（复用原方案）'; }
   }
+}
+
+async function editPausedProjectRoles(id: string) {
+  const workflow = [...projectJobs.values()].find(job => job.id === id);
+  if (!workflow) { toast('找不到这项暂停的协作', true); return; }
+  const roles = await planningDialog({
+    modal, escape, name: agentId => member(agentId)?.name || agentId,
+    members: roleMembers, catalog: agentId => runtimes[agentId]?.models || [], open: openModal,
+    initial: workflowRoles(workflow.roles), title: '调整暂停协作的阶段设置', submitLabel: '保存阶段设置',
+    note: '可修改各阶段的成员、模型与思考强度。已生成的规划会保留，不会重新调用规划模型；继续时还可以为未完成任务逐项选择执行者和模型。',
+  });
+  if (!roles) return;
+  try {
+    adoptProject(await invoke<Workflow>('update_paused_project_roles', { workflowId: id, roles }));
+    toast('阶段设置已保存；继续时可再逐项调整未完成任务');
+  } catch (error) { toast(errorText(error), true); }
 }
 
 // 共享开关按项目范围生效：同一个项目在其他房间显示同一标记，不同项目之间互不覆盖。

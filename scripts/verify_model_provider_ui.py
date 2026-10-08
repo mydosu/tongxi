@@ -1,6 +1,7 @@
 """隔离验证多提供商选择和项目角色切换；浏览器 IPC 使用本地固定演示数据。"""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -16,7 +17,10 @@ MOCK = r"""
 (() => {
   const now=Date.now();
   const models={
-    'codex-win':[{id:'gpt-6.1',name:'GPT-6.1',efforts:['low','high'],default_effort:'low'}],
+    'codex-win':[
+      {id:'gpt-6-luna',name:'GPT-6 Luna',efforts:['low','high'],default_effort:'low'},
+      {id:'gpt-6.1-sol',name:'GPT-6.1 Sol',efforts:['low','high'],default_effort:'low'}
+    ],
     'hermes-win':[{id:'openai:gpt-6.1',name:'GPT-6.1',provider_id:'openai',provider_name:'OpenAI',efforts:['low','high'],default_effort:'low'}],
     'dsh-win':[
       {id:'["route-a","model-one"]',name:'Model One',provider_id:'route-a',efforts:['off','low'],default_effort:'off'},
@@ -36,6 +40,7 @@ MOCK = r"""
   globalThis.__providerDemo={detail,models,group,project};
   globalThis.__confirmation=null;
   globalThis.__continueCalls=0;
+  globalThis.__roleUpdate=null;
   const runtime=id=>({revision:1,connection:'connected',executable:null,version:'test',error:null,active:null,models:models[id],default_model:models[id][0]?.id||null,default_effort:models[id][0]?.default_effort||null});
   let callback=0;
   globalThis.isTauri=true;
@@ -59,6 +64,11 @@ MOCK = r"""
       globalThis.__continueCalls++;
       const workflow=detail.workflows.find(item=>item.id===args.workflowId);
       workflow.status='planning';workflow.plan={summary:'复用原方案',tasks:workflow.tasks.map(task=>({...task}))};workflow.error=null;workflow.updated_at=Date.now();return workflow;
+    }
+    if(command==='update_paused_project_roles'){
+      globalThis.__roleUpdate=args.roles;
+      const workflow=detail.workflows.find(item=>item.id===args.workflowId);
+      workflow.roles=JSON.stringify(args.roles);workflow.updated_at=Date.now();return workflow;
     }
     return null;
   }};
@@ -99,7 +109,7 @@ def main() -> None:
 
             page.locator('[data-role-agent="plan"]').select_option("codex-win")
             expect(provider_wrap).to_be_hidden()
-            expect(page.locator('[data-role-model="plan"] option')).to_have_count(2)
+            expect(page.locator('[data-role-model="plan"] option')).to_have_count(3)
             page.locator('[data-role-agent="plan"]').select_option("dsh-win")
             expect(provider_wrap).to_be_visible()
             provider.select_option("route-a")
@@ -121,38 +131,69 @@ def main() -> None:
             assert page.locator("#live-model option").nth(1).get_attribute("value") == '["route-b","model-two"]'
             print("PASS live session provider change limits model options to selected route")
 
-            task={"id":"task-1","workflow_id":"workflow-1","position":0,"title":"实现一个任务","agent_id":"dsh-win","instructions":"隔离验证任务","files":["src/example.ts"],"depends_on":[],"execution":{"model":"[\"route-a\",\"model-one\"]","reasoning_effort":"low","rationale":"演示建议"},"status":"queued","output":"","error":None,"model":None,"effort":None,"worktree":None,"branch":None}
-            workflow={"id":"workflow-1","project_id":"project-test","conversation_id":"provider-test","user_message_id":"request-1","request":"隔离验证","status":"planning","plan":{"summary":"演示分工","tasks":[task]},"roles":{"plan":{"agent":"codex-win"},"implement":{"agent":"codex-win"},"review":{"agent":"hermes-win"}},"summary":"","error":None,"created_at":1,"updated_at":1,"tasks":[task],"attempts":[],"changes":[]}
+            task={"id":"task-1","workflow_id":"workflow-1","position":0,"title":"实现一个任务","agent_id":"codex-win","instructions":"隔离验证任务","files":["src/example.ts"],"depends_on":[],"execution":{"model":"gpt-6.1-sol","reasoning_effort":"high","rationale":"规划建议"},"status":"queued","output":"","error":None,"model":None,"effort":None,"worktree":None,"branch":None}
+            second={**task,"id":"task-2","position":1,"title":"第二项","agent_id":"hermes-win","files":["src/second.ts"],"execution":None}
+            roles={"plan":{"agent":"codex-win","model":None,"effort":None},"implement":{"agent":"codex-win","model":"gpt-6-luna","effort":"high"},"review":{"agent":"hermes-win","model":None,"effort":None}}
+            workflow={"id":"workflow-1","project_id":"project-test","conversation_id":"provider-test","user_message_id":"request-1","request":"隔离验证","status":"planning","plan":{"summary":"演示分工","tasks":[task,second]},"roles":json.dumps(roles),"summary":"","error":None,"created_at":1,"updated_at":1,"tasks":[task,second],"attempts":[],"changes":[]}
             page.evaluate("workflow => { __providerDemo.detail.workflows=[workflow]; }", workflow)
             page.locator('[data-conversation="provider-test"]').click()
-            agent_select=page.locator('[data-task-agent-select]')
-            expect(agent_select).to_be_visible()
-            agent_select.select_option("codex-win")
-            expect(page.locator('[data-task-provider-wrap]')).to_be_hidden()
-            expect(page.locator('[data-task-model] option')).to_have_count(2)
-            agent_select.select_option("hermes-win")
-            expect(page.locator('[data-task-provider-wrap]')).to_be_hidden()
-            task_model=page.locator('[data-task-model]')
+            first_row=page.locator('[data-task-position="0"]')
+            first_agent=first_row.locator('[data-task-agent-select]')
+            expect(first_agent).to_be_visible()
+            task_model=first_row.locator('[data-task-model]')
+            assert task_model.input_value() == "gpt-6-luna", "stage role model must take priority over the planner suggestion"
+            assert first_row.locator('[data-task-effort]').input_value() == "high"
+            print("PASS Codex stage Luna/high takes priority over planner Sol/high suggestion")
+            first_agent.select_option("codex-win")
+            expect(first_row.locator('[data-task-provider-wrap]')).to_be_hidden()
+            task_model=first_row.locator('[data-task-model]')
+            expect(task_model.locator("option")).to_have_count(3)
+            task_model.select_option("gpt-6-luna")
+            first_row.locator('[data-task-effort]').select_option("high")
+            first_agent.select_option("hermes-win")
+            task_model=first_row.locator('[data-task-model]')
             expect(task_model.locator("option")).to_have_count(2)
             task_model.select_option("openai:gpt-6.1")
-            agent_select.select_option("dsh-win")
-            expect(page.locator('[data-task-provider-wrap]')).to_be_visible()
-            page.locator('[data-task-provider]').select_option("route-b")
-            task_model=page.locator('[data-task-model]')
+            first_agent.select_option("dsh-win")
+            expect(first_row.locator('[data-task-provider-wrap]')).to_be_visible()
+            first_row.locator('[data-task-provider]').select_option("route-b")
+            task_model=first_row.locator('[data-task-model]')
             expect(task_model.locator("option")).to_have_count(2)
             task_model.select_option('["route-b","model-two"]')
-            agent_select.select_option("hermes-win")
-            task_model=page.locator('[data-task-model]')
-            task_model.select_option("openai:gpt-6.1")
+            first_agent.select_option("codex-win")
+            task_model=first_row.locator('[data-task-model]')
+            assert task_model.input_value() == "gpt-6-luna"
+            assert first_row.locator('[data-task-effort]').input_value() == "high"
+            task_model.select_option("gpt-6-luna")
+            first_row.locator('[data-task-effort]').select_option("high")
+            page.locator('[data-task-position="1"] [data-task-model]').select_option("openai:gpt-6.1")
             page.locator('[data-confirm-project]').click()
-            page.wait_for_function("() => Array.isArray(__confirmation) && __confirmation.length === 1")
-            confirmed=page.evaluate("() => __confirmation[0]")
-            assert confirmed["agent_id"] == "hermes-win" and confirmed["model"] == "openai:gpt-6.1"
-            print("PASS each project task submits Hermes as executor and its selected model")
+            page.wait_for_function("() => Array.isArray(__confirmation) && __confirmation.length === 2")
+            confirmed=page.evaluate("() => __confirmation")
+            assert confirmed[0]["agent_id"] == "codex-win" and confirmed[0]["model"] == "gpt-6-luna" and confirmed[0]["effort"] == "high"
+            assert confirmed[1]["agent_id"] == "hermes-win" and confirmed[1]["model"] == "openai:gpt-6.1"
+            print("PASS Codex project task submits selected GPT-6 Luna/high unchanged")
+            print("PASS per-task Hermes selection remains independent")
 
-            recovery={**workflow,"status":"failed","plan":None,"error":"保存方案失败","attempts":[{"id":"plan-attempt","workflow_id":"workflow-1","agent_id":"codex-win","stage":"plan","status":"completed","native_thread_id":None,"native_turn_id":"turn-1","model":"gpt-6.1","reasoning_effort":"high","output":"saved plan output","checks":[],"error":None}],"updated_at":int(time.time()*1000)}
+            recovery={**workflow,"status":"failed","plan":workflow["plan"],"error":"执行失败","attempts":[{"id":"plan-attempt","workflow_id":"workflow-1","agent_id":"codex-win","stage":"plan","status":"completed","native_thread_id":None,"native_turn_id":"turn-1","model":"gpt-6.1","reasoning_effort":"high","output":"saved plan output","checks":[],"error":None}],"updated_at":int(time.time()*1000)}
             page.evaluate("job => { __providerDemo.detail.workflows=[job]; }", recovery)
             page.locator('[data-conversation="provider-test"]').click()
+            edit=page.locator('[data-edit-project-roles]')
+            expect(edit).to_be_visible()
+            edit.click()
+            expect(page.locator('#role-form')).to_be_visible()
+            assert page.locator('[data-role-model="implement"]').input_value() == "gpt-6-luna"
+            assert page.locator('[data-role-effort="implement"]').input_value() == "high"
+            page.locator('[data-role-agent="review"]').select_option("dsh-win")
+            page.locator('[data-role-provider="review"]').select_option("route-b")
+            page.locator('[data-role-model="review"]').select_option('["route-b","model-two"]')
+            page.locator('[data-role-effort="review"]').select_option("low")
+            page.locator('#role-form .primary').click()
+            page.wait_for_function("() => __roleUpdate && __roleUpdate.review.agent === 'dsh-win'")
+            changed_roles=page.evaluate("() => __roleUpdate")
+            assert changed_roles["review"]["model"] == '["route-b","model-two"]' and changed_roles["review"]["effort"] == "low"
+            assert changed_roles["implement"]["model"] == "gpt-6-luna"
+            print("PASS paused workflow edits all phase agent/model/effort choices")
             resume=page.locator('[data-continue-project]')
             expect(resume).to_be_visible()
             assert "不重新调用规划模型" in resume.get_attribute("title")

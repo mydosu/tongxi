@@ -173,6 +173,22 @@ mod tests {
     }
 
     #[test]
+    fn manual_gpt6_luna_high_is_preserved_for_codex_implementation() {
+        assert_eq!(
+            select(
+                &catalog(),
+                Some("gpt-6.1-sol"),
+                Some("gpt-6-luna"),
+                Some("high"),
+                "implement",
+                Some(&choice("gpt-6.1-sol", Some("high")))
+            )
+            .unwrap(),
+            ("gpt-6-luna".into(), "high".into())
+        );
+    }
+
+    #[test]
     fn implementation_uses_the_proposed_choice() {
         assert_eq!(
             select(

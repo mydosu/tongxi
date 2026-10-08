@@ -414,6 +414,56 @@ impl Runtime {
         Ok(resumed)
     }
 
+    fn update_paused_roles(&self, id: &str, roles: &Roles) -> Result<Workflow> {
+        roles.validate()?;
+        let members = {
+            let store = self.store.lock().unwrap();
+            let workflow = store.workflow(id)?;
+            if !matches!(workflow.status.as_str(), "failed" | "interrupted")
+                || workflow.plan.is_none()
+            {
+                return Err("只能调整已暂停且保留原方案的协作".into());
+            }
+            let active = store.attempts(id)?.iter().any(|attempt| {
+                matches!(
+                    attempt.status.as_str(),
+                    "starting" | "running" | "cancelling"
+                )
+            });
+            if active {
+                return Err("项目成员仍在运行，暂时不能调整阶段设置".into());
+            }
+            store.conversation(&workflow.conversation_id)?.members
+        };
+        for (stage, choice) in [
+            ("规划", &roles.plan),
+            ("执行", &roles.implement),
+            ("验收", &roles.review),
+        ] {
+            if !members.iter().any(|member| member == &choice.agent) {
+                return Err(format!("{stage}成员必须属于当前群聊"));
+            }
+            let snapshot = self.snapshot(&choice.agent);
+            if snapshot.connection != "connected" || snapshot.models.is_empty() {
+                return Err(format!("请先连接{stage}成员并读取模型目录"));
+            }
+            crate::models::validate_selection(
+                &snapshot.models,
+                choice.model.as_deref(),
+                choice.effort.as_deref(),
+                snapshot.default_model.as_deref(),
+            )?;
+        }
+        let encoded = serde_json::to_string(roles).map_err(|_| "阶段设置序列化失败")?;
+        let updated = self
+            .store
+            .lock()
+            .unwrap()
+            .update_paused_workflow_roles(id, &encoded)?;
+        (self.notify)(id);
+        Ok(updated)
+    }
+
     /// 逐任务写入模型/强度覆盖，并把工作流从 planning 提到 running（同步）。
     fn configure(&self, id: &str, tasks: &[TaskChoice]) -> Result<Workflow> {
         let mut store = self.store.lock().unwrap();
@@ -1094,6 +1144,14 @@ pub fn confirm_project(
 #[tauri::command]
 pub fn continue_project(runtime: State<'_, Arc<Runtime>>, workflow_id: String) -> Result<Workflow> {
     runtime.inner().continue_open(&workflow_id)
+}
+#[tauri::command]
+pub fn update_paused_project_roles(
+    runtime: State<'_, Arc<Runtime>>,
+    workflow_id: String,
+    roles: Roles,
+) -> Result<Workflow> {
+    runtime.inner().update_paused_roles(&workflow_id, &roles)
 }
 #[tauri::command]
 pub fn cancel_project(runtime: State<'_, Arc<Runtime>>, id: String) -> Result<Workflow> {

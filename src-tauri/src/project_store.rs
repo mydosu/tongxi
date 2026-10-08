@@ -968,6 +968,26 @@ impl Store {
         self.workflow(id)
     }
 
+    pub fn update_paused_workflow_roles(&mut self, id: &str, roles: &str) -> Result<Workflow> {
+        let workflow = self.workflow(id)?;
+        if !matches!(workflow.status.as_str(), "failed" | "interrupted") || workflow.plan.is_none()
+        {
+            return Err("只能调整已暂停且保留原方案的协作".into());
+        }
+        let active: bool = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_attempts WHERE workflow_id=?1 AND status IN ('starting','running','cancelling'))",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active {
+            return Err("项目成员仍在运行，暂时不能调整阶段设置".into());
+        }
+        self.set_workflow_roles(id, Some(roles))
+    }
+
     pub fn workflows(&self, room: &str) -> Result<Vec<Workflow>> {
         let mut stmt=self.connection.prepare("SELECT id FROM workflows WHERE conversation_id=?1 ORDER BY created_at DESC,rowid DESC").map_err(|e|e.to_string())?;
         let ids = stmt
