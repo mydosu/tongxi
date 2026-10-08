@@ -1336,7 +1336,14 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
-            return self.save_plan(id, plan);
+            let saved = self.save_plan(id, plan)?;
+            // 纯答复方案（tasks 为空）没有任何可确认/可执行的任务，继续协作必须和首次规划
+            // （projects::plan_work 的同名分支）落到同一个终态；否则工作流会停在 planning，
+            // 界面上唯一的按钮「确认并开始执行」必然报错，用户只能再停一次，永远收不了尾。
+            if plan.tasks.is_empty() {
+                return self.finish_workflow(id, "completed", &plan.summary, None);
+            }
+            return Ok(saved);
         }
         tx.execute(
             "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=NULL,branch=CASE WHEN status='completed' THEN branch ELSE NULL END WHERE workflow_id=?1",
