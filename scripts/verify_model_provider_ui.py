@@ -19,7 +19,7 @@ MOCK = r"""
   const models={
     'codex-win':[
       {id:'gpt-6-luna',name:'GPT-6 Luna',efforts:['low','high'],default_effort:'low'},
-      {id:'gpt-6.1-sol',name:'GPT-6.1 Sol',efforts:['low','high'],default_effort:'low'}
+      {id:'gpt-5.6-luna',name:'GPT-5.6 Luna',efforts:['low','high'],default_effort:'low'}
     ],
     'hermes-win':[{id:'openai:gpt-6.1',name:'GPT-6.1',provider_id:'openai',provider_name:'OpenAI',efforts:['low','high'],default_effort:'low'}],
     'dsh-win':[
@@ -39,6 +39,8 @@ MOCK = r"""
   const detail={conversation:group,messages:[],discussions:[],project,workflows:[],sessions:group.members.map(agent_id=>({agent_id,session_key:agent_id,native_session_id:null,model:null,reasoning_effort:null}))};
   globalThis.__providerDemo={detail,models,group,project};
   globalThis.__confirmation=null;
+  globalThis.__collaborationRequest=null;
+  globalThis.__collaborationCalls=0;
   globalThis.__continueCalls=0;
   globalThis.__roleUpdate=null;
   const runtime=id=>({revision:1,connection:'connected',executable:null,version:'test',error:null,active:null,models:models[id],default_model:models[id][0]?.id||null,default_effort:models[id][0]?.default_effort||null});
@@ -54,6 +56,13 @@ MOCK = r"""
     if(command==='project_status')return [];
     if(command.endsWith('_status')){const id=command.startsWith('hermes_')?'hermes-win':command.startsWith('dsh_')?'dsh-win':command.startsWith('albion_')?'albion-wsl':'codex-win';return runtime(id);}
     if(command==='set_session_settings')return detail;
+    if(command==='start_project'){
+      globalThis.__collaborationRequest=args;
+      globalThis.__collaborationCalls++;
+      const workflow={id:'unified-workflow',project_id:project.id,conversation_id:group.id,user_message_id:args.messageId,request:args.content,status:'completed',plan:{summary:'这是一次普通讨论回复，不需要改文件。',tasks:[]},roles:null,summary:'这是一次普通讨论回复，不需要改文件。',error:null,created_at:now,updated_at:now,tasks:[],attempts:[{id:'planner',workflow_id:'unified-workflow',task_id:null,agent_id:'codex-win',stage:'plan',status:'completed',native_thread_id:'session-1',native_turn_id:'turn-1',model:'gpt-6-luna',reasoning_effort:'low',output:'{}',error:null}],changes:[]};
+      detail.workflows=[workflow];
+      return workflow;
+    }
     if(command==='confirm_project'){
       globalThis.__confirmation=args.tasks;
       const workflow=detail.workflows[0];
@@ -95,35 +104,15 @@ def main() -> None:
             page.goto(f"http://127.0.0.1:{PORT}",wait_until="networkidle")
             expect(page.locator("#project-controls")).to_be_visible()
             page.locator("#message-input").fill("test")
-            page.locator("#send-project").click()
-            expect(page.locator("#role-form")).to_be_visible()
+            assert page.locator("#send-project").count() == 0, "bound project rooms use one shared composer"
+            page.locator("#send-discussion").click()
+            page.wait_for_function("() => __collaborationCalls === 1")
+            expect(page.locator(".workflow-card").first).to_be_visible()
+            assert page.evaluate("() => __collaborationRequest.content") == "test"
+            assert page.locator("#role-form").count() == 0, "each message starts the unified collaboration automatically"
+            print("PASS project-bound group uses one composer for discussion and implementation")
+            print("PASS discussion-only intent returns in the project timeline without fake tasks")
 
-            page.locator('[data-role-agent="plan"]').select_option("dsh-win")
-            provider_wrap=page.locator('[data-role-provider-wrap="plan"]')
-            expect(provider_wrap).to_be_visible()
-            provider=page.locator('[data-role-provider="plan"]')
-            provider.select_option("route-b")
-            model=page.locator('[data-role-model="plan"]')
-            expect(model.locator("option")).to_have_count(2)
-            assert model.locator("option").nth(1).get_attribute("value") == '["route-b","model-two"]'
-
-            page.locator('[data-role-agent="plan"]').select_option("codex-win")
-            expect(provider_wrap).to_be_hidden()
-            expect(page.locator('[data-role-model="plan"] option')).to_have_count(3)
-            page.locator('[data-role-agent="plan"]').select_option("dsh-win")
-            expect(provider_wrap).to_be_visible()
-            provider.select_option("route-a")
-            model.select_option('["route-a","model-one"]')
-            assert model.input_value() == '["route-a","model-one"]'
-            page.locator('[data-role-agent="implement"]').select_option("hermes-win")
-            assert page.locator('[data-role-agent="implement"]').input_value() == "hermes-win"
-            page.locator('[data-role-agent="review"]').select_option("dsh-win")
-            assert page.locator('[data-role-agent="review"]').input_value() == "dsh-win"
-            print("PASS role agent switching adds/removes provider selector")
-            print("PASS planning/execution/review roles can select Hermes and DSH")
-            print("PASS provider change limits model options to selected route")
-
-            page.locator("#role-cancel").click()
             page.locator("#live-agent").select_option("dsh-win")
             expect(page.locator("#live-provider")).to_be_visible()
             page.locator("#live-provider").select_option("route-b")
@@ -131,7 +120,7 @@ def main() -> None:
             assert page.locator("#live-model option").nth(1).get_attribute("value") == '["route-b","model-two"]'
             print("PASS live session provider change limits model options to selected route")
 
-            task={"id":"task-1","workflow_id":"workflow-1","position":0,"title":"实现一个任务","agent_id":"codex-win","instructions":"隔离验证任务","files":["src/example.ts"],"depends_on":[],"execution":{"model":"gpt-6.1-sol","reasoning_effort":"high","rationale":"规划建议"},"status":"queued","output":"","error":None,"model":None,"effort":None,"worktree":None,"branch":None}
+            task={"id":"task-1","workflow_id":"workflow-1","position":0,"title":"实现一个任务","agent_id":"codex-win","instructions":"隔离验证任务","files":["src/example.ts"],"depends_on":[],"execution":{"model":"gpt-5.6-luna","reasoning_effort":"high","rationale":"规划建议"},"status":"queued","output":"","error":None,"model":None,"effort":None,"worktree":None,"branch":None}
             second={**task,"id":"task-2","position":1,"title":"第二项","agent_id":"hermes-win","files":["src/second.ts"],"execution":None}
             roles={"plan":{"agent":"codex-win","model":None,"effort":None},"implement":{"agent":"codex-win","model":"gpt-6-luna","effort":"high"},"review":{"agent":"hermes-win","model":None,"effort":None}}
             workflow={"id":"workflow-1","project_id":"project-test","conversation_id":"provider-test","user_message_id":"request-1","request":"隔离验证","status":"planning","plan":{"summary":"演示分工","tasks":[task,second]},"roles":json.dumps(roles),"summary":"","error":None,"created_at":1,"updated_at":1,"tasks":[task,second],"attempts":[],"changes":[]}
@@ -143,7 +132,7 @@ def main() -> None:
             task_model=first_row.locator('[data-task-model]')
             assert task_model.input_value() == "gpt-6-luna", "stage role model must take priority over the planner suggestion"
             assert first_row.locator('[data-task-effort]').input_value() == "high"
-            print("PASS Codex stage Luna/high takes priority over planner Sol/high suggestion")
+            print("PASS Codex stage Luna/high takes priority over alternate Luna/high suggestion")
             first_agent.select_option("codex-win")
             expect(first_row.locator('[data-task-provider-wrap]')).to_be_hidden()
             task_model=first_row.locator('[data-task-model]')

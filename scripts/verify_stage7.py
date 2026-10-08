@@ -102,7 +102,9 @@ def run():
             page.locator('#connect-discussion').click()
             catalogs={key:prior.wait_connection(page,key) for key in ['hermes','codex','dsh']}
             check('all technical members connect using existing native harnesses',all(catalog['models'] for catalog in catalogs.values()))
-            model=catalogs['codex']['default_model'];first,second=dsh_routes(catalogs['dsh'])
+            model=next((entry['id'] for entry in catalogs['codex']['models'] if entry['id']=='gpt-6-luna'),None)
+            if model is None:raise AssertionError('GPT-6 Luna is required for this test; Sol is never selected')
+            first,second=dsh_routes(catalogs['dsh'])
             groups.live_settings(page,'codex-win',model,'low');groups.live_settings(page,'hermes-win',None,'low');groups.live_settings(page,'dsh-win',first['id'],'off')
             draft='UNSENT_PROJECT_DRAFT_'+uuid.uuid4().hex[:8]
             desktop.ipc(page,'save_local_message',conversationId=room,messageId=str(uuid.uuid4()),content=draft)

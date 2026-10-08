@@ -16,8 +16,8 @@ use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
 const MAX_REVIEW_SOURCE_BYTES: usize = 192 * 1024;
-const PLAN_PROMPT_WITH_TOOLS: &str = "你是本次项目协作的方案制定者，负责制定项目方案。必要时使用 hub_list/hub_read 阅读绑定项目的源码；此步骤只读，不能修改文件或运行命令。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度；建议之后可由用户逐项修改。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、凭据路径、.git 或框架数据，也不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
-const PLAN_PROMPT_READONLY: &str = "你是本次项目协作的方案制定者，当前没有项目文件工具，只能依据提供的文件清单和需求制定方案；不要输出工具调用。available_agents 是当前群中已连接的项目成员清单，每项含 agent_id、name 和该成员可用的 models。每项实现任务均可从 Codex、Hermes、DSH 中任选，agent_id 必须来自清单；按任务需要自由分工，可将简单局部工作交给 DSH、复杂实现交给 Codex，Hermes 也可承担实现。不要把执行成员固定为某一位。default_executor 仅供角色模型缺省和验收后的修复使用，不限制任务分工。execution 建议只能选该任务所分配成员 models 中的模型和强度，并会由用户逐项确认。方案包含1-5项串行任务，每项明确目标、验收要点和1-5个授权相对文件；depends_on 使用从0开始的任务数组下标并只指向更早任务，例如第二项依赖第一项写 [0]。禁止输出代码补丁、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是这个项目群的协作协调者。当前用户消息是本轮唯一的目标来源，优先级高于所有历史讨论、旧计划和旧项目结果；群聊历史只作背景，除非用户明确引用，否则不得把历史问题改写成本轮需求。必要时使用 hub_list/hub_read 阅读绑定项目源码；此步骤只读，不能修改文件或运行命令。先判断用户是在提问/讨论，还是明确要求项目变更。如果只是提问、意见交流或暂不需要改文件，返回一段直接答复作为 summary，并令 tasks=[]；不要为了制造任务而安排编码。如果要求实现、修改、修复或推进项目，则自由拆成1—5项任务；每项只能从当前 available_agents 清单选择 Codex、Hermes 或 DSH，明确实现目标、验收要点和1—5个授权相对文件。按任务需要自由分工，不固定执行成员；default_executor 仅作缺省和验收失败修复的候选。execution 仅建议所分配成员目录中的模型与强度，框架会自动确认并执行，无需等待用户再次点击。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据路径、.git 或框架数据，不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_READONLY: &str = "你是这个项目群的协作协调者，没有项目文件工具，只能依据用户需求和提供的文件清单工作，不要输出工具调用。当前用户消息是本轮唯一的目标来源，优先级高于所有历史讨论、旧计划和旧项目结果；群聊历史只作背景，除非用户明确引用，否则不得把历史问题改写成本轮需求。先判断用户是在提问/讨论，还是明确要求项目变更。如果只是提问、意见交流或暂不需要改文件，返回一段直接答复作为 summary，并令 tasks=[]；不要为了制造任务而安排编码。如果要求实现、修改、修复或推进项目，则自由拆成1—5项任务；每项只能从当前 available_agents 清单选择 Codex、Hermes 或 DSH，明确实现目标、验收要点和1—5个授权相对文件。按任务需要自由分工，不固定执行成员；default_executor 仅作缺省和验收失败修复的候选。execution 仅建议所分配成员目录中的模型与强度，框架会自动确认并执行，无需等待用户再次点击。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据路径、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
 pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> Result<()> {
     if let Some(task) = plan.tasks.iter().find(|task| {
@@ -106,9 +106,9 @@ fn public_context(store: &Store, workflow: &Workflow) -> Result<Value> {
         messages.push(json!({"sender":message.sender_id,"content":content,"truncated":content.chars().count()<message.content.chars().count()}));
     }
     messages.reverse();
-    let previous=detail.workflows.iter().filter(|job|job.id!=workflow.id&&!project_store::live(&job.status)).take(3).map(|job|json!({"request":job.request.chars().take(2000).collect::<String>(),"status":job.status,"summary":job.summary.chars().take(2000).collect::<String>()})).collect::<Vec<_>>();
+    let previous=detail.workflows.iter().filter(|job|job.id!=workflow.id&&job.project_id==workflow.project_id&&!project_store::live(&job.status)).take(3).map(|job|json!({"request":job.request.chars().take(2000).collect::<String>(),"status":job.status,"summary":job.summary.chars().take(2000).collect::<String>()})).collect::<Vec<_>>();
     Ok(
-        json!({"messages":messages,"previous_project_results":previous,"scope":"仅当前群的公开记录；未发送草稿、私聊、其他群排除；旧记录已按上限截断"}),
+        json!({"messages":messages,"previous_project_results":previous,"scope":"当前项目群公开历史仅作背景；当前用户请求定义本轮目标。未发送草稿、私聊、其他群及其他项目结果均排除；旧记录按上限截断"}),
     )
 }
 
@@ -205,6 +205,36 @@ impl Runtime {
             _ => self.codex.snapshot(),
         }
     }
+    fn default_roles_for_room(&self, room: &str) -> Result<Roles> {
+        let detail = self.store.lock().unwrap().detail(room)?;
+        let choose = |preferred: &[&str]| -> Result<crate::project_store::RoleChoice> {
+            let agent = preferred
+                .iter()
+                .find(|agent| {
+                    detail
+                        .conversation
+                        .members
+                        .iter()
+                        .any(|member| member == **agent)
+                })
+                .ok_or("项目群至少需要一位可执行项目任务的成员")?;
+            let session = detail
+                .sessions
+                .iter()
+                .find(|session| session.agent_id == *agent)
+                .ok_or("项目群成员会话设置不存在")?;
+            Ok(crate::project_store::RoleChoice {
+                agent: (*agent).to_owned(),
+                model: session.model.clone(),
+                effort: session.reasoning_effort.clone(),
+            })
+        };
+        Ok(Roles {
+            plan: choose(&["codex-win", "hermes-win", "dsh-win"])?,
+            implement: choose(&["dsh-win", "codex-win", "hermes-win"])?,
+            review: choose(&["hermes-win", "codex-win", "dsh-win"])?,
+        })
+    }
     /// 建工作流并写入角色配置：不启动后台线程，由调用方决定两段式还是兼容的一段式。
     fn create(
         self: &Arc<Self>,
@@ -212,7 +242,7 @@ impl Runtime {
         message: &str,
         content: &str,
         roles: &Roles,
-    ) -> Result<Workflow> {
+    ) -> Result<(Workflow, bool)> {
         if self.stopping.load(Ordering::SeqCst) {
             return Err("软件正在关闭".into());
         }
@@ -267,12 +297,18 @@ impl Runtime {
         if existing.is_none() && store.active_workflows()?.len() >= 2 {
             return Err("当前已有两项项目协作，请稍后提交".into());
         }
-        let (workflow, _) = store.start_workflow(room, message, content)?;
-        let roles = serde_json::to_string(roles).map_err(|_| "角色配置序列化失败")?;
-        let workflow = store.set_workflow_roles(&workflow.id, Some(&roles))?;
+        let (workflow, created) = store.start_workflow(room, message, content)?;
+        let workflow = if created {
+            let roles = serde_json::to_string(roles).map_err(|_| "角色配置序列化失败")?;
+            store.set_workflow_roles(&workflow.id, Some(&roles))?
+        } else {
+            workflow
+        };
         drop(store);
-        (self.notify)(&workflow.id);
-        Ok(workflow)
+        if created {
+            (self.notify)(&workflow.id);
+        }
+        Ok((workflow, created))
     }
 
     /// 后台跑一段流水线；出错时统一停原生进程、标记 attempt、收尾工作流。
@@ -315,11 +351,18 @@ impl Runtime {
 
     /// 缺省角色的兼容壳：走「规划后立刻按缺省参数确认并执行」的一段式。
     pub fn start(self: &Arc<Self>, room: &str, message: &str, content: &str) -> Result<Workflow> {
-        let workflow = self.create(room, message, content, &Roles::defaults())?;
+        let roles = self.default_roles_for_room(room)?;
+        let (workflow, created) = self.create(room, message, content, &roles)?;
+        if !created {
+            return Ok(workflow);
+        }
         let id = workflow.id.clone();
         self.spawn(id.clone(), move |runtime, deadline| {
             runtime.plan_work(&id, deadline)?;
             let workflow = runtime.store.lock().unwrap().workflow(&id)?;
+            if workflow.status == "completed" {
+                return Ok(());
+            }
             let choices = workflow
                 .tasks
                 .iter()
@@ -344,7 +387,10 @@ impl Runtime {
         content: &str,
         roles: &Roles,
     ) -> Result<Workflow> {
-        let workflow = self.create(room, message, content, roles)?;
+        let (workflow, created) = self.create(room, message, content, roles)?;
+        if !created {
+            return Ok(workflow);
+        }
         let id = workflow.id.clone();
         self.spawn(id.clone(), move |runtime, deadline| {
             runtime.plan_work(&id, deadline)
@@ -766,6 +812,12 @@ impl Runtime {
         let plan = project_store::parse_plan(&planning.output)?;
         validate_plan_agents(&plan, &available_agent_ids)?;
         self.store.lock().unwrap().save_plan(id, &plan)?;
+        if plan.tasks.is_empty() {
+            self.store
+                .lock()
+                .unwrap()
+                .finish_workflow(id, "completed", &plan.summary, None)?;
+        }
         (self.notify)(id);
         Ok(())
     }

@@ -33,8 +33,8 @@ GOOD = (
     'print("3 functional assertions passed")\n'
 )
 ASK = (
-    '把 calc.py 里的 square(value) 改成返回 value 的平方（支持负数、零），只授权 calc.py，'
-    '不能修改 check.py。固定检查通过后由验收角色按实际源码验收。只分一项任务。'
+    '把 calc.py 里的 square(value) 改成返回 value 的平方（支持负数、零），只修改 calc.py，'
+    '不要修改 check.py 或其他文件。完成后由验收角色对照本条目标检查源码。只分一项任务。'
 )
 # 依赖链用：第二项必须建在第一项的成果之上，否则它自己的固定检查（断言 square 是平方）跑不过。
 ASK_DEPS = (
@@ -85,7 +85,7 @@ def observe(page, room, predicate, timeout=900):
     raise AssertionError("等待项目状态超时")
 
 
-def venue(page, title, root, roles):
+def venue(page, title, root, roles, members=None):
     root.mkdir(parents=True)
     (root / "calc.py").write_text("def square(value):\n    return value\n", encoding="utf-8")
     (root / "check.py").write_text(GOOD, encoding="utf-8")
@@ -96,10 +96,13 @@ def venue(page, title, root, roles):
         name=title,
         root=str(root),
     )
-    room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
+    room_members = members or ["hermes-win", "codex-win", "dsh-win"]
+    room = groups.group(page, title, room_members)
     desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
     for agent, effort in (("hermes-win", "none"), ("codex-win", "low"), ("dsh-win", "off")):
-        desktop.ipc(page, "set_session_settings", id=room, agentId=agent, model=None, reasoningEffort=effort)
+        if agent not in room_members:
+            continue
+        desktop.ipc(page, "set_session_settings", id=room, agentId=agent, model="gpt-6-luna" if agent == "codex-win" else None, reasoningEffort=effort)
     return room, project, root / "calc.py", root / "check.py"
 
 
@@ -110,7 +113,7 @@ def start(page, room, roles, ask=ASK):
 
 
 def choice(agent, effort):
-    return {"agent": agent, "model": None, "effort": effort}
+    return {"agent": agent, "model": "gpt-6-luna" if agent == "codex-win" else None, "effort": effort}
 
 
 def stage_agents(job, stage):
@@ -288,56 +291,25 @@ def parallel_round(page, root, title, roles, expect_plan, expect_implement):
 
 
 def ui_round(page, root, title, roles, expect_plan, expect_implement):
-    """全程走真实界面：点「执行项目」→ 角色面板 → 逐任务确认 → 执行。
-
-    前几场是用 IPC 起流程、只把界面当观察窗；这一场反过来——不调 plan_project/confirm_project，
-    全部通过真实点击与下拉完成，证明用户实际会走的那条路径是通的。
-    这里刻意选一组**非缺省**角色（缺省是 codex/dsh/hermes），这样一旦下拉的 change 没生效，
-    落库的 roles 会和断言对不上。
-    """
+    """绑定项目后的同一群聊入口：一条消息自动经过协调、实现与验收，不再弹执行模式或确认方案。"""
     venue_dir = root / "ui"
-    room, _, calc, _ = venue(page, title, venue_dir, roles)
+    room, _, calc, _ = venue(page, title, venue_dir, roles, members=["codex-win", "dsh-win"])
     desktop.choose(page, room)
-    page.fill("#message-input", ASK)
-    page.locator("#send-project").wait_for(state="visible")
-    page.click("#send-project")
-    page.locator("#role-form").wait_for(state="visible")
-    check(
-        title + "：点「执行项目」弹出角色面板且三角色各有成员/模型/强度",
-        len(page.locator("#role-form .role-field").all()) == 3
-        and len(page.locator("#role-form [data-role-agent]").all()) == 3
-        and len(page.locator("#role-form [data-role-model]").all()) == 3
-        and len(page.locator("#role-form [data-role-effort]").all()) == 3,
-    )
-    implement_options = page.eval_on_selector_all(
-        '[data-role-agent="implement"] option', "els => els.map(e => e.value).filter(Boolean)"
-    )
-    check(title + "：执行角色的成员下拉只列能承担该角色的成员", bool(implement_options) and set(implement_options) <= {"codex-win", "dsh-win"})
-
-    page.select_option('[data-role-agent="plan"]', expect_plan)
-    page.select_option('[data-role-agent="implement"]', expect_implement)
-    page.select_option('[data-role-agent="review"]', roles["review"]["agent"])
-    page.click("#role-form button.primary")
-    page.locator("#role-form").wait_for(state="hidden")
-    page.locator(".workflow-card").first.wait_for(state="visible")
-    planned = observe(page, room, lambda j: any(a["stage"] == "plan" and a["status"] == "completed" for a in j["attempts"]))
-    saved = json.loads(planned["roles"])
-    check(
-        title + "：界面里选的角色真的落库（非缺省组合）",
-        saved["plan"]["agent"] == expect_plan and saved["implement"]["agent"] == expect_implement and saved["review"]["agent"] == roles["review"]["agent"],
-    )
-    check(title + "：规划完成后面板给出逐任务确认区", planned["status"] == "planning" and page.locator(".task-confirm [data-task-position]").count() == len(planned["tasks"]))
-    check(title + "：每个任务行都有模型与强度下拉与确认按钮", page.locator(".task-confirm [data-task-model]").count() == len(planned["tasks"]) and page.locator(".task-confirm [data-task-effort]").count() == len(planned["tasks"]) and page.locator("[data-confirm-project]").count() == 1)
-
-    model_options = page.eval_on_selector_all('.task-confirm [data-task-model] option', "els => els.map(e => e.value).filter(Boolean)")
-    picked = model_options[0]
-    page.select_option(".task-confirm [data-task-model]", picked)
-    page.click("[data-confirm-project]")
+    request = '请由 DSH 把 calc.py 里的 square(value) 改成返回平方（支持负数、零），只修改 calc.py，不改其他文件。'
+    page.fill("#message-input", request)
+    check(title + "：项目群没有独立执行按钮", page.locator("#send-project").count() == 0)
+    check(title + "：同一个群聊发送入口启用", page.locator("#send-discussion").is_enabled())
+    page.click("#send-discussion")
     done = observe(page, room, lambda j: j["status"] in ("completed", "failed"))
-    check(title + "：界面确认后跑到终态且成功", done["status"] == "completed")
-    check(title + "：界面里选的模型落到该任务行", done["tasks"][0]["model"] == picked)
+    check(title + "：群聊消息自动跑完协作", done["status"] == "completed")
+    check(title + "：无需角色选择弹窗或方案确认", page.locator("#role-form").count() == 0 and page.locator("[data-confirm-project]").count() == 0)
+    saved = json.loads(done["roles"])
+    check(title + "：阶段成员从群聊成员与当前模型设置自动继承", saved["plan"]["agent"] == "codex-win" and saved["plan"]["model"] == "gpt-6-luna" and saved["implement"]["agent"] == "dsh-win" and saved["review"]["agent"] == "codex-win" and saved["review"]["model"] == "gpt-6-luna")
+    check(title + "：本次改动出现在同一群聊工作区", any(change["path"] == "calc.py" for change in done["changes"]))
+    calc_module = load_module(venue_dir / "calc.py", "unified_ui_calc")
+    check(title + "：最终源码满足本轮明确目标", calc_module.square(3) == 9 and calc_module.square(-4) == 16 and calc_module.square(0) == 0)
     marks = page.eval_on_selector_all(".workflow-card li small", "els => els.map(e => e.textContent)")
-    check(title + "：卡片上能看到工作树与分支", any("工作树" in text and "分支" in text for text in marks))
+    check(title + "：协作结果仍显示实际工作树和分支", any("工作树" in text and "分支" in text for text in marks))
     check(title + "：结束后释放写入租约", not desktop.ipc(page, "project_status"))
     return done
 

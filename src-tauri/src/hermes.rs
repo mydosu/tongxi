@@ -93,23 +93,6 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
         .collect()
 }
 
-#[cfg(test)]
-mod model_catalog_tests {
-    use super::models_from_response;
-    use serde_json::json;
-
-    #[test]
-    fn model_catalog_keeps_provider_routes_for_grouped_selection() {
-        let models = models_from_response(&json!({"models":{"availableModels":[
-            {"modelId":"openai:gpt-6","name":"GPT 6","description":"Provider: OpenAI • current"},
-            {"modelId":"custom:private:sonnet","name":"Sonnet","description":"Provider: My Private API"}
-        ]}}));
-        assert_eq!(models[0].provider_id.as_deref(), Some("openai"));
-        assert_eq!(models[0].provider_name.as_deref(), Some("OpenAI"));
-        assert_eq!(models[1].provider_id.as_deref(), Some("My Private API"));
-        assert_eq!(models[1].provider_name.as_deref(), Some("My Private API"));
-    }
-}
 impl Runtime {
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
@@ -688,5 +671,23 @@ impl Runtime {
             self.finish(&id, "interrupted", None);
         }
         self.emit();
+    }
+}
+
+#[cfg(test)]
+mod model_catalog_tests {
+    use super::models_from_response;
+    use serde_json::json;
+
+    #[test]
+    fn model_catalog_keeps_provider_routes_for_grouped_selection() {
+        let models = models_from_response(&json!({"models":{"availableModels":[
+            {"modelId":"openai:gpt-6","name":"GPT 6","description":"Provider: OpenAI • current"},
+            {"modelId":"custom:private:sonnet","name":"Sonnet","description":"Provider: My Private API"}
+        ]}}));
+        assert_eq!(models[0].provider_id.as_deref(), Some("openai"));
+        assert_eq!(models[0].provider_name.as_deref(), Some("OpenAI"));
+        assert_eq!(models[1].provider_id.as_deref(), Some("My Private API"));
+        assert_eq!(models[1].provider_name.as_deref(), Some("My Private API"));
     }
 }
