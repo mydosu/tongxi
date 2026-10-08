@@ -291,6 +291,57 @@ fn failed_execution_can_reopen_its_plan_and_reset_tasks_for_confirmation() {
 }
 
 #[test]
+fn paused_workflow_role_models_can_change_without_regenerating_the_plan() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let proposed = plan(&["src/retry.rs"]);
+    f.plan_with(&workflow, &proposed);
+    f.store
+        .finish_workflow(&workflow.id, "failed", "", Some("paused for settings"))
+        .unwrap();
+
+    let roles = Roles {
+        plan: RoleChoice {
+            agent: "hermes-win".into(),
+            model: Some("hermes-plan-model".into()),
+            effort: Some("low".into()),
+        },
+        implement: RoleChoice {
+            agent: "codex-win".into(),
+            model: Some("gpt-6-luna".into()),
+            effort: Some("high".into()),
+        },
+        review: RoleChoice {
+            agent: "dsh-win".into(),
+            model: Some("ds-v4.1".into()),
+            effort: Some("medium".into()),
+        },
+    };
+    let updated = f
+        .store
+        .update_paused_workflow_roles(&workflow.id, &serde_json::to_string(&roles).unwrap())
+        .unwrap();
+    assert_eq!(updated.status, "failed");
+    assert_eq!(updated.plan, Some(proposed.clone()));
+    assert_eq!(Roles::parse(updated.roles.as_deref()).unwrap(), roles);
+    assert_eq!(
+        updated
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.stage == "plan")
+            .count(),
+        1
+    );
+    let role_json = updated.roles.as_deref().unwrap().to_owned();
+    f.store.resume_workflow(&workflow.id, &proposed).unwrap();
+    assert!(f
+        .store
+        .update_paused_workflow_roles(&workflow.id, &role_json)
+        .is_err());
+}
+
+#[test]
 fn retry_preserves_completed_tasks_and_only_requeues_unfinished_work() {
     let mut f = Fixture::new();
     let workflow = f.queued();
