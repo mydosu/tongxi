@@ -1459,7 +1459,11 @@ impl Store {
                 if agent == roles.implement.agent
                     && task_id.is_none()
                     && workflow.status == "reviewing"
-                    && !attempts.iter().any(|a| a.stage == "repair")
+                    // Failed/interrupted transports did not perform the bounded repair and may be
+                    // retried after changing the stage member/model; only a completed repair uses it.
+                    && !attempts
+                        .iter()
+                        .any(|a| a.stage == "repair" && a.status == "completed")
                     && attempts
                         .iter()
                         .rev()

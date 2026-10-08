@@ -78,6 +78,24 @@ fn failure_category(error: &Value) -> Option<String> {
     }
     Some("其他原生错误".into())
 }
+
+/// Some ACP providers return quota failures as assistant text and still report `end_turn`.
+/// Do not mistake that transport-level error message for a successful project deliverable.
+fn provider_error_reply(output: &str) -> Option<&'static str> {
+    let output = output.to_ascii_lowercase();
+    [
+        "http 429",
+        "weekly usage limit",
+        "rate limit exceeded",
+        "rate-limited",
+        "too many requests",
+        "quota exceeded",
+    ]
+    .iter()
+    .any(|marker| output.contains(marker))
+    .then_some("项目成员的模型服务返回额度或频率限制，未完成本阶段")
+}
+
 impl Wire {
     fn completed_message(&mut self, id: &str, text: &str, phase: Option<&str>) {
         self.text(id, text, true);
@@ -533,17 +551,21 @@ impl Runner {
                 json!({"contentItems":[{"type":"inputText","text":text}],"success":success}),
             ))
         }));
-        let tools = tool_specs()
-            .into_iter()
-            .filter(|tool| {
-                writable || matches!(tool["name"].as_str(), Some("hub_list" | "hub_read"))
-            })
-            .map(|mut tool| {
-                tool["type"] = json!("function");
-                tool["deferLoading"] = json!(false);
-                tool
-            })
-            .collect::<Vec<_>>();
+        let tools = if stage == "review" {
+            vec![]
+        } else {
+            tool_specs()
+                .into_iter()
+                .filter(|tool| {
+                    writable || matches!(tool["name"].as_str(), Some("hub_list" | "hub_read"))
+                })
+                .map(|mut tool| {
+                    tool["type"] = json!("function");
+                    tool["deferLoading"] = json!(false);
+                    tool
+                })
+                .collect::<Vec<_>>()
+        };
         let instructions = match stage.as_str() {
             "plan" => {
                 "你是同席项目的方案制定者 Codex。当前步骤只读，先分析需求和必要源码，再输出指定结构化项目方案。只允许 hub_list/hub_read 查看绑定项目的非受保护文件；不能写文件、运行命令、调用内置工具、外部 MCP、网络、凭据或外部消息。代码实现与修复由执行角色承担，你只输出只读方案。用户随后确认任务参数，框架再串行执行。"
@@ -637,7 +659,9 @@ impl Runner {
         client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")}}))?;
         let attempt = wire.lock().unwrap().attempt.clone();
         let dsh = attempt.agent_id == "dsh-win";
-        let project_tools = matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
+        // Review receives the authorized source bundle directly and never needs a file MCP.
+        let project_tools = attempt.stage != "review"
+            && matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
         let db = self.store.lock().unwrap().path.clone();
         let servers = if project_tools {
             json!([{"name":"agent_hub","command":std::env::current_exe().map_err(|_|"项目工具程序不可用")?,"args":["--project-tools",db.to_string_lossy(),attempt.id],"env":[]}])
@@ -704,6 +728,9 @@ impl Runner {
         if result["stopReason"] != "end_turn" {
             return Err("项目成员未正常完成任务，已保留已有内容".into());
         }
+        if provider_error_reply(&wire.lock().unwrap().attempt.output).is_some() {
+            return Err("项目成员的模型服务返回额度或频率限制，未完成本阶段".into());
+        }
         Ok(())
     }
 }
@@ -737,6 +764,14 @@ mod tests {
             last_save: Instant::now(),
         }
     }
+
+    #[test]
+    fn acp_provider_quota_text_is_not_treated_as_a_completed_project_turn() {
+        assert!(provider_error_reply("HTTP 429: weekly usage limit reached").is_some());
+        assert!(provider_error_reply("rate-limited after 3 attempts").is_some());
+        assert!(provider_error_reply("验收通过，所有改动符合需求").is_none());
+    }
+
     #[test]
     fn project_native_events_reject_other_thread_and_other_turn() {
         let state = wire();
