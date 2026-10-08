@@ -142,9 +142,7 @@ def execute(report, checks):
             root.mkdir(parents=True, exist_ok=True)
             (root / "check.py").write_text("print('stage8-check')\n", encoding="utf-8")
             project = desktop.ipc(
-                page, "register_project", name="stage8fixture", root=str(root),
-                checks=[{"name": "noop", "program": sys.executable,
-                         "args": ["check.py"], "timeout_seconds": 10}])
+                page, "register_project", name="stage8fixture", root=str(root))
             project_id = project["id"]
             check(checks, "project_registered", bool(project_id))
             desktop.ipc(page, "bind_project", conversationId=group, projectId=project_id)

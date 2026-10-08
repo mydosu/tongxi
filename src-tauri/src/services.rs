@@ -1082,7 +1082,6 @@ mod tests {
             model: None,
             reasoning_effort: None,
             output: String::new(),
-            checks: Vec::new(),
             error: None,
         }
     }

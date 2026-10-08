@@ -95,7 +95,6 @@ def venue(page, title, root, roles):
         "register_project",
         name=title,
         root=str(root),
-        checks=[{"name": "固定功能检查", "program": sys.executable, "args": ["check.py"], "timeout_seconds": 120}],
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
     desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
@@ -196,7 +195,6 @@ def venue_parallel(page, title, root):
         "register_project",
         name=title,
         root=str(root),
-        checks=[{"name": "固定功能检查", "program": sys.executable, "args": ["check.py"], "timeout_seconds": 120}],
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
     desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
@@ -405,7 +403,6 @@ def repair_round(page, root, title):
         "register_project",
         name=title,
         root=str(venue_dir),
-        checks=[{"name": "只在主仓库首次失败的固定检查", "program": sys.executable, "args": ["check.py"], "timeout_seconds": 120}],
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
     desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
@@ -450,7 +447,6 @@ def conflict_round(page, root, title):
         "register_project",
         name=title,
         root=str(venue_dir),
-        checks=[{"name": "任务分支有效性检查", "program": sys.executable, "args": ["check.py"], "timeout_seconds": 120}],
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
     desktop.ipc(page, "bind_project", conversationId=room, projectId=project["id"])
@@ -491,7 +487,6 @@ def non_git_bind_rejection(page, root, title):
         "register_project",
         name=title,
         root=str(venue_dir),
-        checks=[],
     )
     room = groups.group(page, title, ["hermes-win", "codex-win", "dsh-win"])
     rejected = False

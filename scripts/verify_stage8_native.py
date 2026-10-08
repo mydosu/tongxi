@@ -60,9 +60,7 @@ def main():
             expect(page.locator(MODAL)).not_to_be_visible()
             checks.append("real-escape-closes")
 
-            proj = desktop.ipc(page, "register_project", name="stage8", root=str(root), checks=[
-                {"name": "ok", "program": sys.executable,
-                 "args": ["check.py"], "timeout_seconds": 10}])
+            proj = desktop.ipc(page, "register_project", name="stage8", root=str(root))
             project_id = proj["id"]
             desktop.ipc(page, "bind_project", conversationId=group_id, projectId=project_id)
 

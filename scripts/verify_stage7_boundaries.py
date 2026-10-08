@@ -45,7 +45,7 @@ def register(page,root,name,script):
     root.mkdir(parents=True)
     (root/'calc.py').write_text('def square(value):\n    return value\n',encoding='utf-8')
     (root/'check.py').write_text(script,encoding='utf-8')
-    return desktop.ipc(page,'register_project',name=name,root=str(root),checks=[{'name':'固定功能检查','program':sys.executable,'args':['check.py'],'timeout_seconds':120}])
+    return desktop.ipc(page,'register_project',name=name,root=str(root))
 
 def room(page,title,project):
     value=groups.group(page,title,['hermes-win','codex-win','dsh-win'])

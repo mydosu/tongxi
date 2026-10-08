@@ -7,21 +7,11 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CheckCommand {
-    pub name: String,
-    pub program: String,
-    pub args: Vec<String>,
-    pub timeout_seconds: u32,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
     pub root: String,
-    pub checks: Vec<CheckCommand>,
     pub summary_enabled: bool,
     pub created_at: i64,
 }
@@ -283,18 +273,6 @@ pub struct Change {
     pub after_hash: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckResult {
-    pub name: String,
-    pub program: String,
-    pub args: Vec<String>,
-    pub exit_code: Option<i32>,
-    pub timed_out: bool,
-    pub duration_ms: u64,
-    pub output: String,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct Attempt {
     pub id: String,
@@ -308,20 +286,7 @@ pub struct Attempt {
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub output: String,
-    pub checks: Vec<CheckResult>,
     pub error: Option<String>,
-}
-
-pub fn checks_pass(commands: &[CheckCommand], results: &[CheckResult]) -> bool {
-    !commands.is_empty()
-        && commands.len() == results.len()
-        && commands.iter().zip(results).all(|(command, result)| {
-            command.name == result.name
-                && command.program == result.program
-                && command.args == result.args
-                && result.exit_code == Some(0)
-                && !result.timed_out
-        })
 }
 
 pub fn live(status: &str) -> bool {
@@ -332,6 +297,7 @@ pub fn live(status: &str) -> bool {
 }
 
 pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
+    // Legacy `checks` columns stay in existing databases for non-destructive upgrades; the project workflow no longer reads or executes them.
     tx.execute_batch("CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,name TEXT NOT NULL,root TEXT NOT NULL,root_key TEXT NOT NULL UNIQUE,
         checks TEXT NOT NULL,summary_enabled INTEGER NOT NULL DEFAULT 0 CHECK(summary_enabled IN (0,1)),created_at INTEGER NOT NULL);
@@ -657,23 +623,15 @@ impl Store {
     pub fn project(&self, id: &str) -> Result<Project> {
         self.connection
             .query_row(
-                "SELECT id,name,root,checks,summary_enabled,created_at FROM projects WHERE id=?1",
+                "SELECT id,name,root,summary_enabled,created_at FROM projects WHERE id=?1",
                 [id],
                 |r| {
-                    let checks: String = r.get(3)?;
                     Ok(Project {
                         id: r.get(0)?,
                         name: r.get(1)?,
                         root: r.get(2)?,
-                        checks: serde_json::from_str(&checks).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                3,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?,
-                        summary_enabled: r.get(4)?,
-                        created_at: r.get(5)?,
+                        summary_enabled: r.get(3)?,
+                        created_at: r.get(4)?,
                     })
                 },
             )
@@ -681,12 +639,7 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or("项目不存在".into())
     }
-    pub fn register_project(
-        &mut self,
-        name: &str,
-        root: &str,
-        checks: &[CheckCommand],
-    ) -> Result<Project> {
+    pub fn register_project(&mut self, name: &str, root: &str) -> Result<Project> {
         let name = name.trim();
         let root = Path::new(root);
         if name.is_empty()
@@ -717,24 +670,6 @@ impl Store {
                 return Err("不能绑定系统或 agent 配置目录".into());
             }
         }
-        if checks.len() > 6 {
-            return Err("每个项目最多配置六条检查".into());
-        }
-        for check in checks {
-            if check.name.trim().is_empty()
-                || check.name.chars().count() > 80
-                || check.program.trim().is_empty()
-                || check.program.chars().any(char::is_control)
-                || check.args.len() > 30
-                || check
-                    .args
-                    .iter()
-                    .any(|a| a.len() > 1000 || a.chars().any(char::is_control))
-                || !(1..=600).contains(&check.timeout_seconds)
-            {
-                return Err("检查命令的名称、程序、参数或超时无效".into());
-            }
-        }
         let existing = self
             .connection
             .query_row(
@@ -746,13 +681,13 @@ impl Store {
             .map_err(|e| e.to_string())?;
         if let Some(id) = existing {
             let project = self.project(&id)?;
-            if project.checks != checks || project.name != name {
-                return Err("此目录已登记，不能以不同设置重复绑定".into());
+            if project.name != name {
+                return Err("此目录已登记，不能以不同名称重复绑定".into());
             }
             return Ok(project);
         }
         let id = Uuid::new_v4().to_string();
-        self.connection.execute("INSERT INTO projects(id,name,root,root_key,checks,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![id,name,root.to_string_lossy(),root_key,serde_json::to_string(checks).map_err(|e|e.to_string())?,now()]).map_err(|e|e.to_string())?;
+        self.connection.execute("INSERT INTO projects(id,name,root,root_key,checks,created_at) VALUES(?1,?2,?3,?4,'[]',?5)",params![id,name,root.to_string_lossy(),root_key,now()]).map_err(|e|e.to_string())?;
         self.project(&id)
     }
     pub fn conversation_project(&self, room: &str) -> Result<Option<Project>> {
@@ -1340,17 +1275,6 @@ impl Store {
             {
                 return Err("实现与验收尚未完成".into());
             }
-            let latest = self
-                .attempts(id)?
-                .into_iter()
-                .rev()
-                .find(|a| a.stage == "verify");
-            let project = self.project(&workflow.project_id)?;
-            if !latest
-                .is_some_and(|a| a.status == "completed" && checks_pass(&project.checks, &a.checks))
-            {
-                return Err("缺少真实验收证据".into());
-            }
             let review = self
                 .attempts(id)?
                 .into_iter()
@@ -1409,10 +1333,9 @@ impl Store {
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
-        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,output,checks,error FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,output,error FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
         let result = stmt
             .query_map([workflow], |r| {
-                let checks: String = r.get(11)?;
                 Ok(Attempt {
                     id: r.get(0)?,
                     workflow_id: r.get(1)?,
@@ -1425,14 +1348,7 @@ impl Store {
                     model: r.get(8)?,
                     reasoning_effort: r.get(9)?,
                     output: r.get(10)?,
-                    checks: serde_json::from_str(&checks).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            11,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?,
-                    error: r.get(12)?,
+                    error: r.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -1528,57 +1444,32 @@ impl Store {
                     return Err("任务成员、状态或前置依赖尚不满足".into());
                 }
             }
-            // 用户配的固定验收程序：本地跑，无模型调用，挂在验收角色名下。
-            "verify"
-                if agent == roles.review.agent
-                    && task_id.is_none()
-                    && matches!(workflow.status.as_str(), "running" | "verifying")
-                    && !workflow.tasks.is_empty()
-                    && workflow.tasks.iter().all(|t| t.status == "completed") =>
-            {
-                next = "verifying";
-            }
-            // 验收：必须已有通过的实际检查证据。
+            // 功能验收由选定 agent 直接对照需求和授权源码完成。
             "review"
                 if agent == roles.review.agent
                     && task_id.is_none()
-                    && workflow.status == "verifying" =>
+                    && matches!(workflow.status.as_str(), "running" | "reviewing")
+                    && !workflow.tasks.is_empty()
+                    && workflow.tasks.iter().all(|t| t.status == "completed") =>
             {
-                let project = self.project(&workflow.project_id)?;
-                if !attempts
-                    .iter()
-                    .rev()
-                    .find(|a| a.stage == "verify")
-                    .is_some_and(|a| {
-                        a.status == "completed" && checks_pass(&project.checks, &a.checks)
-                    })
-                {
-                    return Err("实际检查未通过，不能进入验收".into());
-                }
                 next = "reviewing";
             }
-            // 修复：验收给出问题后由执行角色重跑一次（诊断与修复合一，不再两段）；
-            // 必须有失败证据才允许，且整场只允许一次。
+            // 验收给出具体问题后，由执行角色修复一次再复核。
             "repair"
                 if agent == roles.implement.agent
                     && task_id.is_none()
-                    && matches!(workflow.status.as_str(), "verifying" | "reviewing")
+                    && workflow.status == "reviewing"
                     && !attempts.iter().any(|a| a.stage == "repair")
-                    && (attempts
+                    && attempts
                         .iter()
                         .rev()
-                        .find(|a| a.stage == "verify")
-                        .is_some_and(|a| a.status == "failed")
-                        || attempts
-                            .iter()
-                            .rev()
-                            .find(|a| a.stage == "review")
-                            .is_some_and(|a| {
-                                a.status == "completed"
-                                    && parse_review(&a.output).is_ok_and(|r| !r.approved)
-                            })) =>
+                        .find(|a| a.stage == "review")
+                        .is_some_and(|a| {
+                            a.status == "completed"
+                                && parse_review(&a.output).is_ok_and(|review| !review.approved)
+                        }) =>
             {
-                next = "verifying";
+                next = "running";
             }
             _ => return Err("项目运行阶段或成员无效".into()),
         }
@@ -1621,15 +1512,8 @@ impl Store {
         if !matches!(old.status.as_str(), "starting" | "running" | "cancelling") {
             return Err("项目运行已经结束".into());
         }
-        if attempt.stage == "verify" && attempt.status == "completed" {
-            let workflow = self.workflow(&attempt.workflow_id)?;
-            let project = self.project(&workflow.project_id)?;
-            if !checks_pass(&project.checks, &attempt.checks) {
-                return Err("实际检查尚未全部通过".into());
-            }
-        }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,output=?6,checks=?7,error=?8 WHERE id=?9",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.output,serde_json::to_string(&attempt.checks).map_err(|e|e.to_string())?,attempt.error,attempt.id]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,output=?6,error=?7 WHERE id=?8",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.output,attempt.error,attempt.id]).map_err(|e|e.to_string())?;
         if attempt.native_turn_id.is_some() {
             tx.execute("UPDATE messages SET status='delivered' WHERE id=(SELECT user_message_id FROM workflows WHERE id=?1) AND status='pending'", [&attempt.workflow_id]).map_err(|e|e.to_string())?;
         }
@@ -1694,7 +1578,7 @@ mod tests {
         let project_root = std::env::temp_dir().join(format!("hub-v10-proj-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&project_root).unwrap();
         let project = store
-            .register_project("项目", project_root.to_str().unwrap(), &[])
+            .register_project("项目", project_root.to_str().unwrap())
             .unwrap();
         let room = store
             .create("协作", "direct", &["codex-win".into()])
