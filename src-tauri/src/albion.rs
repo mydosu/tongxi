@@ -160,6 +160,7 @@ impl Brain {
                 record: record.clone(),
                 text: String::new(),
                 thought: String::new(),
+                tool_events: Vec::new(),
             });
             record
         };

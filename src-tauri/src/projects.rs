@@ -16,7 +16,7 @@ use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
 const MAX_REVIEW_SOURCE_BYTES: usize = 192 * 1024;
-const PLAN_PROMPT_WITH_TOOLS: &str = "你是这个项目群的协作协调者。当前用户消息是本轮唯一的目标来源，优先级高于所有历史讨论、旧计划和旧项目结果；群聊历史只作背景，除非用户明确引用，否则不得把历史问题改写成本轮需求。必要时使用本机 CLI 中已启用的工具、MCP 与插件查看项目；也可使用 hub_list/hub_read。你可以用 hub_message(to_agent,content) 向当前群的另一位项目 Agent 直发协作消息，用 hub_inbox() 读取发给你的消息；直发内容会进入本项目时间线。先判断用户是在提问/讨论，还是明确要求项目变更。如果只是提问、意见交流或暂不需要改文件，返回一段直接答复作为 summary，并令 tasks=[]；不要为了制造任务而安排编码。如果要求实现、修改、修复或推进项目，则自由拆成1—5项任务；每项明确实现目标、验收要点和相关项目文件。所有实现任务的 agent_id 必须是 default_executor；执行阶段成员由用户预先选定，不能按任务自行改派。execution 可建议该成员目录中的模型与强度。框架会自动执行合格方案，无需等待用户再次点击。阶段配置只选择 Agent、模型与强度，不限制其 CLI 工具。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据路径、.git 或框架数据，不生成执行命令。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是项目团队的协作协调者。当前用户消息是本轮唯一目标来源，优先于历史讨论和旧计划；群聊历史只作背景，除非用户明确引用。必要时用本机 CLI、MCP、hub_list/hub_read了解项目；用 hub_message(to_agent,content)私下询问成员、hub_inbox()读收件箱、hub_broadcast(content)把适合团队共同查看的结论发布到团队会话。推理与工具细节不广播。先判断用户是在讨论还是希望实际推进项目；讨论时直接回答并返回 tasks=[]。若要求实施，尊重用户消息里明确指定的 Agent/角色；未指定的任务根据成员能力和默认角色安排，可将不同任务分给不同 Agent。每项任务明确目标、验收要点、文件范围和依赖；execution 可建议该 Agent 可用的模型与强度。框架会按依赖自动执行，无需二次确认。成员均保留自己的原生工具权限。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
 pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> Result<()> {
     if let Some(task) = plan.tasks.iter().find(|task| {
@@ -238,6 +238,50 @@ impl Runtime {
         })
     }
 
+    fn apply_role_directives(request: &str, roles: &mut Roles) {
+        fn agent_in(clause: &str) -> Option<&'static str> {
+            let text = clause.to_lowercase();
+            if text.contains("codex") {
+                Some("codex-win")
+            } else if text.contains("hermes") {
+                Some("hermes-win")
+            } else if text.contains("dsh") || text.contains("deepseek harness") {
+                Some("dsh-win")
+            } else {
+                None
+            }
+        }
+        fn assigned(request: &str, markers: &[&str]) -> Option<&'static str> {
+            request
+                .split(['\n', '，', '、', ',', '。', '；', ';'])
+                .filter(|clause| {
+                    markers
+                        .iter()
+                        .any(|marker| clause.to_lowercase().contains(marker))
+                })
+                .find_map(agent_in)
+        }
+        for (role, markers) in [
+            (&mut roles.plan, &["规划", "方案", "计划", "plan"][..]),
+            (
+                &mut roles.implement,
+                &["执行", "实现", "编码", "开发", "修复", "implement"][..],
+            ),
+            (
+                &mut roles.review,
+                &["验收", "复核", "检查", "审核", "测试", "review"][..],
+            ),
+        ] {
+            if let Some(agent) = assigned(request, markers) {
+                if role.agent != agent {
+                    role.agent = agent.to_owned();
+                    role.model = None;
+                    role.effort = None;
+                }
+            }
+        }
+    }
+
     fn save_project_roles(
         &self,
         room: &str,
@@ -360,7 +404,9 @@ impl Runtime {
 
     fn abort(&self, id: &str, error: &str) {
         self.native.cancel(id);
-        let interrupted = self.native.cancelled(id);
+        let interrupted = self.native.cancelled(id)
+            || error.contains("用户单独中断")
+            || error.contains("依赖它的任务等待恢复");
         let mut store = self.store.lock().unwrap();
         if let Ok(attempts) = store.attempts(id) {
             for mut attempt in attempts
@@ -384,7 +430,9 @@ impl Runtime {
 
     /// 缺省角色的兼容壳：走「规划后立刻按缺省参数确认并执行」的一段式。
     pub fn start(self: &Arc<Self>, room: &str, message: &str, content: &str) -> Result<Workflow> {
-        let roles = self.default_roles_for_room(room)?;
+        let mut roles = self.default_roles_for_room(room)?;
+        Self::apply_role_directives(content, &mut roles);
+        roles.validate()?;
         let (workflow, created) = self.create(room, message, content, &roles)?;
         if !created {
             return Ok(workflow);
@@ -420,7 +468,10 @@ impl Runtime {
         content: &str,
         roles: &Roles,
     ) -> Result<Workflow> {
-        let (workflow, created) = self.create(room, message, content, roles)?;
+        let mut roles = roles.clone();
+        Self::apply_role_directives(content, &mut roles);
+        roles.validate()?;
+        let (workflow, created) = self.create(room, message, content, &roles)?;
         if !created {
             return Ok(workflow);
         }
@@ -481,6 +532,9 @@ impl Runtime {
             (PathBuf::from(project.root), worktree_root)
         };
         for task in &workflow.tasks {
+            if task.status == "interrupted" {
+                continue;
+            }
             let Some(path) = task.worktree.as_deref() else {
                 continue;
             };
@@ -720,7 +774,7 @@ impl Runtime {
         mut prompt: Value,
         deadline: Instant,
     ) -> Result<Attempt> {
-        if attempt.agent_id == "hermes-win"
+        if project_store::EXECUTOR_AGENTS.contains(&attempt.agent_id.as_str())
             && matches!(
                 attempt.stage.as_str(),
                 "plan" | "implement" | "repair" | "review"
@@ -728,7 +782,7 @@ impl Runtime {
         {
             if let Some(instruction) = prompt.get("instruction").and_then(Value::as_str) {
                 prompt["instruction"] = json!(format!(
-                    "{instruction}\n\n本项目工具通过 MCP 提供，消息工具为 mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox，可用于和当前群中的其他项目 Agent 直发消息/收件。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
+                    "{instruction}\n\n本项目通过 MCP 提供团队消息工具：mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox 用于 Agent 私下沟通，并检查团队新增消息/中断通知；mcp__agent_hub__hub_broadcast 用于向用户和团队发布简短公开消息。推理、完整回复和工具过程留在 Agent 专属会话。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
                 ));
             }
         }
@@ -846,11 +900,11 @@ impl Runtime {
                 "manifest_limit":"最多500文件，最大6层，构建/依赖/受保护目录已排除",
                 "available_agents":available_agents,
                 "default_executor":roles.implement.agent,
+                "saved_roles":roles,
             }),
             deadline,
         )?;
-        let mut plan = project_store::parse_plan(&planning.output)?;
-        project_store::bind_plan_to_executor(&mut plan, &roles.implement.agent)?;
+        let plan = project_store::parse_plan(&planning.output)?;
         validate_plan_agents(&plan, &available_agent_ids)?;
         self.store.lock().unwrap().save_plan(id, &plan)?;
         if plan.tasks.is_empty() {
@@ -891,8 +945,16 @@ impl Runtime {
         };
         // 收尾：无论成败都清掉这次建的工作树，不留垃圾（已合并的改动在主分支，冲突现场在仓库里保留）。
         if git {
-            for (_, path, _) in &worktrees {
-                let _ = crate::project_worktree::remove(&root, path);
+            for (task_id, path, _) in &worktrees {
+                let preserve = self
+                    .store
+                    .lock()
+                    .unwrap()
+                    .task(task_id)
+                    .is_ok_and(|task| task.status == "interrupted");
+                if !preserve {
+                    let _ = crate::project_worktree::remove(&root, path);
+                }
             }
         }
         outcome
@@ -913,6 +975,7 @@ impl Runtime {
             let retry_key = uuid::Uuid::new_v4().simple().to_string();
             let retry_key = &retry_key[..8];
             let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            let mut stopped: std::collections::HashSet<u32> = std::collections::HashSet::new();
             for task in exec.tasks.iter().filter(|task| task.status == "completed") {
                 let branch = task
                     .branch
@@ -944,27 +1007,53 @@ impl Runtime {
                     .cloned()
                     .collect::<Vec<_>>();
                 if batch.is_empty() {
+                    if !stopped.is_empty() {
+                        break;
+                    }
                     return Err("任务依赖无法满足：存在循环依赖或缺失的前置任务".into());
                 }
                 // 每轮才建这批任务的工作树。有依赖的以「它最后一个前置任务的分支」为基线，
                 // 否则工作树停在主分支、看不到依赖的成果（依赖就只剩排序意义）。
                 for task in &batch {
                     let name = format!("{prefix}-{retry_key}-{}", task.position);
-                    let branch = format!("hub/{prefix}-{retry_key}-{}", task.position);
-                    let path =
-                        crate::project_worktree::create(exec.root, &worktree_root, &name, &branch)?;
-                    if let Some(base) = task.depends_on.last().and_then(|position| {
-                        worktrees
-                            .iter()
-                            .find(|(task_id, _, _)| {
-                                exec.tasks.iter().any(|known| {
-                                    known.id == *task_id && known.position == *position
+                    let branch = task
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| format!("hub/{prefix}-{retry_key}-{}", task.position));
+                    let reuse = task.worktree.as_deref().map(PathBuf::from);
+                    let path = if let Some(existing) = reuse.as_deref() {
+                        if existing.exists() {
+                            crate::project_worktree::reuse(
+                                exec.root,
+                                &worktree_root,
+                                existing,
+                                &branch,
+                            )?
+                        } else {
+                            crate::project_worktree::attach(
+                                exec.root,
+                                &worktree_root,
+                                &name,
+                                &branch,
+                            )?
+                        }
+                    } else {
+                        crate::project_worktree::create(exec.root, &worktree_root, &name, &branch)?
+                    };
+                    if reuse.is_none() {
+                        if let Some(base) = task.depends_on.last().and_then(|position| {
+                            worktrees
+                                .iter()
+                                .find(|(task_id, _, _)| {
+                                    exec.tasks.iter().any(|known| {
+                                        known.id == *task_id && known.position == *position
+                                    })
                                 })
-                            })
-                            .map(|(_, _, branch)| branch.clone())
-                    }) {
-                        // 新分支还没有自己的提交，这里必定快进，不会产生冲突。
-                        crate::project_worktree::merge(&path, &base)?;
+                                .map(|(_, _, branch)| branch.clone())
+                        }) {
+                            // 新分支还没有自己的提交，这里必定快进，不会产生冲突。
+                            crate::project_worktree::merge(&path, &base)?;
+                        }
                     }
                     self.store.lock().unwrap().set_task_config(
                         &task.id,
@@ -984,17 +1073,20 @@ impl Runtime {
                                 .find(|(task_id, _, _)| task_id == &task.id)
                                 .map(|(_, path, _)| path.clone())
                                 .unwrap_or_else(|| exec.root.to_path_buf());
+                            let task_id = task.id.clone();
                             (
                                 task.position,
+                                task_id,
                                 scope.spawn(move || self.implement_task(exec, task, &cwd)),
                             )
                         })
                         .collect::<Vec<_>>();
                     handles
                         .into_iter()
-                        .map(|(position, handle)| {
+                        .map(|(position, task_id, handle)| {
                             (
                                 position,
+                                task_id,
                                 handle
                                     .join()
                                     .unwrap_or_else(|_| Err("任务执行线程异常终止".into())),
@@ -1002,28 +1094,58 @@ impl Runtime {
                         })
                         .collect::<Vec<_>>()
                 });
-                for (position, result) in results {
-                    result?;
-                    done.insert(position);
+                for (position, task_id, result) in results {
+                    match result {
+                        Ok(()) => {
+                            done.insert(position);
+                        }
+                        Err(error) => {
+                            let interrupted = self
+                                .store
+                                .lock()
+                                .unwrap()
+                                .task(&task_id)
+                                .is_ok_and(|task| task.status == "interrupted");
+                            if interrupted {
+                                stopped.insert(position);
+                            } else {
+                                return Err(error);
+                            }
+                        }
+                    }
                 }
-                pending.retain(|task| !done.contains(&task.position));
+                pending.retain(|task| {
+                    !done.contains(&task.position) && !stopped.contains(&task.position)
+                });
             }
-            // 全部任务成功后按 position 顺序合并回主分支：任何冲突/失败立刻停下、保留现场，
-            // 不自动解法、不回退、不强推、不继续合并后面的（已合并的保持不动）。
+            // 合并已经完成的独立任务；被用户中断的分支不合并，并保留其工作树供恢复。
             for task in exec.tasks {
-                if let Some((_, _, branch)) =
-                    worktrees.iter().find(|(task_id, _, _)| task_id == &task.id)
-                {
-                    crate::project_worktree::merge(exec.root, branch)
-                        .map_err(|error| format!("合并任务「{}」失败：{error}", task.title))?;
+                if done.contains(&task.position) {
+                    if let Some((_, _, branch)) =
+                        worktrees.iter().find(|(task_id, _, _)| task_id == &task.id)
+                    {
+                        crate::project_worktree::merge(exec.root, branch)
+                            .map_err(|error| format!("合并任务「{}」失败：{error}", task.title))?;
+                    }
                 }
+            }
+            if !stopped.is_empty() || !pending.is_empty() {
+                return Err("有 Agent 被单独中断；独立任务已继续，依赖它的任务等待恢复。".into());
             }
         } else {
             return Err("项目必须是 Git 仓库，不能就地串行执行".into());
         }
         // 合并/实现完成后立刻清掉这次建的工作树：在收尾与结束之前，避免结果显示完成时还留着垃圾。
-        for (_, path, _) in worktrees.iter() {
-            let _ = crate::project_worktree::remove(exec.root, path);
+        for (task_id, path, _) in worktrees.iter() {
+            if self
+                .store
+                .lock()
+                .unwrap()
+                .task(task_id)
+                .is_ok_and(|task| task.status == "completed")
+            {
+                let _ = crate::project_worktree::remove(exec.root, path);
+            }
         }
         // 实现分支合并后，由验收 agent 直接对照需求和授权源码复核。
         let first_review = self.review(exec.id, exec.project, exec.deadline)?;
@@ -1092,6 +1214,45 @@ impl Runtime {
         self.native.cancel(id);
         Ok(job)
     }
+    pub fn cancel_agent(&self, id: &str, agent_id: &str) -> Result<Workflow> {
+        let attempts = {
+            let mut store = self.store.lock().unwrap();
+            let attempts = store.cancel_agent_attempts(id, agent_id)?;
+            let agent_name = match agent_id {
+                "codex-win" => "Codex",
+                "hermes-win" => "Hermes",
+                _ => "DSH",
+            };
+            let _ = store.add_system_team_message(
+                id,
+                &format!(
+                    "用户单独中断了 {agent_name}；其他独立任务继续，依赖该 Agent 的任务等待恢复。"
+                ),
+            );
+            attempts
+        };
+        for attempt_id in attempts {
+            self.native.cancel_attempt(&attempt_id);
+        }
+        let job = self.store.lock().unwrap().workflow(id)?;
+        (self.notify)(id);
+        Ok(job)
+    }
+    pub fn post_team_message(
+        &self,
+        conversation_id: &str,
+        content: &str,
+    ) -> Result<project_store::TeamMessage> {
+        let message = self
+            .store
+            .lock()
+            .unwrap()
+            .post_user_team_message(conversation_id, content)?;
+        if let Some(workflow_id) = message.workflow_id.as_deref() {
+            (self.notify)(workflow_id);
+        }
+        Ok(message)
+    }
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let jobs = self
@@ -1137,11 +1298,11 @@ pub fn bind_project(
         };
         crate::project_worktree::initialize_safe_repository(Path::new(&root))?;
     }
-    runtime
-        .store
-        .lock()
-        .unwrap()
-        .bind_project(&conversation_id, project_id.as_deref())
+    let mut store = runtime.store.lock().unwrap();
+    store.bind_project(&conversation_id, project_id.as_deref())?;
+    store
+        .ensure_project_agent_chats(&conversation_id)
+        .map(|_| ())
 }
 #[tauri::command]
 pub fn project_status(runtime: State<'_, Arc<Runtime>>) -> Result<Vec<Workflow>> {
@@ -1212,6 +1373,22 @@ pub fn cancel_project(runtime: State<'_, Arc<Runtime>>, id: String) -> Result<Wo
     runtime.cancel(&id)
 }
 #[tauri::command]
+pub fn cancel_project_agent(
+    runtime: State<'_, Arc<Runtime>>,
+    workflow_id: String,
+    agent_id: String,
+) -> Result<Workflow> {
+    runtime.cancel_agent(&workflow_id, &agent_id)
+}
+#[tauri::command]
+pub fn post_project_team_message(
+    runtime: State<'_, Arc<Runtime>>,
+    conversation_id: String,
+    content: String,
+) -> Result<project_store::TeamMessage> {
+    runtime.post_team_message(&conversation_id, &content)
+}
+#[tauri::command]
 pub fn set_project_summary(
     runtime: State<'_, Arc<Runtime>>,
     project_id: String,
@@ -1222,4 +1399,27 @@ pub fn set_project_summary(
         .lock()
         .unwrap()
         .set_project_summary(&project_id, enabled)
+}
+
+#[cfg(test)]
+mod role_directive_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_agent_role_assignments_in_group_text_override_defaults() {
+        let mut roles = Roles::defaults();
+        Runtime::apply_role_directives(
+            "Codex负责规划、DSH负责编码实现、Hermes负责验收",
+            &mut roles,
+        );
+        assert_eq!(roles.plan.agent, "codex-win");
+        assert_eq!(roles.implement.agent, "dsh-win");
+        assert_eq!(roles.review.agent, "hermes-win");
+
+        let mut roles = Roles::defaults();
+        Runtime::apply_role_directives("请Hermes规划，Codex实现，DSH测试复核", &mut roles);
+        assert_eq!(roles.plan.agent, "hermes-win");
+        assert_eq!(roles.implement.agent, "codex-win");
+        assert_eq!(roles.review.agent, "dsh-win");
+    }
 }

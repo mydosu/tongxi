@@ -260,7 +260,7 @@ fn cancelling_idle_plan_finishes_immediately_and_preserves_resume_path() {
     let planned = f.plan_with(&workflow, &proposed);
     let cancelled = f.store.cancel_workflow(&workflow.id).unwrap();
     assert_eq!(cancelled.status, "interrupted");
-    assert_eq!(cancelled.tasks[0].status, "skipped");
+    assert_eq!(cancelled.tasks[0].status, "queued");
 
     let resumed = f.store.resume_workflow(&workflow.id, &proposed).unwrap();
     assert_eq!(resumed.status, "planning");
@@ -315,7 +315,7 @@ fn failed_execution_can_reopen_its_plan_and_reset_tasks_for_confirmation() {
 }
 
 #[test]
-fn paused_workflow_role_changes_reassign_unfinished_tasks_and_use_the_new_stage_model() {
+fn paused_workflow_role_defaults_do_not_overwrite_task_level_agent_assignments() {
     let mut f = Fixture::new();
     let workflow = f.queued();
     assert!(f.store.acquire_project(&workflow.id).unwrap());
@@ -358,10 +358,10 @@ fn paused_workflow_role_changes_reassign_unfinished_tasks_and_use_the_new_stage_
         .unwrap();
     assert_eq!(updated.status, "failed");
     let resumed_plan = updated.plan.clone().unwrap();
-    assert_eq!(resumed_plan.tasks[0].agent_id, "codex-win");
-    assert_eq!(updated.tasks[0].agent_id, "codex-win");
-    assert_eq!(updated.tasks[0].model, None);
-    assert_eq!(updated.tasks[0].effort, None);
+    assert_eq!(resumed_plan.tasks[0].agent_id, "dsh-win");
+    assert_eq!(updated.tasks[0].agent_id, "dsh-win");
+    assert_eq!(updated.tasks[0].model.as_deref(), Some("ds-v4.1"));
+    assert_eq!(updated.tasks[0].effort.as_deref(), Some("off"));
     assert_eq!(Roles::parse(updated.roles.as_deref()).unwrap(), roles);
     assert_eq!(
         updated
@@ -977,6 +977,105 @@ fn project_task_dependencies_and_agent_busy_are_enforced() {
             None
         )
         .is_ok());
+}
+
+#[test]
+fn cancelling_one_agent_marks_only_its_attempt_and_keeps_other_tasks_running() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let mut plan_attempt = f
+        .store
+        .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    let proposed = Plan {
+        summary: "两个互不依赖的模块".into(),
+        tasks: vec![
+            PlannedTask {
+                title: "DSH模块".into(),
+                agent_id: "dsh-win".into(),
+                instructions: "只处理 a.py".into(),
+                files: vec!["a.py".into()],
+                depends_on: vec![],
+                execution: None,
+            },
+            PlannedTask {
+                title: "Codex模块".into(),
+                agent_id: "codex-win".into(),
+                instructions: "只处理 b.py".into(),
+                files: vec!["b.py".into()],
+                depends_on: vec![],
+                execution: None,
+            },
+            PlannedTask {
+                title: "等待 DSH 的模块".into(),
+                agent_id: "hermes-win".into(),
+                instructions: "依赖 DSH 模块".into(),
+                files: vec!["c.py".into()],
+                depends_on: vec![0],
+                execution: None,
+            },
+        ],
+    };
+    plan_attempt.output = serde_json::to_string(&proposed).unwrap();
+    complete(&mut f.store, &plan_attempt);
+    let planned = f.store.save_plan(&workflow.id, &proposed).unwrap();
+    let running = f.store.begin_execution(&planned.id).unwrap();
+    let dsh = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[0].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    let codex = f
+        .store
+        .begin_attempt(
+            &running.id,
+            Some(&running.tasks[1].id),
+            "codex-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    let cancelled = f
+        .store
+        .cancel_agent_attempts(&running.id, "dsh-win")
+        .unwrap();
+    assert_eq!(cancelled, vec![dsh.id.clone()]);
+    assert_eq!(f.store.attempt(&dsh.id).unwrap().status, "cancelling");
+    assert_eq!(f.store.attempt(&codex.id).unwrap().status, "starting");
+    let mut stopped = dsh;
+    stopped.status = "interrupted".into();
+    stopped.error = Some("用户单独中断".into());
+    f.store.checkpoint_attempt(&stopped).unwrap();
+    complete(&mut f.store, &codex);
+    f.store
+        .finish_workflow(&running.id, "interrupted", "", Some("依赖任务等待恢复"))
+        .unwrap();
+    let saved = f.store.workflow(&running.id).unwrap();
+    assert_eq!(saved.status, "interrupted");
+    assert_eq!(saved.tasks[0].status, "interrupted");
+    assert_eq!(saved.tasks[1].status, "completed");
+    assert_eq!(saved.tasks[2].status, "queued");
+    f.store.recover_projects().unwrap();
+    assert_eq!(
+        f.store.workflow(&running.id).unwrap().tasks[2].status,
+        "queued"
+    );
+    let notice = f
+        .store
+        .add_system_team_message(
+            &running.id,
+            "用户单独中断了 DSH；Codex 的独立任务继续运行。 ",
+        )
+        .unwrap();
+    assert_eq!(notice.kind, "system");
 }
 
 #[test]

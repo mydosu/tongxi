@@ -96,6 +96,7 @@ pub fn roles_of(workflow: &Workflow) -> Result<Roles> {
 
 /// New implementation plans always use the executor selected for this workflow.
 /// A model suggestion belongs to its original agent, so clear it when reassigned.
+#[cfg(test)]
 pub fn bind_plan_to_executor(plan: &mut Plan, executor: &str) -> Result<()> {
     if !EXECUTOR_AGENTS.contains(&executor) {
         return Err("实现角色只能选 Codex、Hermes 或 DSH".into());
@@ -278,6 +279,28 @@ pub struct Workflow {
     pub attempts: Vec<Attempt>,
     pub changes: Vec<Change>,
     pub agent_messages: Vec<AgentMessage>,
+    pub team_messages: Vec<TeamMessage>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProjectAgentChat {
+    pub group_conversation_id: String,
+    pub agent_id: String,
+    pub conversation_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TeamMessage {
+    pub id: String,
+    pub project_id: String,
+    pub conversation_id: String,
+    pub workflow_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub source_message_id: Option<String>,
+    pub sender_agent: Option<String>,
+    pub kind: String,
+    pub content: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -313,6 +336,7 @@ pub struct Attempt {
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub thought: String,
+    pub tool_events: Vec<crate::store::RunToolEvent>,
     pub output: String,
     pub error: Option<String>,
 }
@@ -357,6 +381,11 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         status TEXT NOT NULL CHECK(status IN ('starting','running','cancelling','completed','failed','interrupted')),
         native_thread_id TEXT,native_turn_id TEXT,model TEXT,reasoning_effort TEXT,
         output TEXT NOT NULL DEFAULT '',thought TEXT NOT NULL DEFAULT '',checks TEXT NOT NULL DEFAULT '[]',error TEXT,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS project_attempt_events (
+        attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL,kind TEXT NOT NULL,title TEXT NOT NULL,input TEXT,output TEXT,
+        status TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(attempt_id,event_id));
+      CREATE INDEX IF NOT EXISTS project_attempt_event_order ON project_attempt_events(attempt_id,created_at,event_id);
       CREATE TABLE IF NOT EXISTS project_changes (
         attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
         path TEXT NOT NULL,operation TEXT NOT NULL,before_hash TEXT,after_hash TEXT,
@@ -364,13 +393,29 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
       CREATE TABLE IF NOT EXISTS project_sessions (
         project_id TEXT NOT NULL REFERENCES projects(id),agent_id TEXT NOT NULL,
         stage TEXT NOT NULL,native_session_id TEXT,PRIMARY KEY(project_id,agent_id,stage));
+      CREATE TABLE IF NOT EXISTS project_agent_chats (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        group_conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL CHECK(agent_id IN ('hermes-win','codex-win','dsh-win')),
+        conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,PRIMARY KEY(project_id,group_conversation_id,agent_id));
       CREATE TABLE IF NOT EXISTS project_agent_messages (
         id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
         attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
         sender_agent TEXT NOT NULL CHECK(sender_agent IN ('hermes-win','codex-win','dsh-win')),
         recipient_agent TEXT NOT NULL CHECK(recipient_agent IN ('hermes-win','codex-win','dsh-win')),
         content TEXT NOT NULL,created_at INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS project_agent_inbox ON project_agent_messages(workflow_id,recipient_agent,created_at);")
+      CREATE TABLE IF NOT EXISTS project_team_messages (
+        id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        workflow_id TEXT REFERENCES workflows(id) ON DELETE CASCADE,
+        attempt_id TEXT REFERENCES project_attempts(id) ON DELETE CASCADE,
+        source_message_id TEXT UNIQUE,
+        sender_agent TEXT CHECK(sender_agent IS NULL OR sender_agent IN ('hermes-win','codex-win','dsh-win')),
+        message_kind TEXT NOT NULL DEFAULT 'agent' CHECK(message_kind IN ('agent','system','user')),
+        content TEXT NOT NULL,created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS project_agent_inbox ON project_agent_messages(workflow_id,recipient_agent,created_at);
+      CREATE INDEX IF NOT EXISTS project_team_feed ON project_team_messages(conversation_id,created_at,id);")
         .map_err(|e|e.to_string())?;
     // 每任务独立工作树后，同一成员会并行跑多条 attempt：旧的「同一成员只允许一条活动 attempt」
     // 唯一索引会挡住并行，独占改由 begin_attempt 的按任务软件判定负责，这里幂等删掉。
@@ -869,7 +914,7 @@ impl Store {
         let mut workflow=self.connection.query_row("SELECT id,project_id,conversation_id,user_message_id,request,status,plan,summary,error,created_at,updated_at,roles FROM workflows WHERE id=?1",[id],|r| {
             let plan:Option<String>=r.get(6)?;
             let plan=plan.map(|text|serde_json::from_str(&text)).transpose().map_err(|e|rusqlite::Error::FromSqlConversionFailure(6,rusqlite::types::Type::Text,Box::new(e)))?;
-            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![],agent_messages:vec![]})
+            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![],agent_messages:vec![],team_messages:vec![]})
         }).optional().map_err(|e|e.to_string())?.ok_or("项目协作不存在")?;
         let mut stmt = self
             .connection
@@ -898,7 +943,259 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         workflow.agent_messages = self.agent_messages(id)?;
+        workflow.team_messages = self.workflow_team_messages(id)?;
         Ok(workflow)
+    }
+
+    pub fn workflow_team_messages(&self, workflow_id: &str) -> Result<Vec<TeamMessage>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE workflow_id=?1 ORDER BY created_at,id",
+        ).map_err(|_| "团队消息读取失败")?;
+        let rows = statement
+            .query_map([workflow_id], |row| {
+                Ok(TeamMessage {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    workflow_id: row.get(3)?,
+                    attempt_id: row.get(4)?,
+                    source_message_id: row.get(5)?,
+                    sender_agent: row.get(6)?,
+                    kind: row.get(7)?,
+                    content: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|_| "团队消息读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn team_messages(&self, conversation_id: &str) -> Result<Vec<TeamMessage>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE conversation_id=?1 ORDER BY created_at,id",
+        ).map_err(|_| "团队消息读取失败")?;
+        let rows = statement
+            .query_map([conversation_id], |row| {
+                Ok(TeamMessage {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    workflow_id: row.get(3)?,
+                    attempt_id: row.get(4)?,
+                    source_message_id: row.get(5)?,
+                    sender_agent: row.get(6)?,
+                    kind: row.get(7)?,
+                    content: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|_| "团队消息读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "团队消息读取失败".into())
+    }
+
+    pub fn add_system_team_message(
+        &mut self,
+        workflow_id: &str,
+        content: &str,
+    ) -> Result<TeamMessage> {
+        let workflow = self.workflow(workflow_id)?;
+        let content = content.trim();
+        if content.is_empty() || content.chars().count() > 4000 {
+            return Err("团队状态消息无效".into());
+        }
+        let id = Uuid::new_v4().to_string();
+        let created_at = now();
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO project_team_messages(id,project_id,conversation_id,workflow_id,message_kind,content,created_at) VALUES(?1,?2,?3,?4,'system',?5,?6)",
+            params![id,workflow.project_id,workflow.conversation_id,workflow.id,content,created_at],
+        ).map_err(|_| "团队状态消息保存失败")?;
+        tx.execute(
+            "UPDATE workflows SET updated_at=?1 WHERE id=?2",
+            params![created_at, workflow_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.team_messages(&workflow.conversation_id)?
+            .into_iter()
+            .find(|message| message.id == id)
+            .ok_or("团队状态消息不可用".into())
+    }
+
+    pub fn post_user_team_message(
+        &mut self,
+        conversation_id: &str,
+        content: &str,
+    ) -> Result<TeamMessage> {
+        let group = self.conversation(conversation_id)?;
+        if group.kind != "group" || group.archived {
+            return Err("请选择未归档的项目群聊".into());
+        }
+        let project = self
+            .conversation_project(conversation_id)?
+            .ok_or("群聊未绑定项目")?;
+        let workflow_id: String = self.connection.query_row(
+            "SELECT id FROM workflows WHERE conversation_id=?1 AND status IN ('queued','planning','running','verifying','reviewing','cancelling') ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            [conversation_id], |row| row.get(0),
+        ).optional().map_err(|_| "当前协作状态读取失败")?.ok_or("当前没有进行中的团队协作")?;
+        let content = content.trim();
+        if content.is_empty()
+            || content.chars().count() > 16000
+            || content
+                .chars()
+                .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+        {
+            return Err("团队消息需为 1–16000 个有效字符".into());
+        }
+        let id = Uuid::new_v4().to_string();
+        let created_at = now();
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO project_team_messages(id,project_id,conversation_id,workflow_id,message_kind,content,created_at) VALUES(?1,?2,?3,?4,'user',?5,?6)",
+            params![id,project.id,conversation_id,workflow_id,content,created_at],
+        ).map_err(|_| "团队消息保存失败")?;
+        tx.execute(
+            "UPDATE workflows SET updated_at=?1 WHERE id=?2",
+            params![created_at, workflow_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.team_messages(conversation_id)?
+            .into_iter()
+            .find(|message| message.id == id)
+            .ok_or("团队消息不可用".into())
+    }
+
+    pub fn share_project_agent_message(
+        &mut self,
+        group_id: &str,
+        agent_chat_id: &str,
+        source_message_id: &str,
+    ) -> Result<TeamMessage> {
+        let group = self.conversation(group_id)?;
+        if group.kind != "group" || group.archived {
+            return Err("请选择未归档的项目群聊".into());
+        }
+        let project = self
+            .conversation_project(group_id)?
+            .ok_or("群聊未绑定项目")?;
+        let (agent, content): (String, String) = self.connection.query_row(
+            "SELECT pac.agent_id,m.content FROM project_agent_chats pac JOIN messages m ON m.conversation_id=pac.conversation_id WHERE pac.project_id=?1 AND pac.group_conversation_id=?2 AND pac.conversation_id=?3 AND m.id=?4 AND m.sender_id=pac.agent_id AND m.status='completed'",
+            params![project.id,group_id,agent_chat_id,source_message_id],
+            |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional().map_err(|_| "Agent 消息读取失败")?.ok_or("只能分享同一项目 Agent 已完成的回复")?;
+        if !group.members.contains(&agent) {
+            return Err("该 Agent 不属于当前项目群".into());
+        }
+        if let Some(existing_id) = self
+            .connection
+            .query_row(
+                "SELECT id FROM project_team_messages WHERE source_message_id=?1",
+                [source_message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| "团队消息状态读取失败")?
+        {
+            return self
+                .team_messages(group_id)?
+                .into_iter()
+                .find(|message| message.id == existing_id)
+                .ok_or("团队消息已分享至其他会话".into());
+        }
+        let id = Uuid::new_v4().to_string();
+        self.connection.execute(
+            "INSERT INTO project_team_messages(id,project_id,conversation_id,source_message_id,sender_agent,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![id,project.id,group_id,source_message_id,agent,content,now()],
+        ).map_err(|_| "分享至团队会话失败")?;
+        self.team_messages(group_id)?
+            .into_iter()
+            .find(|message| message.id == id)
+            .ok_or("分享后的团队消息不可用".into())
+    }
+
+    pub fn project_agent_chats(&self, group_id: &str) -> Result<Vec<ProjectAgentChat>> {
+        let Some(project) = self.conversation_project(group_id)? else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.connection.prepare(
+            "SELECT group_conversation_id,agent_id,conversation_id FROM project_agent_chats WHERE project_id=?1 AND group_conversation_id=?2 ORDER BY CASE agent_id WHEN 'codex-win' THEN 0 WHEN 'hermes-win' THEN 1 ELSE 2 END",
+        ).map_err(|_| "Agent 会话读取失败")?;
+        let rows = statement
+            .query_map(params![project.id, group_id], |row| {
+                Ok(ProjectAgentChat {
+                    group_conversation_id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                })
+            })
+            .map_err(|_| "Agent 会话读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "Agent 会话读取失败".into())
+    }
+
+    pub fn project_agent_chat_context(
+        &self,
+        chat_conversation_id: &str,
+    ) -> Result<Option<(String, String, String)>> {
+        self.connection.query_row(
+            "SELECT project_id,group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
+            [chat_conversation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).optional().map_err(|_| "项目 Agent 会话归属读取失败".into())
+    }
+
+    /// Each project gets a hidden direct conversation per connected Windows member.
+    /// It uses the normal harness/run storage but has its own CLI session and project cwd.
+    pub fn ensure_project_agent_chats(&mut self, group_id: &str) -> Result<Vec<ProjectAgentChat>> {
+        let group = self.conversation(group_id)?;
+        if group.kind != "group" {
+            return Ok(Vec::new());
+        }
+        let Some(project) = self.conversation_project(group_id)? else {
+            return Ok(Vec::new());
+        };
+        for agent in EXECUTOR_AGENTS {
+            if !group.members.iter().any(|member| member == agent) {
+                continue;
+            }
+            let exists: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE project_id=?1 AND group_conversation_id=?2 AND agent_id=?3)",
+                params![project.id,group_id,agent], |row| row.get(0),
+            ).map_err(|_| "Agent 会话状态不可用")?;
+            if exists {
+                continue;
+            }
+            let title = format!(
+                "{} · {}",
+                project.name,
+                match agent {
+                    "codex-win" => "Codex",
+                    "hermes-win" => "Hermes",
+                    _ => "DSH",
+                }
+            );
+            let chat = self.create(&title, "direct", &[agent.to_owned()])?;
+            let saved_settings: (Option<String>, Option<String>) = self.connection.query_row(
+                "SELECT s.model,s.reasoning_effort FROM sessions s JOIN conversations c ON c.id=s.conversation_id WHERE s.agent_id=?1 AND c.kind='direct' AND c.id<>?2 ORDER BY c.updated_at DESC LIMIT 1",
+                params![agent, chat.id], |row| Ok((row.get(0)?,row.get(1)?)),
+            ).optional().map_err(|_| "Agent 会话设置读取失败")?.unwrap_or((None,None));
+            let tx = self
+                .connection
+                .transaction()
+                .map_err(|_| "Agent 会话创建失败")?;
+            tx.execute(
+                "UPDATE sessions SET native_cwd=?1,model=?2,reasoning_effort=?3 WHERE conversation_id=?4 AND agent_id=?5",
+                params![project.root,saved_settings.0,saved_settings.1,chat.id,agent],
+            ).map_err(|_| "Agent 项目目录绑定失败")?;
+            tx.execute(
+                "INSERT INTO project_agent_chats(project_id,group_conversation_id,agent_id,conversation_id,created_at) VALUES(?1,?2,?3,?4,?5)",
+                params![project.id,group_id,agent,chat.id,now()],
+            ).map_err(|_| "Agent 项目会话绑定失败")?;
+            tx.commit().map_err(|_| "Agent 项目会话保存失败")?;
+        }
+        self.project_agent_chats(group_id)
     }
 
     pub fn agent_messages(&self, workflow_id: &str) -> Result<Vec<AgentMessage>> {
@@ -1031,37 +1328,14 @@ impl Store {
             return Err("项目成员仍在运行，暂时不能调整阶段设置".into());
         }
         let roles = Roles::parse(Some(roles))?;
-        let mut plan = workflow.plan.ok_or("暂停协作没有可复用方案")?;
         if !EXECUTOR_AGENTS.contains(&roles.implement.agent.as_str()) {
             return Err("执行角色只能选 Codex、Hermes 或 DSH".into());
         }
-        for (planned, saved) in plan.tasks.iter_mut().zip(&workflow.tasks) {
-            if saved.status != "completed" && planned.agent_id != roles.implement.agent {
-                planned.agent_id = roles.implement.agent.clone();
-                planned.execution = None;
-            }
-        }
         let encoded_roles = serde_json::to_string(&roles).map_err(|_| "角色配置序列化失败")?;
-        let encoded_plan = serde_json::to_string(&plan).map_err(|_| "方案序列化失败")?;
-        let (agent, assigned) = if roles.implement.agent == "hermes-win" {
-            ("dsh-win", Some("hermes-win"))
-        } else {
-            (roles.implement.agent.as_str(), None)
-        };
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "UPDATE workflows SET roles=?1,plan=?2,updated_at=?3 WHERE id=?4",
-            params![encoded_roles, encoded_plan, now(), id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE project_attempts SET output=?1 WHERE id=(SELECT id FROM project_attempts WHERE workflow_id=?2 AND stage='plan' AND status='completed' ORDER BY created_at DESC,rowid DESC LIMIT 1)",
-            params![serde_json::to_string(&plan).map_err(|_| "方案序列化失败")?, id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE project_tasks SET agent_id=?1,assigned_agent=?2,model=NULL,effort=NULL WHERE workflow_id=?3 AND status!='completed'",
-            params![agent, assigned, id],
+            "UPDATE workflows SET roles=?1,updated_at=?2 WHERE id=?3",
+            params![encoded_roles, now(), id],
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -1180,8 +1454,7 @@ impl Store {
         {
             return Err("保存方案前需要已完成的规划结果".into());
         }
-        let mut planned_output = parse_plan(&plans[0].output)?;
-        bind_plan_to_executor(&mut planned_output, &roles_of(&workflow)?.implement.agent)?;
+        let planned_output = parse_plan(&plans[0].output)?;
         if planned_output != *plan {
             return Err("保存的方案不能改变规划给出的任务或实现要求".into());
         }
@@ -1339,7 +1612,7 @@ impl Store {
             return self.save_plan(id, plan);
         }
         tx.execute(
-            "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=NULL,branch=CASE WHEN status='completed' THEN branch ELSE NULL END WHERE workflow_id=?1",
+            "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=CASE WHEN status IN ('completed','interrupted') THEN worktree ELSE NULL END,branch=CASE WHEN status IN ('completed','interrupted') THEN branch ELSE NULL END WHERE workflow_id=?1",
             [id],
         )
         .map_err(|e| e.to_string())?;
@@ -1459,11 +1732,13 @@ impl Store {
             params![status, summary, error, now(), id],
         )
         .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE project_tasks SET status='skipped' WHERE workflow_id=?1 AND status='queued'",
-            [id],
-        )
-        .map_err(|e| e.to_string())?;
+        if status != "interrupted" {
+            tx.execute(
+                "UPDATE project_tasks SET status='skipped' WHERE workflow_id=?1 AND status='queued'",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.execute("DELETE FROM project_leases WHERE workflow_id=?1", [id])
             .map_err(|e| e.to_string())?;
         tx.execute(
@@ -1484,7 +1759,6 @@ impl Store {
     pub fn recover_projects(&mut self) -> Result<()> {
         self.connection.execute_batch("UPDATE project_attempts SET status='interrupted',error='上次项目运行因退出中断，不会自动重放' WHERE status IN ('starting','running','cancelling');
           UPDATE project_tasks SET status='interrupted',error='上次任务因退出中断' WHERE status='running';
-          UPDATE project_tasks SET status='skipped' WHERE status='queued' AND workflow_id IN (SELECT id FROM workflows WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling'));
           UPDATE messages SET status='failed' WHERE status='pending' AND id IN (SELECT user_message_id FROM workflows WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling'));
           UPDATE workflows SET status='interrupted',error='上次协作因软件退出中断，不会自动重放' WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling');
           DELETE FROM project_leases;")
@@ -1515,6 +1789,7 @@ impl Store {
                     model: r.get(8)?,
                     reasoning_effort: r.get(9)?,
                     thought: r.get(10)?,
+                    tool_events: Vec::new(),
                     output: r.get(11)?,
                     error: r.get(12)?,
                 })
@@ -1522,7 +1797,32 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string());
-        result
+        let mut attempts = result?;
+        for attempt in &mut attempts {
+            attempt.tool_events = self.attempt_tool_events(&attempt.id)?;
+        }
+        Ok(attempts)
+    }
+
+    fn attempt_tool_events(&self, attempt_id: &str) -> Result<Vec<crate::store::RunToolEvent>> {
+        let mut statement = self.connection.prepare(
+            "SELECT event_id,kind,title,input,output,status,created_at FROM project_attempt_events WHERE attempt_id=?1 ORDER BY created_at,event_id",
+        ).map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([attempt_id], |row| {
+                Ok(crate::store::RunToolEvent {
+                    event_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    title: row.get(2)?,
+                    input: row.get(3)?,
+                    output: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn attempt(&self, id: &str) -> Result<Attempt> {
@@ -1664,6 +1964,46 @@ impl Store {
         self.attempt(&id)
     }
 
+    pub fn cancel_agent_attempts(
+        &mut self,
+        workflow_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<String>> {
+        if !EXECUTOR_AGENTS.contains(&agent_id) {
+            return Err("未知的项目 Agent".into());
+        }
+        let workflow = self.workflow(workflow_id)?;
+        if !matches!(workflow.status.as_str(), "running" | "reviewing") {
+            return Err("当前协作没有可单独中断的 Agent".into());
+        }
+        let attempts = self.attempts(workflow_id)?;
+        let ids = attempts
+            .into_iter()
+            .filter(|attempt| {
+                attempt.agent_id == agent_id
+                    && matches!(
+                        attempt.status.as_str(),
+                        "starting" | "running" | "cancelling"
+                    )
+            })
+            .map(|attempt| attempt.id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Err("该 Agent 当前没有运行中的项目任务".into());
+        }
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        for id in &ids {
+            tx.execute("UPDATE project_attempts SET status='cancelling',error='用户正在单独中断此 Agent' WHERE id=?1 AND status IN ('starting','running','cancelling')",[id]).map_err(|e|e.to_string())?;
+        }
+        tx.execute(
+            "UPDATE workflows SET updated_at=?1 WHERE id=?2",
+            params![now(), workflow_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(ids)
+    }
+
     pub fn checkpoint_attempt(&mut self, attempt: &Attempt) -> Result<()> {
         if !matches!(
             attempt.status.as_str(),
@@ -1703,6 +2043,12 @@ impl Store {
                 params![state, attempt.output, attempt.error, task],
             )
             .map_err(|e| e.to_string())?;
+        }
+        for event in &attempt.tool_events {
+            tx.execute(
+                "INSERT INTO project_attempt_events(attempt_id,event_id,kind,title,input,output,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(attempt_id,event_id) DO UPDATE SET kind=excluded.kind,title=excluded.title,input=excluded.input,output=excluded.output,status=excluded.status",
+                params![attempt.id,event.event_id,event.kind,event.title,event.input,event.output,event.status,event.created_at],
+            ).map_err(|e| e.to_string())?;
         }
         tx.execute(
             "UPDATE workflows SET updated_at=?1 WHERE id=?2",
@@ -1785,7 +2131,7 @@ mod tests {
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 12);
+        assert_eq!(version(&store), 13);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
         assert!(columns(&store, "project_attempts")
             .iter()
@@ -1857,7 +2203,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 12);
+        assert_eq!(version(&store), 13);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 
@@ -2049,5 +2395,118 @@ mod tests {
         let mut albion = Roles::defaults();
         albion.plan.agent = "albion-wsl".into();
         assert!(albion.validate().is_err());
+    }
+
+    #[test]
+    fn project_agent_chats_are_private_hidden_from_sidebar_and_bound_to_project_cwd() {
+        let mut store = memory();
+        let room = store
+            .create(
+                "项目群",
+                "group",
+                &["codex-win".into(), "hermes-win".into(), "dsh-win".into()],
+            )
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("agent-hub-chat-root-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project = store
+            .register_project("项目", root.to_str().unwrap())
+            .unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+
+        let chats = store.ensure_project_agent_chats(&room.id).unwrap();
+        assert_eq!(chats.len(), 3);
+        assert_eq!(store.ensure_project_agent_chats(&room.id).unwrap().len(), 3);
+        let listed = store.list("", false).unwrap();
+        assert_eq!(
+            listed.iter().filter(|item| item.kind == "direct").count(),
+            4
+        );
+        for chat in chats {
+            let detail = store.detail(&chat.conversation_id).unwrap();
+            assert_eq!(detail.conversation.kind, "direct");
+            assert_eq!(detail.conversation.members, vec![chat.agent_id.clone()]);
+            assert_eq!(
+                detail.sessions[0].native_cwd.as_deref(),
+                Some(project.root.as_str())
+            );
+            assert!(detail.messages.is_empty());
+        }
+        assert_eq!(store.detail(&room.id).unwrap().project_agent_chats.len(), 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_private_agent_reply_can_be_shared_to_the_bound_team_once() {
+        let mut store = memory();
+        let room = store
+            .create(
+                "项目群",
+                "group",
+                &["codex-win".into(), "hermes-win".into(), "dsh-win".into()],
+            )
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("agent-hub-share-root-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project = store
+            .register_project("项目", root.to_str().unwrap())
+            .unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room.id).unwrap();
+        let hermes = chats
+            .iter()
+            .find(|chat| chat.agent_id == "hermes-win")
+            .unwrap();
+        let source = Uuid::new_v4().to_string();
+        store.connection.execute(
+            "INSERT INTO messages(id,conversation_id,sender_id,content,status,created_at) VALUES(?1,?2,'hermes-win','结论已复核，可以分享。','completed',?3)",
+            params![source,hermes.conversation_id,now()],
+        ).unwrap();
+
+        let shared = store
+            .share_project_agent_message(&room.id, &hermes.conversation_id, &source)
+            .unwrap();
+        assert_eq!(shared.sender_agent.as_deref(), Some("hermes-win"));
+        assert!(shared.content.contains("可以分享"));
+        assert_eq!(
+            store
+                .share_project_agent_message(&room.id, &hermes.conversation_id, &source)
+                .unwrap()
+                .id,
+            shared.id
+        );
+        assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_can_post_updates_to_an_active_team_thread_without_starting_a_second_workflow() {
+        let mut store = memory();
+        let room = store
+            .create(
+                "项目群",
+                "group",
+                &["codex-win".into(), "hermes-win".into(), "dsh-win".into()],
+            )
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("agent-hub-team-post-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project = store
+            .register_project("项目", root.to_str().unwrap())
+            .unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let workflow = store
+            .start_workflow(&room.id, &Uuid::new_v4().to_string(), "推进项目")
+            .unwrap()
+            .0;
+        let posted = store
+            .post_user_team_message(&room.id, "请先把兼容性问题发到团队讨论里")
+            .unwrap();
+        assert_eq!(posted.kind, "user");
+        assert_eq!(posted.workflow_id.as_deref(), Some(workflow.id.as_str()));
+        assert!(posted.content.contains("团队讨论"));
+        assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
+        assert_eq!(store.workflows(&room.id).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

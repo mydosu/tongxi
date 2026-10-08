@@ -501,7 +501,22 @@ fn list_conversations(
 }
 #[tauri::command]
 fn get_conversation(state: State<'_, AppState>, id: String) -> Result<ConversationDetail, String> {
-    with_store(&state, |store| store.detail(&id))
+    with_store(&state, |store| {
+        store.ensure_project_agent_chats(&id)?;
+        store.detail(&id)
+    })
+}
+
+#[tauri::command]
+fn share_project_agent_message(
+    state: State<'_, AppState>,
+    group_id: String,
+    agent_chat_id: String,
+    message_id: String,
+) -> Result<project_store::TeamMessage, String> {
+    with_store(&state, |store| {
+        store.share_project_agent_message(&group_id, &agent_chat_id, &message_id)
+    })
 }
 #[tauri::command]
 fn create_conversation(
@@ -680,6 +695,20 @@ fn focus_main_window(app: &tauri::AppHandle) {
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "--project-chat-tools") {
+        let result = if args.len() == 4 {
+            project_tools::serve_project_chat(
+                std::path::Path::new(&args[2]),
+                &args[3].to_string_lossy(),
+            )
+        } else {
+            Err("项目 Agent 私聊工具启动参数无效".into())
+        };
+        if result.is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.get(1).is_some_and(|arg| arg == "--project-tools") {
         let result = if args.len() == 4 {
             project_tools::serve(std::path::Path::new(&args[2]), &args[3].to_string_lossy())
@@ -884,6 +913,8 @@ fn main() {
             projects::update_paused_project_roles,
             projects::set_project_roles,
             projects::cancel_project,
+            projects::cancel_project_agent,
+            projects::post_project_team_message,
             projects::set_project_summary,
             services::service_inventory,
             services::check_service_update,
@@ -896,7 +927,8 @@ fn main() {
             set_hud_bounds,
             native_sessions,
             open_agent_client,
-            attach_native_session
+            attach_native_session,
+            share_project_agent_message
         ])
         .build(tauri::generate_context!())
         .expect("Agent Hub failed to start")

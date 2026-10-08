@@ -89,6 +89,18 @@ pub struct Message {
     pub created_at: i64,
     /// 后端推理块（模型的思考），可能为空；不显示在气泡正文里。
     pub thought: String,
+    pub tool_events: Vec<RunToolEvent>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+pub struct RunToolEvent {
+    pub event_id: String,
+    pub kind: String,
+    pub title: String,
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub status: String,
+    pub created_at: i64,
 }
 
 #[derive(Serialize)]
@@ -111,6 +123,8 @@ pub struct ConversationDetail {
     pub project: Option<crate::project_store::Project>,
     pub project_roles: Option<crate::project_store::Roles>,
     pub workflows: Vec<crate::project_store::Workflow>,
+    pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
+    pub project_team_messages: Vec<crate::project_store::TeamMessage>,
 }
 
 pub struct Store {
@@ -191,10 +205,10 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 12 {
+        if version > 13 {
             return Err("数据由更新的软件版本创建，请使用对应版本打开".into());
         }
-        if version > 0 && version < 12 && path.is_absolute() {
+        if version > 0 && version < 13 && path.is_absolute() {
             let backups = path.parent().ok_or("数据库目录无效")?.join("backups");
             std::fs::create_dir_all(&backups).map_err(|_| "迁移前数据库备份目录创建失败")?;
             let snapshot = backups.join(format!("hub-schema-v{version}-{}.db", Uuid::new_v4()));
@@ -308,6 +322,12 @@ impl Store {
                 CREATE UNIQUE INDEX one_active_agent ON runs(agent_id) WHERE status IN ('starting','running','cancelling');").map_err(|e| e.to_string())?;
         }
         crate::group_store::migrate(&tx, version)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS run_tool_events (
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            event_id TEXT NOT NULL,kind TEXT NOT NULL,title TEXT NOT NULL,input TEXT,output TEXT,
+            status TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(run_id,event_id));
+            CREATE INDEX IF NOT EXISTS run_tool_event_order ON run_tool_events(run_id,created_at,event_id);")
+            .map_err(|e| e.to_string())?;
         crate::project_store::migrate(&tx)?;
         if version < 8 {
             // 推理块（后端思考）随回复一起存，历史会话里也能回看。
@@ -345,7 +365,7 @@ impl Store {
                     .map_err(|e| e.to_string())?;
             }
         }
-        tx.execute_batch("PRAGMA user_version=12;")
+        tx.execute_batch("PRAGMA user_version=13;")
             .map_err(|e| e.to_string())?;
         let seeded = tx
             .query_row("SELECT value FROM metadata WHERE key='seeded'", [], |row| {
@@ -448,7 +468,7 @@ impl Store {
             return Err("搜索内容过长".into());
         }
         let mut statement = self.connection.prepare(
-            "SELECT id FROM conversations c WHERE archived=?1 AND (
+            "SELECT id FROM conversations c WHERE archived=?1 AND NOT EXISTS (SELECT 1 FROM project_agent_chats pchat WHERE pchat.conversation_id=c.id) AND (
                 ?2='' OR instr(lower(title),lower(?2))>0 OR EXISTS (
                     SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND instr(lower(m.content),lower(?2))>0
                 )) ORDER BY updated_at DESC,rowid DESC"
@@ -464,11 +484,25 @@ impl Store {
     pub fn detail(&self, id: &str) -> Result<ConversationDetail> {
         let conversation = self.conversation(id)?;
         let mut statement = self.connection.prepare("SELECT id,conversation_id,sender_id,content,status,created_at,thought FROM messages WHERE conversation_id=?1 ORDER BY sequence").map_err(|e| e.to_string())?;
-        let messages = statement
+        let mut messages = statement
             .query_map([id], message_from_row)
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        for message in &mut messages {
+            if let Some(run_id) = self
+                .connection
+                .query_row(
+                    "SELECT id FROM runs WHERE assistant_message_id=?1",
+                    [&message.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+            {
+                message.tool_events = self.tool_events(&run_id)?;
+            }
+        }
         let mut statement = self.connection.prepare("SELECT agent_id,session_key,native_session_id,native_cwd,model,reasoning_effort FROM sessions WHERE conversation_id=?1 ORDER BY agent_id").map_err(|e| e.to_string())?;
         let sessions = statement
             .query_map([id], |row| {
@@ -492,6 +526,8 @@ impl Store {
             project: self.conversation_project(id)?,
             project_roles: self.conversation_project_roles(id)?,
             workflows: self.workflows(id)?,
+            project_agent_chats: self.project_agent_chats(id)?,
+            project_team_messages: self.team_messages(id)?,
         })
     }
 
@@ -640,12 +676,34 @@ impl Store {
     }
 
     pub fn delete(&mut self, id: &str) -> Result<()> {
-        self.conversation(id)?;
+        let conversation = self.conversation(id)?;
         self.guard_discussion(id)?;
         self.guard_workflow(id)?;
-        self.connection
-            .execute("DELETE FROM conversations WHERE id=?1", [id])
+        let project_chats = if conversation.kind == "group" {
+            self.project_agent_chats(id)?
+        } else {
+            Vec::new()
+        };
+        for chat in &project_chats {
+            let active: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND status IN ('starting','running','cancelling'))",
+                [&chat.conversation_id], |row| row.get(0),
+            ).map_err(|_| "项目私聊状态不可用")?;
+            if active {
+                return Err("项目内 Agent 私聊仍在运行，请先停止后再删除群聊".into());
+            }
+        }
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        for chat in project_chats {
+            tx.execute(
+                "DELETE FROM conversations WHERE id=?1",
+                [chat.conversation_id],
+            )
             .map_err(|e| e.to_string())?;
+        }
+        tx.execute("DELETE FROM conversations WHERE id=?1", [id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -759,6 +817,59 @@ impl Store {
         tx.execute("INSERT INTO runs(id,conversation_id,agent_id,user_message_id,assistant_message_id,status,model,reasoning_effort,discussion_id,round) VALUES(?1,?2,?3,?4,?5,'starting',?6,?7,?8,?9)", params![record.id,conversation_id,agent_id,message_id,record.assistant_message_id,record.model,record.reasoning_effort,discussion_id,round]).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(record)
+    }
+
+    pub fn append_tool_event(&mut self, record: &RunRecord, event: &RunToolEvent) -> Result<()> {
+        if event.event_id.is_empty()
+            || event.event_id.chars().count() > 160
+            || event.kind.is_empty()
+            || event.kind.chars().count() > 80
+            || event.title.chars().count() > 500
+            || event
+                .input
+                .as_ref()
+                .is_some_and(|value| value.len() > 16_000)
+            || event
+                .output
+                .as_ref()
+                .is_some_and(|value| value.len() > 16_000)
+            || !matches!(event.status.as_str(), "running" | "completed" | "failed")
+        {
+            return Err("工具活动记录无效".into());
+        }
+        let belongs: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1 AND assistant_message_id=?2 AND conversation_id=?3)",
+            params![record.id,record.assistant_message_id,record.conversation_id], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if !belongs {
+            return Err("工具活动不属于当前会话运行".into());
+        }
+        self.connection.execute(
+            "INSERT INTO run_tool_events(run_id,event_id,kind,title,input,output,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(run_id,event_id) DO UPDATE SET kind=excluded.kind,title=excluded.title,input=excluded.input,output=excluded.output,status=excluded.status",
+            params![record.id,event.event_id,event.kind,event.title,event.input,event.output,event.status,event.created_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn tool_events(&self, run_id: &str) -> Result<Vec<RunToolEvent>> {
+        let mut statement = self.connection.prepare(
+            "SELECT event_id,kind,title,input,output,status,created_at FROM run_tool_events WHERE run_id=?1 ORDER BY created_at,event_id",
+        ).map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([run_id], |row| {
+                Ok(RunToolEvent {
+                    event_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    title: row.get(2)?,
+                    input: row.get(3)?,
+                    output: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn bind_thread(&mut self, record: &mut RunRecord, thread_id: &str) -> Result<()> {
@@ -905,6 +1016,7 @@ impl Store {
             sender_id: "user".into(),
             content: content.into(),
             thought: String::new(),
+            tool_events: Vec::new(),
             status: "local_only".into(),
             created_at: now(),
         };
@@ -999,6 +1111,7 @@ fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         status: row.get(4)?,
         created_at: row.get(5)?,
         thought: row.get(6)?,
+        tool_events: Vec::new(),
     })
 }
 
@@ -1488,7 +1601,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            12
+            13
         );
         let room = direct(&mut store, "升级后");
         assert!(store
@@ -1569,6 +1682,37 @@ mod tests {
         });
         assert_ne!(keys[0], keys[1]);
         assert_ne!(keys[1], keys[2]);
+    }
+
+    #[test]
+    fn native_tool_events_are_persisted_with_their_assistant_turn() {
+        let mut store = memory();
+        let room = direct(&mut store, "工具轨迹");
+        let run = store
+            .begin_agent_run(
+                &room.id,
+                &Uuid::new_v4().to_string(),
+                "读取并检查文件",
+                "codex-win",
+            )
+            .unwrap();
+        let event = RunToolEvent {
+            event_id: "item-1".into(),
+            kind: "commandExecution".into(),
+            title: "cargo test".into(),
+            input: Some("cargo test".into()),
+            output: Some("12 tests passed".into()),
+            status: "completed".into(),
+            created_at: now(),
+        };
+        store.append_tool_event(&run, &event).unwrap();
+        let detail = store.detail(&room.id).unwrap();
+        let assistant = detail
+            .messages
+            .iter()
+            .find(|message| message.id == run.assistant_message_id)
+            .unwrap();
+        assert_eq!(assistant.tool_events, vec![event]);
     }
     #[test]
     fn duplicate_requests_are_idempotent_but_payload_drift_is_rejected() {

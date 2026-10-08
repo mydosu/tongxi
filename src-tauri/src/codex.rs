@@ -1,6 +1,6 @@
 use crate::models::{codex_models, validate_selection, ModelOption};
 use crate::rpc::Client;
-use crate::store::{RunRecord, Store};
+use crate::store::{RunRecord, RunToolEvent, Store};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -23,6 +23,8 @@ pub struct RunSnapshot {
     /// 后端推理块；没有推理的 runtime 留空。
     #[serde(default)]
     pub thought: String,
+    #[serde(default)]
+    pub tool_events: Vec<RunToolEvent>,
 }
 
 /// 只读的原生会话条目（各 agent 自己的历史），供「原生会话」面板展示。
@@ -83,6 +85,137 @@ struct ActiveRun {
 
 fn busy(status: &str) -> bool {
     matches!(status, "starting" | "running" | "cancelling")
+}
+pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToolEvent> {
+    let item = params.get("item")?;
+    let kind = item["type"].as_str()?;
+    if matches!(kind, "agentMessage" | "reasoning" | "reasoningSummary") {
+        return None;
+    }
+    let event_id = item["id"].as_str()?.to_owned();
+    let title = match kind {
+        "commandExecution" => item["command"].as_str().unwrap_or("运行命令").to_owned(),
+        "mcpToolCall" => format!(
+            "{} · {}",
+            item["serverName"].as_str().unwrap_or("MCP"),
+            item["toolName"].as_str().unwrap_or("工具调用")
+        ),
+        "fileChange" => "修改文件".to_owned(),
+        "webSearch" => format!("网页搜索 · {}", item["query"].as_str().unwrap_or("")),
+        _ => format!("Agent 工具 · {kind}"),
+    };
+    let input_value = item
+        .get("arguments")
+        .or_else(|| item.get("changes"))
+        .or_else(|| item.get("query"));
+    let input = input_value
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .map(|text| text.chars().take(8000).collect());
+    let output = ["aggregatedOutput", "output", "result", "text"]
+        .iter()
+        .find_map(|key| item[*key].as_str())
+        .map(|text| text.chars().take(8000).collect());
+    let status = if !completed {
+        "running"
+    } else if item["status"]
+        .as_str()
+        .is_some_and(|status| status == "failed" || status == "error")
+        || item["exitCode"].as_i64().is_some_and(|code| code != 0)
+    {
+        "failed"
+    } else {
+        "completed"
+    };
+    Some(RunToolEvent {
+        event_id,
+        kind: kind.into(),
+        title,
+        input,
+        output,
+        status: status.into(),
+        created_at: crate::store::now(),
+    })
+}
+pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
+    let update_kind = update["sessionUpdate"].as_str()?;
+    if !matches!(update_kind, "tool_call" | "tool_call_update") {
+        return None;
+    }
+    let call = update
+        .get("toolCall")
+        .or_else(|| update.get("tool_call"))
+        .unwrap_or(update);
+    let event_id = call["toolCallId"]
+        .as_str()
+        .or_else(|| call["id"].as_str())?
+        .to_owned();
+    let kind = call["kind"]
+        .as_str()
+        .or_else(|| call["name"].as_str())
+        .or_else(|| call["toolName"].as_str())
+        .unwrap_or("tool")
+        .to_owned();
+    let title = call["title"]
+        .as_str()
+        .or_else(|| call["name"].as_str())
+        .or_else(|| call["toolName"].as_str())
+        .unwrap_or(&kind)
+        .to_owned();
+    let value_text = |value: &Value| {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string())
+    };
+    let input = ["rawInput", "input", "arguments"]
+        .iter()
+        .find_map(|key| call.get(*key))
+        .map(value_text)
+        .map(|text| text.chars().take(8000).collect());
+    let output = ["rawOutput", "output", "result"]
+        .iter()
+        .find_map(|key| call.get(*key))
+        .map(value_text)
+        .map(|text| text.chars().take(8000).collect());
+    let status = match call["status"]
+        .as_str()
+        .unwrap_or(if update_kind == "tool_call" {
+            "running"
+        } else {
+            "completed"
+        }) {
+        "failed" | "error" => "failed",
+        "completed" | "success" => "completed",
+        _ => "running",
+    };
+    Some(RunToolEvent {
+        event_id,
+        kind,
+        title,
+        input,
+        output,
+        status: status.into(),
+        created_at: crate::store::now(),
+    })
+}
+fn remember_tool_event(run: &mut ActiveRun, event: RunToolEvent, store: &Arc<Mutex<Store>>) {
+    upsert_tool_event(&mut run.snapshot.tool_events, &event);
+    let _ = store
+        .lock()
+        .unwrap()
+        .append_tool_event(&run.snapshot.record, &event);
+}
+pub(crate) fn upsert_tool_event(events: &mut Vec<RunToolEvent>, event: &RunToolEvent) {
+    if let Some(existing) = events.iter_mut().find(|old| old.event_id == event.event_id) {
+        *existing = event.clone();
+    } else {
+        events.push(event.clone());
+    }
 }
 fn apply_reasoning_delta(run: &mut ActiveRun, method: &str, params: &Value) -> bool {
     if !matches!(
@@ -379,6 +512,18 @@ impl Runtime {
                     }
                 },
             )?;
+            let request_weak = Arc::downgrade(self);
+            client.set_request_handler(Arc::new(move |method, params| match method {
+                "item/tool/call" => match request_weak.upgrade() {
+                    Some(runtime) => runtime.project_chat_tool(params),
+                    None => Some(Err("Agent Hub 已关闭".into())),
+                },
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                    Some(Ok(json!({"decision":"accept"})))
+                }
+                "item/tool/requestUserInput" => Some(Ok(json!({"answers":{}}))),
+                _ => None,
+            }));
             {
                 self.inner.lock().unwrap().client = Some(client.clone());
             }
@@ -486,6 +631,7 @@ impl Runtime {
                 record: record.clone(),
                 text: String::new(),
                 thought: String::new(),
+                tool_events: Vec::new(),
             },
             items: BTreeMap::new(),
             order: Vec::new(),
@@ -529,6 +675,7 @@ impl Runtime {
                 record: record.clone(),
                 text: String::new(),
                 thought: String::new(),
+                tool_events: Vec::new(),
             },
             items: BTreeMap::new(),
             order: Vec::new(),
@@ -590,6 +737,12 @@ impl Runtime {
         };
         // 同席作为 CLI 外壳，不阻止 Codex 使用本机文件、命令、MCP、插件或网络工具。
         let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access"});
+        let project_db = self.store.lock().unwrap().path.clone();
+        let project_tools =
+            crate::project_tools::project_chat_dynamic_tools(&project_db, &conversation_id)?;
+        if !project_tools.is_empty() {
+            params["dynamicTools"] = json!(project_tools);
+        }
         let (model, effort) = {
             let inner = self.inner.lock().unwrap();
             let settings = &inner
@@ -747,6 +900,43 @@ impl Runtime {
         Ok(self.snapshot())
     }
 
+    fn project_chat_tool(&self, params: &Value) -> Option<Result<Value>> {
+        let (conversation_id, thread_id, turn_id) = {
+            let inner = self.inner.lock().unwrap();
+            let run = inner.active.as_ref()?;
+            let record = &run.snapshot.record;
+            let context = self
+                .store
+                .lock()
+                .unwrap()
+                .project_agent_chat_context(&record.conversation_id)
+                .ok()
+                .flatten();
+            context?;
+            if record.native_thread_id.as_deref() != params["threadId"].as_str()
+                || record.native_turn_id.as_deref() != params["turnId"].as_str()
+            {
+                return Some(Err("项目 Agent 工具调用身份不匹配".into()));
+            }
+            (
+                record.conversation_id.clone(),
+                record.native_thread_id.clone().unwrap_or_default(),
+                record.native_turn_id.clone().unwrap_or_default(),
+            )
+        };
+        if params["tool"].as_str() != Some("hub_broadcast") {
+            return Some(Err("此项目私聊只开放团队分享工具".into()));
+        }
+        let _ = (thread_id, turn_id);
+        let content = params["arguments"]["content"].as_str().unwrap_or("");
+        let result = crate::project_tools::broadcast_from_project_chat(
+            &self.store.lock().unwrap().path,
+            &conversation_id,
+            content,
+        );
+        Some(result.map(|value| json!({"contentItems":[{"type":"inputText","text":value.to_string()}],"success":true})))
+    }
+
     fn notification(&self, connection_id: &str, value: Value) {
         let mut inner = self.inner.lock().unwrap();
         if inner.connection_id != connection_id {
@@ -782,19 +972,28 @@ impl Runtime {
             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
                 apply_reasoning_delta(run, method, params);
             }
+            "item/started" => {
+                if let Some(event) = codex_tool_event(params, false) {
+                    remember_tool_event(run, event, &self.store);
+                }
+            }
+            "item/completed" => {
+                if let Some(event) = codex_tool_event(params, true) {
+                    remember_tool_event(run, event, &self.store);
+                } else if params["item"]["type"] == "agentMessage" {
+                    if let (Some(item), Some(text)) = (
+                        params["item"]["id"].as_str(),
+                        params["item"]["text"].as_str(),
+                    ) {
+                        run.text(item, text, true);
+                    }
+                }
+            }
             "item/agentMessage/delta" => {
                 if let (Some(item), Some(delta)) =
                     (params["itemId"].as_str(), params["delta"].as_str())
                 {
                     run.text(item, delta, false);
-                }
-            }
-            "item/completed" if params["item"]["type"] == "agentMessage" => {
-                if let (Some(item), Some(text)) = (
-                    params["item"]["id"].as_str(),
-                    params["item"]["text"].as_str(),
-                ) {
-                    run.text(item, text, true);
                 }
             }
             "turn/completed" => {
@@ -963,6 +1162,7 @@ mod tests {
                 },
                 text: String::new(),
                 thought: String::new(),
+                tool_events: Vec::new(),
             },
             items: BTreeMap::new(),
             order: Vec::new(),

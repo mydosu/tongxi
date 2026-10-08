@@ -1,6 +1,6 @@
 //! Shared, lease-checked file tools. Neither transport grants native shell access.
 use crate::project_store::{key, protected_relative, task_path, EXECUTOR_AGENTS};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -22,6 +22,7 @@ struct Scope {
     root: PathBuf,
     files: Vec<String>,
     writable: bool,
+    project_id: String,
     workflow_id: String,
     conversation_id: String,
     agent_id: String,
@@ -57,6 +58,11 @@ struct DeleteArg {
 #[serde(deny_unknown_fields)]
 struct AgentMessageArg {
     to_agent: String,
+    content: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BroadcastArg {
     content: String,
 }
 
@@ -156,7 +162,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 12 {
+        if version != 13 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -167,7 +173,7 @@ impl Broker {
     }
 
     fn scope(connection: &Connection, attempt: &str) -> Result<Scope> {
-        let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id,w.id,w.conversation_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
+        let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id,w.id,w.conversation_id,w.project_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
         let project_root = Path::new(&row.0)
             .canonicalize()
             .map_err(|_| "项目目录不可用")?;
@@ -201,6 +207,7 @@ impl Broker {
             root,
             files,
             writable,
+            project_id: row.10,
             workflow_id: row.8,
             conversation_id: row.9,
             agent_id: row.7,
@@ -214,7 +221,7 @@ impl Broker {
             tools.retain(|tool| {
                 matches!(
                     tool["name"].as_str(),
-                    Some("hub_list" | "hub_read" | "hub_message" | "hub_inbox")
+                    Some("hub_list" | "hub_read" | "hub_message" | "hub_inbox" | "hub_broadcast")
                 )
             });
         }
@@ -305,7 +312,48 @@ impl Broker {
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(|_| "项目消息收件箱读取失败")?;
                 drop(statement);
-                json!({"messages":messages})
+                let mut statement = tx.prepare("SELECT id,message_kind,sender_agent,content,created_at FROM project_team_messages WHERE conversation_id=?1 ORDER BY created_at DESC,id DESC LIMIT 100")
+                    .map_err(|_| "团队消息读取失败")?;
+                let team_updates = statement.query_map([&scope.conversation_id], |row| Ok(json!({
+                    "id":row.get::<_,String>(0)?,"kind":row.get::<_,String>(1)?,"from_agent":row.get::<_,Option<String>>(2)?,
+                    "content":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?
+                }))).map_err(|_| "团队消息读取失败")?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_|"团队消息读取失败")?;
+                json!({"messages":messages,"team_updates":team_updates.into_iter().rev().collect::<Vec<_>>()})
+            }
+            "hub_broadcast" => {
+                let arg: BroadcastArg =
+                    serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
+                let content = arg.content.trim();
+                if content.is_empty()
+                    || content.chars().count() > 4000
+                    || content
+                        .chars()
+                        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+                {
+                    return Err("团队消息需为 1–4000 个有效字符".into());
+                }
+                let count: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM project_team_messages WHERE conversation_id=?1",
+                        [&scope.conversation_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| "团队消息计数失败")?;
+                if count >= 500 {
+                    return Err("本轮团队消息已达到 500 条上限".into());
+                }
+                let id = Uuid::new_v4().to_string();
+                let created_at = crate::store::now();
+                tx.execute(
+                    "INSERT INTO project_team_messages(id,project_id,conversation_id,workflow_id,attempt_id,sender_agent,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![id,scope.project_id,scope.conversation_id,scope.workflow_id,self.attempt_id,scope.agent_id,content,created_at],
+                ).map_err(|_| "团队消息保存失败")?;
+                tx.execute(
+                    "UPDATE workflows SET updated_at=?1 WHERE id=?2",
+                    params![created_at, scope.workflow_id],
+                )
+                .map_err(|_| "团队消息更新时间失败")?;
+                json!({"sent":true,"message_id":id,"audience":"project_group"})
             }
             "hub_list" => {
                 if args != json!({}) {
@@ -439,11 +487,185 @@ pub fn tool_specs() -> Vec<Value> {
         ("hub_read","Read one authorized UTF-8 file and its SHA256.",json!({"path":string}),vec!["path"]),
         ("hub_message","Send a direct message to another project agent in this group. The recipient can read it from their project inbox.",json!({"to_agent":string,"content":string}),vec!["to_agent","content"]),
         ("hub_inbox","Read direct messages sent to you by other agents in this project workflow.",json!({}),vec![]),
+        ("hub_broadcast","Post a short message for the user and all agents in the shared project room. Only publish information the team should see; keep reasoning and tool details in your own agent session.",json!({"content":string}),vec!["content"]),
         ("hub_write","Create or replace one authorized UTF-8 file. Existing files require the current SHA256.",json!({"path":string,"content":string,"expected_sha256":nullable_hash}),vec!["path","content","expected_sha256"]),
         ("hub_edit","Replace exactly one occurrence in an authorized file, guarded by its SHA256.",json!({"path":string,"old_text":string,"new_text":string,"expected_sha256":string}),vec!["path","old_text","new_text","expected_sha256"]),
         ("hub_delete","Delete one authorized file, guarded by its SHA256. The previous file is backed up.",json!({"path":string,"expected_sha256":string}),vec!["path","expected_sha256"]),
     ];
     definitions.into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
+}
+
+pub fn project_chat_mcp_server(db: &Path, conversation_id: &str) -> Result<Option<Value>> {
+    let connection = Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| "项目 Agent 会话数据库不可用")?;
+    let linked: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE conversation_id=?1)",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "项目 Agent 会话映射不可用")?;
+    if !linked {
+        return Ok(None);
+    }
+    let command = std::env::current_exe().map_err(|_| "项目消息工具程序不可用")?;
+    Ok(Some(
+        json!({"name":"agent_hub_project","command":command,"args":["--project-chat-tools",db.to_string_lossy(),conversation_id],"env":[]}),
+    ))
+}
+
+pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Vec<Value>> {
+    let server = project_chat_mcp_server(db, conversation_id)?;
+    if server.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut tool = tool_specs()
+        .into_iter()
+        .find(|tool| tool["name"] == "hub_broadcast")
+        .ok_or("项目团队消息工具不可用")?;
+    tool["type"] = json!("function");
+    tool["deferLoading"] = json!(false);
+    Ok(vec![tool])
+}
+
+pub fn broadcast_from_project_chat(
+    db: &Path,
+    conversation_id: &str,
+    content: &str,
+) -> Result<Value> {
+    let connection = Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| "项目消息数据库不可用")?;
+    chat_broadcast(&connection, conversation_id, content)
+}
+
+fn chat_broadcast(connection: &Connection, conversation_id: &str, content: &str) -> Result<Value> {
+    let text = content.trim();
+    if text.is_empty()
+        || text.chars().count() > 4000
+        || text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    {
+        return Err("团队消息需为 1–4000 个有效字符".into());
+    }
+    let (project, group, agent): (String,String,String) = connection.query_row(
+        "SELECT project_id,group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
+        [conversation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional().map_err(|_| "项目 Agent 会话映射读取失败")?.ok_or("这不是项目内 Agent 会话")?;
+    let allowed: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM members WHERE conversation_id=?1 AND agent_id=?2)",
+            params![group, agent],
+            |row| row.get(0),
+        )
+        .map_err(|_| "团队成员校验失败")?;
+    if !allowed {
+        return Err("该 Agent 已不属于项目团队".into());
+    }
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM project_team_messages WHERE conversation_id=?1",
+            [&group],
+            |row| row.get(0),
+        )
+        .map_err(|_| "团队消息计数失败")?;
+    if count >= 500 {
+        return Err("团队消息已达到 500 条上限".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    connection.execute(
+        "INSERT INTO project_team_messages(id,project_id,conversation_id,sender_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,'agent',?5,?6)",
+        params![id,project,group,agent,text,crate::store::now()],
+    ).map_err(|_|"消息发布到团队失败")?;
+    Ok(json!({"sent":true,"message_id":id,"audience":"project_group"}))
+}
+
+pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
+    use std::io::{BufRead, Write};
+    if !db.is_absolute() || !db.is_file() || Uuid::parse_str(conversation_id).is_err() {
+        return Err("项目 Agent 工具参数无效".into());
+    }
+    let connection = Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| "项目消息数据库不可用")?;
+    let linked: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE conversation_id=?1)",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "项目 Agent 会话映射不可用")?;
+    if !linked {
+        return Err("项目 Agent 会话映射不存在".into());
+    }
+    let input = std::io::stdin();
+    let mut reader = input.lock();
+    let output = std::io::stdout();
+    let mut writer = output.lock();
+    let mut initialized = false;
+    loop {
+        let mut line = String::new();
+        let count = std::io::Read::by_ref(&mut reader)
+            .take(64 * 1024)
+            .read_line(&mut line)
+            .map_err(|_| "项目消息工具输入中断")?;
+        if count == 0 {
+            break;
+        }
+        if !line.ends_with('\n') {
+            return Err("项目消息工具请求过长或不完整".into());
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(id) = value.get("id") else {
+            continue;
+        };
+        let response = match value["method"].as_str().unwrap_or("") {
+            "initialize" if !initialized => {
+                initialized = true;
+                json!({"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"agent-hub-project-chat","version":env!("CARGO_PKG_VERSION")}}})
+            }
+            "ping" => json!({"result":{}}),
+            "tools/list" if initialized => {
+                json!({"result":{"tools":[{"name":"hub_broadcast","description":"Post a short, intentional message from your private project session to the shared project team room. Keep reasoning and tool details private.","inputSchema":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"],"additionalProperties":false}}]}})
+            }
+            "tools/call" if initialized && value["params"]["name"] == "hub_broadcast" => {
+                match chat_broadcast(
+                    &connection,
+                    conversation_id,
+                    value["params"]["arguments"]["content"]
+                        .as_str()
+                        .unwrap_or(""),
+                ) {
+                    Ok(result) => {
+                        json!({"result":{"content":[{"type":"text","text":result.to_string()}],"isError":false}})
+                    }
+                    Err(error) => {
+                        json!({"result":{"content":[{"type":"text","text":error}],"isError":true}})
+                    }
+                }
+            }
+            _ => json!({"error":{"code":-32601,"message":"Unsupported project chat tool request"}}),
+        };
+        let mut response = response;
+        response["id"] = id.clone();
+        response["jsonrpc"] = json!("2.0");
+        serde_json::to_writer(&mut writer, &response).map_err(|_| "项目消息工具输出中断")?;
+        writer
+            .write_all(b"\n")
+            .and_then(|_| writer.flush())
+            .map_err(|_| "项目消息工具输出中断")?;
+    }
+    Ok(())
 }
 
 /// Minimal stdio MCP transport used only by dedicated project harness sessions.
@@ -530,6 +752,25 @@ mod agent_message_tests {
             .register_project("测试项目", root.to_str().unwrap())
             .unwrap();
         store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room.id).unwrap();
+        let codex_chat = chats
+            .iter()
+            .find(|chat| chat.agent_id == "codex-win")
+            .unwrap();
+        let mcp = project_chat_mcp_server(&store.path, &codex_chat.conversation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mcp["args"][0], "--project-chat-tools");
+        assert_eq!(
+            broadcast_from_project_chat(
+                &store.path,
+                &codex_chat.conversation_id,
+                "Codex 分享团队结论"
+            )
+            .unwrap()["sent"],
+            true
+        );
+        assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
         let (workflow, _) = store
             .start_workflow(&room.id, &Uuid::new_v4().to_string(), "实现一个功能")
             .unwrap();
@@ -549,6 +790,7 @@ mod agent_message_tests {
         let tools = sender.allowed_tool_specs().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "hub_message"));
         assert!(tools.iter().any(|tool| tool["name"] == "hub_inbox"));
+        assert!(tools.iter().any(|tool| tool["name"] == "hub_broadcast"));
         let sent = sender
             .call(
                 "hub_message",
@@ -556,6 +798,16 @@ mod agent_message_tests {
             )
             .unwrap();
         assert_eq!(sent["sent"], true);
+        let published = sender
+            .call(
+                "hub_broadcast",
+                json!({"content":"我会把最终进展发在团队会话中。"}),
+            )
+            .unwrap();
+        assert_eq!(published["audience"], "project_group");
+        let inbox = sender.call("hub_inbox", json!({})).unwrap();
+        assert_eq!(inbox["team_updates"].as_array().unwrap().len(), 2);
+        assert_eq!(inbox["team_updates"][0]["kind"], "agent");
         assert!(sender
             .call(
                 "hub_message",
@@ -584,6 +836,11 @@ mod agent_message_tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].sender_agent, "codex-win");
         assert_eq!(messages[0].recipient_agent, "dsh-win");
+        let team_messages = store.team_messages(&room.id).unwrap();
+        assert_eq!(team_messages.len(), 2);
+        assert!(team_messages
+            .iter()
+            .any(|message| message.content.contains("最终进展")));
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

@@ -203,6 +203,21 @@ impl Runner {
                 .map(|job| job.status == "cancelling" || !crate::project_store::live(&job.status))
                 .unwrap_or(true)
     }
+    fn attempt_cancelled(&self, workflow: &str, attempt: &str) -> bool {
+        if self.cancelled(workflow) {
+            return true;
+        }
+        match self.store.lock().unwrap().attempt(attempt) {
+            Ok(state) => matches!(state.status.as_str(), "cancelling" | "interrupted"),
+            Err(_) => true,
+        }
+    }
+    fn wire_cancelled(&self, wire: &Arc<Mutex<Wire>>) -> bool {
+        let state = wire.lock().unwrap();
+        let (workflow, attempt) = (state.attempt.workflow_id.clone(), state.attempt.id.clone());
+        drop(state);
+        self.attempt_cancelled(&workflow, &attempt)
+    }
     pub fn cancel(&self, workflow: &str) {
         // 先把要停的客户端 clone 到锁外再逐个 stop，别抱着锁调 stop()。
         let clients = self
@@ -214,6 +229,17 @@ impl Runner {
             .map(|(_, client)| client.clone())
             .collect::<Vec<_>>();
         for client in clients {
+            client.stop();
+        }
+    }
+    pub fn cancel_attempt(&self, attempt: &str) {
+        let client = self
+            .active
+            .lock()
+            .unwrap()
+            .get(attempt)
+            .map(|(_, client)| client.clone());
+        if let Some(client) = client {
             client.stop();
         }
     }
@@ -321,13 +347,38 @@ impl Runner {
                                 state.append_thought(text);
                             }
                         }
-                        "item/completed" if params["item"]["type"] == "agentMessage" => {
-                            if let (Some(id), Some(text)) = (
-                                params["item"]["id"].as_str(),
-                                params["item"]["text"].as_str(),
-                            ) {
-                                state.completed_message(id, text, params["item"]["phase"].as_str());
+                        "item/started" => {
+                            if let Some(event) = crate::codex::codex_tool_event(params, false) {
+                                crate::codex::upsert_tool_event(
+                                    &mut state.attempt.tool_events,
+                                    &event,
+                                );
+                                force = true;
+                            } else {
+                                return;
                             }
+                        }
+                        "item/completed" => {
+                            if let Some(event) = crate::codex::codex_tool_event(params, true) {
+                                crate::codex::upsert_tool_event(
+                                    &mut state.attempt.tool_events,
+                                    &event,
+                                );
+                            } else if params["item"]["type"] == "agentMessage" {
+                                if let (Some(id), Some(text)) = (
+                                    params["item"]["id"].as_str(),
+                                    params["item"]["text"].as_str(),
+                                ) {
+                                    state.completed_message(
+                                        id,
+                                        text,
+                                        params["item"]["phase"].as_str(),
+                                    );
+                                }
+                            } else {
+                                return;
+                            }
+                            force = true;
                         }
                         "turn/completed" => {
                             state.completed =
@@ -356,14 +407,19 @@ impl Runner {
                         return;
                     }
                     let update = &params["update"];
-                    if update["content"]["type"] != "text" {
-                        return;
-                    }
-                    let text = update["content"]["text"].as_str().unwrap_or("");
-                    match update["sessionUpdate"].as_str().unwrap_or("") {
-                        "agent_message_chunk" => state.text("acp-message", text, false),
-                        "agent_thought_chunk" => state.append_thought(text),
-                        _ => return,
+                    if let Some(event) = crate::codex::acp_tool_event(update) {
+                        crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
+                        force = true;
+                    } else {
+                        if update["content"]["type"] != "text" {
+                            return;
+                        }
+                        let text = update["content"]["text"].as_str().unwrap_or("");
+                        match update["sessionUpdate"].as_str().unwrap_or("") {
+                            "agent_message_chunk" => state.text("acp-message", text, false),
+                            "agent_thought_chunk" => state.append_thought(text),
+                            _ => return,
+                        }
                     }
                 }
                 persist(&store, &notify, &mut state, force);
@@ -381,7 +437,7 @@ impl Runner {
             .unwrap()
             .insert(attempt_id.clone(), (workflow.clone(), client.clone()));
         let outcome = (|| -> Result<()> {
-            if self.cancelled(&workflow) {
+            if self.attempt_cancelled(&workflow, &attempt_id) {
                 return Err("项目协作已停止".into());
             }
             if is_codex {
@@ -394,9 +450,13 @@ impl Runner {
         client.stop();
         self.active.lock().unwrap().remove(&attempt_id);
         let mut result = wire.lock().unwrap().attempt.clone();
-        if self.cancelled(&workflow) {
+        if self.attempt_cancelled(&workflow, &attempt_id) {
             result.status = "interrupted".into();
-            result.error = Some("项目协作已停止，已保留现有文件和回复".into());
+            result.error = Some(if self.cancelled(&workflow) {
+                "项目协作已停止，已保留现有文件和回复".into()
+            } else {
+                "用户单独中断了此 Agent；依赖此任务的后续工作会等待恢复".into()
+            });
         } else if outcome.is_err() || wire.lock().unwrap().invalid {
             result.status = "failed".into();
             result.error = Some(
@@ -468,7 +528,11 @@ impl Runner {
             .into_iter()
             .filter(|tool| {
                 let name = tool["name"].as_str().unwrap_or("");
-                writable || matches!(name, "hub_list" | "hub_read" | "hub_message" | "hub_inbox")
+                writable
+                    || matches!(
+                        name,
+                        "hub_list" | "hub_read" | "hub_message" | "hub_inbox" | "hub_broadcast"
+                    )
             })
             .map(|mut tool| {
                 tool["type"] = json!("function");
@@ -478,16 +542,16 @@ impl Runner {
             .collect::<Vec<_>>();
         let instructions = match stage.as_str() {
             "plan" => {
-                "你是本项目群的规划成员 Codex。先理解本轮明确目标，再分析需求和必要源码，之后输出结构化方案。可使用本机 Codex CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read 查看项目文件，使用 hub_message(to_agent,content) 联系项目成员、hub_inbox() 读取消息。框架会自动执行合格方案，不等待用户再次确认。"
+                "你是本项目群的协作协调者。先理解本轮明确目标，并遵守用户消息中指定的角色；用户未指定的任务由你结合成员能力和当前上下文安排，可将不同任务分配给不同 Agent。可使用本机 CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read 查看项目文件，使用 hub_message(to_agent,content) 与成员私下协作、hub_inbox() 读收件箱、hub_broadcast(content) 向用户和团队发布简短进展。只把应公开的进展发到团队会话；推理、命令细节和工具过程留在自己的 Agent 会话。"
             }
             "implement" => {
-                "你是本项目的实现者。按当前任务目标完成实现，使用本机 Codex CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 操作项目文件，用 hub_message/hub_inbox 与其他项目成员直接沟通。完成后简短说明实现内容；最终由验收角色对照需求与源码复核。"
+                "你是本项目的实现者。按当前任务目标完成实现，使用本机 CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 操作项目文件，用 hub_message/hub_inbox 与其他项目成员私下沟通；需要向用户和团队同步时，用 hub_broadcast 发简短进度或完成说明。推理和工具轨迹会留在你的专属 Agent 会话中。最终由验收角色对照需求与源码复核。"
             }
             "review" => {
-                "你是本项目的验收者。依据本轮目标、方案和源码独立判断项目是否达到目的。可使用本机 Codex CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与执行者直接沟通。按提示词要求的结构化 JSON 给出结论。"
+                "你是本项目的验收者。依据本轮目标、方案和源码独立判断项目是否达到目的。可使用本机 CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与执行者私下沟通。验收结论会显示在团队会话中；按提示词要求的结构化 JSON 给出结论。"
             }
             _ => {
-                "你是本项目的修复者。验收角色对照用户需求和源码后指出了具体缺陷；据此完成修复。可使用本机 Codex CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与验收者沟通。修复后由验收角色再次复核。"
+                "你是本项目的修复者。验收角色对照用户需求和源码后指出了具体缺陷；据此完成修复。可使用本机 CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与验收者私下沟通。修复后由验收角色再次复核。"
             }
         };
         let thread=client.rpc("thread/start",json!({"cwd":root,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":true,"model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":instructions,"dynamicTools":tools}))?;
@@ -500,7 +564,7 @@ impl Runner {
             state.attempt.native_thread_id = Some(thread_id.clone());
             persist(&self.store, &self.notify, &mut state, true);
         }
-        if self.cancelled(&attempt.workflow_id) {
+        if self.wire_cancelled(wire) {
             return Err("项目协作已停止".into());
         }
         let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
@@ -538,7 +602,7 @@ impl Runner {
                 return Err("Codex 项目连接或状态无效".into());
             }
             drop(state);
-            if self.cancelled(&attempt.workflow_id) {
+            if self.wire_cancelled(wire) {
                 return Err("项目协作已停止".into());
             }
             if Instant::now() >= deadline {
@@ -600,7 +664,7 @@ impl Runner {
             }
             client.rpc("session/set_config_option",json!({"sessionId":session,"configId":"reasoning_effort","value":attempt.reasoning_effort.as_deref().unwrap_or("default")}))?;
         }
-        if self.cancelled(&attempt.workflow_id) {
+        if self.wire_cancelled(wire) {
             return Err("项目协作已停止".into());
         }
         // Use the workflow's remaining budget, not a shorter per-prompt 10m cap:
@@ -658,6 +722,7 @@ mod tests {
                 model: None,
                 reasoning_effort: None,
                 thought: String::new(),
+                tool_events: Vec::new(),
                 output: String::new(),
                 error: None,
             },

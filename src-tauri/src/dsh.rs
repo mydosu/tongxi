@@ -417,6 +417,7 @@ impl Runtime {
             record: record.clone(),
             text: String::new(),
             thought: String::new(),
+            tool_events: Vec::new(),
         });
         drop(inner);
         self.emit();
@@ -449,6 +450,7 @@ impl Runtime {
             record: record.clone(),
             text: String::new(),
             thought: String::new(),
+            tool_events: Vec::new(),
         });
         drop(inner);
         self.emit();
@@ -509,6 +511,10 @@ impl Runtime {
                 local
             }
         };
+        let project_db = self.store.lock().unwrap().path.clone();
+        let mcp_servers =
+            crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
+                .map_or_else(|| json!([]), |server| json!([server]));
         let response = if let Some(session_id) = settings.native_session_id.as_ref() {
             let loaded = self.inner.lock().unwrap().loaded.contains(session_id);
             if loaded {
@@ -516,11 +522,11 @@ impl Runtime {
             } else {
                 client.rpc(
                     "session/resume",
-                    json!({"sessionId":session_id,"cwd":cwd,"mcpServers":[]}),
+                    json!({"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers}),
                 )?
             }
         } else {
-            client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?
+            client.rpc("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))?
         };
         let session_id = settings
             .native_session_id
@@ -630,6 +636,17 @@ impl Runtime {
             return;
         };
         let update = &params["update"];
+        if let Some(event) = crate::codex::acp_tool_event(update) {
+            crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+            let _ = self
+                .store
+                .lock()
+                .unwrap()
+                .append_tool_event(&run.record, &event);
+            drop(inner);
+            self.emit();
+            return;
+        }
         if update["content"]["type"] != "text" {
             return;
         }

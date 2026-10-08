@@ -11,16 +11,22 @@ export interface Message {
   id: string; conversation_id: string; sender_id: string; content: string;
   /** 后端推理块；没有推理或老数据时是空串。 */
   thought?: string;
+  tool_events?: RunToolEvent[];
   status: 'local_only' | 'pending' | 'delivered' | 'streaming' | 'completed' | 'interrupted' | 'failed'; created_at: number;
 }
+export interface RunToolEvent { event_id: string; kind: string; title: string; input: string | null; output: string | null; status: string; created_at: number; }
 export interface ConversationDetail {
   conversation: Conversation; messages: Message[];
   discussions: Discussion[];
   project: Project | null;
   project_roles: Roles | null;
   workflows: Workflow[];
+  project_agent_chats: ProjectAgentChat[];
+  project_team_messages: ProjectTeamMessage[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
+export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; }
+export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {
   version: string; milestone: number; database_path: string; hud_shortcut: boolean;
 }
@@ -37,7 +43,7 @@ export interface RuntimeSnapshot {
   models: ModelOption[]; default_model: string | null; default_effort: string | null;
   revision: number;
   connection: 'disconnected' | 'connecting' | 'connected'; executable: string | null;
-  version: string | null; error: string | null; active: (RunRecord & { text: string; thought?: string }) | null;
+  version: string | null; error: string | null; active: (RunRecord & { text: string; thought?: string; tool_events?: RunToolEvent[] }) | null;
 }
 export interface NativeSession {
   id: string; title?: string | null; cwd?: string | null; updated_at?: string | null;
@@ -58,9 +64,9 @@ export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoic
 export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
 export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
 export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
-export interface ProjectAttempt { id: string; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; output: string; error: string | null; }
+export interface ProjectAttempt { id: string; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; tool_events?: RunToolEvent[]; output: string; error: string | null; }
 export interface WorkflowAgentMessage { id: string; workflow_id: string; attempt_id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
-export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; agent_messages?: WorkflowAgentMessage[]; }
+export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; agent_messages?: WorkflowAgentMessage[]; team_messages?: ProjectTeamMessage[]; }
 
 export interface ServiceInfo {
   id: string; name: string; connection: 'disconnected' | 'connecting' | 'connected';
