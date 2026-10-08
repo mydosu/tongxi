@@ -23,15 +23,31 @@ try {
   const existing = await readFile(archivedExe);
   const existingHash = createHash('sha256').update(existing).digest('hex');
   if (existingHash !== manifest.sha256) {
-    throw new Error(`版本备份已存在且内容不同，拒绝覆盖：${archivedExe}`);
+    const archiveManifest = JSON.parse(await readFile(resolve(archive, 'manifest.json'), 'utf8'));
+    if (archiveManifest.version !== version) {
+      throw new Error(`版本备份已存在且版本不同，拒绝覆盖：${archivedExe}`);
+    }
+    await copyFile(source, archivedExe);
   }
   archiveExists = true;
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }
 if (!archiveExists) await copyFile(source, archivedExe);
+const manifestText = JSON.stringify(manifest, null, 2) + '\n';
+await writeFile(resolve(archive, 'manifest.json'), manifestText);
 await mkdir(dirname(destination), { recursive: true });
-await copyFile(source, destination);
-await writeFile(resolve(root, 'release', 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-await writeFile(resolve(archive, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-console.log(`已发布 v${version}：${destination}，版本备份：${archive} (${(binary.length / 1024 / 1024).toFixed(2)} MiB)`);
+let rootUpdated = false;
+try {
+  await copyFile(source, destination);
+  await writeFile(resolve(root, 'release', 'manifest.json'), manifestText);
+  rootUpdated = true;
+} catch (error) {
+  if (!['EBUSY', 'EPERM'].includes(error?.code)) throw error;
+}
+const size = (binary.length / 1024 / 1024).toFixed(2);
+if (rootUpdated) {
+  console.log(`已发布 v${version}：${destination}，版本备份：${archive} (${size} MiB)`);
+} else {
+  console.log(`已生成 v${version} 备份：${archive} (${size} MiB)；主程序正被运行中的同席锁定，关闭应用后再执行 npm run postdesktop:build 更新主文件。`);
+}

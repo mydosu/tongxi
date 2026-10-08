@@ -17,7 +17,7 @@ import uuid
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / "release" / "Agent Hub.exe"
+EXE = Path(os.environ.get("AGENT_HUB_EXE", str(ROOT / "release" / "Agent Hub.exe")))
 ARTIFACTS = ROOT / "artifacts"
 # 每轮跑的应用数据目录放进会被自动清理的 scratch（Hermes 的缓存目录，闲置即清），
 # 别往仓库的 artifacts/ 里堆：一轮就是一份 WebView2 数据目录（约 11 MB）。

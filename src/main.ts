@@ -569,16 +569,18 @@ function updateProjectControls() {
     let user = messages.querySelector<HTMLElement>(`[data-message-id="${workflow.user_message_id}"]`);
     if (!user) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', renderMessage({ id: workflow.user_message_id, conversation_id: workflow.conversation_id, sender_id: 'user', content: workflow.request, status: state, created_at: workflow.created_at })); user = messages.querySelector(`[data-message-id="${workflow.user_message_id}"]`)!; }
     const current = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
-    const stamp = `${workflow.updated_at}:${workflow.status}:${workflow.tasks.map(task => task.agent_id).join(',')}:${workflow.attempts.map(attempt => `${attempt.status}:${attempt.output.length}`).join('|')}:${workflow.changes.length}`;
+    const stamp = `${workflow.updated_at}:${workflow.status}:${workflow.tasks.map(task => task.agent_id).join(',')}:${workflow.attempts.map(attempt => `${attempt.status}:${(attempt.thought || '').length}:${attempt.output.length}`).join('|')}:${workflow.changes.length}`;
     if (user.dataset.projectDelivery !== state) { user.dataset.projectDelivery = state; const delivery = user.querySelector('.message-delivery'); if (delivery) delivery.innerHTML = `${icon('check')}${state === 'delivered' ? '已提交原生会话' : state === 'pending' ? '等待项目调度' : '项目请求未完成'}`; }
     if (current?.dataset.paint === stamp) continue;
     const open = new Map([...current?.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id]') || []].map(node => [node.dataset.attemptId!, node.open]));
+    const thoughtOpen = new Map([...current?.querySelectorAll<HTMLDetailsElement>('details[data-thought-attempt-id]') || []].map(node => [node.dataset.thoughtAttemptId!, node.open]));
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     const html = workflowCard(workflow, escape, id => member(id)?.name || id, (id, value) => runtimes[id]?.models.find(model => model.id === value)?.name || value || '沿用本机默认', id => runtimes[id]?.models || [], roleMembers('implement'));
     if (current) current.outerHTML = html; else user.insertAdjacentHTML('afterend', html);
     const card = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`)!;
     card.dataset.paint = stamp;
     card.querySelectorAll<HTMLDetailsElement>('[data-attempt-id]').forEach(node => { if (open.has(node.dataset.attemptId!)) node.open = open.get(node.dataset.attemptId!)!; });
+    card.querySelectorAll<HTMLDetailsElement>('[data-thought-attempt-id]').forEach(node => { if (thoughtOpen.has(node.dataset.thoughtAttemptId!)) node.open = thoughtOpen.get(node.dataset.thoughtAttemptId!)!; });
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
     card.querySelector('[data-edit-project-roles]')?.addEventListener('click', () => void editPausedProjectRoles(workflow.id));

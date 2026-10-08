@@ -64,7 +64,7 @@ MOCK = r"""
       globalThis.__collaborationRequest=args;
       globalThis.__collaborationCalls++;
       const roles=detail.project_roles;
-      const workflow={id:'unified-workflow',project_id:project.id,conversation_id:group.id,user_message_id:args.messageId,request:args.content,status:'completed',plan:{summary:'这是一次普通讨论回复，不需要改文件。',tasks:[]},roles:JSON.stringify(roles),summary:'这是一次普通讨论回复，不需要改文件。',error:null,created_at:now,updated_at:now,tasks:[],attempts:[{id:'planner',workflow_id:'unified-workflow',task_id:null,agent_id:roles.plan.agent,stage:'plan',status:'completed',native_thread_id:'session-1',native_turn_id:'turn-1',model:roles.plan.model,reasoning_effort:roles.plan.effort,output:'{}',error:null}],changes:[],agent_messages:[]};
+      const workflow={id:'unified-workflow',project_id:project.id,conversation_id:group.id,user_message_id:args.messageId,request:args.content,status:'completed',plan:{summary:'这是一次普通讨论回复，不需要改文件。',tasks:[]},roles:JSON.stringify(roles),summary:'这是一次普通讨论回复，不需要改文件。',error:null,created_at:now,updated_at:now,tasks:[],attempts:[{id:'planner',workflow_id:'unified-workflow',task_id:null,agent_id:roles.plan.agent,stage:'plan',status:'completed',native_thread_id:'session-1',native_turn_id:'turn-1',model:roles.plan.model,reasoning_effort:roles.plan.effort,thought:'规划阶段思考增量',output:'{}',error:null}],changes:[],agent_messages:[]};
       detail.workflows=[workflow];
       return workflow;
     }
@@ -130,6 +130,10 @@ def main() -> None:
             assert page.evaluate("() => __collaborationRequest.content") == "test"
             assert page.evaluate("() => __providerDemo.detail.workflows[0].roles") is not None
             assert page.evaluate("() => __providerDemo.detail.workflows[0].attempts[0].model") == "custom:command-code-daily:deepseek/deepseek-v4.1-flash"
+            thought=page.locator('[data-thought-attempt-id=planner]')
+            thought.wait_for(state="attached")
+            assert thought.count()==1 and '规划阶段思考增量' in thought.text_content()
+            print("PASS project workflow displays persisted streaming thought separately from final output")
             assert not page.locator("#modal").evaluate("el => el.open"), "each message starts the unified collaboration without another role prompt"
             print("PASS project-bound group uses one composer for discussion and implementation")
             print("PASS discussion-only intent returns in the project timeline without fake tasks")

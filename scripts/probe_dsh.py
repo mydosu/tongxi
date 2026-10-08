@@ -68,14 +68,15 @@ def run():
         if '--prompt' in sys.argv:
             # Explicitly pin the real probe to DSH's Daily One / DS V4.1 route; no Sol model is used.
             client.rpc('session/set_config_option',{'sessionId':response['sessionId'],'configId':'model','value':'[\"command-code-daily\",\"deepseek/deepseek-v4.1-flash\"]'})
-            client.rpc('session/set_config_option',{'sessionId':response['sessionId'],'configId':'reasoning_effort','value':'off'})
+            effort='high' if '--high' in sys.argv else 'off'
+            client.rpc('session/set_config_option',{'sessionId':response['sessionId'],'configId':'reasoning_effort','value':effort})
             marker='DSH_TOOL_'+uuid.uuid4().hex[:8]
             filename='agent-hub-tool-probe.txt'
             result=client.rpc('session/prompt',{'sessionId':response['sessionId'],'prompt':[{'type':'text','text':'请使用你在 DSH CLI 中可用的文件或终端工具，在当前工作目录创建文件 '+filename+'，文件内容必须精确为 '+marker+'。工具操作完成后简短确认。'}]},timeout=180)
             text=''.join(update.get('params',{}).get('update',{}).get('content',{}).get('text','') for update in client.updates if update.get('params',{}).get('update',{}).get('sessionUpdate')=='agent_message_chunk')
             target=data/filename
             success=result.get('stopReason')=='end_turn' and target.is_file() and target.read_text(encoding='utf-8')==marker
-            print({'real_tool_prompt':success,'tool_file_created':target.is_file(),'assistant_characters':len(text),'provider':'command-code-daily','model':'deepseek/deepseek-v4.1-flash','reasoning_effort':'off'},flush=True)
+            print({'real_tool_prompt':success,'tool_file_created':target.is_file(),'assistant_characters':len(text),'provider':'command-code-daily','model':'deepseek/deepseek-v4.1-flash','reasoning_effort':effort},flush=True)
             if not success: raise AssertionError('DSH native tool did not create the isolated fixture file')
     finally: client.close()
 

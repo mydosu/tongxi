@@ -142,6 +142,13 @@ impl Wire {
             self.invalid = true;
         }
     }
+    fn append_thought(&mut self, text: &str) {
+        if self.attempt.thought.len().saturating_add(text.len()) > 128_000 {
+            self.invalid = true;
+            return;
+        }
+        self.attempt.thought.push_str(text);
+    }
     fn accepts(&self, params: &Value) -> bool {
         self.attempt.native_thread_id.as_deref() == params["threadId"].as_str()
             && params["threadId"].is_string()
@@ -309,6 +316,11 @@ impl Runner {
                                 state.text(id, text, false);
                             }
                         }
+                        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
+                            if let Some(text) = params["delta"].as_str() {
+                                state.append_thought(text);
+                            }
+                        }
                         "item/completed" if params["item"]["type"] == "agentMessage" => {
                             if let (Some(id), Some(text)) = (
                                 params["item"]["id"].as_str(),
@@ -344,16 +356,14 @@ impl Runner {
                         return;
                     }
                     let update = &params["update"];
-                    if update["sessionUpdate"] == "agent_message_chunk"
-                        && update["content"]["type"] == "text"
-                    {
-                        state.text(
-                            "acp-message",
-                            update["content"]["text"].as_str().unwrap_or(""),
-                            false,
-                        );
-                    } else {
+                    if update["content"]["type"] != "text" {
                         return;
+                    }
+                    let text = update["content"]["text"].as_str().unwrap_or("");
+                    match update["sessionUpdate"].as_str().unwrap_or("") {
+                        "agent_message_chunk" => state.text("acp-message", text, false),
+                        "agent_thought_chunk" => state.append_thought(text),
+                        _ => return,
                     }
                 }
                 persist(&store, &notify, &mut state, force);
@@ -593,16 +603,16 @@ impl Runner {
         if self.cancelled(&attempt.workflow_id) {
             return Err("项目协作已停止".into());
         }
-        let timeout = deadline
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(600));
+        // Use the workflow's remaining budget, not a shorter per-prompt 10m cap:
+        // a high-effort DSH tool turn may legitimately take longer while streaming progress.
+        let timeout = deadline.saturating_duration_since(Instant::now());
         if timeout.is_zero() {
             return Err("项目协作超时".into());
         }
         let sent_wire = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
-        let result = client.rpc_timeout_with_sent(
+        let result = match client.rpc_timeout_with_sent(
             "session/prompt",
             json!({"sessionId":session,"prompt":[{"type":"text","text":prompt}]}),
             timeout,
@@ -612,7 +622,15 @@ impl Runner {
                 state.attempt.status = "running".into();
                 persist(&store, &notify, &mut state, true);
             },
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(error) if error.contains("session/prompt 超时") => {
+                return Err(
+                    "项目成员的推理或工具调用超过当前工作流剩余时间；现有项目记录与文件改动已保留，可直接继续协作。".into(),
+                )
+            }
+            Err(error) => return Err(error),
+        };
         if result["stopReason"] != "end_turn" {
             return Err("项目成员未正常完成任务，已保留已有内容".into());
         }
@@ -639,6 +657,7 @@ mod tests {
                 native_turn_id: Some("turn".into()),
                 model: None,
                 reasoning_effort: None,
+                thought: String::new(),
                 output: String::new(),
                 error: None,
             },
@@ -651,6 +670,16 @@ mod tests {
             invalid: false,
             last_save: Instant::now(),
         }
+    }
+
+    #[test]
+    fn project_reasoning_chunks_append_separately_from_visible_output() {
+        let mut state = wire();
+        state.append_thought("先检查工作区。");
+        state.text("acp-message", "我开始处理。", false);
+        state.append_thought("再验证恢复路径。");
+        assert_eq!(state.attempt.thought, "先检查工作区。再验证恢复路径。");
+        assert_eq!(state.attempt.output, "我开始处理。");
     }
 
     #[test]

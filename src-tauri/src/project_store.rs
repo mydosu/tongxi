@@ -312,6 +312,7 @@ pub struct Attempt {
     pub native_turn_id: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub thought: String,
     pub output: String,
     pub error: Option<String>,
 }
@@ -355,7 +356,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         stage TEXT NOT NULL CHECK(stage IN ('plan','implement','verify','review','repair')),
         status TEXT NOT NULL CHECK(status IN ('starting','running','cancelling','completed','failed','interrupted')),
         native_thread_id TEXT,native_turn_id TEXT,model TEXT,reasoning_effort TEXT,
-        output TEXT NOT NULL DEFAULT '',checks TEXT NOT NULL DEFAULT '[]',error TEXT,created_at INTEGER NOT NULL);
+        output TEXT NOT NULL DEFAULT '',thought TEXT NOT NULL DEFAULT '',checks TEXT NOT NULL DEFAULT '[]',error TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS project_changes (
         attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
         path TEXT NOT NULL,operation TEXT NOT NULL,before_hash TEXT,after_hash TEXT,
@@ -386,6 +387,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_tasks", "worktree", "TEXT"),
         ("project_tasks", "branch", "TEXT"),
         ("project_tasks", "assigned_agent", "TEXT"),
+        ("project_attempts", "thought", "TEXT NOT NULL DEFAULT ''"),
     ] {
         add_column(tx, table, column, definition)?;
     }
@@ -1498,7 +1500,7 @@ impl Store {
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
-        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,output,error FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
         let result = stmt
             .query_map([workflow], |r| {
                 Ok(Attempt {
@@ -1512,8 +1514,9 @@ impl Store {
                     native_turn_id: r.get(7)?,
                     model: r.get(8)?,
                     reasoning_effort: r.get(9)?,
-                    output: r.get(10)?,
-                    error: r.get(11)?,
+                    thought: r.get(10)?,
+                    output: r.get(11)?,
+                    error: r.get(12)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -1682,7 +1685,7 @@ impl Store {
             return Err("项目运行已经结束".into());
         }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,output=?6,error=?7 WHERE id=?8",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.output,attempt.error,attempt.id]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,thought=?6,output=?7,error=?8 WHERE id=?9",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.thought,attempt.output,attempt.error,attempt.id]).map_err(|e|e.to_string())?;
         if attempt.native_turn_id.is_some() {
             tx.execute("UPDATE messages SET status='delivered' WHERE id=(SELECT user_message_id FROM workflows WHERE id=?1) AND status='pending'", [&attempt.workflow_id]).map_err(|e|e.to_string())?;
         }
@@ -1763,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn v10_upgrade_adds_columns_and_keeps_legacy_rows() {
+    fn v11_upgrade_adds_project_thought_and_keeps_legacy_rows() {
         let mut store = memory();
         let (workflow, task) = legacy_workflow(&mut store);
         // 把库退回 v9 的样子：新列全去掉，版本号也退回。
@@ -1776,13 +1779,17 @@ mod tests {
                  ALTER TABLE project_tasks DROP COLUMN worktree;
                  ALTER TABLE project_tasks DROP COLUMN branch;
                  ALTER TABLE project_tasks DROP COLUMN assigned_agent;
+                 ALTER TABLE project_attempts DROP COLUMN thought;
                  PRAGMA user_version=9;",
             )
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 11);
+        assert_eq!(version(&store), 12);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
+        assert!(columns(&store, "project_attempts")
+            .iter()
+            .any(|c| c == "thought"));
         for column in ["model", "effort", "worktree", "branch", "assigned_agent"] {
             assert!(
                 columns(&store, "project_tasks")
@@ -1832,6 +1839,13 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            columns(&store, "project_attempts")
+                .iter()
+                .filter(|name| *name == "thought")
+                .count(),
+            1
+        );
         // v9 老库升一次，再降回 v9 重升一次：两次都不报错、数据也还在。
         store
             .connection
@@ -1843,7 +1857,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 11);
+        assert_eq!(version(&store), 12);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 
