@@ -497,6 +497,9 @@ impl Runtime {
                 return Err("确认参数包含重复任务".into());
             }
             seen.push(choice.position);
+            if task.status == "completed" {
+                continue;
+            }
             let agent = choice.agent_id.as_deref().unwrap_or(&task.agent_id);
             if !project_store::EXECUTOR_AGENTS.contains(&agent)
                 || !conversation.members.iter().any(|member| member == agent)

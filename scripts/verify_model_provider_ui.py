@@ -63,7 +63,7 @@ MOCK = r"""
     if(command==='continue_project'){
       globalThis.__continueCalls++;
       const workflow=detail.workflows.find(item=>item.id===args.workflowId);
-      workflow.status='planning';workflow.plan={summary:'复用原方案',tasks:workflow.tasks.map(task=>({...task}))};workflow.error=null;workflow.updated_at=Date.now();return workflow;
+      workflow.status='planning';workflow.plan={summary:'复用原方案',tasks:workflow.tasks.map(task=>({...task}))};for(const task of workflow.tasks)if(task.status!=='completed')task.status='queued';workflow.error=null;workflow.updated_at=Date.now();return workflow;
     }
     if(command==='update_paused_project_roles'){
       globalThis.__roleUpdate=args.roles;
@@ -176,6 +176,8 @@ def main() -> None:
             print("PASS per-task Hermes selection remains independent")
 
             recovery={**workflow,"status":"failed","plan":workflow["plan"],"error":"执行失败","attempts":[{"id":"plan-attempt","workflow_id":"workflow-1","agent_id":"codex-win","stage":"plan","status":"completed","native_thread_id":None,"native_turn_id":"turn-1","model":"gpt-6.1","reasoning_effort":"high","output":"saved plan output","checks":[],"error":None}],"updated_at":int(time.time()*1000)}
+            recovery["tasks"][0].update(status="completed",worktree="previous-worktree",branch="hub/previous-task")
+            recovery["tasks"][1]["status"]="skipped"
             page.evaluate("job => { __providerDemo.detail.workflows=[job]; }", recovery)
             page.locator('[data-conversation="provider-test"]').click()
             edit=page.locator('[data-edit-project-roles]')
@@ -199,9 +201,12 @@ def main() -> None:
             assert "不重新调用规划模型" in resume.get_attribute("title")
             resume.click()
             expect(page.locator('[data-confirm-project]')).to_be_visible()
+            expect(page.locator('[data-task-position="0"] [data-task-agent-select]')).to_be_disabled()
+            expect(page.locator('[data-task-position="1"] [data-task-agent-select]')).to_be_enabled()
             assert page.evaluate("() => __continueCalls") == 1
             assert page.locator('[data-attempt-id="plan-attempt"] summary span').inner_text() == "方案完成"
-            assert "待执行" in page.locator('[data-task-id="task-1"]').inner_text()
+            assert "任务完成" in page.locator('[data-task-id="task-1"]').inner_text()
+            assert "待执行" in page.locator('[data-task-id="task-2"]').inner_text()
             print("PASS failed project resumes from saved plan and returns to task confirmation")
             print("PASS plan/task status labels do not claim the whole collaboration is complete")
             browser.close()
