@@ -190,7 +190,7 @@ impl Client {
             .recv_timeout(timeout)
             .map_err(|_| format!("原生 agent {method} 超时，请断开后重新连接"));
         self.pending.lock().unwrap().remove(&id);
-        result?
+        result?.map_err(|error| format!("原生 agent {method} 请求失败：{error}"))
     }
 
     fn fail_pending(&self, error: &str) {
