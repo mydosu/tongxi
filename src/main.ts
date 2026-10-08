@@ -19,6 +19,7 @@ const icons: Record<string, string> = {
   arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
   settings: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  lock: '<rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   edit: '<path d="m15 5 4 4M4 20l5-1L20 8l-4-4L5 15z"/>',
 };
@@ -440,6 +441,10 @@ function projectAgentChatMessageHtml(message: Message, agentId: string) {
   return html;
 }
 
+function projectAgentChatEmptyHtml(agentId: string) {
+  return `<div class="project-agent-chat-empty"><div class="project-chat-empty-mark">${avatar(member(agentId), 'project-chat-empty-avatar')}<span>${icon('chat')}</span></div><span class="eyebrow">当前项目 · 独立对话</span><h2>与 ${escape(member(agentId).name)} 一起推进项目</h2><p>讨论一个想法，检查一段代码，或让它直接动手。<br>消息默认保留在此会话，需要时可以分享到团队。</p></div>`;
+}
+
 function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: ConversationDetail) {
   const container = host.querySelector<HTMLElement>('.project-agent-chat-messages');
   if (!container) return;
@@ -455,6 +460,8 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
     if (existing >= 0) messages[existing] = virtual; else messages.push(virtual);
   }
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  if (messages.length) container.querySelector('.project-agent-chat-empty')?.remove();
+  else if (!container.querySelector('.project-agent-chat-empty')) container.innerHTML = projectAgentChatEmptyHtml(agentId);
   for (const message of messages) {
     const old = container.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`);
     const stamp = `${message.status}:${message.content.length}:${(message.thought || '').length}:${(message.tool_events || []).map(event => `${event.event_id}:${event.status}:${(event.output || '').length}`).join('|')}`;
@@ -498,7 +505,7 @@ async function loadProjectAgentChat(host: HTMLElement, agentId: string, workflow
       const provider = selectedProvider(models, settings?.model);
       const selectedModel = settings?.model || '';
       const efforts = models.find(model => model.id === selectedModel)?.efforts || Object.keys(effortLabels);
-      host.innerHTML = `<div class="project-agent-chat-heading"><strong>${escape(member(agentId).name)} 私聊</strong><span class="project-chat-context">此对话属于当前项目，默认只对你和该 Agent 可见。</span></div><div class="project-agent-chat-settings ${providers.length > 1 ? 'multi-provider' : ''}">${providers.length > 1 ? `<label>提供商<select data-project-chat-provider>${providerOptionsHtml(models, provider, escape)}</select></label>` : ''}<label>模型<select data-project-chat-model>${modelOptionsHtml(models, provider, selectedModel, escape, '默认模型')}</select></label><label>思考<select data-project-chat-effort><option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}" ${effort === settings?.reasoning_effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label></div><div class="project-agent-chat-messages">${saved.messages.map(message => projectAgentChatMessageHtml(message, agentId)).join('')}</div><form class="project-agent-chat-composer" data-project-agent-chat-form><textarea data-project-agent-chat-input rows="2" placeholder="单独发消息给 ${escape(member(agentId).name)}，回复不会自动公开到团队"></textarea><button type="submit" class="primary" data-project-agent-chat-send>发送</button></form>`;
+      host.innerHTML = `<div class="project-agent-chat-heading"><div class="project-chat-identity">${avatar(member(agentId))}<div><strong>与 ${escape(member(agentId).name)} 私聊</strong><span class="project-chat-context">围绕当前项目，保留独立的对话与工作记录</span></div></div><span class="project-chat-private">${icon('lock')}独立会话</span></div><div class="project-agent-chat-settings ${providers.length > 1 ? 'multi-provider' : ''}">${providers.length > 1 ? `<label>提供商<select data-project-chat-provider aria-label="项目私聊提供商">${providerOptionsHtml(models, provider, escape)}</select></label>` : ''}<label class="project-chat-model-field">模型<select data-project-chat-model aria-label="项目私聊模型">${modelOptionsHtml(models, provider, selectedModel, escape, '默认模型')}</select></label><label class="project-chat-effort-field">思考强度<select data-project-chat-effort aria-label="项目私聊思考强度"><option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}" ${effort === settings?.reasoning_effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><span class="project-chat-settings-note">切换即保存 · 下一条消息生效</span></div><div class="project-agent-chat-messages">${saved.messages.length ? saved.messages.map(message => projectAgentChatMessageHtml(message, agentId)).join('') : projectAgentChatEmptyHtml(agentId)}</div><form class="project-agent-chat-composer" data-project-agent-chat-form><textarea data-project-agent-chat-input maxlength="16000" rows="2" aria-label="单独发消息给 ${escape(member(agentId).name)}" placeholder="向 ${escape(member(agentId).name)} 描述问题，或交给它一项具体任务…"></textarea><div class="project-chat-composer-bottom"><span>Enter 发送 <i>·</i> Shift + Enter 换行</span><button type="submit" class="primary" data-project-agent-chat-send>发送${icon('arrow')}</button></div></form>`;
       bindProjectChatHost(host, agentId, chat.conversation_id, workflowId);
     }
     syncProjectAgentChat(host, agentId, saved);
@@ -550,7 +557,7 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
     projectAgentChatDetails.set(chatId, saved);
     syncProjectAgentChat(host, agentId, saved);
   } catch (error) { toast(errorText(error), true); }
-  finally { if (button) { button.disabled = false; button.textContent = '发送'; } }
+  finally { if (button) { button.disabled = false; button.innerHTML = `发送${icon('arrow')}`; } }
 }
 
 function updateProjectAgentActivity() {
