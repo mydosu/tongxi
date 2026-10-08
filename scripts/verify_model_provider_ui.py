@@ -138,9 +138,11 @@ def main() -> None:
               const {workflowCard}=await import('/src/project_ui.ts');
               const {bindProjectThoughtFollow,unbindProjectThoughtFollow}=await import('/src/project_thought_scroll.ts');
               const base=globalThis.__providerDemo.detail.workflows[0];
-              const render=job=>{const host=document.createElement('div');host.innerHTML=workflowCard(job,x=>String(x),x=>String(x),(_,value)=>value||'model',()=>[],[]);return host.firstElementChild;};
+              const render=job=>{const host=document.createElement('div');host.innerHTML=workflowCard(job,x=>String(x),x=>x==='hermes-win'?'Hermes':String(x),(_,value)=>value||'model',()=>[],[]);return host.firstElementChild;};
               const settled=render(base);
               const settledClosed=!settled.querySelector('[data-thought-attempt-id=planner]').open;
+              const approvedJob=structuredClone(base);approvedJob.summary='已对照需求和源码完成验收。';approvedJob.attempts.push({...approvedJob.attempts[0],id:'hermes-review',agent_id:'hermes-win',stage:'review',output:'{"approved":true}'});
+              const reviewerLabel=render(approvedJob).querySelector('.workflow-result')?.textContent.includes('Hermes 验收结论')||false;
               const activeJob=structuredClone(base);activeJob.attempts[0].status='running';
               const active=render(activeJob);
               const activeOpen=active.querySelector('[data-thought-attempt-id=planner]').open;
@@ -158,10 +160,11 @@ def main() -> None:
               await new Promise(resolve=>setTimeout(resolve,60));
               const manualScrollKept=body.scrollTop<=2;
               unbindProjectThoughtFollow(card);card.remove();
-              return {settledClosed,activeOpen,firstFollows,sameBody,manualScrollKept};
+              return {settledClosed,reviewerLabel,activeOpen,firstFollows,sameBody,manualScrollKept};
             }""")
-            assert thought_ui == {"settledClosed":True,"activeOpen":True,"firstFollows":True,"sameBody":True,"manualScrollKept":True}, thought_ui
-            print("PASS project reasoning follows live growth, keeps manual scroll, opens only active thought by default")
+            assert thought_ui == {"settledClosed":True,"reviewerLabel":True,"activeOpen":True,"firstFollows":True,"sameBody":True,"manualScrollKept":True}, thought_ui
+            print("PASS project reasoning follows live growth, keeps manual scroll, and collapses completed thoughts")
+            print("PASS completed project result visibly identifies Hermes as the reviewer")
             assert not page.locator("#modal").evaluate("el => el.open"), "each message starts the unified collaboration without another role prompt"
             print("PASS project-bound group uses one composer for discussion and implementation")
             print("PASS discussion-only intent returns in the project timeline without fake tasks")
