@@ -2,6 +2,11 @@
 :root { font-family: 'Noto Sans SC', 'MiSans', HubSans, 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; color: #303844; background: #f8f9fb; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; font-size: 14px; --accent: #33383e; --line: #e3e5e8; --muted: #848990; }
 * { box-sizing: border-box; }
 body { margin: 0; }
+.message-context-menu { position: fixed; z-index: 100; min-width: 190px; padding: 6px; border: 1px solid #e0e5ed; border-radius: 9px; background: #fff; box-shadow: 0 8px 28px #28344826; }
+.message-context-menu button { width: 100%; padding: 9px 10px; text-align: left; color: #ab6659; font-size: 13px; border-radius: 5px; }
+.message-context-menu button:hover { background: #faf1ef; }
+.message-context-menu [data-message-copy] { color: #536277; }
+.message-context-menu small { display: block; padding: 2px 10px 6px; color: #96a0ae; font-size: 10px; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; border: none; color: inherit; background: none; }
 button:disabled { cursor: default; opacity: .55; }

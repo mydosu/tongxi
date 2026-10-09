@@ -20,6 +20,7 @@ def run(index):
     context=fixture('dsh-win');native=context['data']/'dsh-project-native';native.mkdir()
     env=os.environ.copy();env['AGENT_HUB_DSH_PROJECT_MODE']='1'
     env['AGENT_HUB_DSH_AUTH_BRIDGE']=(ROOT/'src-tauri/src/dsh_hermes_auth.py').read_text(encoding='utf-8')
+    env['AGENT_HUB_DSH_FALLBACK_BRIDGE']=(ROOT/'src-tauri/src/dsh_fallback.mjs').read_text(encoding='utf-8')
     source=(ROOT/'src-tauri/src/dsh_bridge.mjs').read_text(encoding='utf-8')
     proc=subprocess.Popen([NODE,'--input-type=module','-e',source,str(INSTALLATION),str(native)],env=env,cwd=context['data'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW)
     messages=queue.Queue();updates=[];unexpected=[];identifier=0

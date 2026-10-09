@@ -225,6 +225,12 @@ def run():
             expect(page.locator("[data-conversation]")).to_have_count(6)
             check("confirmed delete removes only selected room", len(ipc(page, "get_conversation", id=group_id)["messages"]) == 1)
             check("no JavaScript runtime errors", not errors)
+            choose(page, group_id)
+            page.locator('[data-message-id]').first.click(button='right')
+            expect(page.locator('[data-message-copy]')).to_be_visible()
+            page.locator('[data-message-delete]').click()
+            expect(page.locator('[data-message-id]')).to_have_count(0)
+            check("right-click removes one stored message without deleting the conversation", not ipc(page,"get_conversation",id=group_id)['messages'])
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()

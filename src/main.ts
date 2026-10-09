@@ -8,6 +8,7 @@ import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
+import { installMessageMenu } from './message_menu';
 import './styles.css';
 import './agent_transcript.css';
 
@@ -66,6 +67,7 @@ const projectChatRefreshStamp: Record<string, string> = {};
 let eventSubscribed = false;
 let latestDiscussion: Discussion | null = null;
 const projectJobs = new Map<string, Workflow>();
+const removedProjectJobs = new Set<string>();
 const projectAgentChatDetails = new Map<string, ConversationDetail>();
 const projectChatSettingsQueues = new Map<string, Promise<void>>();
 const projectChatSettingsPending = new Map<string, number>();
@@ -80,6 +82,7 @@ const roomProjects = () => [...new Map([...(detail?.workflows || []), ...project
 const currentWorkflow = () => roomProjects()[0] || null;
 const projectAgentBusy = (id: string) => [...projectJobs.values()].some(job => workflowBusy(job) && job.attempts.some(attempt => attempt.agent_id === id && ['starting', 'running', 'cancelling'].includes(attempt.status)));
 function adoptProject(job: Workflow, event = false) {
+  if (removedProjectJobs.has(job.id)) return;
   const old = projectJobs.get(job.id);
   if (!event && old && (old.updated_at > job.updated_at || old.attempts.length > job.attempts.length || (!workflowBusy(old) && workflowBusy(job)) || (old.status === 'cancelling' && workflowBusy(job) && job.status !== 'cancelling'))) return;
   projectJobs.set(job.id, job);
@@ -137,6 +140,16 @@ app.innerHTML = `
 const main = document.querySelector<HTMLDivElement>('#main')!;
 main.addEventListener('focusout', () => { setTimeout(() => renderLiveSettings(), 0); });
 const modal = document.querySelector<HTMLDialogElement>('#modal')!;
+installMessageMenu(main, () => selectedId, async target => {
+  try {
+    const removed = await invoke<{ workflow_id: string | null }>('remove_conversation_item', { conversationId: target.conversationId, kind: target.kind, id: target.id });
+    if (removed.workflow_id) { removedProjectJobs.add(removed.workflow_id); projectJobs.delete(removed.workflow_id); }
+    projectAgentChatDetails.delete(target.conversationId);
+    await refreshList();
+    if (selectedId) await selectConversation(selectedId);
+    toast('本机记录已删除');
+  } catch (error) { toast(errorText(error), true); }
+});
 
 if (isTauri()) {
   const window = getCurrentWindow();
@@ -606,7 +619,7 @@ function updateRuntimeControls() {
   updateProjectControls();
   for (const snapshot of Object.values(runtimes)) {
     const active = snapshot.active;
-    if (active?.conversation_id !== selectedId) continue;
+    if (active?.conversation_id !== selectedId || (!busySnapshot(snapshot) && !detail.messages.some(message => message.id === active.assistant_message_id))) continue;
     const messages = main.querySelector('#messages')!;
     const old = messages.querySelector(`[data-message-id="${active.assistant_message_id}"]`);
     const thoughtScroll = captureThoughtScroll(old as HTMLElement | null);

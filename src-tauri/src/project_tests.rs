@@ -6,6 +6,67 @@ use serde_json::json;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+#[test]
+fn large_source_review_uses_paths_and_native_tools_instead_of_a_snapshot_limit() {
+    let mut f = Fixture::new();
+    let workflow = f.planned(&["large.py"]);
+    std::fs::write(
+        f.root.join("large.py"),
+        format!("{}\ndef result(): return 42", "# filler\n".repeat(32_000)),
+    )
+    .unwrap();
+    let project = f.store.project(&f.project).unwrap();
+    let prompt = crate::projects::review_prompt(&workflow, &project, "hermes-win", None);
+    assert_eq!(prompt["source_paths"], json!(["large.py"]));
+    assert!(prompt.get("sources").is_none());
+    assert!(!prompt.to_string().contains("# filler"));
+    assert!(prompt.to_string().len() < 10_000);
+    let recovery = crate::projects::review_prompt(&workflow, &project, "hermes-win", Some(0));
+    assert_eq!(recovery["review_mode"], "context_recovery");
+    assert_eq!(recovery["task_results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn deleting_history_removes_plan_tasks_attempts_and_messages_without_touching_source() {
+    let mut f = Fixture::new();
+    let workflow = f.planned(&["main.py"]);
+    std::fs::write(f.root.join("main.py"), "unchanged source").unwrap();
+    let attempt = f
+        .store
+        .begin_attempt(
+            &workflow.id,
+            Some(&workflow.tasks[0].id),
+            "dsh-win",
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(f
+        .store
+        .remove_conversation_item(&f.room, "workflow", &workflow.id)
+        .is_err());
+    f.store
+        .connection
+        .execute(
+            "UPDATE workflows SET status='failed' WHERE id=?1",
+            [&workflow.id],
+        )
+        .unwrap();
+    let removed = f
+        .store
+        .remove_conversation_item(&f.room, "workflow", &workflow.id)
+        .unwrap();
+    assert_eq!(removed.workflow_id.as_deref(), Some(workflow.id.as_str()));
+    assert!(f.store.workflow(&workflow.id).is_err());
+    assert!(f.store.attempt(&attempt.id).is_err());
+    assert!(f.store.detail(&f.room).unwrap().messages.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("main.py")).unwrap(),
+        "unchanged source"
+    );
+}
+
 struct Fixture {
     store: Store,
     base: PathBuf,

@@ -303,6 +303,10 @@ impl Runner {
                         "AGENT_HUB_DSH_AUTH_BRIDGE",
                         include_str!("dsh_hermes_auth.py"),
                     )
+                    .env(
+                        "AGENT_HUB_DSH_FALLBACK_BRIDGE",
+                        include_str!("dsh_fallback.mjs"),
+                    )
                     .env("AGENT_HUB_DSH_PROJECT_MODE", "1");
                 command
             }
@@ -400,10 +404,28 @@ impl Runner {
                         _ => return,
                     }
                 } else {
-                    if value["method"] != "session/update"
-                        || state.attempt.native_thread_id.as_deref() != params["sessionId"].as_str()
+                    if state.attempt.native_thread_id.as_deref() != params["sessionId"].as_str()
                         || params["sessionId"].is_null()
                     {
+                        return;
+                    }
+                    if value["method"] == "agent_hub/model_route"
+                        && state.attempt.agent_id == "dsh-win"
+                    {
+                        if let Some((model, event)) = crate::dsh::route_notice(params) {
+                            let changed = state.attempt.model.as_deref() != Some(&model);
+                            state.attempt.model = Some(model);
+                            if changed || params["fallback"] == true {
+                                crate::codex::upsert_tool_event(
+                                    &mut state.attempt.tool_events,
+                                    &event,
+                                );
+                            }
+                            persist(&store, &notify, &mut state, true);
+                        }
+                        return;
+                    }
+                    if value["method"] != "session/update" {
                         return;
                     }
                     let update = &params["update"];

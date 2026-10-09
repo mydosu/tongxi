@@ -54,6 +54,9 @@
 .agent-chat-share { margin-top: 8px; padding: 0; color: #8c99ab; font-size: 10px; }
 .agent-chat-share:hover { color: #526b89; }
 .agent-turn-actions:empty { display: none; }
+.agent-protocol { margin-top: 12px; color: #909aab; font-size: 11px; }
+.agent-protocol > summary { cursor: pointer; }
+.agent-protocol pre { max-height: 260px; overflow: auto; padding: 10px 12px; border-radius: 6px; background: #f7f8fa; font: 12px/1.7 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-jump-latest { position: sticky; bottom: 3px; display: block; margin: 14px auto 0; padding: 6px 12px; border: 1px solid #e1e6ef; border-radius: 20px; background: #fff; color: #708198; font-size: 11px; box-shadow: 0 3px 12px #d7dde64d; }
 .agent-jump-latest[hidden] { display: none; }
 .project-agent-chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px 12px; text-align: center; }

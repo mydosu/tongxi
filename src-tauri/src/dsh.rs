@@ -15,6 +15,38 @@ use tauri::Emitter;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
+pub(crate) fn route_notice(params: &Value) -> Option<(String, crate::store::RunToolEvent)> {
+    let model = params["modelId"].as_str()?;
+    let pair: Vec<String> = serde_json::from_str(model).ok()?;
+    if pair.len() != 2
+        || !["command-code-daily", "command-code-daily-2"].contains(&pair[0].as_str())
+        || pair[1].is_empty()
+        || pair[1].len() > 256
+    {
+        return None;
+    }
+    let id = params["eventId"].as_str()?;
+    if uuid::Uuid::parse_str(id).is_err() {
+        return None;
+    }
+    Some((
+        model.to_owned(),
+        crate::store::RunToolEvent {
+            event_id: id.into(),
+            kind: "model_route".into(),
+            title: if params["fallback"] == true {
+                "模型回退：Daily Two · DS v4.1"
+            } else {
+                "实际模型线路变化"
+            }
+            .into(),
+            input: None,
+            output: Some("仅切换当前模型调用；已完成的工具操作不重跑。".into()),
+            status: "completed".into(),
+            created_at: crate::store::now(),
+        },
+    ))
+}
 struct Inner {
     connection: String,
     generation: String,
@@ -285,6 +317,10 @@ impl Runtime {
             command.env(
                 "AGENT_HUB_DSH_AUTH_BRIDGE",
                 include_str!("dsh_hermes_auth.py"),
+            );
+            command.env(
+                "AGENT_HUB_DSH_FALLBACK_BRIDGE",
+                include_str!("dsh_fallback.mjs"),
             );
             command.env_remove("AGENT_HUB_DSH_PROJECT_MODE");
             // 共用她自己的 DSH 家目录（同一个会话库）：外层设了就照用（测试隔离），
@@ -621,7 +657,7 @@ impl Runtime {
         Ok(())
     }
     fn notification(&self, generation: &str, value: Value) {
-        if value["method"] != "session/update" {
+        if value["method"] != "session/update" && value["method"] != "agent_hub/model_route" {
             return;
         }
         let params = &value["params"];
@@ -635,6 +671,28 @@ impl Runtime {
         }) else {
             return;
         };
+        if value["method"] == "agent_hub/model_route" {
+            if let Some((model, event)) = route_notice(params) {
+                let changed = run.record.model.as_deref() != Some(&model);
+                let effort = run.record.reasoning_effort.clone();
+                let _ =
+                    self.store
+                        .lock()
+                        .unwrap()
+                        .record_model(&mut run.record, Some(model), effort);
+                if changed || params["fallback"] == true {
+                    crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+                    let _ = self
+                        .store
+                        .lock()
+                        .unwrap()
+                        .append_tool_event(&run.record, &event);
+                }
+                drop(inner);
+                self.emit();
+            }
+            return;
+        }
         let update = &params["update"];
         if let Some(event) = crate::codex::acp_tool_event(update) {
             let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);

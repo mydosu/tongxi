@@ -361,6 +361,67 @@ def partial_pause(page):
     evidence['pause'] = {'room': room, 'root': str(root), 'workflow': done['id'], 'paused_task_statuses': [t['status'] for t in paused['tasks']], 'plan_attempts': count}
 
 
+def large_review(page):
+    root=Path(tempfile.mkdtemp(prefix='tongxi-large-review-'))
+    filler='# generated fixture comments\n'*9000
+    (root/'calc.py').write_text(filler+'def square(value):\n    return value\n',encoding='utf-8')
+    (root/'check.py').write_text('from calc import square\nassert square(-3)==9\nassert square(0)==0\nassert square(2.5)==6.25\nprint("3 assertions passed")\n',encoding='utf-8')
+    project=desktop.ipc(page,'register_project',name='大源码按需验收',root=str(root))
+    room=groups.group(page,'大源码按需验收',['codex-win','dsh-win','hermes-win'])
+    desktop.ipc(page,'bind_project',conversationId=room,projectId=project['id'])
+    dsh=next(m['id'] for m in desktop.ipc(page,'dsh_status')['models'] if m.get('provider_id')=='command-code-daily')
+    hermes=next(m['id'] for m in desktop.ipc(page,'hermes_status')['models'] if 'daily one' in (m.get('provider_name') or '').lower() and 'deepseek-v4.1-flash' in m['id'])
+    roles={'plan':{'agent':'codex-win','model':'gpt-5.6-luna','effort':'low'},'implement':{'agent':'dsh-win','model':dsh,'effort':'high'},'review':{'agent':'hermes-win','model':hermes,'effort':'high'}}
+    configure_agents(page,room,roles)
+    page.fill('#message-input','修正 calc.py 末尾的 square(value)，使其返回平方，支持负数、零和小数。Codex规划、DSH实现、Hermes验收。只改calc.py，只分一个实现任务；文件前面是大量重复的夹具注释，必须保留，不要整体读取注释，用搜索或末尾读取定位函数。验收实际运行 python -B check.py。自动完成，不需要用户操作。')
+    page.locator('#message-input').press('Enter')
+    done=wait_job(page,room,lambda job:job['status']=='completed',capture=True)
+    check('超过旧192KiB上限的源码完成真实Agent协作', (root/'calc.py').stat().st_size>192*1024 and done['status']=='completed')
+    check('Hermes 按需读取并完成实际验收', any(a['agent_id']=='hermes-win' and a['stage']=='review' and a['status']=='completed' and a.get('tool_events') for a in done['attempts']))
+    actual=subprocess.run(['python','-B','check.py'],cwd=root,capture_output=True,timeout=20)
+    check('外部3个功能断言通过且重复注释未改',actual.returncode==0 and (root/'calc.py').read_text(encoding='utf-8').startswith(filler))
+    select_agent(page,'codex-win')
+    planner=next(a for a in done['attempts'] if a['stage']=='plan')
+    body=page.locator(f'[data-attempt-id="{planner["id"]}"] .agent-turn-text')
+    expect(body).to_contain_text(done['plan']['summary'])
+    check('真实 Codex 方案展示为正文，JSON 默认收起', not body.inner_text().lstrip().startswith('{') and not page.locator(f'[data-attempt-id="{planner["id"]}"] .agent-protocol').evaluate('node=>node.open'))
+    page.screenshot(path=str(ROOT/'artifacts/live-readable-codex-plan.png'))
+    select_agent(page,'hermes-win')
+    page.screenshot(path=str(ROOT/'artifacts/live-lazy-hermes-review.png'))
+    select_team(page,room)
+    page.locator(f'[data-workflow-id="{done["id"]}"]').click(button='right')
+    page.locator('[data-message-delete]').click()
+    page.wait_for_timeout(300)
+    after=desktop.ipc(page,'get_conversation',id=room)
+    check('右键删除实际移除整轮方案、执行记录及请求', not after['workflows'] and not after['messages'])
+    check('删除协作记录后项目文件与功能保留',subprocess.run(['python','-B','check.py'],cwd=root,capture_output=True,timeout=20).returncode==0)
+    page.screenshot(path=str(ROOT/'artifacts/live-deleted-workflow.png'))
+    evidence['large_review']={'source_bytes':(root/'calc.py').stat().st_size,'root':str(root),'workflow':done['id'],'roles':roles,'deleted':True}
+
+
+def native_project_memory(page, room):
+    detail=desktop.ipc(page,'get_conversation',id=room)
+    name='verification_'+uuid.uuid4().hex[:8]
+    marker='MEMORY_'+uuid.uuid4().hex[:8]
+    uri=f'viking://resources/tongxi/projects/{detail["project"]["id"]}/codex-win/{name}.md'
+    for agent in ['codex-win','dsh-win','hermes-win']:
+        select_team(page,room);select_agent(page,agent)
+        if agent=='codex-win':
+            page.select_option('[data-project-chat-model]','gpt-5.6-luna');page.select_option('[data-project-chat-effort]','low')
+        else:
+            state=desktop.ipc(page,'dsh_status' if agent=='dsh-win' else 'hermes_status')
+            model=next(m for m in state['models'] if ('daily one' in (m.get('provider_name') or '').lower() or m.get('provider_id')=='command-code-daily') and 'v4.1' in m['id'])
+            if page.locator('[data-project-chat-provider]').count():page.select_option('[data-project-chat-provider]',model['provider_id'])
+            page.select_option('[data-project-chat-model]',model['id']);page.select_option('[data-project-chat-effort]','off' if agent=='dsh-win' else 'low')
+        chat=next(c['conversation_id'] for c in detail['project_agent_chats'] if c['agent_id']==agent)
+        prompt=f'使用项目记忆工具 hub_memory_write（也可能叫 mcp__tongxi_project__hub_memory_write）实际写入一条固定测试事实。name={name}，content=“本项目的合成验收事实：{marker}”。不保存其他私聊、不广播、不修改项目文件。回复写入的URI。' if agent=='codex-win' else f'使用当前项目的 hub_memory_read 工具读取URI {uri}，只回复确认读到了标记 {marker}。不广播、不修改项目文件。'
+        previous=desktop.ipc(page,{'codex-win':'codex_status','dsh-win':'dsh_status','hermes-win':'hermes_status'}[agent]).get('active')
+        page.fill('[data-project-agent-chat-input]',prompt);page.locator('[data-project-agent-chat-input]').press('Enter')
+        run,_=wait_private(page,agent,chat,after_id=previous['id'] if previous else None)
+        check(agent+' 在原生专属会话中实际使用项目记忆工具', bool(run.get('tool_events')) and any('memory' in event.get('title','') for event in run['tool_events']) and (uri in run['text'] if agent=='codex-win' else marker in run['text']))
+    evidence['native_memory']={'uri':uri,'actors':['codex-win','dsh-win','hermes-win']}
+
+
 def run(only):
     previous = json.loads((ROOT / 'artifacts/project-roles-ui-verification.json').read_text(encoding='utf-8'))
     desktop.DATA = Path(previous['test_data_directory'])
@@ -390,6 +451,10 @@ def run(only):
                 hermes_receipt(page, room)
             if only in ('all', 'pause'):
                 partial_pause(page)
+            if only == 'large':
+                large_review(page)
+            if only == 'memory':
+                native_project_memory(page, room)
             check('真实窗口运行期间无 JavaScript 错误', not errors)
             success = True
     finally:
@@ -402,5 +467,5 @@ def run(only):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--only', choices=['all', 'resume', 'private', 'hermes', 'pause', 'display'], default='all')
+    parser.add_argument('--only', choices=['all', 'resume', 'private', 'hermes', 'pause', 'display', 'large', 'memory'], default='all')
     run(parser.parse_args().only)
