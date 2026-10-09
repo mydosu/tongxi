@@ -224,7 +224,9 @@ fn json_document(raw: &str, limit: usize) -> Result<&str> {
 
 pub fn parse_review(raw: &str) -> Result<Review> {
     let raw = json_document(raw, 32_000)?;
-    let review: Review = serde_json::from_str(raw).map_err(|_| "管家未返回有效的结构化验收结果")?;
+    let review: Review = serde_json::from_str(raw)
+        .or_else(|_| serde_json::from_str(&quote_bare_object_keys(raw)))
+        .map_err(|_| "验收成员未返回有效的结构化结果")?;
     if review.summary.trim().is_empty()
         || review.summary.chars().count() > 2000
         || review.issues.len() > 12
@@ -237,6 +239,62 @@ pub fn parse_review(raw: &str) -> Result<Review> {
         return Err("验收结果的摘要或问题列表无效".into());
     }
     Ok(review)
+}
+
+/// Some native agents emit a JSON object with bare property names. Quote keys only;
+/// never evaluate code, rewrite strings, or infer an approval from prose.
+fn quote_bare_object_keys(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut result = String::with_capacity(raw.len());
+    let (mut index, mut quoted, mut escaped, mut key) = (0, false, false, false);
+    while index < chars.len() {
+        let ch = chars[index];
+        if quoted {
+            result.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            index += 1;
+            continue;
+        }
+        if key && (ch.is_ascii_alphabetic() || ch == '_') {
+            let start = index;
+            while index < chars.len()
+                && (chars[index].is_ascii_alphanumeric() || chars[index] == '_')
+            {
+                index += 1;
+            }
+            let mut colon = index;
+            while colon < chars.len() && chars[colon].is_whitespace() {
+                colon += 1;
+            }
+            let quote = chars.get(colon) == Some(&':');
+            if quote {
+                result.push('"');
+            }
+            result.extend(chars[start..index].iter());
+            if quote {
+                result.push('"');
+            }
+            key = false;
+            continue;
+        }
+        if ch == '"' {
+            quoted = true;
+            key = false;
+        } else if matches!(ch, '{' | ',') {
+            key = true;
+        } else if !ch.is_whitespace() {
+            key = false;
+        }
+        result.push(ch);
+        index += 1;
+    }
+    result
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -299,6 +357,15 @@ pub struct TeamMessage {
     pub source_message_id: Option<String>,
     pub sender_agent: Option<String>,
     pub kind: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RoomAgentMessage {
+    pub id: String,
+    pub sender_agent: String,
+    pub recipient_agent: String,
     pub content: String,
     pub created_at: i64,
 }
@@ -433,6 +500,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_tasks", "branch", "TEXT"),
         ("project_tasks", "assigned_agent", "TEXT"),
         ("project_attempts", "thought", "TEXT NOT NULL DEFAULT ''"),
+        ("project_team_messages", "recipient_agent", "TEXT"),
     ] {
         add_column(tx, table, column, definition)?;
     }
@@ -575,8 +643,9 @@ pub fn task_path(root: &Path, relative: &str) -> Result<PathBuf> {
 
 pub fn parse_plan(raw: &str) -> Result<Plan> {
     let json = json_document(raw, 64_000)?;
-    let mut plan: Plan =
-        serde_json::from_str(json).map_err(|_| "管家未返回有效的结构化任务，请发送新需求重试")?;
+    let mut plan: Plan = serde_json::from_str(json)
+        .or_else(|_| serde_json::from_str(&quote_bare_object_keys(json)))
+        .map_err(|_| "规划成员未返回有效的结构化任务，已有回复已保留")?;
     // 模型偶尔会把“依赖第 N 项”按 1 基任务编号输出。若 0 基解释不成立、
     // 但所有依赖都合法地指向更早的一基任务，则在入口统一换算为内部 0 基位置。
     let zero_based = plan.tasks.iter().enumerate().all(|(index, task)| {
@@ -949,7 +1018,7 @@ impl Store {
 
     pub fn workflow_team_messages(&self, workflow_id: &str) -> Result<Vec<TeamMessage>> {
         let mut statement = self.connection.prepare(
-            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE workflow_id=?1 ORDER BY created_at,id",
+            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE workflow_id=?1 AND recipient_agent IS NULL ORDER BY created_at,id",
         ).map_err(|_| "团队消息读取失败")?;
         let rows = statement
             .query_map([workflow_id], |row| {
@@ -973,7 +1042,7 @@ impl Store {
 
     pub fn team_messages(&self, conversation_id: &str) -> Result<Vec<TeamMessage>> {
         let mut statement = self.connection.prepare(
-            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE conversation_id=?1 ORDER BY created_at,id",
+            "SELECT id,project_id,conversation_id,workflow_id,attempt_id,source_message_id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE conversation_id=?1 AND recipient_agent IS NULL ORDER BY created_at,id",
         ).map_err(|_| "团队消息读取失败")?;
         let rows = statement
             .query_map([conversation_id], |row| {
@@ -1134,6 +1203,28 @@ impl Store {
             .map_err(|_| "Agent 会话读取失败")?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| "Agent 会话读取失败".into())
+    }
+
+    pub fn project_chat_messages(&self, conversation_id: &str) -> Result<Vec<RoomAgentMessage>> {
+        let Some((project, group, agent)) = self.project_agent_chat_context(conversation_id)?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut query = self.connection.prepare("SELECT id,sender_agent,recipient_agent,content,created_at FROM project_team_messages WHERE project_id=?1 AND conversation_id=?2 AND recipient_agent IS NOT NULL AND (sender_agent=?3 OR recipient_agent=?3) ORDER BY created_at,id").map_err(|_| "成员直发消息不可用")?;
+        let rows = query
+            .query_map(params![project, group, agent], |row| {
+                Ok(RoomAgentMessage {
+                    id: row.get(0)?,
+                    sender_agent: row.get(1)?,
+                    recipient_agent: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(|_| "成员直发消息读取失败")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "成员直发消息读取失败".into());
+        rows
     }
 
     pub fn project_agent_chat_context(
@@ -2131,7 +2222,7 @@ mod tests {
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 13);
+        assert_eq!(version(&store), 14);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
         assert!(columns(&store, "project_attempts")
             .iter()
@@ -2203,7 +2294,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 13);
+        assert_eq!(version(&store), 14);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 

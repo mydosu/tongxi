@@ -9,10 +9,11 @@ export function bindProjectThoughtFollow(card: HTMLElement): void {
     const content = thought.querySelector<HTMLElement>('.attempt-thought-content');
     if (!viewport || !content) continue;
 
-    let following = true;
+    let following = viewport.dataset.follow !== 'false';
     let lastHeight = -1;
     const trackScroll = () => {
       following = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < FOLLOW_THRESHOLD;
+      viewport.dataset.follow = String(following);
     };
     const resize = (entries: ResizeObserverEntry[]) => {
       const height = entries.at(-1)?.borderBoxSize?.[0]?.blockSize ?? content.offsetHeight;

@@ -1626,3 +1626,18 @@ fn summary_sql_failure_is_closed() {
     assert!(f.store.begin_service_maintenance("dsh-win").is_err());
     assert!(f.store.guard_service_maintenance("dsh-win").is_ok());
 }
+#[test]
+fn review_accepts_bare_keys_without_changing_strings_or_inventing_approval() {
+    let review = crate::project_store::parse_review(r#"Acceptance complete. {approved: true, summary: "源码和3条断言通过；文字 approved: false 保持原样。", issues: []}"#).unwrap();
+    assert!(review.approved);
+    assert!(review.summary.contains("approved: false"));
+    assert!(
+        crate::project_store::parse_review(r#"{approved: "true", summary: "ok", issues: []}"#)
+            .is_err()
+    );
+    assert!(crate::project_store::parse_review(
+        r#"{approved: true, summary: "ok", issues: [], other: 1}"#
+    )
+    .is_err());
+    assert!(crate::project_store::parse_review("Everything seems approved: true").is_err());
+}

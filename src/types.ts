@@ -23,9 +23,11 @@ export interface ConversationDetail {
   workflows: Workflow[];
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
+  project_agent_inbox?: ProjectRoomAgentMessage[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
 export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; }
+export interface ProjectRoomAgentMessage { id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
 export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {
   version: string; milestone: number; database_path: string; hud_shortcut: boolean;

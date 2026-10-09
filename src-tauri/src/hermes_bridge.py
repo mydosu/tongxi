@@ -88,6 +88,13 @@ class ChatSessions(SessionManager):
 
 
 class ChatACP(HermesACPAgent):
+    def _switch_model(self, state, raw_model, *, keep_endpoint=False):
+        result = super()._switch_model(state, raw_model, keep_endpoint=keep_endpoint)
+        # Keep the provider-qualified identity resolved by Hermes, not its bare API model name.
+        from acp_adapter.model_catalog import encode_model_choice
+        state.agent._hub_model_choice = encode_model_choice(result[1], result[2])
+        return result
+
     async def set_config_option(self, config_id, session_id, value, **kwargs):
         if config_id not in ('reasoning_effort', 'hub_development_digest'):
             raise acp.RequestError(-32602, 'Unsupported session setting')
@@ -118,7 +125,7 @@ class ChatACP(HermesACPAgent):
                 state.agent.reasoning_config = config
             digest_injected = bool(getattr(state.agent, 'ephemeral_system_prompt', None))
         return SetSessionConfigOptionResponse(config_options=[], **{'_meta': {'agentHub': {
-            'model': state.agent.model, 'reasoningConfig': copy.deepcopy(state.agent.reasoning_config),
+            'model': state.agent.model, 'modelId': getattr(state.agent, '_hub_model_choice', None), 'reasoningConfig': copy.deepcopy(state.agent.reasoning_config),
             'toolCount': len(state.agent.tools), 'digest_injected': digest_injected
         }}})
 

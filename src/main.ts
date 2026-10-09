@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RoleChoice, Roles, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
-import { bindingDialog, planningDialog, projectAgentActivity, workflowBusy, workflowCard, workflowRoles } from './project_ui';
+import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, TaskChoice, Workflow } from './types';
+import { bindingDialog, projectAgentActivity, projectTeamMessageHtml, projectTeamMessages, workflowBusy, workflowCard } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
 import { bindProjectThoughtFollow, unbindProjectThoughtFollow } from './project_thought_scroll';
@@ -59,10 +59,14 @@ const busySnapshot = (snapshot: RuntimeSnapshot) => !!snapshot.active && ['start
 
 let pendingSend: { conversationId: string; messageId: string; content: string } | null = null;
 const lastFinalRuns: Record<string, string> = {};
+const projectChatRefreshStamp: Record<string, string> = {};
 let eventSubscribed = false;
 let latestDiscussion: Discussion | null = null;
 const projectJobs = new Map<string, Workflow>();
 const projectAgentChatDetails = new Map<string, ConversationDetail>();
+const projectChatSettingsQueues = new Map<string, Promise<void>>();
+const projectChatSettingsPending = new Map<string, number>();
+const projectChatSettingsErrors = new Map<string, string>();
 const projectRoomsByGroup = new Map<string, ConversationDetail['project_agent_chats']>();
 let activeProjectModule = 'team';
 let expandedProjectGroup = '';
@@ -367,7 +371,7 @@ function renderMessage(message: Message) {
   const toolEvents = message.tool_events || [];
   const eventStatus = (status: string) => status === 'running' ? '进行中' : status === 'failed' ? '失败' : '完成';
   const toolsHtml = toolEvents.length ? `<details class="message-tool-trace" ${message.status === 'streaming' ? 'open' : ''}><summary>工具活动 · ${toolEvents.length}</summary>${toolEvents.map(event => `<details class="message-tool-event" ${event.status === 'running' ? 'open' : ''}><summary><span>${escape(event.title || event.kind)}</span><small>${eventStatus(event.status)}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</details>` : '';
-  return `<article class="message ${own ? 'own' : 'agent-message'}" data-message-id="${escape(message.id)}"><div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(message.content || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div></article>`;
+  return `<article class="message ${own ? 'own' : 'agent-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0"><div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(message.content || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div></article>`;
 }
 
 function projectChatFor(agentId: string) {
@@ -377,6 +381,10 @@ function projectChatFor(agentId: string) {
 function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string, workflowId: string) {
   if (host.dataset.bound === 'true') return;
   host.dataset.bound = 'true';
+  host.addEventListener('input', event => {
+    const target = event.target;
+    if (target instanceof HTMLTextAreaElement && target.matches('[data-project-agent-chat-input]')) localStorage.setItem(draftKey(chatId), target.value);
+  });
   host.addEventListener('submit', event => {
     if (!(event.target instanceof HTMLFormElement) || !event.target.matches('[data-project-agent-chat-form]')) return;
     event.preventDefault();
@@ -393,8 +401,10 @@ function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string,
     const target = event.target as HTMLSelectElement;
     if (target.matches('[data-project-chat-provider]')) {
       const models = runtimes[agentId]?.models || [];
-      host.querySelector<HTMLSelectElement>('[data-project-chat-model]')!.innerHTML = modelOptionsHtml(models, target.value, null, escape, '默认模型');
-      host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')!.innerHTML = '<option value="">默认强度</option>';
+      const next = modelProviders(models).find(provider => provider.id === target.value)?.models[0];
+      host.querySelector<HTMLSelectElement>('[data-project-chat-model]')!.innerHTML = modelOptionsHtml(models, target.value, next?.id || null, escape, '默认模型');
+      host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')!.innerHTML = `<option value="">默认强度</option>${(next?.efforts || []).map(effort => `<option value="${escape(effort)}">${escape(effortLabels[effort] || effort)}</option>`).join('')}`;
+      void saveProjectAgentSettings(host, agentId, chatId);
       return;
     }
     if (target.matches('[data-project-chat-model]')) {
@@ -448,6 +458,16 @@ function projectAgentChatEmptyHtml(agentId: string) {
 function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: ConversationDetail) {
   const container = host.querySelector<HTMLElement>('.project-agent-chat-messages');
   if (!container) return;
+  let inbox = host.querySelector<HTMLElement>('.project-agent-peer-inbox');
+  if (!inbox) { container.insertAdjacentHTML('beforebegin', '<div class="project-agent-peer-inbox" hidden></div>'); inbox = host.querySelector('.project-agent-peer-inbox')!; }
+  const peers = chat.project_agent_inbox || [];
+  const stamp = JSON.stringify(peers.map(message => [message.id, message.content]));
+  if (inbox.dataset.paint !== stamp) {
+    const wasOpen = inbox.querySelector<HTMLDetailsElement>('details')?.open;
+    inbox.innerHTML = peers.length ? `<details ${wasOpen ? 'open' : ''}><summary>成员直发 <span>${peers.length}</span><small>${escape(member(peers.at(-1)!.sender_agent).name)}：${escape(peers.at(-1)!.content.slice(0, 48))}</small></summary>${peers.map(message => `<div class="agent-dm-row" data-project-peer-message="${escape(message.id)}"><small>${escape(member(message.sender_agent).name)} → ${escape(member(message.recipient_agent).name)}</small><p>${escape(message.content)}</p></div>`).join('')}</details>` : '';
+    inbox.hidden = !peers.length;
+    inbox.dataset.paint = stamp;
+  }
   const messages = [...chat.messages];
   const active = runtimes[agentId]?.active;
   if (active?.conversation_id === chat.conversation.id) {
@@ -487,7 +507,7 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
   const send = host.querySelector<HTMLButtonElement>('[data-project-agent-chat-send]');
   const blocked = busySnapshot(runtimes[agentId]) || projectAgentBusy(agentId) || runtimes[agentId]?.connection !== 'connected';
   if (input) input.disabled = blocked;
-  if (send) send.disabled = blocked;
+  if (send) send.disabled = blocked || !!projectChatSettingsPending.get(chat.conversation.id) || projectChatSettingsErrors.has(chat.conversation.id);
   if (nearBottom) container.scrollTop = container.scrollHeight;
 }
 
@@ -496,30 +516,57 @@ async function loadProjectAgentChat(host: HTMLElement, agentId: string, workflow
   if (!chat) return;
   bindProjectChatHost(host, agentId, chat.conversation_id, workflowId);
   try {
-    const saved = projectAgentChatDetails.get(chat.conversation_id) || await invoke<ConversationDetail>('get_conversation', { id: chat.conversation_id });
+    const saved = await invoke<ConversationDetail>('get_conversation', { id: chat.conversation_id });
     projectAgentChatDetails.set(chat.conversation_id, saved);
-    if (!host.querySelector('.project-agent-chat-heading')) {
+    const initialLoad = !host.querySelector('.project-agent-chat-heading');
+    if (initialLoad) {
       const settings = saved.sessions.find(session => session.agent_id === agentId);
       const models = runtimes[agentId]?.models || [];
       const providers = modelProviders(models);
-      const provider = selectedProvider(models, settings?.model);
+      const effectiveModel = settings?.model || runtimes[agentId]?.default_model;
+      const provider = selectedProvider(models, effectiveModel);
       const selectedModel = settings?.model || '';
-      const efforts = models.find(model => model.id === selectedModel)?.efforts || Object.keys(effortLabels);
-      host.innerHTML = `<div class="project-agent-chat-heading"><div class="project-chat-identity">${avatar(member(agentId))}<div><strong>与 ${escape(member(agentId).name)} 私聊</strong><span class="project-chat-context">围绕当前项目，保留独立的对话与工作记录</span></div></div><span class="project-chat-private">${icon('lock')}独立会话</span></div><div class="project-agent-chat-settings ${providers.length > 1 ? 'multi-provider' : ''}">${providers.length > 1 ? `<label>提供商<select data-project-chat-provider aria-label="项目私聊提供商">${providerOptionsHtml(models, provider, escape)}</select></label>` : ''}<label class="project-chat-model-field">模型<select data-project-chat-model aria-label="项目私聊模型">${modelOptionsHtml(models, provider, selectedModel, escape, '默认模型')}</select></label><label class="project-chat-effort-field">思考强度<select data-project-chat-effort aria-label="项目私聊思考强度"><option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}" ${effort === settings?.reasoning_effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><span class="project-chat-settings-note">切换即保存 · 下一条消息生效</span></div><div class="project-agent-chat-messages">${saved.messages.length ? saved.messages.map(message => projectAgentChatMessageHtml(message, agentId)).join('') : projectAgentChatEmptyHtml(agentId)}</div><form class="project-agent-chat-composer" data-project-agent-chat-form><textarea data-project-agent-chat-input maxlength="16000" rows="2" aria-label="单独发消息给 ${escape(member(agentId).name)}" placeholder="向 ${escape(member(agentId).name)} 描述问题，或交给它一项具体任务…"></textarea><div class="project-chat-composer-bottom"><span>Enter 发送 <i>·</i> Shift + Enter 换行</span><button type="submit" class="primary" data-project-agent-chat-send>发送${icon('arrow')}</button></div></form>`;
+      const efforts = models.find(model => model.id === effectiveModel)?.efforts || Object.keys(effortLabels);
+      const defaultLabel = `默认${runtimes[agentId]?.default_model ? ` · ${models.find(model => model.id === runtimes[agentId].default_model)?.name || runtimes[agentId].default_model}` : '模型'}`;
+      host.innerHTML = `<div class="project-agent-chat-heading"><div class="project-chat-identity">${avatar(member(agentId))}<div><strong>与 ${escape(member(agentId).name)} 私聊</strong><span class="project-chat-context">围绕当前项目，保留独立的对话与工作记录</span></div></div><span class="project-chat-private">${icon('lock')}独立会话</span></div><div class="project-agent-chat-settings ${providers.length > 1 ? 'multi-provider' : ''}">${providers.length > 1 ? `<label>提供商<select data-project-chat-provider aria-label="项目私聊提供商">${providerOptionsHtml(models, provider, escape)}</select></label>` : ''}<label class="project-chat-model-field">模型<select data-project-chat-model aria-label="项目私聊模型">${modelOptionsHtml(models, provider, selectedModel, escape, defaultLabel)}</select></label><label class="project-chat-effort-field">思考强度<select data-project-chat-effort aria-label="项目私聊思考强度"><option value="">默认强度</option>${efforts.map(effort => `<option value="${escape(effort)}" ${effort === settings?.reasoning_effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><span class="project-chat-settings-note">切换即保存 · 下一条消息生效</span></div><div class="project-agent-chat-messages">${saved.messages.length ? saved.messages.map(message => projectAgentChatMessageHtml(message, agentId)).join('') : projectAgentChatEmptyHtml(agentId)}</div><form class="project-agent-chat-composer" data-project-agent-chat-form><textarea data-project-agent-chat-input maxlength="16000" rows="2" aria-label="单独发消息给 ${escape(member(agentId).name)}" placeholder="向 ${escape(member(agentId).name)} 描述问题，或交给它一项具体任务…"></textarea><div class="project-chat-composer-bottom"><span>Enter 发送 <i>·</i> Shift + Enter 换行</span><button type="submit" class="primary" data-project-agent-chat-send>发送${icon('arrow')}</button></div></form>`;
       bindProjectChatHost(host, agentId, chat.conversation_id, workflowId);
+      const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]')!;
+      input.value = readDraft(chat.conversation_id);
+      resizeComposer(input);
     }
     syncProjectAgentChat(host, agentId, saved);
+    if (initialLoad) requestAnimationFrame(() => {
+      const messages = host.querySelector<HTMLElement>('.project-agent-chat-messages');
+      if (messages?.isConnected) messages.scrollTop = messages.scrollHeight;
+    });
   } catch (error) { host.innerHTML = `<p class="workflow-error">${escape(errorText(error))}</p>`; }
 }
 
 async function saveProjectAgentSettings(host: HTMLElement, agentId: string, chatId: string) {
-  try {
-    const model = host.querySelector<HTMLSelectElement>('[data-project-chat-model]')?.value || null;
-    const effort = host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')?.value || null;
-    const saved = await invoke<ConversationDetail>('set_session_settings', { id: chatId, agentId, model, reasoningEffort: effort });
-    projectAgentChatDetails.set(chatId, saved);
-    toast(`${member(agentId).name} 项目私聊设置已保存`);
-  } catch (error) { toast(errorText(error), true); }
+  const model = host.querySelector<HTMLSelectElement>('[data-project-chat-model]')?.value || null;
+  const effort = host.querySelector<HTMLSelectElement>('[data-project-chat-effort]')?.value || null;
+  projectChatSettingsPending.set(chatId, (projectChatSettingsPending.get(chatId) || 0) + 1);
+  const note = host.querySelector('.project-chat-settings-note');
+  if (note) note.textContent = '正在保存设置…';
+  const work = (projectChatSettingsQueues.get(chatId) || Promise.resolve()).then(async () => {
+    try {
+      const saved = await invoke<ConversationDetail>('set_session_settings', { id: chatId, agentId, model, reasoningEffort: effort });
+      projectAgentChatDetails.set(chatId, saved);
+      projectChatSettingsErrors.delete(chatId);
+    } catch (error) { projectChatSettingsErrors.set(chatId, errorText(error)); toast(errorText(error), true); }
+    finally {
+      projectChatSettingsPending.set(chatId, Math.max(0, (projectChatSettingsPending.get(chatId) || 1) - 1));
+      const currentHost = main.querySelector<HTMLElement>(`.project-agent-chat[data-project-chat-id="${chatId}"]`);
+      const current = projectAgentChatDetails.get(chatId);
+      if (currentHost && current) syncProjectAgentChat(currentHost, agentId, current);
+      if (!projectChatSettingsPending.get(chatId) && currentHost) {
+        const label = currentHost.querySelector('.project-chat-settings-note');
+        if (label) { label.textContent = projectChatSettingsErrors.has(chatId) ? '设置未保存，请重新选择后再发送' : '已保存 · 下一条消息生效'; label.classList.toggle('error', projectChatSettingsErrors.has(chatId)); }
+      }
+    }
+  });
+  projectChatSettingsQueues.set(chatId, work);
+  await work;
 }
 
 async function refreshProjectAgentChat(chatId: string) {
@@ -537,6 +584,10 @@ async function refreshProjectAgentChat(chatId: string) {
         if (!host.querySelector('.project-agent-chat-heading')) await loadProjectAgentChat(host, mapping.agent_id, currentWorkflow()?.id || '');
         else syncProjectAgentChat(host, mapping.agent_id, saved);
       }
+    } else if (activeProjectAgent()) {
+      const viewing = projectChatFor(activeProjectAgent()!);
+      const host = viewing && main.querySelector<HTMLElement>(`.project-agent-chat[data-project-chat-id="${viewing.conversation_id}"]`);
+      if (viewing && host) await loadProjectAgentChat(host, viewing.agent_id, currentWorkflow()?.id || '');
     }
   } catch { /* keep the persisted transcript visible on transient refresh errors */ }
 }
@@ -545,6 +596,8 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
   const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
   const text = input?.value.trim();
   if (!text || !detail) return;
+  await projectChatSettingsQueues.get(chatId);
+  if (projectChatSettingsErrors.has(chatId)) { toast('模型设置尚未保存，已保留消息草稿', true); return; }
   if (runtimes[agentId]?.connection !== 'connected') { toast(`请先连接${member(agentId).name}`, true); return; }
   if (projectAgentBusy(agentId)) { toast(`${member(agentId).name} 正在执行项目任务；可在该模块中断后再私聊`, true); return; }
   if (busySnapshot(runtimes[agentId])) { toast(`${member(agentId).name} 正在私聊回复`, true); return; }
@@ -552,10 +605,13 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
   if (button) { button.disabled = true; button.textContent = '发送中…'; }
   try {
     await invoke<RunRecord>(`send_${harnessKey(agentId)}_message`, { conversationId: chatId, messageId: crypto.randomUUID(), content: text });
-    if (input) input.value = '';
+    if (input?.value.trim() === text) input.value = '';
+    if (readDraft(chatId).trim() === text) localStorage.removeItem(draftKey(chatId));
     const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
     projectAgentChatDetails.set(chatId, saved);
     syncProjectAgentChat(host, agentId, saved);
+    const messages = host.querySelector<HTMLElement>('.project-agent-chat-messages');
+    if (messages) messages.scrollTop = messages.scrollHeight;
   } catch (error) { toast(errorText(error), true); }
   finally { if (button) { button.disabled = false; button.innerHTML = `发送${icon('arrow')}`; } }
 }
@@ -564,21 +620,45 @@ function updateProjectAgentActivity() {
   const agentId = activeProjectAgent();
   const host = main.querySelector<HTMLElement>('#project-agent-activity');
   if (!agentId || !host) return;
-  const workflow = currentWorkflow();
-  if (!workflow) return;
-  const layout = JSON.stringify(workflow.attempts.filter(attempt => attempt.agent_id === agentId).map(attempt => [attempt.id, attempt.stage, attempt.status, attempt.model, attempt.reasoning_effort, !!attempt.thought, !!attempt.output, attempt.error, attempt.tool_events?.map(event => [event.event_id, event.status])]));
+  const jobs = roomProjects().filter(job => job.attempts.some(attempt => attempt.agent_id === agentId) || job.agent_messages?.some(message => message.sender_agent === agentId || message.recipient_agent === agentId));
+  const attempts = jobs.flatMap(job => job.attempts.filter(attempt => attempt.agent_id === agentId));
+  const history = host.closest<HTMLDetailsElement>('[data-project-history]');
+  if (history) {
+    const active = attempts.some(attempt => ['starting', 'running', 'cancelling'].includes(attempt.status));
+    if (active && history.dataset.active !== 'true') { history.open = true; delete history.dataset.userOpen; }
+    else if (!active && history.dataset.active === 'true' && history.dataset.userOpen === undefined) history.open = false;
+    history.dataset.active = String(active);
+    const status = history.querySelector<HTMLElement>('[data-project-history-status]');
+    if (status) status.textContent = active ? '正在执行 · 可单独中断' : `${jobs.length} 轮记录 · 展开查看`;
+  }
+  if (!jobs.length) return;
+  const layout = JSON.stringify([jobs.map(job => [job.id, job.agent_messages?.map(message => message.id)]), attempts.map(attempt => [attempt.id, attempt.stage, attempt.status, attempt.model, attempt.reasoning_effort, !!attempt.thought, !!attempt.output, attempt.error, attempt.tool_events?.map(event => [event.event_id, event.status, event.title, event.output?.length])])]);
   if (host.dataset.layout !== layout) {
-    const disclosures = new Map([...host.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id], details[data-thought-attempt-id]')].map(node => [node.dataset.attemptId || node.dataset.thoughtAttemptId || '', node.open]));
+    const disclosures = new Map([...host.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id], details[data-thought-attempt-id]')].map(node => [node.dataset.attemptId || node.dataset.thoughtAttemptId || '', { open: node.open, userOpen: node.dataset.userOpen, status: node.dataset.attemptStatus || node.closest<HTMLElement>('[data-attempt-id]')?.dataset.attemptStatus }]));
+    const scrolls = new Map([...host.querySelectorAll<HTMLElement>('[data-thought-attempt-id]')].map(node => {
+      const viewport = node.querySelector<HTMLElement>('.attempt-thought-output')!;
+      return [node.dataset.thoughtAttemptId!, { top: viewport.scrollTop, follow: viewport.dataset.follow }];
+    }));
     unbindProjectThoughtFollow(host);
-    host.innerHTML = projectAgentActivity(workflow, agentId, escape, id => member(id).name, (id, value) => runtimes[id]?.models.find(item => item.id === value)?.name || value || '沿用本机默认', id => avatar(member(id), 'project-agent-avatar'));
+    host.innerHTML = jobs.map(job => projectAgentActivity(job, agentId, escape, id => member(id).name, (id, value) => runtimes[id]?.models.find(item => item.id === value)?.name || value || '沿用本机默认', id => avatar(member(id), 'project-agent-avatar'))).join('');
     host.dataset.layout = layout;
     host.querySelectorAll<HTMLDetailsElement>('details[data-attempt-id], details[data-thought-attempt-id]').forEach(node => {
       const key = node.dataset.attemptId || node.dataset.thoughtAttemptId || '';
-      if (disclosures.has(key)) node.open = disclosures.get(key)!;
+      const previous = disclosures.get(key);
+      const status = node.dataset.attemptStatus || node.closest<HTMLElement>('[data-attempt-id]')?.dataset.attemptStatus;
+      if (previous?.userOpen !== undefined) { node.open = previous.userOpen === 'true'; node.dataset.userOpen = previous.userOpen; }
+      else if (previous && ['starting','running','cancelling'].includes(previous.status || '') && !['starting','running','cancelling'].includes(status || '')) node.open = false;
+      else if (previous) node.open = previous.open;
+      node.querySelector('summary')?.addEventListener('click', () => requestAnimationFrame(() => { node.dataset.userOpen = String(node.open); }));
+      if (node.dataset.thoughtAttemptId && scrolls.has(key)) {
+        const viewport = node.querySelector<HTMLElement>('.attempt-thought-output')!;
+        const saved = scrolls.get(key)!;
+        if (saved.follow === 'false') { viewport.dataset.follow = 'false'; viewport.scrollTop = saved.top; }
+      }
     });
     bindProjectThoughtFollow(host);
   } else {
-    for (const attempt of workflow.attempts.filter(item => item.agent_id === agentId)) {
+    for (const attempt of attempts) {
       const row = host.querySelector<HTMLElement>(`[data-attempt-id="${attempt.id}"]`);
       const thought = row?.querySelector<HTMLElement>('.attempt-thought-content');
       if (thought && thought.textContent !== attempt.thought) thought.textContent = attempt.thought;
@@ -818,6 +898,26 @@ async function cancelDiscussion() {
   catch (error) { toast(errorText(error), true); }
 }
 
+function syncProjectTeamTimeline() {
+  if (!detail?.project || activeProjectAgent()) return;
+  const host = main.querySelector<HTMLElement>('#messages');
+  if (!host) return;
+  const follow = host.scrollHeight - host.scrollTop - host.clientHeight < 100;
+  const previousTop = host.scrollTop;
+  for (const message of projectTeamMessages(selectedId, detail.project_team_messages || [], roomProjects())) {
+    const old = host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`);
+    if (old?.dataset.content === message.content) continue;
+    const html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)));
+    host.querySelector('.welcome')?.remove();
+    if (old) old.outerHTML = html; else host.insertAdjacentHTML('beforeend', html);
+    host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`)!.dataset.content = message.content;
+  }
+  const entries = [...host.children].filter((node): node is HTMLElement => node instanceof HTMLElement && !!node.dataset.timelineAt);
+  const ordered = [...entries].sort((a, b) => Number(a.dataset.timelineAt) - Number(b.dataset.timelineAt) || Number(a.dataset.timelineOrder) - Number(b.dataset.timelineOrder));
+  if (ordered.some((node, index) => node !== entries[index])) for (const node of ordered) host.append(node);
+  if (follow) host.scrollTop = host.scrollHeight; else host.scrollTop = previousTop;
+}
+
 function updateProjectControls() {
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
   if (activeProjectAgent()) { updateProjectAgentActivity(); return; }
@@ -834,12 +934,6 @@ function updateProjectControls() {
     connect.hidden = !detail.project;
     connect.disabled = !detail.project || groupConnecting || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived || ready;
     connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '项目成员已连接' : '连接项目成员';
-  }
-  const roles = main.querySelector<HTMLButtonElement>('#project-roles');
-  if (roles) {
-    roles.hidden = !detail.project;
-    roles.disabled = !detail.project || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived;
-    roles.textContent = detail.project_roles ? '调整协作阶段' : '配置协作阶段';
   }
   const title = main.querySelector('#project-title');
   if (title) title.textContent = detail.project ? `${detail.project.name} · 项目群聊` : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要两位 Windows 成员';
@@ -861,7 +955,6 @@ function updateProjectControls() {
     let user = messages.querySelector<HTMLElement>(`[data-message-id="${workflow.user_message_id}"]`);
     if (!user) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', renderMessage({ id: workflow.user_message_id, conversation_id: workflow.conversation_id, sender_id: 'user', content: workflow.request, status: state, created_at: workflow.created_at })); user = messages.querySelector(`[data-message-id="${workflow.user_message_id}"]`)!; }
     const current = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`);
-    const teamMessages = [...new Map([...(detail.project_team_messages || []), ...(workflow.team_messages || [])].map(message => [message.id,message])).values()];
     const layoutStamp = JSON.stringify({
       status: workflow.status,
       plan: workflow.plan?.summary,
@@ -870,7 +963,6 @@ function updateProjectControls() {
       changes: workflow.changes.map(change => [change.attempt_id, change.path, change.operation, change.after_hash]),
       messages: workflow.agent_messages?.map(message => message.id),
       projectChats: (detail.project_agent_chats || []).map(chat => [chat.agent_id, chat.conversation_id]),
-      teamMessages: teamMessages.map(message => [message.id, message.content, message.kind]),
       summary: workflow.summary,
       error: workflow.error,
     });
@@ -896,12 +988,14 @@ function updateProjectControls() {
     const open = readDisclosureState('details[data-attempt-id]');
     const thoughtOpen = readDisclosureState('details[data-thought-attempt-id]');
     const scrollTop = messages.scrollTop;
-    const html = workflowCard(workflow, escape, id => member(id)?.name || id, id => runtimes[id]?.models || [], roleMembers('implement'), detail.project_agent_chats || [], teamMessages, id => member(id) ? avatar(member(id), 'project-agent-avatar') : `<span class="system-avatar">·</span>`);
+    const html = workflowCard(workflow, escape, id => member(id)?.name || id, id => runtimes[id]?.models || [], detail.conversation.members.filter(id => ['codex-win', 'hermes-win', 'dsh-win'].includes(id) && runtimes[id]?.connection === 'connected'), detail.project_agent_chats || []);
     if (current) unbindProjectThoughtFollow(current);
     if (current) current.outerHTML = html; else user.insertAdjacentHTML('afterend', html);
     const card = messages.querySelector<HTMLElement>(`[data-workflow-id="${workflow.id}"]`)!;
     card.dataset.layout = layoutStamp;
     card.dataset.paint = paintStamp;
+    card.dataset.timelineAt = String(workflow.created_at);
+    card.dataset.timelineOrder = '1';
     const accordion = card.querySelector<HTMLDetailsElement>('[data-project-accordion]');
     if (accordion) accordion.open = activeProjectModule === 'team' && workflowBusy(workflow);
     const restoreDisclosure = (node: HTMLDetailsElement, previous: { open: boolean; userOpen?: string; status: string } | undefined, active: boolean) => {
@@ -921,7 +1015,6 @@ function updateProjectControls() {
     card.querySelectorAll<HTMLElement>('[data-project-panel]').forEach(panel => { panel.hidden = panel.dataset.projectPanel !== 'team'; });
     card.querySelector('[data-stop-project]')?.addEventListener('click', () => void cancelProject(workflow.id));
     card.querySelector('[data-continue-project]')?.addEventListener('click', () => void continueProject(workflow.id));
-    card.querySelector('[data-edit-project-roles]')?.addEventListener('click', () => void editPausedProjectRoles(workflow.id));
     card.querySelector('[data-confirm-project]')?.addEventListener('click', () => void confirmProject(workflow.id, card));
     card.querySelectorAll<HTMLButtonElement>('[data-stop-project-agent]').forEach(button => button.addEventListener('click', () => {
       button.disabled = true;
@@ -951,7 +1044,9 @@ function updateProjectControls() {
     card.querySelectorAll<HTMLSelectElement>('[data-task-provider]').forEach(select => select.addEventListener('change', () => {
       const row = select.closest<HTMLElement>('[data-task-position]')!;
       const agent = row.dataset.taskAgent || '';
-      row.querySelector<HTMLSelectElement>('[data-task-model]')!.innerHTML = modelOptionsHtml(runtimes[agent]?.models || [], select.value, null, escape, '自动选型');
+      const models = runtimes[agent]?.models || [];
+      const next = modelProviders(models).find(provider => provider.id === select.value)?.models[0];
+      row.querySelector<HTMLSelectElement>('[data-task-model]')!.innerHTML = modelOptionsHtml(models, select.value, next?.id || null, escape, '自动选型');
       row.querySelector<HTMLSelectElement>('[data-task-effort]')!.innerHTML = '<option value="">自动</option>';
     }));
     // 换模型后强度选项跟着该模型的可用档位走，旧选择作废。
@@ -963,6 +1058,7 @@ function updateProjectControls() {
     if (nearBottom) messages.scrollTop = messages.scrollHeight;
     else messages.scrollTop = scrollTop;
   }
+  syncProjectTeamTimeline();
 }
 
 async function showProjectBinding() {
@@ -971,68 +1067,6 @@ async function showProjectBinding() {
   catch (error) { toast(errorText(error), true); }
 }
 
-function defaultProjectRoles(): Roles | null {
-  if (!detail) return null;
-  const preferences = {
-    plan: detail.project_roles?.plan,
-    implement: detail.project_roles?.implement,
-    review: detail.project_roles?.review,
-  };
-  const preferred = {
-    plan: ['codex-win', 'hermes-win', 'dsh-win'],
-    implement: ['dsh-win', 'codex-win', 'hermes-win'],
-    review: ['hermes-win', 'codex-win', 'dsh-win'],
-  } as const;
-  const choose = (stage: 'plan' | 'implement' | 'review'): RoleChoice | null => {
-    const available = roleMembers(stage);
-    const prior = preferences[stage];
-    const agent = prior && available.includes(prior.agent)
-      ? prior.agent
-      : preferred[stage].find(candidate => available.includes(candidate)) || available[0];
-    if (!agent) return null;
-    const session = detail!.sessions.find(item => item.agent_id === agent);
-    return {
-      agent,
-      model: prior?.agent === agent ? prior.model : session?.model || null,
-      effort: prior?.agent === agent ? prior.effort : session?.reasoning_effort || null,
-    };
-  };
-  const plan = choose('plan'); const implement = choose('implement'); const review = choose('review');
-  return plan && implement && review ? { plan, implement, review } : null;
-}
-
-async function editProjectRoles() {
-  if (!detail?.project || workflowBusy(currentWorkflow()) || detail.conversation.archived) return;
-  const roles = await planningDialog({
-    modal, escape, name: id => member(id)?.name || id,
-    members: roleMembers,
-    catalog: id => runtimes[id]?.models || [],
-    settings: id => {
-      const session = detail?.sessions.find(item => item.agent_id === id);
-      return { model: session?.model || null, effort: session?.reasoning_effort || null };
-    },
-    open: openModal,
-    initial: defaultProjectRoles(),
-    title: '配置项目协作角色',
-    note: '规划、执行、验收成员和模型会保存在此群的项目设置中。发送项目目标后，Agent 将按这些设置自动协作；任务执行者仍可按目标选择。',
-    submitLabel: '保存角色设置',
-  });
-  if (!roles) return;
-  try {
-    detail = await invoke<ConversationDetail>('set_project_roles', { conversationId: detail.conversation.id, roles });
-    await selectConversation(detail.conversation.id);
-    toast('项目协作角色已保存');
-  } catch (error) { toast(errorText(error), true); }
-}
-
-/// 角色可选成员：只列当前群中已连接、且有原生模型目录的 Windows 项目成员。
-const roleMembers = (_role: 'plan' | 'implement' | 'review') => {
-  if (!detail) return [];
-  const capable = ['codex-win', 'hermes-win', 'dsh-win'];
-  return detail.conversation.members.filter(id => capable.includes(id) && runtimes[id]?.connection === 'connected' && runtimes[id]?.models.length > 0);
-};
-
-/// 逐任务确认：把卡片里选定的模型与强度随任务一起提交，随后开始执行。
 async function confirmProject(workflowId: string, card: HTMLElement) {
   const tasks: TaskChoice[] = [...card.querySelectorAll<HTMLElement>('[data-task-position]')].map(row => ({
     position: Number(row.dataset.taskPosition),
@@ -1058,33 +1092,13 @@ async function continueProject(id: string) {
   const button = main.querySelector<HTMLButtonElement>(`[data-continue-project="${CSS.escape(id)}"]`);
   if (button) { button.disabled = true; button.textContent = '正在恢复原方案…'; }
   try {
-    adoptProject(await invoke<Workflow>('continue_project', { workflowId: id }));
+    adoptProject(await invoke<Workflow>('continue_project', { workflowId: id, autoExecute: true }));
     updateRuntimeControls();
-    toast('已复用原方案，请确认任务执行成员与模型后继续');
+    toast('已复用原方案，继续未完成任务');
   } catch (error) {
     toast(errorText(error), true);
     if (button?.isConnected) { button.disabled = false; button.textContent = '继续协作（复用原方案）'; }
   }
-}
-
-async function editPausedProjectRoles(id: string) {
-  const workflow = [...projectJobs.values()].find(job => job.id === id);
-  if (!workflow) { toast('找不到这项暂停的协作', true); return; }
-  const roles = await planningDialog({
-    modal, escape, name: agentId => member(agentId)?.name || agentId,
-    members: roleMembers, catalog: agentId => runtimes[agentId]?.models || [], open: openModal,
-    settings: agentId => {
-      const session = detail?.sessions.find(item => item.agent_id === agentId);
-      return { model: session?.model || null, effort: session?.reasoning_effort || null };
-    },
-    initial: workflowRoles(workflow.roles), title: '调整暂停协作的阶段设置', submitLabel: '保存阶段设置',
-    note: '可修改各阶段的成员、模型与思考强度。已生成的规划会保留，不会重新调用规划模型；继续时还可以为未完成任务逐项选择执行者和模型。',
-  });
-  if (!roles) return;
-  try {
-    adoptProject(await invoke<Workflow>('update_paused_project_roles', { workflowId: id, roles }));
-    toast('阶段设置已保存；继续时可再逐项调整未完成任务');
-  } catch (error) { toast(errorText(error), true); }
 }
 
 // 共享开关按项目范围生效：同一个项目在其他房间显示同一标记，不同项目之间互不覆盖。
@@ -1125,14 +1139,17 @@ function renderProjectAgentRoom(agentId: string) {
   const chat = projectChatFor(agentId);
   if (!chat) return;
   const workflow = currentWorkflow();
-  main.innerHTML = `<header class="chat-header project-agent-room-header"><div class="chat-heading">${avatar(agent)}<div><h1>${escape(agent.name)} · 项目专属会话</h1><p>${escape(detail.project?.name || detail.conversation.title)} · 独立上下文与原生会话</p></div></div><div class="header-actions"><span id="project-agent-connection" class="connection-badge"><span class="status-dot muted"></span>未连接</span><button id="connect-project-agent" class="secondary">连接 ${escape(agent.name)}</button><button id="project-team-return" class="secondary">返回团队对话</button></div></header><section class="project-agent-room-body"><div class="project-agent-room-activity" id="project-agent-activity">${workflow ? projectAgentActivity(workflow, agentId, escape, id => member(id).name, (id, value) => runtimes[id]?.models.find(item => item.id === value)?.name || value || '沿用本机默认', id => avatar(member(id), 'project-agent-avatar')) : '<section class="project-agent-activity"><header><div><strong>项目执行记录</strong><small>该 Agent 在当前项目中的思考、工具和输出</small></div></header><div class="agent-task-log"><p class="team-feed-empty">需求发到团队对话后，这里会记录该 Agent 的执行过程。</p></div></section>'}</div><div class="project-agent-chat" data-project-chat-id="${escape(chat.conversation_id)}" data-project-chat-agent="${escape(agentId)}"><p class="team-feed-empty">正在载入项目专属会话…</p></div></section>`;
+  main.innerHTML = `<header class="chat-header project-agent-room-header"><div class="chat-heading">${avatar(agent)}<div><h1>${escape(agent.name)} · 项目专属会话</h1><p>${escape(detail.project?.name || detail.conversation.title)} · 独立上下文与原生会话</p></div></div><div class="header-actions"><span id="project-agent-connection" class="connection-badge"><span class="status-dot muted"></span>未连接</span><button id="connect-project-agent" class="secondary">连接 ${escape(agent.name)}</button><button id="project-team-return" class="secondary">返回团队对话</button></div></header><section class="project-agent-room-body"><details class="project-agent-room-activity" data-project-history><summary class="project-agent-history-summary"><span>项目执行记录</span><small data-project-history-status>展开查看思考、工具与完整输出</small></summary><div id="project-agent-activity">${workflow ? projectAgentActivity(workflow, agentId, escape, id => member(id).name, (id, value) => runtimes[id]?.models.find(item => item.id === value)?.name || value || '沿用本机默认', id => avatar(member(id), 'project-agent-avatar')) : '<section class="project-agent-activity"><header><div><strong>项目执行记录</strong><small>该 Agent 在当前项目中的思考、工具和输出</small></div></header><div class="agent-task-log"><p class="team-feed-empty">需求发到团队对话后，这里会记录该 Agent 的执行过程。</p></div></section>'}</div></details><div class="project-agent-chat" data-project-chat-id="${escape(chat.conversation_id)}" data-project-chat-agent="${escape(agentId)}"><p class="team-feed-empty">正在载入项目专属会话…</p></div></section>`;
   main.querySelector('#project-team-return')?.addEventListener('click', () => void selectProjectModule(detail!.conversation.id, 'team'));
+  main.querySelector<HTMLDetailsElement>('[data-project-history]')?.querySelector('summary')?.addEventListener('click', () => {
+    requestAnimationFrame(() => { const history = main.querySelector<HTMLDetailsElement>('[data-project-history]'); if (history) history.dataset.userOpen = String(history.open); });
+  });
   main.querySelector('#connect-project-agent')?.addEventListener('click', () => void connectAgent(agentId));
   main.querySelector('#project-agent-activity')?.addEventListener('click', event => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-stop-project-agent]');
     if (!button || !currentWorkflow()) return;
     button.disabled = true;
-    void invoke<Workflow>('cancel_project_agent', { workflowId: currentWorkflow()!.id, agentId: button.dataset.stopProjectAgent })
+    void invoke<Workflow>('cancel_project_agent', { workflowId: button.dataset.stopProjectWorkflow || currentWorkflow()!.id, agentId: button.dataset.stopProjectAgent })
       .then(adoptProject)
       .catch(error => { button.disabled = false; toast(errorText(error), true); });
   });
@@ -1156,7 +1173,7 @@ function renderConversationChat() {
   const name = directAgent?.name || ''; 
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : `<span class="avatar group-avatar">${icon('group')}</span>`}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout"><section class="chat-content"><div class="milestone-note"><span class="note-mark">07</span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}</div>
-      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button id="project-roles" type="button" class="secondary" hidden>配置协作阶段</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
+      <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.map(renderMessage).join('')}` : `<div class="welcome"><div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div><span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
       <form id="composer" class="composer"><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · ${key === 'hermes' ? '仅聊天' : '只读对话'}` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : detail.project ? 'Enter 发送给项目组 · Shift + Enter 换行' : 'Enter 开始群聊 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary" hidden>停止回复</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
@@ -1164,7 +1181,6 @@ function renderConversationChat() {
     </section><aside class="members-panel"><div class="panel-title"><span>会话成员</span>${conversation.kind === 'group' ? `<button class="text-button" id="edit-members">管理</button>` : ''}</div><div class="member-list">${roster.map(agent => `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small><span class="status-dot muted"></span>待接入 · ${escape(agent.location)}</small></div></div>`).join('')}</div><div class="workspace-note"><span class="eyebrow">会话边界</span><h3>各自的上下文<br>共同的讨论空间</h3><p>每位成员使用独立的会话映射。加入群聊不会合并已有私聊。</p>${conversation.kind === 'group' ? `<div class="tiny-rule"></div><p>阿尔比恩可以受邀参加，也保留与你单独交流的空间。</p>` : ''}</div><div class="phase-progress"><span>第一步 · 桌面与会话</span><div><i></i><i></i><i></i><i></i></div><small>接下来：开发摘要与更新管理</small></div></aside></div>`;
   renderDiscussionControls();
   main.querySelector('#bind-project')?.addEventListener('click', () => void showProjectBinding());
-  main.querySelector('#project-roles')?.addEventListener('click', () => void editProjectRoles());
   main.querySelector('#connect-project-members')?.addEventListener('click', () => void connectProjectMembers());
   main.querySelector('#share-project-summary')?.addEventListener('click', () => void toggleProjectSummary());
   main.querySelector('#cancel-discussion')?.addEventListener('click', () => void cancelDiscussion());
@@ -1309,6 +1325,8 @@ function renderLiveSettings(force = false) {
   const host = main.querySelector<HTMLDivElement>('#live-settings');
   if (!host || !detail) return;
   const conversation = detail.conversation;
+  if (conversation.kind === 'group' && detail.project) { host.hidden = true; host.innerHTML = ''; return; }
+  host.hidden = false;
   const autoProjectSetting = conversation.kind === 'group' && !!detail.project;
   if (!conversation.members.includes(settingsAgentId)) settingsAgentId = conversation.members[0];
   const autoProjectModel = autoProjectSetting && settingsAgentId === 'codex-win';
@@ -1370,7 +1388,8 @@ function renderLiveSettings(force = false) {
   });
   providerSelect?.addEventListener('change', () => {
     liveProviderSelection[providerKey] = providerSelect.value;
-    model.innerHTML = modelOptionsHtml(catalog, providerSelect.value, null, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`);
+    const next = modelProviders(catalog).find(provider => provider.id === providerSelect.value)?.models[0];
+    model.innerHTML = modelOptionsHtml(catalog, providerSelect.value, next?.id || null, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`);
     const available = catalog.find(item => item.id === model.value)?.efforts || Object.keys(effortLabels);
     effort.innerHTML = `<option value="">默认</option>${available.map(value => `<option value="${escape(value)}">${escape(effortLabels[value] || value)}</option>`).join('')}`;
     effort.value = '';
@@ -1806,8 +1825,13 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
           updateRuntimeControls();
           if (screen === 'services' && old.connection !== event.payload.connection) renderServices();
           const active = event.payload.active;
-          if (active && !busySnapshot(event.payload) && detail?.project_agent_chats?.some(chat => chat.conversation_id === active.conversation_id)) {
-            void refreshProjectAgentChat(active.conversation_id);
+          if (active && detail?.project_agent_chats?.some(chat => chat.conversation_id === active.conversation_id)) {
+            const completed = (active.tool_events || []).filter(tool => tool.status !== 'running');
+            const stamp = `${active.id}:${active.status}:${completed.map(tool => `${tool.event_id}:${tool.status}:${tool.output?.length}`).join('|')}`;
+            if ((completed.length || !busySnapshot(event.payload)) && projectChatRefreshStamp[active.conversation_id] !== stamp) {
+              projectChatRefreshStamp[active.conversation_id] = stamp;
+              void refreshProjectAgentChat(active.conversation_id);
+            }
           }
           if (active && !busySnapshot(event.payload) && `${active.id}:${active.status}` !== lastFinalRuns[agentId]) {
             lastFinalRuns[agentId] = `${active.id}:${active.status}`;

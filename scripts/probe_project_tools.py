@@ -13,23 +13,29 @@ import threading
 import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
-EXE=ROOT/'src-tauri/target/debug/local-agent-hub.exe'
+EXE=Path(os.environ.get('AGENT_HUB_EXE', str(ROOT/'release/Agent Hub.exe')))
 
 def fixture(agent='codex-win'):
     base=ROOT/'artifacts'/('project-tools-probe-'+uuid.uuid4().hex[:10]);project=base/'project';data=base/'data'
     project.mkdir(parents=True);data.mkdir();db=data/'hub.db';attempt=str(uuid.uuid4());task=str(uuid.uuid4())
     with sqlite3.connect(db) as connection:
-        connection.executescript('''PRAGMA user_version=11;
+        connection.executescript('''PRAGMA user_version=14;
         CREATE TABLE projects(id TEXT PRIMARY KEY,root TEXT,checks TEXT);
-        CREATE TABLE workflows(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,plan TEXT);
+        CREATE TABLE workflows(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,plan TEXT,conversation_id TEXT,updated_at INTEGER);
         CREATE TABLE project_tasks(id TEXT PRIMARY KEY,files TEXT,worktree TEXT,assigned_agent TEXT);
         CREATE TABLE project_attempts(id TEXT PRIMARY KEY,workflow_id TEXT,task_id TEXT,agent_id TEXT DEFAULT 'codex-win',stage TEXT,status TEXT);
         CREATE TABLE project_leases(workflow_id TEXT PRIMARY KEY,root_key TEXT);
-        CREATE TABLE project_changes(attempt_id TEXT,path TEXT,operation TEXT,before_hash TEXT,after_hash TEXT,PRIMARY KEY(attempt_id,path));''')
+        CREATE TABLE project_changes(attempt_id TEXT,path TEXT,operation TEXT,before_hash TEXT,after_hash TEXT,PRIMARY KEY(attempt_id,path));
+        CREATE TABLE members(conversation_id TEXT,agent_id TEXT);
+        CREATE TABLE conversations(id TEXT PRIMARY KEY,updated_at INTEGER);
+        CREATE TABLE project_agent_messages(id TEXT,workflow_id TEXT,attempt_id TEXT,sender_agent TEXT,recipient_agent TEXT,content TEXT,created_at INTEGER);
+        CREATE TABLE project_team_messages(id TEXT,project_id TEXT,conversation_id TEXT,workflow_id TEXT,attempt_id TEXT,source_message_id TEXT,sender_agent TEXT,recipient_agent TEXT,message_kind TEXT DEFAULT 'agent',content TEXT,created_at INTEGER);''')
         connection.execute('INSERT INTO projects VALUES(?,?,?)',('project',str(project),'[]'))
-        connection.execute('INSERT INTO workflows VALUES(?,?,?,?)',('workflow','project','running',None))
+        connection.execute('INSERT INTO workflows VALUES(?,?,?,?,?,?)',('workflow','project','running',None,'group',0))
+        connection.executemany('INSERT INTO members VALUES(?,?)', [('group', member) for member in ('codex-win','dsh-win','hermes-win')])
+        connection.execute('INSERT INTO conversations VALUES(?,?)', ('group',0))
         connection.execute('INSERT INTO project_tasks(id,files,worktree,assigned_agent) VALUES(?,?,?,?)',(task,json.dumps(['hello.txt','calc.py','src/new.txt','test.py']),None,None))
-        connection.execute('INSERT INTO project_attempts VALUES(?,?,?,?,?,?)',(attempt,'workflow',task,'dsh-win','implement','running'))
+        connection.execute('INSERT INTO project_attempts VALUES(?,?,?,?,?,?)',(attempt,'workflow',task,agent,'implement','running'))
         connection.execute('INSERT INTO project_leases VALUES(?,?)',('workflow',str(project).replace('\\','/').lower().rstrip('/')))
     (project/'test.py').write_text('# authorized project test file',encoding='utf-8')
     return {'base':base,'project':project,'data':data,'db':db,'attempt':attempt,'agent':agent}
@@ -60,7 +66,11 @@ def main():
         if not condition:raise AssertionError(name)
         checks.append(name)
     try:
-        specs=helper.rpc('tools/list',{})['tools'];check('five scoped tools',len(specs)==5)
+        specs=helper.rpc('tools/list',{})['tools'];check('file and collaboration tools use current executable',len(specs)==8)
+        recipient='hermes-win' if context['agent']!='hermes-win' else 'dsh-win'
+        sent=helper.call('hub_message',{'to_agent':recipient,'content':'isolated handoff'});check('direct member message persists',not sent['isError'])
+        published=helper.call('hub_broadcast',{'content':'isolated team update'});check('public broadcast persists',not published['isError'])
+        inbox=helper.call('hub_inbox',{});check('inbox sees public team updates',not inbox['isError'] and len(json.loads(inbox['content'][0]['text'])['team_updates'])==1)
         written=helper.call('hub_write',{'path':'hello.txt','content':'BEFORE','expected_sha256':None});check('create real file',not written['isError'] and (context['project']/'hello.txt').read_text()=='BEFORE')
         read=helper.call('hub_read',{'path':'hello.txt'});contents=json.loads(read['content'][0]['text']);check('read SHA256',len(contents['sha256'])==64)
         wrong=helper.call('hub_write',{'path':'hello.txt','content':'CONFLICT','expected_sha256':None});check('hash conflict blocks overwrite',wrong['isError'] and (context['project']/'hello.txt').read_text()=='BEFORE')

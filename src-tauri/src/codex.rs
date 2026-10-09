@@ -101,6 +101,11 @@ pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToo
             item["toolName"].as_str().unwrap_or("工具调用")
         ),
         "fileChange" => "修改文件".to_owned(),
+        "dynamicToolCall" => item["tool"]
+            .as_str()
+            .or_else(|| item["toolName"].as_str())
+            .unwrap_or("项目工具调用")
+            .to_owned(),
         "webSearch" => format!("网页搜索 · {}", item["query"].as_str().unwrap_or("")),
         _ => format!("Agent 工具 · {kind}"),
     };
@@ -116,16 +121,23 @@ pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToo
                 .unwrap_or_else(|| value.to_string())
         })
         .map(|text| text.chars().take(8000).collect());
-    let output = ["aggregatedOutput", "output", "result", "text"]
-        .iter()
-        .find_map(|key| item[*key].as_str())
-        .map(|text| text.chars().take(8000).collect());
+    let output = [
+        "aggregatedOutput",
+        "output",
+        "result",
+        "text",
+        "contentItems",
+    ]
+    .iter()
+    .find_map(|key| tool_content_text(&item[*key]))
+    .map(|text| text.chars().take(8000).collect());
     let status = if !completed {
         "running"
     } else if item["status"]
         .as_str()
         .is_some_and(|status| status == "failed" || status == "error")
         || item["exitCode"].as_i64().is_some_and(|code| code != 0)
+        || item["success"] == false
     {
         "failed"
     } else {
@@ -140,6 +152,27 @@ pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToo
         status: status.into(),
         created_at: crate::store::now(),
     })
+}
+
+fn tool_content_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    let blocks = value
+        .as_array()
+        .or_else(|| value.get("content")?.as_array())
+        .or_else(|| value.get("contentItems")?.as_array())?;
+    let text = blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("text")
+                .and_then(Value::as_str)
+                .or_else(|| block.get("content")?.get("text")?.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
     let update_kind = update["sessionUpdate"].as_str()?;
@@ -174,21 +207,33 @@ pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
     };
     let input = ["rawInput", "input", "arguments"]
         .iter()
-        .find_map(|key| call.get(*key))
+        .find_map(|key| call.get(*key).filter(|value| !value.is_null()))
         .map(value_text)
         .map(|text| text.chars().take(8000).collect());
     let output = ["rawOutput", "output", "result"]
         .iter()
-        .find_map(|key| call.get(*key))
+        .find_map(|key| call.get(*key).filter(|value| !value.is_null()))
         .map(value_text)
+        .or_else(|| {
+            call.get("content")?
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|block| {
+                            block
+                                .get("content")
+                                .unwrap_or(block)
+                                .get("text")
+                                .and_then(Value::as_str)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|text| !text.is_empty())
+        })
         .map(|text| text.chars().take(8000).collect());
-    let status = match call["status"]
-        .as_str()
-        .unwrap_or(if update_kind == "tool_call" {
-            "running"
-        } else {
-            "completed"
-        }) {
+    let status = match call["status"].as_str().unwrap_or("running") {
         "failed" | "error" => "failed",
         "completed" | "success" => "completed",
         _ => "running",
@@ -204,17 +249,34 @@ pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
     })
 }
 fn remember_tool_event(run: &mut ActiveRun, event: RunToolEvent, store: &Arc<Mutex<Store>>) {
-    upsert_tool_event(&mut run.snapshot.tool_events, &event);
+    let event = upsert_tool_event(&mut run.snapshot.tool_events, &event);
     let _ = store
         .lock()
         .unwrap()
         .append_tool_event(&run.snapshot.record, &event);
 }
-pub(crate) fn upsert_tool_event(events: &mut Vec<RunToolEvent>, event: &RunToolEvent) {
+pub(crate) fn upsert_tool_event(
+    events: &mut Vec<RunToolEvent>,
+    event: &RunToolEvent,
+) -> RunToolEvent {
     if let Some(existing) = events.iter_mut().find(|old| old.event_id == event.event_id) {
-        *existing = event.clone();
+        if event.kind != "tool" {
+            existing.kind = event.kind.clone();
+        }
+        if event.title != "tool" {
+            existing.title = event.title.clone();
+        }
+        if event.input.is_some() {
+            existing.input = event.input.clone();
+        }
+        if event.output.is_some() {
+            existing.output = event.output.clone();
+        }
+        existing.status = event.status.clone();
+        existing.clone()
     } else {
         events.push(event.clone());
+        event.clone()
     }
 }
 fn apply_reasoning_delta(run: &mut ActiveRun, method: &str, params: &Value) -> bool {
@@ -527,7 +589,7 @@ impl Runtime {
             {
                 self.inner.lock().unwrap().client = Some(client.clone());
             }
-            client.rpc("initialize", json!({"clientInfo":{"name":"personal_agent_hub","title":"同席 Agent Hub","version":env!("CARGO_PKG_VERSION")}}))?;
+            client.rpc("initialize", json!({"clientInfo":{"name":"personal_agent_hub","title":"同席 Agent Hub","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
             client.write(&json!({"method":"initialized","params":{}}))?;
             let mut models = Vec::new();
             let mut cursor = Value::Null;
@@ -740,7 +802,7 @@ impl Runtime {
         let project_db = self.store.lock().unwrap().path.clone();
         let project_tools =
             crate::project_tools::project_chat_dynamic_tools(&project_db, &conversation_id)?;
-        if !project_tools.is_empty() {
+        if previous.is_none() && !project_tools.is_empty() {
             params["dynamicTools"] = json!(project_tools);
         }
         let (model, effort) = {
@@ -924,15 +986,12 @@ impl Runtime {
                 record.native_turn_id.clone().unwrap_or_default(),
             )
         };
-        if params["tool"].as_str() != Some("hub_broadcast") {
-            return Some(Err("此项目私聊只开放团队分享工具".into()));
-        }
         let _ = (thread_id, turn_id);
-        let content = params["arguments"]["content"].as_str().unwrap_or("");
-        let result = crate::project_tools::broadcast_from_project_chat(
+        let result = crate::project_tools::call_from_project_chat(
             &self.store.lock().unwrap().path,
             &conversation_id,
-            content,
+            params["tool"].as_str().unwrap_or(""),
+            params["arguments"].clone(),
         );
         Some(result.map(|value| json!({"contentItems":[{"type":"inputText","text":value.to_string()}],"success":true})))
     }
@@ -1004,8 +1063,12 @@ impl Runtime {
                 }
                 .into();
                 if run.snapshot.record.status == "failed" {
-                    run.snapshot.record.error =
-                        Some("Codex 原生运行失败，请检查本机模型连接；可以发送新消息重试".into());
+                    let category =
+                        crate::project_native::failure_category(&params["turn"]["error"])
+                            .unwrap_or_else(|| "原生执行失败".into());
+                    run.snapshot.record.error = Some(format!(
+                        "Codex {category}，已保留会话记录，可调整当前模型后重试"
+                    ));
                 }
                 final_event = true;
             }
@@ -1141,6 +1204,21 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sparse_acp_tool_updates_preserve_identity_input_and_capture_content_output() {
+        let started = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"one","kind":"execute","title":"python check.py","rawInput":{"command":"python check.py"},"status":"in_progress"})).unwrap();
+        let mut events = vec![];
+        super::upsert_tool_event(&mut events, &started);
+        let finished = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"one","status":"completed","content":[{"type":"content","content":{"type":"text","text":"3 assertions passed"}}]})).unwrap();
+        let merged = super::upsert_tool_event(&mut events, &finished);
+        assert_eq!(events.len(), 1);
+        assert_eq!(merged.title, "python check.py");
+        assert_eq!(merged.kind, "execute");
+        assert!(merged.input.unwrap().contains("python check.py"));
+        assert_eq!(merged.output.as_deref(), Some("3 assertions passed"));
+        assert_eq!(merged.status, "completed");
+        assert_eq!(merged.created_at, started.created_at);
+    }
     use super::*;
     fn active() -> ActiveRun {
         ActiveRun {

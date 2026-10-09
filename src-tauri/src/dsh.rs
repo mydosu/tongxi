@@ -637,7 +637,7 @@ impl Runtime {
         };
         let update = &params["update"];
         if let Some(event) = crate::codex::acp_tool_event(update) {
-            crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+            let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);
             let _ = self
                 .store
                 .lock()
