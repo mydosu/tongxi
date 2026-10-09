@@ -393,6 +393,7 @@ pub struct Change {
 #[derive(Clone, Debug, Serialize)]
 pub struct Attempt {
     pub id: String,
+    pub created_at: i64,
     pub workflow_id: String,
     pub task_id: Option<String>,
     pub agent_id: String,
@@ -1872,11 +1873,12 @@ impl Store {
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
-        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error,created_at FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
         let result = stmt
             .query_map([workflow], |r| {
                 Ok(Attempt {
                     id: r.get(0)?,
+                    created_at: r.get(13)?,
                     workflow_id: r.get(1)?,
                     task_id: r.get(2)?,
                     agent_id: r.get(3)?,

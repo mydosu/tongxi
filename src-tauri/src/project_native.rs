@@ -710,6 +710,7 @@ mod tests {
         Wire {
             attempt: Attempt {
                 id: "test".into(),
+                created_at: 1,
                 workflow_id: "workflow".into(),
                 task_id: None,
                 agent_id: "codex-win".into(),

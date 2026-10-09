@@ -1074,6 +1074,7 @@ mod tests {
     fn attempt(agent: &str, stage: &str, status: &str) -> crate::project_store::Attempt {
         crate::project_store::Attempt {
             id: format!("attempt-{agent}-{stage}"),
+            created_at: 1,
             workflow_id: "workflow".to_string(),
             task_id: None,
             agent_id: agent.to_string(),

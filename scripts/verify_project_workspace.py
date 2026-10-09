@@ -208,7 +208,7 @@ def private_tools(page, room):
     hermes_chat = next(c['conversation_id'] for c in detail['project_agent_chats'] if c['agent_id'] == 'hermes-win')
     received = desktop.ipc(page, 'get_conversation', id=hermes_chat)['project_agent_inbox']
     check('专属会话可直接发送给其他 Agent，并持久化到其收件箱', any(direct in message['content'] and message['sender_agent'] == 'codex-win' for message in received))
-    expect(page.locator('.project-agent-peer-inbox')).to_be_visible()
+    expect(page.locator('[data-agent-direct-message-id]').first).to_be_attached()
     hermes_session = desktop.ipc(page, 'get_conversation', id=hermes_chat)['sessions'][0]
     role = {'model': hermes_session['model'], 'effort': hermes_session['reasoning_effort']}
     provider = next(m['provider_id'] for m in desktop.ipc(page, 'hermes_status')['models'] if m['id'] == role['model'])
@@ -249,6 +249,48 @@ def hermes_receipt(page, room):
     select_agent(page, 'hermes-win')
     page.screenshot(path=str(ROOT / 'artifacts/live-project-hermes-inbox.png'))
     evidence['hermes_receipt'] = {'model': receipt['model'], 'run': receipt['id'], 'tools': len(receipt.get('tool_events', []))}
+
+
+def live_display(page, room):
+    select_agent(page, 'dsh-win')
+    status = desktop.ipc(page, 'dsh_status')
+    model = next(m for m in status['models'] if m.get('provider_id') == 'command-code-daily')
+    if page.locator('[data-project-chat-provider]').count(): page.select_option('[data-project-chat-provider]', model['provider_id'])
+    page.select_option('[data-project-chat-model]', model['id'])
+    page.select_option('[data-project-chat-effort]', 'high')
+    page.wait_for_timeout(300)
+    chat = next(c['conversation_id'] for c in desktop.ipc(page, 'get_conversation', id=room)['project_agent_chats'] if c['agent_id'] == 'dsh-win')
+    previous = status.get('active')
+    page.fill('[data-project-agent-chat-input]', '本轮隔离验收：实际读取 calc.py、cube.py、quad.py 和 check.py。运行 check.py，并另外用命令验证平方/立方/四次方对负整数、零、小数的结果与返回类型，共9例；检查有无副作用。只读，不修改文件、不广播。用中文简短报告实际结果和工具。')
+    page.locator('[data-project-agent-chat-input]').press('Enter')
+    samples=set(); captured=False; deadline=time.monotonic()+480
+    while time.monotonic()<deadline:
+        active=desktop.ipc(page, 'dsh_status').get('active')
+        if active and active['conversation_id']==chat and active['id'] != (previous['id'] if previous else None):
+            if active.get('thought'): samples.add(len(active['thought']))
+            if active['status'] in ('starting','running') and active.get('thought') and not captured:
+                page.screenshot(path=str(ROOT/'artifacts/live-agent-transcript-stream.png'));captured=True
+            if active['status'] not in ('starting','running','cancelling'):
+                check('DSH 原生文件和命令验证完成', active['status']=='completed' and bool(active.get('tool_events')))
+                break
+        page.wait_for_timeout(250)
+    else: raise TimeoutError('DSH 会话显示验收超时')
+    project=desktop.ipc(page, 'get_conversation', id=room)['project']
+    result=subprocess.run(['python','-B','-c','from calc import square; from cube import cube; from quad import quad;\nfor fn,power in [(square,2),(cube,3),(quad,4)]:\n for value in [-2,0,2.5]:\n  answer=fn(value); assert answer==value**power; assert type(answer)==type(value)'],cwd=project['root'],capture_output=True,timeout=20)
+    check('外部独立验证9个数值与返回类型用例通过', result.returncode==0)
+    check('思考在原生运行结束之前显示', bool(samples) and captured)
+    check('项目与私聊输出位于同一个滚动区', page.locator('.project-agent-chat-messages').count()==1 and page.locator('.project-agent-chat-messages [data-attempt-id]').count()>0 and page.locator('.project-agent-chat-messages [data-message-id]').count()>0)
+    check('专属页不再有独立执行记录框或回复气泡', not page.locator('[data-project-history],.project-agent-room-activity,.bubble').count())
+    check('完成的思考默认收起且正文保留', not page.locator(f'[data-message-id="{active["assistant_message_id"]}"] .thought').evaluate('node=>node.open') and bool(active['text']))
+    page.wait_for_function("() => {const n=document.querySelector('.project-agent-chat-messages');return n && n.scrollHeight-n.scrollTop-n.clientHeight<3 && n.querySelector('.agent-jump-latest').hidden;}", timeout=5000)
+    check('正文流式增长和思考收起后仍自动跟随最新', True)
+    page.screenshot(path=str(ROOT/'artifacts/live-agent-transcript-complete.png'))
+    page.set_viewport_size({'width':980,'height':760})
+    page.wait_for_timeout(150)
+    composer=page.locator('[data-project-agent-chat-form]').bounding_box()
+    check('窄窗口没有横向溢出且输入框可见', page.evaluate('document.documentElement.scrollWidth <= innerWidth') and composer and composer['y']+composer['height'] <= page.evaluate('innerHeight'))
+    page.screenshot(path=str(ROOT/'artifacts/live-agent-transcript-narrow.png'))
+    evidence['display']={'model':active['model'],'stream_samples':len(samples),'tools':len(active.get('tool_events',[]))}
 
 
 def automatic_round(page, room):
@@ -342,6 +384,8 @@ def run(only):
                 if only == 'all': automatic_round(page, room)
             if only in ('all', 'private'):
                 private_tools(page, room)
+            if only == 'display':
+                live_display(page, room)
             if only == 'hermes':
                 hermes_receipt(page, room)
             if only in ('all', 'pause'):
@@ -358,5 +402,5 @@ def run(only):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--only', choices=['all', 'resume', 'private', 'hermes', 'pause'], default='all')
+    parser.add_argument('--only', choices=['all', 'resume', 'private', 'hermes', 'pause', 'display'], default='all')
     run(parser.parse_args().only)
