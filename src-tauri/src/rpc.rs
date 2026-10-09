@@ -11,6 +11,55 @@ type Result<T> = std::result::Result<T, String>;
 type Pending = HashMap<u64, mpsc::Sender<Result<Value>>>;
 type RequestHandler = Arc<dyn Fn(&str, &Value) -> Option<Result<Value>> + Send + Sync>;
 
+fn native_error_summary(error: &Value) -> String {
+    // Use only fixed categories. Native messages/data may contain credentials or configuration.
+    let text = error.to_string().to_lowercase();
+    let contains = |terms: &[&str]| terms.iter().any(|term| text.contains(term));
+    let category = if contains(&[
+        "429",
+        "rate limit",
+        "rate-limit",
+        "rate_limit",
+        "too many requests",
+    ]) {
+        "模型服务限流，请稍后继续当前任务"
+    } else if contains(&[
+        "402",
+        "insufficient",
+        "quota exceeded",
+        "billing",
+        "usage limit",
+    ]) {
+        "模型服务额度不足，请检查当前会话选定的提供商"
+    } else if contains(&["401", "unauthorized", "invalid api key", "authentication"]) {
+        "模型服务认证失败，请检查当前提供商的登录或认证"
+    } else if contains(&[
+        "fetch failed",
+        "econnreset",
+        "etimedout",
+        "connection refused",
+        "network error",
+    ]) {
+        "原生成员与模型服务的连接失败，可保留原方案后重试"
+    } else if contains(&["unknown tool", "tool not found", "tool is not registered"]) {
+        "原生成员调用了不可用的工具，已保留现有执行记录"
+    } else if contains(&[
+        "context length",
+        "maximum context",
+        "max_tokens",
+        "invalid request",
+        "400",
+    ]) {
+        "模型服务拒绝了请求参数，请检查当前模型与上下文设置"
+    } else {
+        "原生成员执行失败，已保留现有记录，可继续当前协作"
+    };
+    format!(
+        "{category}（协议代码 {}）",
+        error["code"].as_i64().unwrap_or(-1)
+    )
+}
+
 pub struct Client {
     child: Mutex<Child>,
     writer: Mutex<Option<ChildStdin>>,
@@ -130,10 +179,7 @@ impl Client {
                     if let Some(sender) = sender {
                         let result = if value.get("error").is_some() {
                             // Do not expose raw native errors: they may include configuration.
-                            Err(format!(
-                                "原生 agent 请求失败（协议代码 {}），请检查本机连接和登录状态",
-                                value["error"]["code"].as_i64().unwrap_or(-1)
-                            ))
+                            Err(native_error_summary(&value["error"]))
                         } else {
                             Ok(value["result"].clone())
                         };
@@ -211,6 +257,22 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_errors_expose_only_a_safe_category_and_protocol_code() {
+        let secret = "PRIVATE_NATIVE_TOKEN_DO_NOT_EXPOSE";
+        let limited =
+            native_error_summary(&json!({"code":-32603,"message":format!("HTTP 429 {secret}")}));
+        assert!(limited.contains("限流"));
+        assert!(!limited.contains(secret));
+        let unknown = native_error_summary(&json!({"code":-32603,"message":secret}));
+        assert!(unknown.contains("执行失败"));
+        assert!(!unknown.contains("登录"));
+        assert!(!unknown.contains(secret));
+        assert!(
+            native_error_summary(&json!({"code":-32603,"message":"fetch failed"}))
+                .contains("连接失败")
+        );
+    }
     #[test]
     fn project_request_callback_can_use_nested_rpc_without_blocking_reader() {
         let mut command = Command::new("python");

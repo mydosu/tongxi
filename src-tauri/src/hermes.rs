@@ -432,9 +432,7 @@ impl Runtime {
             .as_ref()
             .cloned()
             .or_else(|| self.inner.lock().unwrap().default_model.clone());
-        if let Some(model_id) = selected_model
-            .filter(|model| response["models"]["currentModelId"].as_str() != Some(model.as_str()))
-        {
+        if let Some(model_id) = selected_model.as_ref() {
             client.rpc(
                 "session/set_model",
                 json!({"sessionId":session_id,"modelId":model_id}),
@@ -467,7 +465,11 @@ impl Runtime {
             };
             self.store.lock().unwrap().record_model(
                 &mut run.record,
-                applied["model"].as_str().map(String::from),
+                applied["modelId"]
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| selected_model.clone())
+                    .or_else(|| applied["model"].as_str().map(String::from)),
                 effort,
             )?;
         }
@@ -538,7 +540,7 @@ impl Runtime {
         };
         let update = &params["update"];
         if let Some(event) = crate::codex::acp_tool_event(update) {
-            crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+            let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);
             let _ = self
                 .store
                 .lock()

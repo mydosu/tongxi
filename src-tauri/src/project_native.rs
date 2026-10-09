@@ -39,7 +39,7 @@ struct Wire {
 
 /// Only protocol enum variants and a bounded HTTP status may reach the UI.
 /// Upstream messages/additionalDetails can contain configuration or credentials.
-fn failure_category(error: &Value) -> Option<String> {
+pub(crate) fn failure_category(error: &Value) -> Option<String> {
     let info = &error["codexErrorInfo"];
     if info.is_null() {
         return None;
@@ -654,9 +654,7 @@ impl Runner {
                 )?;
             }
         } else {
-            if let Some(model) = attempt.model.as_ref().filter(|model| {
-                response["models"]["currentModelId"].as_str() != Some(model.as_str())
-            }) {
+            if let Some(model) = attempt.model.as_ref() {
                 client.rpc(
                     "session/set_model",
                     json!({"sessionId":session,"modelId":model}),

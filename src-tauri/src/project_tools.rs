@@ -162,7 +162,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 13 {
+        if version != 14 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -304,7 +304,7 @@ impl Broker {
                 let mut statement = tx
                     .prepare("SELECT id,sender_agent,content,created_at FROM project_agent_messages WHERE workflow_id=?1 AND recipient_agent=?2 ORDER BY created_at,id LIMIT 100")
                     .map_err(|_| "项目消息收件箱读取失败")?;
-                let messages = statement
+                let mut messages = statement
                     .query_map(params![scope.workflow_id,scope.agent_id], |row| {
                         Ok(json!({"id":row.get::<_,String>(0)?,"from_agent":row.get::<_,String>(1)?,"content":row.get::<_,String>(2)?,"created_at":row.get::<_,i64>(3)?}))
                     })
@@ -312,7 +312,10 @@ impl Broker {
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(|_| "项目消息收件箱读取失败")?;
                 drop(statement);
-                let mut statement = tx.prepare("SELECT id,message_kind,sender_agent,content,created_at FROM project_team_messages WHERE conversation_id=?1 ORDER BY created_at DESC,id DESC LIMIT 100")
+                let mut private = tx.prepare("SELECT id,sender_agent,content,created_at FROM project_team_messages WHERE conversation_id=?1 AND recipient_agent=?2 ORDER BY created_at,id LIMIT 100").map_err(|_| "成员消息读取失败")?;
+                messages.extend(private.query_map(params![scope.conversation_id,scope.agent_id], |row| Ok(json!({"id":row.get::<_,String>(0)?,"from_agent":row.get::<_,String>(1)?,"content":row.get::<_,String>(2)?,"created_at":row.get::<_,i64>(3)?}))).map_err(|_| "成员消息读取失败")?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_| "成员消息读取失败")?);
+                drop(private);
+                let mut statement = tx.prepare("SELECT id,message_kind,sender_agent,content,created_at FROM project_team_messages WHERE conversation_id=?1 AND recipient_agent IS NULL ORDER BY created_at DESC,id DESC LIMIT 100")
                     .map_err(|_| "团队消息读取失败")?;
                 let team_updates = statement.query_map([&scope.conversation_id], |row| Ok(json!({
                     "id":row.get::<_,String>(0)?,"kind":row.get::<_,String>(1)?,"from_agent":row.get::<_,Option<String>>(2)?,
@@ -522,26 +525,136 @@ pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Ve
     if server.is_none() {
         return Ok(Vec::new());
     }
-    let mut tool = tool_specs()
+    Ok(project_chat_tool_specs()
         .into_iter()
-        .find(|tool| tool["name"] == "hub_broadcast")
-        .ok_or("项目团队消息工具不可用")?;
-    tool["type"] = json!("function");
-    tool["deferLoading"] = json!(false);
-    Ok(vec![tool])
+        .map(|mut tool| {
+            tool["type"] = json!("function");
+            tool["deferLoading"] = json!(false);
+            tool
+        })
+        .collect())
 }
 
-pub fn broadcast_from_project_chat(
+fn project_chat_tool_specs() -> Vec<Value> {
+    tool_specs()
+        .into_iter()
+        .filter(|tool| {
+            matches!(
+                tool["name"].as_str(),
+                Some("hub_message" | "hub_inbox" | "hub_broadcast")
+            )
+        })
+        .collect()
+}
+
+fn chat_context(
+    connection: &Connection,
+    conversation_id: &str,
+) -> Result<(String, String, String)> {
+    let context: (String,String,String) = connection.query_row("SELECT project_id,group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1", [conversation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|_| "项目会话归属读取失败")?.ok_or("这不是项目内 Agent 会话")?;
+    let allowed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM members m JOIN conversations c ON c.id=m.conversation_id JOIN conversation_projects p ON p.conversation_id=c.id WHERE m.conversation_id=?1 AND m.agent_id=?2 AND p.project_id=?3 AND c.archived=0)", params![context.1,context.2,context.0], |row| row.get(0)).map_err(|_| "项目成员归属校验失败")?;
+    if !allowed {
+        return Err("该项目会话已归档、解除绑定或成员已退出".into());
+    }
+    Ok(context)
+}
+
+fn chat_tool(
+    connection: &Connection,
+    conversation_id: &str,
+    name: &str,
+    args: Value,
+) -> Result<Value> {
+    let (project, group, agent) = chat_context(connection, conversation_id)?;
+    match name {
+        "hub_broadcast" => {
+            let arg: BroadcastArg = serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
+            chat_broadcast(connection, conversation_id, &arg.content)
+        }
+        "hub_message" => {
+            let arg: AgentMessageArg =
+                serde_json::from_value(args).map_err(|_| "成员消息参数无效")?;
+            let recipient = arg.to_agent.trim();
+            let content = arg.content.trim();
+            if !EXECUTOR_AGENTS.contains(&recipient)
+                || recipient == agent
+                || content.is_empty()
+                || content.chars().count() > 4000
+                || content
+                    .chars()
+                    .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+            {
+                return Err("收件成员或消息内容无效".into());
+            }
+            let belongs: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM members WHERE conversation_id=?1 AND agent_id=?2)",
+                    params![group, recipient],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "收件成员校验失败")?;
+            if !belongs {
+                return Err("收件 Agent 不属于当前项目群".into());
+            }
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM project_team_messages WHERE conversation_id=?1",
+                    [&group],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "成员消息计数失败")?;
+            if count >= 500 {
+                return Err("项目消息已达到500条上限".into());
+            }
+            let id = Uuid::new_v4().to_string();
+            connection.execute("INSERT INTO project_team_messages(id,project_id,conversation_id,sender_agent,recipient_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'agent',?6,?7)", params![id,project,group,agent,recipient,content,crate::store::now()]).map_err(|_| "成员消息保存失败")?;
+            Ok(json!({"sent":true,"message_id":id,"to_agent":recipient,"audience":"project_agent"}))
+        }
+        "hub_inbox" => {
+            if args != json!({}) {
+                return Err("hub_inbox 不接收参数".into());
+            }
+            let mut query = connection.prepare("SELECT id,sender_agent,content,created_at FROM project_team_messages WHERE conversation_id=?1 AND recipient_agent=?2 UNION ALL SELECT m.id,m.sender_agent,m.content,m.created_at FROM project_agent_messages m JOIN workflows w ON w.id=m.workflow_id WHERE w.conversation_id=?1 AND m.recipient_agent=?2 ORDER BY created_at,id LIMIT 100").map_err(|_| "成员收件箱不可用")?;
+            let messages = query.query_map(params![group,agent], |row| Ok(json!({"id":row.get::<_,String>(0)?,"from_agent":row.get::<_,String>(1)?,"content":row.get::<_,String>(2)?,"created_at":row.get::<_,i64>(3)?}))).map_err(|_| "成员收件箱读取失败")?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_| "成员收件箱读取失败")?;
+            let mut query = connection.prepare("SELECT id,sender_agent,message_kind,content,created_at FROM project_team_messages WHERE conversation_id=?1 AND recipient_agent IS NULL ORDER BY created_at DESC,id DESC LIMIT 100").map_err(|_| "团队消息不可用")?;
+            let updates = query.query_map([&group], |row| Ok(json!({"id":row.get::<_,String>(0)?,"from_agent":row.get::<_,Option<String>>(1)?,"kind":row.get::<_,String>(2)?,"content":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?}))).map_err(|_| "团队消息读取失败")?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_| "团队消息读取失败")?;
+            Ok(
+                json!({"messages":messages,"team_updates":updates.into_iter().rev().collect::<Vec<_>>()}),
+            )
+        }
+        _ => Err("此项目会话不支持该协作工具".into()),
+    }
+}
+
+pub fn call_from_project_chat(
     db: &Path,
     conversation_id: &str,
-    content: &str,
+    name: &str,
+    args: Value,
 ) -> Result<Value> {
     let connection = Connection::open_with_flags(
         db,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|_| "项目消息数据库不可用")?;
-    chat_broadcast(&connection, conversation_id, content)
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|_| "项目消息数据库不可用")?;
+    chat_tool(&connection, conversation_id, name, args)
+}
+
+#[cfg(test)]
+pub fn broadcast_from_project_chat(
+    db: &Path,
+    conversation_id: &str,
+    content: &str,
+) -> Result<Value> {
+    call_from_project_chat(
+        db,
+        conversation_id,
+        "hub_broadcast",
+        json!({"content":content}),
+    )
 }
 
 fn chat_broadcast(connection: &Connection, conversation_id: &str, content: &str) -> Result<Value> {
@@ -554,10 +667,7 @@ fn chat_broadcast(connection: &Connection, conversation_id: &str, content: &str)
     {
         return Err("团队消息需为 1–4000 个有效字符".into());
     }
-    let (project, group, agent): (String,String,String) = connection.query_row(
-        "SELECT project_id,group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
-        [conversation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
-    ).optional().map_err(|_| "项目 Agent 会话映射读取失败")?.ok_or("这不是项目内 Agent 会话")?;
+    let (project, group, agent) = chat_context(connection, conversation_id)?;
     let allowed: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM members WHERE conversation_id=?1 AND agent_id=?2)",
@@ -596,6 +706,9 @@ pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|_| "项目消息数据库不可用")?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|_| "项目消息数据库不可用")?;
     let linked: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE conversation_id=?1)",
@@ -636,15 +749,14 @@ pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
             }
             "ping" => json!({"result":{}}),
             "tools/list" if initialized => {
-                json!({"result":{"tools":[{"name":"hub_broadcast","description":"Post a short, intentional message from your private project session to the shared project team room. Keep reasoning and tool details private.","inputSchema":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"],"additionalProperties":false}}]}})
+                json!({"result":{"tools":project_chat_tool_specs()}})
             }
-            "tools/call" if initialized && value["params"]["name"] == "hub_broadcast" => {
-                match chat_broadcast(
+            "tools/call" if initialized => {
+                match chat_tool(
                     &connection,
                     conversation_id,
-                    value["params"]["arguments"]["content"]
-                        .as_str()
-                        .unwrap_or(""),
+                    value["params"]["name"].as_str().unwrap_or(""),
+                    value["params"]["arguments"].clone(),
                 ) {
                     Ok(result) => {
                         json!({"result":{"content":[{"type":"text","text":result.to_string()}],"isError":false}})
@@ -771,6 +883,65 @@ mod agent_message_tests {
             true
         );
         assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
+        let hermes_chat = chats
+            .iter()
+            .find(|chat| chat.agent_id == "hermes-win")
+            .unwrap();
+        let dsh_chat = chats
+            .iter()
+            .find(|chat| chat.agent_id == "dsh-win")
+            .unwrap();
+        let direct = call_from_project_chat(
+            &store.path,
+            &codex_chat.conversation_id,
+            "hub_message",
+            json!({"to_agent":"hermes-win","content":"只给验收成员的项目消息"}),
+        )
+        .unwrap();
+        assert_eq!(direct["audience"], "project_agent");
+        assert_eq!(
+            project_chat_dynamic_tools(&store.path, &codex_chat.conversation_id)
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .detail(&hermes_chat.conversation_id)
+                .unwrap()
+                .project_agent_inbox
+                .len(),
+            1
+        );
+        assert!(store
+            .detail(&dsh_chat.conversation_id)
+            .unwrap()
+            .project_agent_inbox
+            .is_empty());
+        let inbox = call_from_project_chat(
+            &store.path,
+            &hermes_chat.conversation_id,
+            "hub_inbox",
+            json!({}),
+        )
+        .unwrap();
+        assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(inbox["team_updates"].as_array().unwrap().len(), 1);
+        assert!(call_from_project_chat(
+            &store.path,
+            &codex_chat.conversation_id,
+            "hub_message",
+            json!({"to_agent":"albion-wsl","content":"不能加入项目"})
+        )
+        .is_err());
+        assert!(call_from_project_chat(
+            &store.path,
+            &codex_chat.conversation_id,
+            "hub_message",
+            json!({"to_agent":"codex-win","content":"不能给自己"})
+        )
+        .is_err());
         let (workflow, _) = store
             .start_workflow(&room.id, &Uuid::new_v4().to_string(), "实现一个功能")
             .unwrap();

@@ -205,10 +205,16 @@ impl Runtime {
         }
     }
     fn default_roles_for_room(&self, room: &str) -> Result<Roles> {
-        let detail = self.store.lock().unwrap().detail(room)?;
-        if let Some(roles) = detail.project_roles {
-            return Ok(roles);
-        }
+        let native_defaults = project_store::EXECUTOR_AGENTS
+            .iter()
+            .map(|agent| {
+                let snapshot = self.snapshot(agent);
+                (*agent, (snapshot.default_model, snapshot.default_effort))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut store = self.store.lock().unwrap();
+        let chats = store.ensure_project_agent_chats(room)?;
+        let detail = store.detail(room)?;
         let choose = |preferred: &[&str]| -> Result<crate::project_store::RoleChoice> {
             let agent = preferred
                 .iter()
@@ -220,15 +226,21 @@ impl Runtime {
                         .any(|member| member == **agent)
                 })
                 .ok_or("项目群至少需要一位可执行项目任务的成员")?;
-            let session = detail
+            let chat = chats
+                .iter()
+                .find(|chat| chat.agent_id == *agent)
+                .ok_or("项目成员专属会话不存在")?;
+            let private = store.detail(&chat.conversation_id)?;
+            let session = private
                 .sessions
                 .iter()
                 .find(|session| session.agent_id == *agent)
-                .ok_or("项目群成员会话设置不存在")?;
+                .ok_or("项目成员专属模型设置不存在")?;
+            let native = native_defaults.get(*agent).cloned().unwrap_or_default();
             Ok(crate::project_store::RoleChoice {
                 agent: (*agent).to_owned(),
-                model: session.model.clone(),
-                effort: session.reasoning_effort.clone(),
+                model: session.model.clone().or(native.0),
+                effort: session.reasoning_effort.clone().or(native.1),
             })
         };
         Ok(Roles {
@@ -430,6 +442,37 @@ impl Runtime {
 
     /// 缺省角色的兼容壳：走「规划后立刻按缺省参数确认并执行」的一段式。
     pub fn start(self: &Arc<Self>, room: &str, message: &str, content: &str) -> Result<Workflow> {
+        if Self::resume_directive(content) {
+            let paused = self
+                .store
+                .lock()
+                .unwrap()
+                .workflows(room)?
+                .into_iter()
+                .find(|job| {
+                    matches!(job.status.as_str(), "failed" | "interrupted") && job.plan.is_some()
+                });
+            if let Some(paused) = paused {
+                let old = project_store::roles_of(&paused)?;
+                let mut roles = old.clone();
+                Self::apply_role_directives(content, &mut roles);
+                self.update_paused_roles(&paused.id, &roles)?;
+                {
+                    let mut store = self.store.lock().unwrap();
+                    store.save_message(room, message, content)?;
+                    store
+                        .connection
+                        .execute(
+                            "UPDATE messages SET status='delivered' WHERE id=?1",
+                            [message],
+                        )
+                        .map_err(|_| "继续协作指令保存失败")?;
+                }
+                let executor =
+                    (roles.implement.agent != old.implement.agent).then_some(roles.implement.agent);
+                return self.continue_auto_as(&paused.id, executor.as_deref());
+            }
+        }
         let mut roles = self.default_roles_for_room(room)?;
         Self::apply_role_directives(content, &mut roles);
         roles.validate()?;
@@ -458,6 +501,16 @@ impl Runtime {
             runtime.execute_work(&id, deadline)
         });
         Ok(workflow)
+    }
+
+    fn resume_directive(content: &str) -> bool {
+        let text = content.trim();
+        ["继续协作", "恢复协作", "继续未完成任务", "恢复未完成任务"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+            && !["新增", "添加", "还要", "新目标", "新需求"]
+                .iter()
+                .any(|term| text.contains(term))
     }
 
     /// 两段式第一段：只出方案并保存，状态停在 planning 等用户确认。
@@ -598,8 +651,82 @@ impl Runtime {
         Ok(updated)
     }
 
+    fn continue_auto(self: &Arc<Self>, id: &str) -> Result<Workflow> {
+        self.continue_auto_as(id, None)
+    }
+
+    fn continue_auto_as(self: &Arc<Self>, id: &str, executor: Option<&str>) -> Result<Workflow> {
+        let workflow = self.continue_open(id)?;
+        if workflow.tasks.is_empty() {
+            let mut store = self.store.lock().unwrap();
+            store.finish_workflow(
+                id,
+                "completed",
+                workflow
+                    .plan
+                    .as_ref()
+                    .map(|plan| plan.summary.as_str())
+                    .unwrap_or("协作回复已恢复"),
+                None,
+            )?;
+            let result = store.workflow(id)?;
+            drop(store);
+            (self.notify)(id);
+            return Ok(result);
+        }
+        let choices = {
+            let mut store = self.store.lock().unwrap();
+            let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
+            workflow
+                .tasks
+                .iter()
+                .map(|task| {
+                    let agent = if task.status == "completed" {
+                        task.agent_id.as_str()
+                    } else {
+                        executor.unwrap_or(&task.agent_id)
+                    };
+                    let settings = chats
+                        .iter()
+                        .find(|chat| chat.agent_id == agent)
+                        .map(|chat| store.detail(&chat.conversation_id))
+                        .transpose()?
+                        .and_then(|chat| {
+                            chat.sessions
+                                .into_iter()
+                                .find(|session| session.agent_id == agent)
+                        });
+                    Ok(TaskChoice {
+                        position: task.position,
+                        agent_id: Some(agent.into()),
+                        model: settings
+                            .as_ref()
+                            .and_then(|session| session.model.clone())
+                            .or_else(|| {
+                                (agent == task.agent_id)
+                                    .then(|| task.model.clone())
+                                    .flatten()
+                            }),
+                        effort: settings
+                            .and_then(|session| session.reasoning_effort)
+                            .or_else(|| {
+                                (agent == task.agent_id)
+                                    .then(|| task.effort.clone())
+                                    .flatten()
+                            }),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        self.confirm_open(id, &choices)
+    }
+
     /// 逐任务写入模型/强度覆盖，并把工作流从 planning 提到 running（同步）。
     fn configure(&self, id: &str, tasks: &[TaskChoice]) -> Result<Workflow> {
+        let snapshots = project_store::EXECUTOR_AGENTS
+            .iter()
+            .map(|agent| (*agent, self.snapshot(agent)))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut store = self.store.lock().unwrap();
         let workflow = store.workflow(id)?;
         if workflow.status != "planning" || workflow.plan.is_none() {
@@ -640,7 +767,7 @@ impl Runtime {
             {
                 return Err("每项任务的执行成员必须是当前群中已连接的 Codex、Hermes 或 DSH".into());
             }
-            let snapshot = self.snapshot(agent);
+            let snapshot = snapshots.get(agent).ok_or("任务成员不是可执行的 Agent")?;
             if snapshot.connection != "connected" {
                 return Err(format!("{} 已断开，请重新连接后确认任务", agent));
             }
@@ -656,13 +783,14 @@ impl Runtime {
             confirmed.push((task.id.clone(), agent.to_owned(), choice));
         }
         for (task_id, agent, choice) in confirmed {
+            let previous = store.task(&task_id)?;
             store.set_task_agent(&task_id, &agent)?;
             store.set_task_config(
                 &task_id,
                 choice.model.clone(),
                 choice.effort.clone(),
-                None,
-                None,
+                previous.worktree,
+                previous.branch,
             )?;
         }
         // 只写覆盖并保持 planning：真正的状态提升由后台的 execute_work 调 begin_execution 完成。
@@ -723,14 +851,44 @@ impl Runtime {
                     .map(|_| &roles.implement),
                 _ => return Err("项目运行阶段或成员无效".into()),
             };
+            let private_settings = store
+                .project_agent_chats(&workflow.conversation_id)?
+                .into_iter()
+                .find(|chat| chat.agent_id == agent)
+                .and_then(|chat| store.detail(&chat.conversation_id).ok())
+                .and_then(|chat| {
+                    chat.sessions
+                        .into_iter()
+                        .find(|session| session.agent_id == agent)
+                });
             let manual_model = overrides
                 .as_ref()
                 .and_then(|task| task.model.clone())
-                .or_else(|| role.and_then(|role| role.model.clone()));
+                .or_else(|| {
+                    private_settings
+                        .as_ref()
+                        .and_then(|session| session.model.clone())
+                })
+                .or_else(|| role.and_then(|role| role.model.clone()))
+                .or_else(|| {
+                    private_settings
+                        .as_ref()
+                        .and(snapshot.default_model.clone())
+                });
             let manual_effort = overrides
                 .as_ref()
                 .and_then(|task| task.effort.clone())
-                .or_else(|| role.and_then(|role| role.effort.clone()));
+                .or_else(|| {
+                    private_settings
+                        .as_ref()
+                        .and_then(|session| session.reasoning_effort.clone())
+                })
+                .or_else(|| role.and_then(|role| role.effort.clone()))
+                .or_else(|| {
+                    private_settings
+                        .as_ref()
+                        .and(snapshot.default_effort.clone())
+                });
             let proposal = workflow
                 .tasks
                 .iter()
@@ -1347,8 +1505,16 @@ pub fn confirm_project(
     runtime.inner().confirm_open(&workflow_id, &tasks)
 }
 #[tauri::command]
-pub fn continue_project(runtime: State<'_, Arc<Runtime>>, workflow_id: String) -> Result<Workflow> {
-    runtime.inner().continue_open(&workflow_id)
+pub fn continue_project(
+    runtime: State<'_, Arc<Runtime>>,
+    workflow_id: String,
+    auto_execute: Option<bool>,
+) -> Result<Workflow> {
+    if auto_execute.unwrap_or(false) {
+        runtime.inner().continue_auto(&workflow_id)
+    } else {
+        runtime.inner().continue_open(&workflow_id)
+    }
 }
 #[tauri::command]
 pub fn update_paused_project_roles(
@@ -1404,6 +1570,15 @@ pub fn set_project_summary(
 #[cfg(test)]
 mod role_directive_tests {
     use super::*;
+    #[test]
+    fn explicit_resume_messages_do_not_swallow_a_new_project_goal() {
+        assert!(Runtime::resume_directive(
+            "继续协作，执行改为Hermes，验收交给Codex"
+        ));
+        assert!(Runtime::resume_directive("恢复未完成任务"));
+        assert!(!Runtime::resume_directive("继续协作，新增一个立方函数"));
+        assert!(!Runtime::resume_directive("继续开发新功能"));
+    }
 
     #[test]
     fn explicit_agent_role_assignments_in_group_text_override_defaults() {

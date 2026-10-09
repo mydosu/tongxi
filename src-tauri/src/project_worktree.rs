@@ -328,7 +328,22 @@ pub fn create(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Re
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
-    if !git(root, &["status", "--porcelain"])?.is_empty() {
+    let status = git(
+        root,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )?;
+    let source_dirty = status.len() >= OUTPUT_CAP.saturating_sub(8)
+        || status
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .any(|entry| {
+                let Some(path) = entry.strip_prefix("?? ") else {
+                    return true;
+                };
+                !(path.split('/').any(|part| part == "__pycache__")
+                    && (path.ends_with(".pyc") || path.ends_with(".pyo")))
+            });
+    if source_dirty {
         return Err("原仓库存在未提交改动，请先提交或暂存后再开始任务".into());
     }
     let path = worktree_root.join(name);
@@ -677,6 +692,48 @@ mod tests {
         let error = create(&repo, &base.join("wt"), "task-b", "hub/task-b").unwrap_err();
         assert!(error.contains("未提交"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn generated_python_bytecode_does_not_block_the_next_task_but_source_does() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let repo = base.join("repo");
+        assert!(init_repo(&exe, &repo));
+        std::fs::create_dir_all(repo.join("__pycache__")).unwrap();
+        std::fs::write(repo.join("__pycache__/calc.cpython-313.pyc"), "cache").unwrap();
+        let tree = create(&repo, &base.join("wt"), "cache-ok", "hub/cache-ok").unwrap();
+        remove(&repo, &tree).unwrap();
+        std::fs::write(repo.join("__pycache__/important.py"), "source").unwrap();
+        assert!(create(
+            &repo,
+            &base.join("wt"),
+            "source-denied",
+            "hub/source-denied"
+        )
+        .unwrap_err()
+        .contains("未提交"));
+        std::fs::remove_file(repo.join("__pycache__/important.py")).unwrap();
+        assert!(git_ok(
+            &exe,
+            &repo,
+            &["add", "-f", "__pycache__/calc.cpython-313.pyc"]
+        ));
+        assert!(git_ok(
+            &exe,
+            &repo,
+            &["commit", "-q", "-m", "tracked cache"]
+        ));
+        std::fs::write(repo.join("__pycache__/calc.cpython-313.pyc"), "changed").unwrap();
+        assert!(create(
+            &repo,
+            &base.join("wt"),
+            "tracked-denied",
+            "hub/tracked-denied"
+        )
+        .unwrap_err()
+        .contains("未提交"));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
