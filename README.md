@@ -1,6 +1,6 @@
 # 同席 · Agent Hub
 
-个人独立 Windows 桌面多 Agent 协作软件，当前版本 `0.14.0`。已完成本地会话管理、四位成员的真实私聊、绑定项目后的统一项目群聊、当前会话内模型与思考强度切换、无边框窗口与 HUD 浮窗，以及桌面服务更新管理。
+个人独立 Windows 桌面多 Agent 协作软件，当前版本 `0.15.0`。已完成本地会话管理、四位成员的真实私聊、绑定项目后的统一项目群聊、当前会话内模型与思考强度切换、无边框窗口与 HUD 浮窗，以及桌面服务更新管理。
 
 代码在 `src/`（TS）与 `src-tauri/`（Rust），构建见「开发与测试」。采用 Tauri 2 + TypeScript + Rust + SQLite，使用系统 WebView2。默认数据库位于 Windows 应用本地数据目录 `local.personal.agenthub/hub.db`，完整路径可在“成员与服务”页查看。旧版数据会事务迁移至当前 schema（v14），保留消息、设置和原生会话映射；迁移前通过 SQLite 保存一份完整旧数据库到同目录 `backups`，包含已提交的 WAL 数据。本机构建产物与冻结的历史版本放在 `release/`，不进版本库。
 
@@ -101,8 +101,8 @@ Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝�
 - `scripts/Invoke-NativeVerification.ps1 -VerificationScript verify_stage4_native.py`：真实鼠标键盘验收会话内模型/强度、成员隔离、中文草稿与恢复默认。复用下述已授权的共享暂停恢复流程，不调用模型。
 - `python scripts/verify_stage3.py`：发布 EXE 的设置、真实 Codex 模型切换/恢复默认、Hermes 私聊/隔离/重启/取消验收；使用 CDP 自动化。
 - `python scripts/verify_stage3_native.py`：真实系统鼠标键盘验收窗口拖动、缩放、窗口按钮与会话设置；不调用模型，CDP 仅定位和观察。
-- `python scripts/verify_model_provider_ui.py`：侧栏模块、提供商过滤与保存、宽窄窗口布局、自动群聊入口、公开气泡去重、推理滚动和原方案恢复；12 项模拟 IPC 回归，不发送模型请求。
-- `python scripts/verify_project_workspace.py --only resume|private|hermes|pause`：真实 EXE、原生 harness 和隔离项目验收，分别覆盖原方案恢复、私聊工具与模型切换、Hermes 收件箱与提供商身份、单成员中断与依赖恢复。会发送模型请求；只使用 Luna 与 Daily One，复用先前验收的隔离数据目录。
+- `python scripts/verify_model_provider_ui.py`：侧栏模块、提供商过滤与保存、宽窄窗口布局、自动群聊入口、公开气泡去重、推理滚动和原方案恢复；18 项模拟 IPC 回归，不发送模型请求。
+- `python scripts/verify_project_workspace.py --only resume|private|hermes|pause|display`：真实 EXE、原生 harness 和隔离项目验收，分别覆盖原方案恢复、私聊工具与模型切换、Hermes 收件箱与提供商身份、单成员中断与依赖恢复、成员页真实流式输出与宽窄布局。会发送模型请求；只使用 Luna 与 Daily One，复用先前验收的隔离数据目录。
 - `python scripts/probe_project_tools.py`：发布 EXE 的真实 MCP 工具与跨成员消息探针，19 项检查，不发送模型请求。
 - `scripts/verify_project_roles.py`：旧版阶段设置入口的历史验收脚本；v0.14.0 的项目入口验收使用 verify_project_workspace.py。
 - `scripts/Invoke-NativeVerification.ps1 -VerificationScript verify_stage3_native.py`：本机 Mouse Without Borders 干扰焦点时，**经用户明确授权暂停共享之后**使用。仅暂停助手提升权限，软件保持普通权限；结束、宿主退出或超时后恢复，不修改设置。
@@ -111,6 +111,9 @@ Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝�
 测试使用 `artifacts/desktop-test-*` 隔离本地数据，仅测试子进程打开临时本机 CDP 调试端口。普通启动不打开调试端口。软件不依赖键鼠测试工具或共享暂停助手。
 
 ## 后续
+
+v0.15.0 重构项目成员页：移除单独的项目执行记录框，项目输出、私聊、成员直发按时间排列在一个连续会话区。成员页不使用回复气泡；团队页保留头像和公开回复气泡，思考与工具详情只在成员页出现。模型设置与输入框简化，字体优先采用本机 Noto Sans SC／MiSans，缺少时回退系统字体，不请求在线字体。回复支持安全的基础 Markdown 排版；思考和工具可展开，流式内容自动跟随，手动上翻后停留并可回到最新。前端分为时间线数据、输出渲染、页面结构与样式模块；执行与私聊共用展示组件，原生会话继续保持独立。
+
 
 v0.14.0 简化项目交互：删除阶段设置入口，成员专属页配置模型，群聊直接分工；公开消息独立为头像气泡，最终验收结论无需展开卡片。新增成员私聊之间的项目直发收件箱，保留公开广播与手动分享。修复提供商选择未保存明确模型、Codex 私聊动态工具启动协议、稀疏工具更新丢失详情、Hermes 提供商身份记录、恢复时丢失工作树和 Python 生成缓存阻挡下一轮任务等问题。推理块保留手动阅读位置，流式跟随不重新跳到首行。原生额度、连接及协议错误使用固定安全分类显示，不输出上游凭据或配置。
 

@@ -67,6 +67,7 @@ MOCK = r"""
     if(command.endsWith('_status')){const id=command.startsWith('hermes_')?'hermes-win':command.startsWith('dsh_')?'dsh-win':command.startsWith('albion_')?'albion-wsl':'codex-win';return runtime(id);}
     if(command==='set_session_settings'){const current=chatDetails[args.id]||detail;const session=current.sessions.find(s=>s.agent_id===args.agentId);session.model=args.model;session.reasoning_effort=args.reasoningEffort;return current;}
     if(command==='set_project_roles'){detail.project_roles=args.roles;return detail;}
+    if(command==='cancel_project_agent'){globalThis.__cancelledAgent=args;const job=detail.workflows.find(job=>job.id===args.workflowId);job.status='interrupted';job.attempts.forEach(attempt=>attempt.status='interrupted');return job;}
     if(command==='start_project'){
       globalThis.__collaborationRequest=args;
       globalThis.__collaborationCalls++;
@@ -158,12 +159,13 @@ def main() -> None:
             page.locator('[data-project-module="codex-win"]').click()
             expect(page.locator('[data-thought-attempt-id="planner"]')).to_be_attached()
             print('PASS reasoning and full project execution output stay in the assigned agent module')
-            assert not page.locator('[data-project-history]').evaluate('node => node.open')
+            assert not page.locator('[data-project-history]').count()
+            assert not page.locator('.project-agent-room-activity').count()
+            assert not page.locator('.bubble').count()
+            assert page.locator('.project-agent-chat-messages [data-attempt-id="planner"]').count() == 1
             composer = page.locator('[data-project-agent-chat-form]').bounding_box()
             assert composer and composer['y'] + composer['height'] <= 1000
-            page.locator('[data-project-history] > summary').click()
-            expect(page.locator('[data-attempt-id="planner"]')).to_be_visible()
-            print('PASS completed history collapses to preserve conversation space and can be expanded')
+            print('PASS agent page has one transcript for project and private output, with no execution panel or bubbles')
             page.locator('[data-project-module="team"]').click()
             page.evaluate("""() => { const chat=__providerDemo.chats['project-chat-codex-win'];chat.messages=Array.from({length:24},(_,i)=>({id:'old-'+i,conversation_id:chat.conversation.id,sender_id:'codex-win',content:'历史消息 '+i+'。'.repeat(100),thought:'',status:'completed',created_at:Date.now()+i})); }""")
             page.locator('[data-project-module="codex-win"]').click()
@@ -177,9 +179,40 @@ def main() -> None:
             assert row.count()==1 and row.locator('.avatar').count()==1 and row.locator('.bubble').count()==1
             assert row.evaluate("node => !node.closest('.workflow-card')")
             print('PASS public messages remain visible once as avatar bubbles outside collapsed workflow cards')
-            scroll=page.evaluate(r"""async () => {const {bindProjectThoughtFollow,unbindProjectThoughtFollow}=await import('/src/project_thought_scroll.ts');const host=document.createElement('div');host.innerHTML='<details class="attempt-thought" data-active="true" open><div class="attempt-thought-output" data-follow="true" style="height:60px;overflow:auto"><div class="attempt-thought-content" style="white-space:pre-wrap"></div></div></details>';document.body.append(host);const body=host.querySelector('.attempt-thought-output'),content=host.querySelector('.attempt-thought-content');content.textContent=Array.from({length:30},(_,i)=>'思考行'+i).join('\n');bindProjectThoughtFollow(host);await new Promise(r=>setTimeout(r,60));const follows=body.scrollHeight-body.scrollTop-body.clientHeight<3;body.scrollTop=0;body.dispatchEvent(new Event('scroll'));await new Promise(requestAnimationFrame);bindProjectThoughtFollow(host);content.textContent+='\n新增思考';await new Promise(r=>setTimeout(r,60));const preserves=body.scrollTop<3;unbindProjectThoughtFollow(host);host.remove();return {follows,preserves};}""")
-            assert scroll=={'follows':True,'preserves':True}
-            print('PASS streamed reasoning follows live output and preserves manual reading after rebind')
+            page.evaluate("""() => {const d=__providerDemo.detail;d.messages=[{id:'old-group-answer',conversation_id:d.conversation.id,sender_id:'codex-win',content:'仅公开回复',thought:'私有思考不显示',tool_events:[{event_id:'tool',title:'私有工具不显示',status:'completed'}],status:'completed',created_at:Date.now()}];}""")
+            page.locator('[data-conversation="provider-test"]').click()
+            expect(page.locator('[data-message-id="old-group-answer"] .bubble')).to_contain_text('仅公开回复')
+            assert not page.locator('#messages .thought,#messages .message-tool-trace').count()
+            print('PASS historical group replies retain bubbles while reasoning and tools stay out of the team page')
+            transcript=page.evaluate(r"""async () => {
+              const {AgentTranscript}=await import('/src/agent_transcript.ts');
+              const {agentTimeline}=await import('/src/agent_timeline.ts');
+              const result={};const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+              const host=document.createElement('div');host.style.cssText='position:fixed;inset:10px auto auto 10px;width:420px;height:180px;overflow:auto;background:white;z-index:100';document.body.append(host);
+              const view=new AgentTranscript(host,{escape,name:s=>s,empty:'<div class="project-agent-chat-empty">empty</div>'});
+              const row=(id,body,at=1)=>({id,at,kind:'agent',source:'private',author:'codex-win',body,thought:'',tools:[],status:'completed',error:null,messageId:id});
+              const tick=()=>new Promise(r=>setTimeout(r,70));
+              let rows=Array.from({length:14},(_,i)=>row('r'+i,'reply '+i+'\n'+'line\n'.repeat(5),i));view.update(rows);await tick();
+              result.follows=host.scrollHeight-host.scrollTop-host.clientHeight<3;
+              host.dispatchEvent(new WheelEvent('wheel',{deltaY:-100}));host.scrollTop=90;host.dispatchEvent(new Event('scroll'));const anchor=host.scrollTop;rows.at(-1).body+='tail';view.update(rows);await tick();result.manual=host.scrollTop===anchor;
+              result.jump=!host.querySelector('.agent-jump-latest').hidden;host.querySelector('.agent-jump-latest').click();await tick();result.returned=host.scrollHeight-host.scrollTop-host.clientHeight<3;
+              rows[0].body='same A';view.update(rows);rows[0].body='same B';view.update(rows);result.sameLength=host.querySelector('[data-entry-id="r0"] .agent-turn-text').textContent==='same B';
+              const live={...row('live',''),status:'running',thought:Array.from({length:60},(_,i)=>'reason '+i).join('\n'),tools:[{event_id:'t',title:'tool',kind:'command',status:'running',input:'abc',output:'',created_at:1}]};
+              view.update([live]);await tick();const thought=host.querySelector('.thought'),body=host.querySelector('.thought-body');result.thoughtFollows=body.scrollHeight-body.scrollTop-body.clientHeight<3;
+              body.scrollTop=0;body.dispatchEvent(new Event('scroll'));live.thought+='\nnew reason';view.update([live]);await tick();result.thoughtManual=body.scrollTop===0;
+              const tool=host.querySelector('[data-tool-key="all"]');tool.open=true;live.tools[0].status='completed';live.tools[0].input='xyz';view.update([live]);result.toolDisclosure=host.querySelector('[data-tool-key="all"]').open && host.textContent.includes('xyz');
+              live.status='completed';live.body='<img src=x onerror="globalThis.__bad=true">';view.update([live]);result.closed=!thought.open;result.safe=!host.querySelector('img')&&!globalThis.__bad;view.latest();live.body+='\n'+'growth\n'.repeat(30);view.update([live]);await tick();result.layoutFollow=host.scrollHeight-host.scrollTop-host.clientHeight<3 && host.querySelector('.agent-jump-latest').hidden;live.body='**bold** and `code`\n\n- one\n- two';view.update([live]);result.markdown=host.querySelector('.agent-turn-text strong')?.textContent==='bold' && host.querySelector('.agent-turn-text code')?.textContent==='code' && host.querySelectorAll('.agent-turn-text li').length===2;
+              const d=structuredClone(__providerDemo.detail),chat=structuredClone(__providerDemo.chats['project-chat-codex-win']);chat.messages=[];chat.project_agent_inbox=[];
+              const job={...d.workflows[0],created_at:10,attempts:[{...d.workflows[0].attempts[0],id:'later',created_at:300}],agent_messages:[]};chat.messages=[{id:'between',created_at:200,sender_id:'user',content:'private',status:'delivered'}];
+              const runtime={active:null};const timeline=agentTimeline('codex-win',chat,[job],runtime);result.order=timeline.map(x=>x.id).join(',')==='request:'+job.id+',message:between,attempt:later';
+              view.dispose();host.remove();return result;
+            }""")
+            assert all(transcript.values()), transcript
+            print('PASS unified transcript follows output, preserves manual reading and provides return-to-latest')
+            print('PASS reasoning follows live content, preserves manual scroll and collapses on completion')
+            print('PASS tool disclosures survive updates and same-length edits render correctly')
+            print('PASS project attempts use actual timestamps and output cannot execute markup')
+            print('PASS layout-driven scroll keeps auto-follow and Markdown renders without raw HTML')
             page.evaluate("""() => {const d=__providerDemo.detail;d.workflows=[{...d.workflows[0],status:'failed',tasks:[{id:'task',position:0,title:'未完成任务',agent_id:'dsh-win',files:['calc.py'],depends_on:[],status:'queued'}],plan:{summary:'已保存方案',tasks:[]},attempts:[{...d.workflows[0].attempts[0],status:'completed'}]}];}""")
             page.locator('[data-conversation="provider-test"]').click()
             assert not page.locator('[data-edit-project-roles]').count()
@@ -187,6 +220,11 @@ def main() -> None:
             page.wait_for_function("() => __providerDemo.detail.workflows[0].status==='running'")
             assert not page.locator('[data-confirm-project]').count()
             print('PASS paused collaboration resumes its saved plan automatically without stage or task confirmation controls')
+            page.evaluate("""() => {const d=__providerDemo.detail;d.workflows=['new-job','old-job'].map((id,index)=>({...d.workflows[0],id,created_at:Date.now()+index,attempts:[{...d.workflows[0].attempts[0],id:id+'-attempt',workflow_id:id,agent_id:'dsh-win',status:'running',thought:'正在执行',output:'',created_at:Date.now()+index}]}));}""")
+            page.locator('[data-project-module="dsh-win"]').click()
+            page.locator('[data-stop-project-workflow="old-job"]').click()
+            page.wait_for_function("() => __cancelledAgent?.workflowId==='old-job' && __cancelledAgent?.agentId==='dsh-win'")
+            print('PASS inline interrupt targets the clicked workflow instead of the latest history item')
             browser.close()
     finally:
         server.terminate()

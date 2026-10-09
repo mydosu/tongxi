@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Conversation, ExecutionChoice, ModelOption, Project, ProjectAgentChat, ProjectAttempt, ProjectTask, ProjectTeamMessage, RoleChoice, Roles, Workflow } from './types';
+import type { Conversation, ExecutionChoice, ModelOption, Project, ProjectAgentChat, ProjectTask, ProjectTeamMessage, RoleChoice, Roles, Workflow } from './types';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 
 type Escape = (value: string | number) => string;
@@ -13,9 +13,6 @@ export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Esca
 }
 export const workflowBusy = (job: Workflow | null | undefined) => !!job && ['queued', 'planning', 'running', 'verifying', 'reviewing', 'cancelling'].includes(job.status);
 export const projectLabels: Record<string, string> = { queued: '等待项目空闲', planning: '方案与任务分发', running: '正在实现', verifying: '正在实际验收', reviewing: '功能验收中', cancelling: '正在停止', completed: '协作完成', failed: '协作失败', interrupted: '协作已中断', starting: '准备会话', skipped: '未执行' };
-const stages: Record<string, string> = { implement: '项目实现', review: '功能校验', repair: '复杂修复' };
-const stageLabel = (attempt: ProjectAttempt) => attempt.stage === 'plan' ? attempt.agent_id === 'codex-win' ? '项目方案' : attempt.agent_id === 'hermes-win' ? '任务分发' : '项目方案' : attempt.stage === 'repair' && attempt.agent_id === 'codex-win' ? '疑难诊断' : attempt.stage === 'repair' && attempt.agent_id === 'dsh-win' ? '实际修复' : stages[attempt.stage] || attempt.stage;
-const attemptStatusLabel = (attempt: ProjectAttempt) => attempt.status === 'completed' ? ({ plan: '方案完成', implement: '任务完成', review: '验收完成', repair: '修复完成' }[attempt.stage] || '步骤完成') : projectLabels[attempt.status] || attempt.status;
 const taskStatusLabel = (task: ProjectTask, job: Workflow) => task.status === 'queued' && job.status === 'interrupted' && task.depends_on.some(position => job.tasks[position]?.status === 'interrupted') ? '等待依赖' : ({ queued: '待执行', running: '正在执行', completed: '任务完成', failed: '任务失败', interrupted: '已中断', skipped: '未执行' }[task.status] || task.status);
 export function workflowRoles(value: Workflow['roles']): Roles | null {
   if (typeof value !== 'string') return value || null;
@@ -48,17 +45,6 @@ function confirmBlock(job: Workflow, escape: Escape, name: (id: string) => strin
     const roleDefault = roles?.implement.agent === task.agent_id ? roles.implement : null;
     return confirmRow(task, suggestion, roleDefault, catalog(task.agent_id), eligibleAgents, escape, name);
   }).join('')}<button type="button" class="primary" data-confirm-project>确认并开始执行</button></div>`;
-}
-
-export function projectAgentActivity(job: Workflow, agentId: string, escape: Escape, name: (id: string) => string, model: (id: string, value: string | null) => string, avatar: (id: string) => string = id => `<span class="project-agent-avatar">${escape(name(id).slice(0, 1))}</span>`) {
-  const attempts = job.attempts.filter(attempt => attempt.agent_id === agentId && attempt.stage !== 'verify');
-  const active = attempts.some(attempt => ['starting','running','cancelling'].includes(attempt.status));
-  const rows = attempts.map(attempt => {
-    const running = ['starting','running','cancelling'].includes(attempt.status);
-    return `<details class="agent-attempt" data-attempt-id="${escape(attempt.id)}" data-attempt-status="${escape(attempt.status)}" ${running ? 'open' : ''}><summary><span>${escape(stageLabel(attempt))}</span><span>${escape(attemptStatusLabel(attempt))}</span></summary><small>${escape(model(attempt.agent_id, attempt.model))}${attempt.reasoning_effort ? ` · ${escape(attempt.reasoning_effort)}` : ''}</small>${attempt.thought ? `<details class="attempt-thought" data-thought-attempt-id="${escape(attempt.id)}" data-active="${running}" ${running ? 'open' : ''}><summary class="attempt-thought-summary">${running ? '思考中' : '思考过程'}</summary><div class="attempt-thought-output" data-follow="${running}"><div class="attempt-thought-content">${escape(attempt.thought)}</div></div></details>` : ''}${attempt.tool_events?.length ? `<details class="attempt-tool-events"><summary>工具活动 · ${attempt.tool_events.length}</summary>${attempt.tool_events.map(event => `<details class="message-tool-event"><summary><span>${escape(event.title || event.kind)}</span><small>${escape(event.status === 'running' ? '进行中' : event.status === 'failed' ? '失败' : '完成')}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</details>` : ''}${attempt.output ? `<pre class="attempt-output">${escape(attempt.output)}</pre>` : ''}${attempt.error ? `<p class="workflow-error">${escape(attempt.error)}</p>` : ''}</details>`;
-  }).join('');
-  const direct = (job.agent_messages || []).filter(message => message.sender_agent === agentId || message.recipient_agent === agentId).map(message => `<div class="agent-dm-row" data-agent-direct-message-id="${escape(message.id)}"><small>${escape(name(message.sender_agent))} → ${escape(name(message.recipient_agent))}</small><p>${escape(message.content)}</p></div>`).join('');
-  return `<section class="project-agent-activity" data-agent-activity="${escape(agentId)}" data-activity-workflow="${escape(job.id)}"><header>${avatar(agentId)}<div><strong>${escape(name(agentId))} · 项目执行记录</strong><small>${active ? '正在执行；可单独中断' : escape(job.request.slice(0, 100))}</small></div>${active ? `<button type="button" class="text-button" data-stop-project-agent="${escape(agentId)}" data-stop-project-workflow="${escape(job.id)}">中断此 Agent</button>` : ''}</header><div class="agent-task-log">${rows || '<p class="team-feed-empty">该 Agent 本轮尚未执行任务。</p>'}</div>${direct ? `<details class="agent-direct-messages"><summary>成员间协作消息</summary>${direct}</details>` : ''}</section>`;
 }
 
 export function workflowCard(job: Workflow, escape: Escape, name: (id: string) => string, catalog: (id: string) => ModelOption[], eligibleAgents: string[], agentChats: ProjectAgentChat[] = []) {
