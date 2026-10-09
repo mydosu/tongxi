@@ -16,6 +16,15 @@ fn native_error_summary(error: &Value) -> String {
     let text = error.to_string().to_lowercase();
     let contains = |terms: &[&str]| terms.iter().any(|term| text.contains(term));
     let category = if contains(&[
+        "context length",
+        "context window",
+        "contextwindowexceeded",
+        "maximum context",
+        "context_length_exceeded",
+        "context_window_exceeded",
+    ]) {
+        "模型上下文容量不足，已保留现有记录"
+    } else if contains(&[
         "429",
         "rate limit",
         "rate-limit",

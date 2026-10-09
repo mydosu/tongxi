@@ -246,6 +246,10 @@ impl Broker {
     }
 
     pub fn call(&mut self, tool: &str, args: Value) -> Result<Value> {
+        if tool.starts_with("hub_memory_") {
+            let scope = Self::scope(&self.connection, &self.attempt_id)?;
+            return crate::project_memory::call(&scope.project_id, &scope.agent_id, tool, args);
+        }
         // An IMMEDIATE transaction serializes admission with cancellation in the UI.
         let tx = self
             .connection
@@ -486,6 +490,9 @@ pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let nullable_hash = json!({"type":["string","null"],"description":"Current SHA256 from hub_read; null only for a new file."});
     let definitions=[
+        ("hub_memory_search","Search shared memory for this project only; use before work to recall decisions and known pitfalls.",json!({"query":string}),vec!["query"]),
+        ("hub_memory_write","Store concise project decisions, findings and verified results under your member's project notes. Do not store private chats, raw reasoning or credentials.",json!({"name":string,"content":string}),vec!["name","content"]),
+        ("hub_memory_read","Read a note URI from the current project's shared memory; other project scopes are rejected.",json!({"uri":string}),vec!["uri"]),
         ("hub_list","List files explicitly authorized for the current task.",json!({}),vec![]),
         ("hub_read","Read one authorized UTF-8 file and its SHA256.",json!({"path":string}),vec!["path"]),
         ("hub_message","Send a direct message to another project agent in this group. The recipient can read it from their project inbox.",json!({"to_agent":string,"content":string}),vec!["to_agent","content"]),
@@ -541,7 +548,14 @@ fn project_chat_tool_specs() -> Vec<Value> {
         .filter(|tool| {
             matches!(
                 tool["name"].as_str(),
-                Some("hub_message" | "hub_inbox" | "hub_broadcast")
+                Some(
+                    "hub_message"
+                        | "hub_inbox"
+                        | "hub_broadcast"
+                        | "hub_memory_search"
+                        | "hub_memory_write"
+                        | "hub_memory_read"
+                )
             )
         })
         .collect()
@@ -567,6 +581,9 @@ fn chat_tool(
 ) -> Result<Value> {
     let (project, group, agent) = chat_context(connection, conversation_id)?;
     match name {
+        "hub_memory_search" | "hub_memory_write" | "hub_memory_read" => {
+            crate::project_memory::call(&project, &agent, name, args)
+        }
         "hub_broadcast" => {
             let arg: BroadcastArg = serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
             chat_broadcast(connection, conversation_id, &arg.content)
@@ -903,7 +920,7 @@ mod agent_message_tests {
             project_chat_dynamic_tools(&store.path, &codex_chat.conversation_id)
                 .unwrap()
                 .len(),
-            3
+            6
         );
         assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
         assert_eq!(

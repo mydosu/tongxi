@@ -6,12 +6,14 @@ mod albion_openai;
 mod chat_text;
 mod clients;
 mod codex;
+mod conversation_cleanup;
 mod discussion;
 mod dsh;
 mod group_store;
 mod hermes;
 mod models;
 mod process_scope;
+mod project_memory;
 mod project_models;
 mod project_native;
 mod project_store;
@@ -519,6 +521,17 @@ fn share_project_agent_message(
     })
 }
 #[tauri::command]
+fn remove_conversation_item(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    kind: String,
+    id: String,
+) -> Result<conversation_cleanup::RemovedItem, String> {
+    with_store(&state, |store| {
+        store.remove_conversation_item(&conversation_id, &kind, &id)
+    })
+}
+#[tauri::command]
 fn create_conversation(
     state: State<'_, AppState>,
     title: String,
@@ -875,6 +888,7 @@ fn main() {
             rename_conversation,
             archive_conversation,
             delete_conversation,
+            remove_conversation_item,
             update_group_members,
             save_local_message,
             app_info,

@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 
 const [installation, data] = process.argv.slice(1);
 const projectMode = process.env.AGENT_HUB_DSH_PROJECT_MODE === '1';
@@ -74,6 +75,8 @@ try {
     ['tool-subagent', 'dsh-tool-subagent'], ['tool-subagent-fork', 'dsh-tool-subagent'],
     ['tool-todo', 'dsh-tool-todo'], ['goal', 'dsh-goal'], ['goal-round-driver', 'dsh-goal-round-driver'],
     ['command-goal', 'dsh-command-goal'], ['tool-goal', 'dsh-tool-goal'],
+    ['token-meter', 'dsh-token-meter'], ['compaction-pruner', 'dsh-compaction-tool-result-pruner'],
+    ['compaction', 'dsh-compaction-basic'], ['command-compact', 'dsh-command-compact'],
     ['workflow-worker-thread', 'dsh-workflow-worker-thread'], ['tool-workflow', 'dsh-tool-workflow'],
     ['tool-ralph', 'dsh-tool-ralph'], ['tool-str-replace-editor', 'dsh-tool-str-replace-editor'],
     ['skill', 'dsh-skill'], ['skill-filesystem', 'dsh-skill-filesystem'], ['tool-skill', 'dsh-tool-skill'],
@@ -132,6 +135,10 @@ try {
   ctx = await boot('agent-hub-dsh', config, [{ id: 'llm-pi-ai', config: { providers } }], host => {
     host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment);
   }, pathToFileURL(join(installation, 'package.json')).href);
+  if (process.env.AGENT_HUB_DSH_FALLBACK_BRIDGE) {
+    const { installDailyFallback } = await import('data:text/javascript;base64,' + Buffer.from(process.env.AGENT_HUB_DSH_FALLBACK_BRIDGE).toString('base64'));
+    installDailyFallback(ctx, routes, params => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'agent_hub/model_route', params: { ...params, eventId: randomUUID() } }) + '\n'));
+  }
   // Keep DSH's native tool/plugin surface. Project sessions additionally mount
   // the Agent Hub MCP server for direct messages between group members.
   process.stdin.on('end', () => {

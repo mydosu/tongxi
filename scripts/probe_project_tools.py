@@ -66,7 +66,7 @@ def main():
         if not condition:raise AssertionError(name)
         checks.append(name)
     try:
-        specs=helper.rpc('tools/list',{})['tools'];check('file and collaboration tools use current executable',len(specs)==8)
+        specs=helper.rpc('tools/list',{})['tools'];check('file and collaboration tools use current executable',len(specs)==11)
         recipient='hermes-win' if context['agent']!='hermes-win' else 'dsh-win'
         sent=helper.call('hub_message',{'to_agent':recipient,'content':'isolated handoff'});check('direct member message persists',not sent['isError'])
         published=helper.call('hub_broadcast',{'content':'isolated team update'});check('public broadcast persists',not published['isError'])

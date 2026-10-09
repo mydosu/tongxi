@@ -1,4 +1,5 @@
 import type { ConversationDetail, RunToolEvent, RuntimeSnapshot, Workflow } from './types';
+import { projectReply } from './agent_protocol';
 
 /** Display data only: merging logs never changes the separate native sessions. */
 export interface AgentEntry {
@@ -17,9 +18,11 @@ export interface AgentEntry {
   messageId?: string;
   attemptId?: string;
   workflowId?: string;
+  protocol?: { label: string; raw: string };
 }
 
 export const entryBusy = (status: string) => ['starting', 'running', 'cancelling', 'streaming'].includes(status);
+const toolActivity = (events: RunToolEvent[]) => events.filter(event => !['userMessage','hookPrompt','plan','functionCallOutput'].includes(event.kind));
 
 export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Workflow[], runtime: RuntimeSnapshot): AgentEntry[] {
   const rows = new Map<string, AgentEntry>();
@@ -27,17 +30,17 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
     rows.set(`message:${message.id}`, {
       id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
       source: 'private', author: message.sender_id, body: message.content, thought: message.thought || '',
-      tools: message.tool_events || [], status: message.status, error: null, messageId: message.id,
+      tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id,
     });
   }
   const active = runtime.active;
-  if (active?.conversation_id === chat.conversation.id) {
+  if (active?.conversation_id === chat.conversation.id && (entryBusy(active.status) || rows.has(`message:${active.assistant_message_id}`))) {
     const key = `message:${active.assistant_message_id}`;
     const saved = rows.get(key);
     rows.set(key, {
       id: key, at: saved?.at || chat.messages.find(message => message.id === active.user_message_id)?.created_at || chat.conversation.updated_at,
       kind: 'agent', source: 'private', author: agent, body: active.text, thought: active.thought || '',
-      tools: active.tool_events || [], status: active.status, error: active.error, model: active.model, effort: active.reasoning_effort,
+      tools: toolActivity(active.tool_events || []), status: active.status, error: active.error, model: active.model, effort: active.reasoning_effort,
       messageId: active.assistant_message_id,
     });
   }
@@ -45,12 +48,12 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
     const attempts = job.attempts.filter(attempt => attempt.agent_id === agent && attempt.stage !== 'verify');
     if (attempts.length) rows.set(`request:${job.id}`, {
       id: `request:${job.id}`, at: job.created_at, kind: 'user', source: 'project', author: 'user', body: job.request,
-      thought: '', tools: [], status: 'delivered', error: null,
+      thought: '', tools: [], status: 'delivered', error: null, workflowId: job.id,
     });
     attempts.forEach((attempt, index) => rows.set(`attempt:${attempt.id}`, {
       id: `attempt:${attempt.id}`, at: attempt.created_at ?? job.created_at + index + 1,
-      kind: 'agent', source: 'project', author: agent, body: attempt.output, thought: attempt.thought,
-      tools: attempt.tool_events || [], status: attempt.status, error: attempt.error, model: attempt.model,
+      kind: 'agent', source: 'project', author: agent, ...projectReply(attempt, job), thought: attempt.thought,
+      tools: toolActivity(attempt.tool_events || []), status: attempt.status, error: attempt.error, model: attempt.model,
       effort: attempt.reasoning_effort, attemptId: attempt.id, workflowId: job.id,
     }));
     for (const message of job.agent_messages || []) {

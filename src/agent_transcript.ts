@@ -81,7 +81,7 @@ export class AgentTranscript {
     const node = document.createElement('article');
     node.dataset.entryId = entry.id;
     node.className = `agent-transcript-entry ${entry.kind === 'user' ? 'agent-user-entry' : entry.kind === 'peer' ? 'agent-peer-entry' : 'agent-output-entry'}`;
-    node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-text"></div><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
+    node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
     const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
     thought.querySelector('summary')!.addEventListener('click', () => requestAnimationFrame(() => { thought.dataset.userOpen = String(thought.open); }));
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
@@ -94,6 +94,7 @@ export class AgentTranscript {
     const busy = entryBusy(entry.status);
     if (entry.attemptId) { node.dataset.attemptId = entry.attemptId; node.dataset.attemptStatus = entry.status; }
     if (entry.messageId) node.dataset.messageId = entry.messageId;
+    if (entry.workflowId) node.dataset.sourceWorkflow = entry.workflowId;
     if (entry.kind === 'peer') node.dataset.agentDirectMessageId = entry.id.slice(5);
     const label = entry.kind === 'user' ? entry.source === 'project' ? '你 · 项目目标' : '你' : entry.kind === 'peer' ? `${name(entry.author)} · 成员直发` : name(entry.author);
     node.querySelector('[data-entry-label]')!.textContent = label;
@@ -125,6 +126,10 @@ export class AgentTranscript {
       text.dataset.output = output;
     }
     text.hidden = !output;
+    const protocol = node.querySelector<HTMLDetailsElement>('.agent-protocol')!;
+    protocol.hidden = !entry.protocol;
+    protocol.querySelector('summary')!.textContent = entry.protocol?.label || '';
+    if (protocol.querySelector('pre')!.textContent !== (entry.protocol?.raw || '')) protocol.querySelector('pre')!.textContent = entry.protocol?.raw || '';
     const error = node.querySelector<HTMLElement>('.agent-turn-error')!;
     error.textContent = entry.error || (entry.status === 'failed' ? '本次运行失败，已有内容已保留。' : '');
     error.hidden = !error.textContent;

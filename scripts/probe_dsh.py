@@ -17,6 +17,7 @@ class Client:
         installation=local_paths.dsh_installation()
         env=os.environ.copy(); env['AGENT_HUB_DSH_DIAGNOSTICS']='1'
         env['AGENT_HUB_DSH_AUTH_BRIDGE']=(ROOT/'src-tauri/src/dsh_hermes_auth.py').read_text(encoding='utf-8')
+        env['AGENT_HUB_DSH_FALLBACK_BRIDGE']=(ROOT/'src-tauri/src/dsh_fallback.mjs').read_text(encoding='utf-8')
         self.proc=subprocess.Popen(['node','--input-type=module','-e',script,installation,str(data)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',env=env,creationflags=subprocess.CREATE_NO_WINDOW)
         self.messages=queue.Queue(); self.next=0; self.updates=[]
         def reader():

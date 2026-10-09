@@ -89,7 +89,16 @@ fn busy(status: &str) -> bool {
 pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToolEvent> {
     let item = params.get("item")?;
     let kind = item["type"].as_str()?;
-    if matches!(kind, "agentMessage" | "reasoning" | "reasoningSummary") {
+    if matches!(
+        kind,
+        "agentMessage"
+            | "reasoning"
+            | "reasoningSummary"
+            | "userMessage"
+            | "hookPrompt"
+            | "plan"
+            | "functionCallOutput"
+    ) {
         return None;
     }
     let event_id = item["id"].as_str()?.to_owned();
@@ -97,8 +106,14 @@ pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToo
         "commandExecution" => item["command"].as_str().unwrap_or("运行命令").to_owned(),
         "mcpToolCall" => format!(
             "{} · {}",
-            item["serverName"].as_str().unwrap_or("MCP"),
-            item["toolName"].as_str().unwrap_or("工具调用")
+            item["server"]
+                .as_str()
+                .or_else(|| item["serverName"].as_str())
+                .unwrap_or("MCP"),
+            item["tool"]
+                .as_str()
+                .or_else(|| item["toolName"].as_str())
+                .unwrap_or("工具调用")
         ),
         "fileChange" => "修改文件".to_owned(),
         "dynamicToolCall" => item["tool"]
@@ -197,7 +212,7 @@ pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
         .as_str()
         .or_else(|| call["name"].as_str())
         .or_else(|| call["toolName"].as_str())
-        .unwrap_or(&kind)
+        .unwrap_or("tool")
         .to_owned();
     let value_text = |value: &Value| {
         value
@@ -839,6 +854,12 @@ impl Runtime {
         };
         params["model"] = json!(model);
         params["config"] = json!({"model_reasoning_effort":effort});
+        if let Some(server) =
+            crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
+        {
+            params["config"]["mcp_servers.tongxi_project"] =
+                json!({"command":server["command"],"args":server["args"]});
+        }
         let method = if let Some(thread_id) = previous {
             params["threadId"] = json!(thread_id);
             params["excludeTurns"] = json!(true);
@@ -1204,6 +1225,29 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sparse_other_kind_completion_keeps_the_original_acp_tool_name() {
+        let started = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"call","kind":"other","title":"mcp__agent_hub_project__hub_memory_read","rawInput":{"uri":"project-note"}})).unwrap();
+        let completed = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"call","kind":"other","status":"completed","content":[{"content":{"type":"text","text":"read result"}}]})).unwrap();
+        let mut events = vec![started];
+        let merged = super::upsert_tool_event(&mut events, &completed);
+        assert_eq!(merged.title, "mcp__agent_hub_project__hub_memory_read");
+        assert!(merged.input.is_some());
+        assert_eq!(merged.output.as_deref(), Some("read result"));
+    }
+    #[test]
+    fn current_mcp_fields_show_the_actual_tool_and_user_events_are_not_tools() {
+        let event = super::codex_tool_event(&serde_json::json!({"item":{"type":"mcpToolCall","id":"call","server":"tongxi_project","tool":"hub_memory_write","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"stored"}]}}}), true).unwrap();
+        assert_eq!(event.title, "tongxi_project · hub_memory_write");
+        assert_eq!(event.output.as_deref(), Some("stored"));
+        for kind in ["userMessage", "plan", "hookPrompt", "functionCallOutput"] {
+            assert!(super::codex_tool_event(
+                &serde_json::json!({"item":{"type":kind,"id":"metadata"}}),
+                true
+            )
+            .is_none());
+        }
+    }
     #[test]
     fn sparse_acp_tool_updates_preserve_identity_input_and_capture_content_output() {
         let started = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"one","kind":"execute","title":"python check.py","rawInput":{"command":"python check.py"},"status":"in_progress"})).unwrap();

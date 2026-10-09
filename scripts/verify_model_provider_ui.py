@@ -66,6 +66,7 @@ MOCK = r"""
     if(command==='project_status')return [];
     if(command.endsWith('_status')){const id=command.startsWith('hermes_')?'hermes-win':command.startsWith('dsh_')?'dsh-win':command.startsWith('albion_')?'albion-wsl':'codex-win';return runtime(id);}
     if(command==='set_session_settings'){const current=chatDetails[args.id]||detail;const session=current.sessions.find(s=>s.agent_id===args.agentId);session.model=args.model;session.reasoning_effort=args.reasoningEffort;return current;}
+    if(command==='remove_conversation_item'){globalThis.__removedItem=args;const workflow=detail.workflows.find(job=>job.id===args.id);if(args.kind==='workflow')detail.workflows=detail.workflows.filter(job=>job.id!==args.id);else detail.messages=detail.messages.filter(message=>message.id!==args.id);return {workflow_id:workflow?.id||null};}
     if(command==='set_project_roles'){detail.project_roles=args.roles;return detail;}
     if(command==='cancel_project_agent'){globalThis.__cancelledAgent=args;const job=detail.workflows.find(job=>job.id===args.workflowId);job.status='interrupted';job.attempts.forEach(attempt=>attempt.status='interrupted');return job;}
     if(command==='start_project'){
@@ -159,6 +160,10 @@ def main() -> None:
             page.locator('[data-project-module="codex-win"]').click()
             expect(page.locator('[data-thought-attempt-id="planner"]')).to_be_attached()
             print('PASS reasoning and full project execution output stay in the assigned agent module')
+            expect(page.locator('[data-attempt-id="planner"] .agent-turn-text')).to_contain_text('这是一次普通讨论回复')
+            assert page.locator('[data-attempt-id="planner"] .agent-turn-text').inner_text().strip() != '{}'
+            assert not page.locator('[data-attempt-id="planner"] .agent-protocol').evaluate('node=>node.open')
+            print('PASS planning JSON is readable as a reply with raw protocol data collapsed')
             assert not page.locator('[data-project-history]').count()
             assert not page.locator('.project-agent-room-activity').count()
             assert not page.locator('.bubble').count()
@@ -225,6 +230,13 @@ def main() -> None:
             page.locator('[data-stop-project-workflow="old-job"]').click()
             page.wait_for_function("() => __cancelledAgent?.workflowId==='old-job' && __cancelledAgent?.agentId==='dsh-win'")
             print('PASS inline interrupt targets the clicked workflow instead of the latest history item')
+            page.locator('[data-project-module="team"]').click()
+            card=page.locator('[data-workflow-id="old-job"]')
+            card.click(button='right')
+            page.locator('[data-message-delete]').click()
+            page.wait_for_function("() => __removedItem?.kind==='workflow' && __removedItem?.id==='old-job'")
+            expect(page.locator('[data-workflow-id="old-job"]')).to_have_count(0)
+            print('PASS right-click deletes a round and its cached card does not reappear')
             browser.close()
     finally:
         server.terminate()

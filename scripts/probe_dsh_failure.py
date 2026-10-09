@@ -51,6 +51,7 @@ def run():
     env['AGENT_HUB_DSH_PROJECT_MODE'] = '1'
     env['AGENT_HUB_DSH_DIAGNOSTICS'] = '1'
     env['AGENT_HUB_DSH_AUTH_BRIDGE'] = (ROOT / 'src-tauri/src/dsh_hermes_auth.py').read_text(encoding='utf-8')
+    env['AGENT_HUB_DSH_FALLBACK_BRIDGE']=(ROOT/'src-tauri/src/dsh_fallback.mjs').read_text(encoding='utf-8')
     source = (ROOT / 'src-tauri/src/dsh_bridge.mjs').read_text(encoding='utf-8')
     proc = subprocess.Popen(['node', '--input-type=module', '-e', source, local_paths.dsh_installation(), str(root / 'native')],
                             cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
