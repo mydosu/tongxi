@@ -145,6 +145,16 @@ impl Runtime {
             }),
         })
     }
+    pub(crate) fn shared_project_client(&self) -> Result<Arc<Client>> {
+        let inner = self.inner.lock().unwrap();
+        if inner.connection != "connected" {
+            return Err("项目成员尚未连接".into());
+        }
+        inner
+            .client
+            .clone()
+            .ok_or_else(|| "项目成员接口不可用".into())
+    }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();
         RuntimeSnapshot {

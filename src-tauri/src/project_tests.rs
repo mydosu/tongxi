@@ -7,6 +7,169 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 #[test]
+fn members_can_discuss_direction_before_planner_without_becoming_the_plan() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    assert!(f
+        .store
+        .begin_attempt(&workflow.id, None, "albion-wsl", "discussion", None, None)
+        .is_err());
+    for agent in ["dsh-win", "hermes-win"] {
+        let mut attempt = f
+            .store
+            .begin_attempt(&workflow.id, None, agent, "discussion", None, None)
+            .unwrap();
+        assert_eq!(attempt.activity.as_deref(), Some("discussion"));
+        attempt.output = "保留已完成内容，调整未完成任务。".into();
+        complete(&mut f.store, &attempt);
+    }
+    assert!(f
+        .store
+        .save_plan(&workflow.id, &plan(&["double.py"]))
+        .is_err());
+    let planned = f.plan_with(&workflow, &plan(&["double.py"]));
+    assert_eq!(planned.tasks.len(), 1);
+    assert_eq!(planned.attempts.len(), 3);
+}
+
+#[test]
+fn direction_change_preserves_completed_branch_but_never_merges_interrupted_work() {
+    let mut f = Fixture::new();
+    crate::project_worktree::initialize_safe_repository(&f.root).unwrap();
+    let mut workflow = f.planned(&["identity.py"]);
+    let parent = f.base.join("worktrees");
+    let finished =
+        crate::project_worktree::create(&f.root, &parent, "finished", "hub/finished").unwrap();
+    std::fs::write(
+        finished.join("identity.py"),
+        "def identity(value): return value\n",
+    )
+    .unwrap();
+    crate::project_worktree::commit(&finished, "completed task", &["identity.py".into()]).unwrap();
+    let partial =
+        crate::project_worktree::create(&f.root, &parent, "partial", "hub/partial").unwrap();
+    std::fs::write(partial.join("cube.py"), "partial code\n").unwrap();
+    crate::project_worktree::commit(&partial, "partial task", &["cube.py".into()]).unwrap();
+    workflow.tasks[0].status = "completed".into();
+    workflow.tasks[0].branch = Some("hub/finished".into());
+    let mut other = workflow.tasks[0].clone();
+    other.status = "interrupted".into();
+    other.branch = Some("hub/partial".into());
+    workflow.tasks.push(other);
+    crate::projects::preserve_completed_work(&f.root, &workflow).unwrap();
+    crate::projects::preserve_completed_work(&f.root, &workflow).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("identity.py"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "def identity(value): return value\n"
+    );
+    assert!(!f.root.join("cube.py").exists());
+    assert!(partial.join("cube.py").exists());
+    crate::project_worktree::remove(&f.root, &finished).unwrap();
+    crate::project_worktree::remove(&f.root, &partial).unwrap();
+}
+
+#[test]
+fn user_question_is_public_and_answered_atomically_during_live_workflow() {
+    let mut f = Fixture::new();
+    let attempt = f.implement(&["main.py"]);
+    let id = crate::project_questions::post(
+        &f.store.path,
+        &attempt.id,
+        "选择输出格式？",
+        vec!["JSON".into(), "文本".into()],
+    )
+    .unwrap();
+    assert_eq!(f.store.team_messages(&f.room).unwrap()[0].id, id);
+    assert_eq!(
+        f.store.project_questions(&f.room).unwrap()[0].status,
+        "pending"
+    );
+    let wrong = f
+        .store
+        .create("其他群", "group", &["codex-win".into(), "dsh-win".into()])
+        .unwrap();
+    assert!(f
+        .store
+        .answer_project_question(&wrong.id, &id, &Uuid::new_v4().to_string(), "文本")
+        .is_err());
+    let message = Uuid::new_v4().to_string();
+    f.store
+        .answer_project_question(&f.room, &id, &message, "JSON")
+        .unwrap();
+    let question = &f.store.project_questions(&f.room).unwrap()[0];
+    assert_eq!(question.answer.as_deref(), Some("JSON"));
+    assert_eq!(question.status, "answered");
+    assert!(f
+        .store
+        .detail(&f.room)
+        .unwrap()
+        .messages
+        .iter()
+        .any(|row| row.id == message && row.status == "delivered"));
+    let before = f.store.detail(&f.room).unwrap().messages.len();
+    assert!(f
+        .store
+        .answer_project_question(&f.room, &id, &Uuid::new_v4().to_string(), "再次回答")
+        .is_err());
+    assert_eq!(f.store.detail(&f.room).unwrap().messages.len(), before);
+}
+
+#[test]
+fn waiting_questions_exclude_overlapping_human_waits_and_disappear_with_history() {
+    let mut f = Fixture::new();
+    let attempt = f.implement(&["main.py"]);
+    let a = crate::project_questions::post(&f.store.path, &attempt.id, "问题一", vec![]).unwrap();
+    let b = crate::project_questions::post(&f.store.path, &attempt.id, "问题二", vec![]).unwrap();
+    f.store.connection.execute("UPDATE project_questions SET created_at=1000,answered_at=5000,status='answered' WHERE id=?1", [&a]).unwrap();
+    f.store.connection.execute("UPDATE project_questions SET created_at=3000,answered_at=7000,status='cancelled' WHERE id=?1", [&b]).unwrap();
+    assert_eq!(
+        f.store
+            .project_wait_duration(&attempt.workflow_id)
+            .as_millis(),
+        6000
+    );
+    f.store
+        .connection
+        .execute(
+            "UPDATE workflows SET status='failed' WHERE id=?1",
+            [&attempt.workflow_id],
+        )
+        .unwrap();
+    assert!(
+        crate::project_questions::post(&f.store.path, &attempt.id, "旧任务问题", vec![]).is_err()
+    );
+    f.store
+        .remove_conversation_item(&f.room, "workflow", &attempt.workflow_id)
+        .unwrap();
+    assert!(f.store.project_questions(&f.room).unwrap().is_empty());
+    assert!(f.store.team_messages(&f.room).unwrap().is_empty());
+}
+
+#[test]
+fn a_conflicting_answer_message_id_rolls_back_question_transition() {
+    let mut f = Fixture::new();
+    let attempt = f.implement(&["main.py"]);
+    let id =
+        crate::project_questions::post(&f.store.path, &attempt.id, "需要确认", vec![]).unwrap();
+    let message = f
+        .store
+        .workflow(&attempt.workflow_id)
+        .unwrap()
+        .user_message_id;
+    assert!(f
+        .store
+        .answer_project_question(&f.room, &id, &message, "回答")
+        .is_err());
+    assert_eq!(
+        f.store.project_questions(&f.room).unwrap()[0].status,
+        "pending"
+    );
+}
+
+#[test]
 fn large_source_review_uses_paths_and_native_tools_instead_of_a_snapshot_limit() {
     let mut f = Fixture::new();
     let workflow = f.planned(&["large.py"]);

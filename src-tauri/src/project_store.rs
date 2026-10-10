@@ -398,6 +398,7 @@ pub struct Attempt {
     pub task_id: Option<String>,
     pub agent_id: String,
     pub stage: String,
+    pub activity: Option<String>,
     pub status: String,
     pub native_thread_id: Option<String>,
     pub native_turn_id: Option<String>,
@@ -458,6 +459,10 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         attempt_id TEXT NOT NULL REFERENCES project_attempts(id) ON DELETE CASCADE,
         path TEXT NOT NULL,operation TEXT NOT NULL,before_hash TEXT,after_hash TEXT,
         PRIMARY KEY(attempt_id,path));
+      CREATE TABLE IF NOT EXISTS project_questions (
+        id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,agent_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,options TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL,answer TEXT,created_at INTEGER NOT NULL,answered_at INTEGER,attempt_id TEXT REFERENCES project_attempts(id) ON DELETE CASCADE,delivery TEXT NOT NULL DEFAULT 'deferred');
       CREATE TABLE IF NOT EXISTS project_sessions (
         project_id TEXT NOT NULL REFERENCES projects(id),agent_id TEXT NOT NULL,
         stage TEXT NOT NULL,native_session_id TEXT,PRIMARY KEY(project_id,agent_id,stage));
@@ -502,6 +507,14 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_tasks", "assigned_agent", "TEXT"),
         ("project_attempts", "thought", "TEXT NOT NULL DEFAULT ''"),
         ("project_team_messages", "recipient_agent", "TEXT"),
+        ("project_attempts", "activity", "TEXT"),
+        ("project_questions", "attempt_id", "TEXT"),
+        (
+            "project_questions",
+            "delivery",
+            "TEXT NOT NULL DEFAULT 'deferred'",
+        ),
+        ("project_questions", "answered_at", "INTEGER"),
     ] {
         add_column(tx, table, column, definition)?;
     }
@@ -1538,7 +1551,9 @@ impl Store {
         }
         let plans = attempts
             .iter()
-            .filter(|attempt| attempt.stage == "plan")
+            .filter(|attempt| {
+                attempt.stage == "plan" && attempt.activity.as_deref() != Some("discussion")
+            })
             .collect::<Vec<_>>();
         if plans.len() != 1
             || plans[0].status != "completed"
@@ -1629,7 +1644,9 @@ impl Store {
         }
         let planning = attempts
             .iter()
-            .filter(|attempt| attempt.stage == "plan")
+            .filter(|attempt| {
+                attempt.stage == "plan" && attempt.activity.as_deref() != Some("discussion")
+            })
             .collect::<Vec<_>>();
         if planning.len() != 1
             || planning[0].status != "completed"
@@ -1804,7 +1821,9 @@ impl Store {
                     .attempts
                     .iter()
                     .rev()
-                    .find(|attempt| attempt.stage == "plan")
+                    .find(|attempt| {
+                        attempt.stage == "plan" && attempt.activity.as_deref() != Some("discussion")
+                    })
                     .is_some_and(|attempt| {
                         attempt.status == "completed"
                             && parse_plan(&attempt.output).is_ok_and(|plan| plan.tasks.is_empty())
@@ -1831,6 +1850,14 @@ impl Store {
             params![status, summary, error, now(), id],
         )
         .map_err(|e| e.to_string())?;
+        if status == "completed" && !summary.trim().is_empty() {
+            let final_attempt = workflow.attempts.iter().rev().find(|attempt| {
+                attempt.status == "completed" && matches!(attempt.stage.as_str(), "review" | "plan")
+            });
+            if let Some(attempt) = final_attempt {
+                tx.execute("INSERT OR IGNORE INTO project_team_messages(id,project_id,conversation_id,workflow_id,attempt_id,sender_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,'agent',?7,?8)",params![format!("result:{id}"),workflow.project_id,workflow.conversation_id,id,attempt.id,attempt.agent_id,summary,now()]).map_err(|_|"团队结果发布失败")?;
+            }
+        }
         if status != "interrupted" {
             tx.execute(
                 "UPDATE project_tasks SET status='skipped' WHERE workflow_id=?1 AND status='queued'",
@@ -1856,6 +1883,7 @@ impl Store {
         self.workflow(id)
     }
     pub fn recover_projects(&mut self) -> Result<()> {
+        self.connection.execute("UPDATE project_questions SET status='cancelled',answered_at=?1 WHERE status='pending'", [now()]).map_err(|e| e.to_string())?;
         self.connection.execute_batch("UPDATE project_attempts SET status='interrupted',error='上次项目运行因退出中断，不会自动重放' WHERE status IN ('starting','running','cancelling');
           UPDATE project_tasks SET status='interrupted',error='上次任务因退出中断' WHERE status='running';
           UPDATE messages SET status='failed' WHERE status='pending' AND id IN (SELECT user_message_id FROM workflows WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling'));
@@ -1873,12 +1901,13 @@ impl Store {
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
-        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error,created_at FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error,created_at,activity FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
         let result = stmt
             .query_map([workflow], |r| {
                 Ok(Attempt {
                     id: r.get(0)?,
                     created_at: r.get(13)?,
+                    activity: r.get(14)?,
                     workflow_id: r.get(1)?,
                     task_id: r.get(2)?,
                     agent_id: r.get(3)?,
@@ -1987,12 +2016,23 @@ impl Store {
         let roles = roles_of(&workflow)?;
         let mut next = workflow.status.as_str();
         match stage {
+            "discussion"
+                if EXECUTOR_AGENTS.contains(&agent)
+                    && task_id.is_none()
+                    && workflow.status == "planning"
+                    && self
+                        .conversation(&workflow.conversation_id)?
+                        .members
+                        .iter()
+                        .any(|member| member == agent) => {}
             // 规划：规划角色一个人做完（不再有 Hermes 分发这一步）。
             "plan"
                 if agent == roles.plan.agent
                     && task_id.is_none()
                     && workflow.status == "planning"
-                    && !attempts.iter().any(|a| a.stage == "plan") => {}
+                    && !attempts.iter().any(|a| {
+                        a.stage == "plan" && a.activity.as_deref() != Some("discussion")
+                    }) => {}
             // 实现：成员由用户逐任务确认；仍只允许 Codex/DSH，且必须匹配该任务的已确认成员。
             "implement" if EXECUTOR_AGENTS.contains(&agent) && workflow.status == "running" => {
                 let task = workflow
@@ -2047,7 +2087,9 @@ impl Store {
         }
         let id = Uuid::new_v4().to_string();
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        tx.execute("INSERT INTO project_attempts(id,workflow_id,task_id,agent_id,stage,status,model,reasoning_effort,created_at) VALUES(?1,?2,?3,?4,?5,'starting',?6,?7,?8)",params![id,workflow_id,task_id,agent,stage,model,effort,now()]).map_err(|e|e.to_string())?;
+        let activity = (stage == "discussion").then_some("discussion");
+        let stage = if activity.is_some() { "plan" } else { stage };
+        tx.execute("INSERT INTO project_attempts(id,workflow_id,task_id,agent_id,stage,status,model,reasoning_effort,created_at,activity) VALUES(?1,?2,?3,?4,?5,'starting',?6,?7,?8,?9)",params![id,workflow_id,task_id,agent,stage,model,effort,now(),activity]).map_err(|e|e.to_string())?;
         tx.execute(
             "UPDATE workflows SET status=?1,updated_at=?2 WHERE id=?3",
             params![next, now(), workflow_id],
@@ -2231,7 +2273,7 @@ mod tests {
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 14);
+        assert_eq!(version(&store), 15);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
         assert!(columns(&store, "project_attempts")
             .iter()
@@ -2303,7 +2345,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 14);
+        assert_eq!(version(&store), 15);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 

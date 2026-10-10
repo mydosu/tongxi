@@ -266,6 +266,22 @@ impl Runtime {
             }),
         })
     }
+    pub(crate) fn shared_project_loaded(&self, session: &str) {
+        self.inner.lock().unwrap().loaded.insert(session.to_owned());
+    }
+    pub(crate) fn project_session_is_loaded(&self, session: &str) -> bool {
+        self.inner.lock().unwrap().loaded.contains(session)
+    }
+    pub(crate) fn shared_project_client(&self) -> Result<Arc<Client>> {
+        let inner = self.inner.lock().unwrap();
+        if inner.connection != "connected" {
+            return Err("项目成员尚未连接".into());
+        }
+        inner
+            .client
+            .clone()
+            .ok_or_else(|| "项目成员接口不可用".into())
+    }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();
         RuntimeSnapshot {

@@ -19,7 +19,7 @@ def fixture(agent='codex-win'):
     base=ROOT/'artifacts'/('project-tools-probe-'+uuid.uuid4().hex[:10]);project=base/'project';data=base/'data'
     project.mkdir(parents=True);data.mkdir();db=data/'hub.db';attempt=str(uuid.uuid4());task=str(uuid.uuid4())
     with sqlite3.connect(db) as connection:
-        connection.executescript('''PRAGMA user_version=14;
+        connection.executescript('''PRAGMA user_version=15;
         CREATE TABLE projects(id TEXT PRIMARY KEY,root TEXT,checks TEXT);
         CREATE TABLE workflows(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,plan TEXT,conversation_id TEXT,updated_at INTEGER);
         CREATE TABLE project_tasks(id TEXT PRIMARY KEY,files TEXT,worktree TEXT,assigned_agent TEXT);
@@ -66,7 +66,7 @@ def main():
         if not condition:raise AssertionError(name)
         checks.append(name)
     try:
-        specs=helper.rpc('tools/list',{})['tools'];check('file and collaboration tools use current executable',len(specs)==11)
+        specs=helper.rpc('tools/list',{})['tools'];check('file and collaboration tools use current executable',len(specs)==12)
         recipient='hermes-win' if context['agent']!='hermes-win' else 'dsh-win'
         sent=helper.call('hub_message',{'to_agent':recipient,'content':'isolated handoff'});check('direct member message persists',not sent['isError'])
         published=helper.call('hub_broadcast',{'content':'isolated team update'});check('public broadcast persists',not published['isError'])
