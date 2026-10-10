@@ -7,6 +7,122 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 #[test]
+fn supplementary_user_assignment_updates_roles_during_planning_and_overrides_the_proposal() {
+    let mut f = Fixture::new();
+    let workflow = f.queued();
+    assert!(f.store.acquire_project(&workflow.id).unwrap());
+    let mut roles = Roles::defaults();
+    roles.implement.agent = "hermes-win".into();
+    roles.implement.model = Some("old-hermes-route".into());
+    f.store
+        .set_workflow_roles(&workflow.id, Some(&serde_json::to_string(&roles).unwrap()))
+        .unwrap();
+    let mut planner = f
+        .store
+        .begin_attempt(&workflow.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    let posted = f
+        .store
+        .post_user_team_message(&f.room, "由codex出方案，dsh执行，Hermes做好验收和文件整理")
+        .unwrap();
+    assert_eq!(posted.workflow_id.as_deref(), Some(workflow.id.as_str()));
+    let updated = f.store.workflow(&workflow.id).unwrap();
+    let roles = roles_of(&updated).unwrap();
+    assert_eq!(roles.implement.agent, "dsh-win");
+    assert!(roles.implement.model.is_none());
+    let mut proposed = plan(&["main.py"]);
+    proposed.tasks[0].agent_id = "hermes-win".into();
+    planner.output = serde_json::to_string(&proposed).unwrap();
+    complete(&mut f.store, &planner);
+    let planned = f.store.save_plan(&workflow.id, &proposed).unwrap();
+    let chosen = f
+        .store
+        .project_explicit_executor(&planned)
+        .unwrap()
+        .unwrap();
+    assert_eq!(chosen, "dsh-win");
+    f.store
+        .set_task_agent(&planned.tasks[0].id, &chosen)
+        .unwrap();
+    f.store.begin_execution(&workflow.id).unwrap();
+    let actual = f
+        .store
+        .begin_attempt(
+            &workflow.id,
+            Some(&planned.tasks[0].id),
+            &chosen,
+            "implement",
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(actual.agent_id, "dsh-win");
+    assert_eq!(f.store.attempts(&workflow.id).unwrap().len(), 2);
+}
+
+#[test]
+fn user_answers_can_correct_assignment_without_importing_other_project_messages() {
+    let mut f = Fixture::new();
+    let job = f.queued();
+    f.store.acquire_project(&job.id).unwrap();
+    let planner = f
+        .store
+        .begin_attempt(&job.id, None, "codex-win", "plan", None, None)
+        .unwrap();
+    let id = crate::project_questions::post(&f.store.path, &planner.id, "请描述改进目标", vec![])
+        .unwrap();
+    f.store
+        .answer_project_question(
+            &f.room,
+            &id,
+            &Uuid::new_v4().to_string(),
+            "DSH执行，修复main.py，Hermes验收",
+        )
+        .unwrap();
+    let updates = f.store.project_user_updates(&job.id).unwrap();
+    assert_eq!(updates.len(), 1);
+    assert!(updates[0].id.starts_with("answer:"));
+    assert_eq!(
+        f.store
+            .project_explicit_executor(&f.store.workflow(&job.id).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some("dsh-win")
+    );
+    f.store
+        .post_user_team_message(&f.room, "实现交给Hermes")
+        .unwrap();
+    assert_eq!(
+        f.store
+            .project_explicit_executor(&f.store.workflow(&job.id).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some("hermes-win")
+    );
+    assert!(f
+        .store
+        .project_user_updates("another-workflow")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn role_directives_bind_each_marker_to_its_agent_in_a_single_sentence() {
+    let mut roles = Roles::defaults();
+    crate::project_directives::apply("Hermes出方案 Codex实现 DSH验收", &mut roles);
+    assert_eq!(roles.plan.agent, "hermes-win");
+    assert_eq!(roles.implement.agent, "codex-win");
+    assert_eq!(roles.review.agent, "dsh-win");
+    crate::project_directives::apply("规划交给Codex，实现交给DSH，验收由Hermes完成", &mut roles);
+    assert_eq!(roles.plan.agent, "codex-win");
+    assert_eq!(roles.implement.agent, "dsh-win");
+    assert_eq!(roles.review.agent, "hermes-win");
+    let before = roles.clone();
+    crate::project_directives::apply("Hermes的实现现在是什么状态？Codex验收做完了？", &mut roles);
+    assert_eq!(roles, before);
+}
+
+#[test]
 fn members_can_discuss_direction_before_planner_without_becoming_the_plan() {
     let mut f = Fixture::new();
     let workflow = f.queued();

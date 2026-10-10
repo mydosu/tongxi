@@ -437,6 +437,13 @@ impl Runner {
             .insert(attempt_id.clone(), (workflow.clone(), client.clone()));
         let mut next_prompt = prompt.to_owned();
         let mut handled = std::collections::HashSet::new();
+        let mut handled_updates = serde_json::from_str::<Value>(prompt)
+            .ok()
+            .and_then(|value| value["user_updates"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|update| update["id"].as_str().map(String::from))
+            .collect::<std::collections::HashSet<_>>();
         let outcome = loop {
             if self.attempt_cancelled(&workflow, &attempt_id) {
                 break Err("项目协作已停止".into());
@@ -446,11 +453,13 @@ impl Runner {
                 state.completed = None;
                 state.failure = None;
                 state.attempt.native_turn_id = None;
-                if !handled.is_empty()
+                if (!handled.is_empty() || !handled_updates.is_empty())
                     && matches!(state.attempt.stage.as_str(), "plan" | "repair" | "review")
                 {
                     state.pieces.clear();
                     state.attempt.output.clear();
+                    state.final_plan = None;
+                    state.last_plan_message = None;
                 }
             }
             let effective = deadline + self.store.lock().unwrap().project_wait_duration(&workflow);
@@ -481,7 +490,36 @@ impl Runner {
                 Err(error) => break Err(error),
             };
             if questions.is_empty() {
-                break Ok(());
+                let continuation = (|| -> Result<Option<String>> {
+                    let planning = {
+                        let state = wire.lock().unwrap();
+                        state.attempt.stage == "plan"
+                            && state.attempt.activity.as_deref() != Some("discussion")
+                    };
+                    if !planning {
+                        return Ok(None);
+                    }
+                    let store = self.store.lock().unwrap();
+                    let updates = store
+                        .project_user_updates(&workflow)?
+                        .into_iter()
+                        .filter(|update| !handled_updates.contains(&update.id))
+                        .collect::<Vec<_>>();
+                    if updates.is_empty() {
+                        return Ok(None);
+                    }
+                    let roles = crate::project_store::roles_of(&store.workflow(&workflow)?)?;
+                    handled_updates.extend(updates.iter().map(|update| update.id.clone()));
+                    Ok(Some(format!("用户在本轮规划期间补充了以下要求：{}\n当前分工：{}\n请复用已有方案与检查证据，按补充要求修正当前方案与任务分配；不要重新开始一轮协作，不要重复已完成的摸底。需求仍不清楚时 hub_ask_user 提问并等待。最终方案使用既定 JSON 格式。",json!(updates),json!(roles))))
+                })();
+                match continuation {
+                    Ok(Some(prompt)) => {
+                        next_prompt = prompt;
+                        continue;
+                    }
+                    Ok(None) => break Ok(()),
+                    Err(error) => break Err(error),
+                }
             }
             let mut answers = Vec::new();
             for question in questions {
@@ -512,11 +550,17 @@ impl Runner {
             if self.attempt_cancelled(&workflow, &attempt_id) {
                 break Err("项目协作已停止".into());
             }
-            next_prompt = format!(
-                "{}\n用户已回答：{}\n从停下的位置继续同一项目目标，不重做已完成工具操作。",
-                prompt,
-                json!(answers)
-            );
+            let continuation = (|| -> Result<String> {
+                let store = self.store.lock().unwrap();
+                let updates = store.project_user_updates(&workflow)?;
+                let roles = crate::project_store::roles_of(&store.workflow(&workflow)?)?;
+                handled_updates.extend(updates.iter().map(|update| update.id.clone()));
+                Ok(format!("{}\n用户已回答：{}\n本轮最新补充要求：{}\n当前分工：{}\n从停下的位置继续同一项目目标，不重做已完成工具操作。",prompt,json!(answers),json!(updates),json!(roles)))
+            })();
+            match continuation {
+                Ok(prompt) => next_prompt = prompt,
+                Err(error) => break Err(error),
+            }
         };
         client.unlisten(subscription);
         client.swap_request_handler(previous_handler);

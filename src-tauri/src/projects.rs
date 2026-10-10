@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
-const PLAN_PROMPT_WITH_TOOLS: &str = "你是项目团队的协作协调者。当前用户消息是本轮唯一目标来源，优先于历史讨论和旧计划；群聊历史只作背景，除非用户明确引用。必要时用本机 CLI、MCP、hub_list/hub_read了解项目；用 hub_message(to_agent,content)私下询问成员、hub_inbox()读收件箱、hub_broadcast(content)把适合团队共同查看的结论发布到团队会话。推理与工具细节不广播。先判断用户是在讨论还是希望实际推进项目；讨论时直接回答并返回 tasks=[]。若要求实施，尊重用户消息里明确指定的 Agent/角色；未指定的任务根据成员能力和默认角色安排，可将不同任务分给不同 Agent。每项任务明确目标、验收要点、文件范围和依赖；模型与思考强度已由用户在项目成员配置中设置；不要建议或覆盖模型，省略 execution。框架会按依赖自动执行，无需二次确认。成员均保留自己的原生工具权限。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是项目团队的协作协调者。本轮首条需求及随后补充的用户消息共同定义目标；user_updates 中最新的用户补充、分工和实际回答优先于首条请求里已被纠正的内容，也优先于旧计划。其他群聊历史只作背景，除非用户明确引用。必要时用本机 CLI、MCP、hub_list/hub_read了解项目；用 hub_message(to_agent,content)私下询问成员、hub_inbox()读收件箱、hub_broadcast(content)把适合团队共同查看的结论发布到团队会话。推理与工具细节不广播。先判断用户是在讨论、要求只读研究，还是希望实际推进开发。普通讨论或明确只读研究时，用规划阶段的工具完成分析，自然答复并返回 tasks=[]，不能把规划者的源码摸底、审查者的查缺口或最终验收再包装成实现任务。用户希望开发、改进或修复时，先在规划阶段用工具摸底，再给出真正推进目标的实现任务；不得交付一份全部是只读摸底/复核且禁止实现的方案就进入验收。若用户尚未描述具体改进点，先自行了解现状，向群聊公开简短候选与依据，再调用 hub_ask_user 问清要实现的目标，结束本轮回复等待实际回答；回答前不生成假实现任务或声称开发完成。收到用户回答后结合回答继续规划，无须重复摸底。实际代码实现优先交给 saved_roles.implement / default_executor 指定的成员；规划者自行承担本阶段摸底、验收成员在实现完成后独立验收。尊重用户消息里明确指定的 Agent/角色；用户指定不同任务给不同成员时可以分别分派，不施加固定成员限制。每项任务明确目标、验收要点、文件范围和依赖；模型与思考强度已由用户在项目成员配置中设置；不要建议或覆盖模型，省略 execution。框架会按依赖自动执行，无需二次确认。成员均保留自己的原生工具权限。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
 fn review_context_failure(error: &str) -> bool {
     error.contains("上下文超限") || error.contains("模型上下文容量不足")
@@ -178,7 +178,7 @@ fn public_context(store: &Store, workflow: &Workflow) -> Result<Value> {
     messages.reverse();
     let previous=detail.workflows.iter().filter(|job|job.id!=workflow.id&&job.project_id==workflow.project_id&&!project_store::live(&job.status)).take(3).map(|job|json!({"request":job.request.chars().take(2000).collect::<String>(),"status":job.status,"summary":job.summary.chars().take(2000).collect::<String>()})).collect::<Vec<_>>();
     Ok(
-        json!({"messages":messages,"previous_project_results":previous,"scope":"当前项目群公开历史仅作背景；当前用户请求定义本轮目标。未发送草稿、私聊、其他群及其他项目结果均排除；旧记录按上限截断"}),
+        json!({"messages":messages,"team_user_updates":store.project_user_updates(&workflow.id)?,"previous_project_results":previous,"scope":"当前项目群公开历史仅作背景；本轮首条请求与team_user_updates共同定义目标，最新补充优先。未发送草稿、私聊、其他群及其他项目结果均排除；旧记录按上限截断"}),
     )
 }
 
@@ -353,47 +353,7 @@ impl Runtime {
     }
 
     fn apply_role_directives(request: &str, roles: &mut Roles) {
-        fn agent_in(clause: &str) -> Option<&'static str> {
-            let text = clause.to_lowercase();
-            if text.contains("codex") {
-                Some("codex-win")
-            } else if text.contains("hermes") {
-                Some("hermes-win")
-            } else if text.contains("dsh") || text.contains("deepseek harness") {
-                Some("dsh-win")
-            } else {
-                None
-            }
-        }
-        fn assigned(request: &str, markers: &[&str]) -> Option<&'static str> {
-            request
-                .split(['\n', '，', '、', ',', '。', '；', ';'])
-                .filter(|clause| {
-                    markers
-                        .iter()
-                        .any(|marker| clause.to_lowercase().contains(marker))
-                })
-                .find_map(agent_in)
-        }
-        for (role, markers) in [
-            (&mut roles.plan, &["规划", "方案", "计划", "plan"][..]),
-            (
-                &mut roles.implement,
-                &["执行", "实现", "编码", "开发", "修复", "implement"][..],
-            ),
-            (
-                &mut roles.review,
-                &["验收", "复核", "检查", "审核", "测试", "review"][..],
-            ),
-        ] {
-            if let Some(agent) = assigned(request, markers) {
-                if role.agent != agent {
-                    role.agent = agent.to_owned();
-                    role.model = None;
-                    role.effort = None;
-                }
-            }
-        }
+        crate::project_directives::apply(request, roles);
     }
 
     fn save_project_roles(
@@ -589,12 +549,21 @@ impl Runtime {
             if workflow.status == "completed" {
                 return Ok(());
             }
+            let explicit_executor = runtime
+                .store
+                .lock()
+                .unwrap()
+                .project_explicit_executor(&workflow)?;
             let choices = workflow
                 .tasks
                 .iter()
                 .map(|task| TaskChoice {
                     position: task.position,
-                    agent_id: Some(task.agent_id.clone()),
+                    agent_id: Some(
+                        explicit_executor
+                            .clone()
+                            .unwrap_or_else(|| task.agent_id.clone()),
+                    ),
                     model: None,
                     effort: None,
                 })
@@ -795,6 +764,7 @@ impl Runtime {
         let choices = {
             let mut store = self.store.lock().unwrap();
             let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
+            let explicit = store.project_explicit_executor(&workflow)?;
             workflow
                 .tasks
                 .iter()
@@ -802,7 +772,7 @@ impl Runtime {
                     let agent = if task.status == "completed" {
                         task.agent_id.as_str()
                     } else {
-                        executor.unwrap_or(&task.agent_id)
+                        executor.or(explicit.as_deref()).unwrap_or(&task.agent_id)
                     };
                     let settings = chats
                         .iter()
@@ -1061,6 +1031,11 @@ impl Runtime {
                 ));
             }
         }
+        prompt["user_updates"] = json!(self
+            .store
+            .lock()
+            .unwrap()
+            .project_user_updates(&attempt.workflow_id)?);
         let result = self
             .native
             .run(attempt, root, &prompt.to_string(), deadline)?;
@@ -1226,6 +1201,7 @@ impl Runtime {
                 "manifest_limit":"最多500文件，最大6层，构建/依赖/受保护目录已排除",
                 "available_agents":available_agents,
                 "default_executor":roles.implement.agent,
+                "stage_responsibilities":{"planning":"理解目标、工具摸底、澄清并生成可实施方案","implementation":"按照实现任务推进目标，不用只读预检或提前验收替代","review":"实现完成后独立核对结果"},
                 "saved_roles":roles,
             }),
             deadline,

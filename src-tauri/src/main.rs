@@ -13,6 +13,7 @@ mod group_store;
 mod hermes;
 mod models;
 mod process_scope;
+mod project_directives;
 mod project_memory;
 mod project_models;
 mod project_native;
