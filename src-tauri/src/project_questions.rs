@@ -66,6 +66,7 @@ impl Store {
         if !crate::project_store::live(&job.status) {
             return Err("这轮协作已停止，问题不会再提交给旧任务".into());
         }
+        let roles = crate::project_directives::encoded_roles(self, &job.id, content)?;
         // Ordinary save_message rejects new work during a live workflow; answers
         // are allowed here and must be stored atomically with the question state.
         let tx = self.connection.transaction().map_err(|_| "回答保存失败")?;
@@ -79,6 +80,7 @@ impl Store {
             params![timestamp, room],
         )
         .map_err(|_| "回答保存失败")?;
+        crate::project_directives::save_roles(&tx, &job.id, &roles, timestamp)?;
         tx.commit().map_err(|_| "回答保存失败")?;
         Ok(())
     }

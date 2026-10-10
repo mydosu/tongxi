@@ -1132,6 +1132,7 @@ impl Store {
         {
             return Err("团队消息需为 1–16000 个有效字符".into());
         }
+        let roles = crate::project_directives::encoded_roles(self, &workflow_id, content)?;
         let id = Uuid::new_v4().to_string();
         let created_at = now();
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
@@ -1139,11 +1140,7 @@ impl Store {
             "INSERT INTO project_team_messages(id,project_id,conversation_id,workflow_id,message_kind,content,created_at) VALUES(?1,?2,?3,?4,'user',?5,?6)",
             params![id,project.id,conversation_id,workflow_id,content,created_at],
         ).map_err(|_| "团队消息保存失败")?;
-        tx.execute(
-            "UPDATE workflows SET updated_at=?1 WHERE id=?2",
-            params![created_at, workflow_id],
-        )
-        .map_err(|e| e.to_string())?;
+        crate::project_directives::save_roles(&tx, &workflow_id, &roles, created_at)?;
         tx.commit().map_err(|e| e.to_string())?;
         self.team_messages(conversation_id)?
             .into_iter()

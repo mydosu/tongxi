@@ -1,6 +1,6 @@
 # 同席 · Agent Hub
 
-个人独立 Windows 桌面多 Agent 协作软件，当前版本 `0.17.0`。已完成本地会话管理、四位成员的真实私聊、绑定项目后的统一项目群聊、当前会话内模型与思考强度切换、无边框窗口与 HUD 浮窗，以及桌面服务更新管理。
+个人独立 Windows 桌面多 Agent 协作软件，当前版本 `0.17.1`。已完成本地会话管理、四位成员的真实私聊、绑定项目后的统一项目群聊、当前会话内模型与思考强度切换、无边框窗口与 HUD 浮窗，以及桌面服务更新管理。
 
 代码在 `src/`（TS）与 `src-tauri/`（Rust），构建见「开发与测试」。采用 Tauri 2 + TypeScript + Rust + SQLite，使用系统 WebView2。默认数据库位于 Windows 应用本地数据目录 `local.personal.agenthub/hub.db`，完整路径可在“成员与服务”页查看。旧版数据会事务迁移至当前 schema（v15），保留消息、设置和原生会话映射；迁移前通过 SQLite 保存一份完整旧数据库到同目录 `backups`，包含已提交的 WAL 数据。本机构建产物与冻结的历史版本放在 `release/`，不进版本库。
 
@@ -112,6 +112,7 @@ Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝�
 - `python scripts/verify_stage3.py`：发布 EXE 的设置、真实 Codex 模型切换/恢复默认、Hermes 私聊/隔离/重启/取消验收；使用 CDP 自动化。
 - `python scripts/verify_stage3_native.py`：真实系统鼠标键盘验收窗口拖动、缩放、窗口按钮与会话设置；不调用模型，CDP 仅定位和观察。
 - `python scripts/verify_project_ui_v17.py`：当前项目空间、集中配置、进度页、原方案续跑和连续会话滚动的 27 项模拟 IPC 回归，不发送模型请求。
+- `python scripts/verify_dispatch_update.py`：真实复现“先启动规划、随后在群聊点名 DSH 执行”，验证角色更新、澄清目标、DSH 源码改动与 Hermes 独立验收；只使用 Luna 和 Daily One、隔离数据库与项目。
 - `python scripts/verify_project_v17.py`：真实三个客户端私聊与执行共用会话、集中模型设置、DSH 提问、等待回答及同一会话续跑、Hermes 验收、宽窄窗口布局。只使用 Luna 与 Daily One；需要真实 API。
 - `python scripts/verify_project_correction_v17.py`：在上一脚本的隔离项目中完成一个任务后暂停，真实成员讨论纠正方向，保留已完成改动并验收新目标。
 - `python scripts/verify_model_provider_ui.py`：v0.16 历史界面的侧栏模块、提供商过滤与保存、宽窄窗口布局、自动群聊入口、公开气泡去重、推理滚动和原方案恢复；20 项模拟 IPC 回归，不发送模型请求。
@@ -125,6 +126,8 @@ Codex 从 PATH 中查找原生 exe，也支持 `AGENT_HUB_CODEX_EXE` 指定绝�
 测试使用 `artifacts/desktop-test-*` 隔离本地数据，仅测试子进程打开临时本机 CDP 调试端口。普通启动不打开调试端口。软件不依赖键鼠测试工具或共享暂停助手。
 
 ## 迭代记录
+
+v0.17.1 修复规划期间补发分工仅保存气泡、没有更新调度的问题。补充消息和实际回答会更新本轮分工并进入原生会话；规划者在原会话中复用方案修正，自动派发优先使用用户点名的执行者。源码摸底留在规划阶段，需求缺少具体目标时先向用户澄清，不用只读摸底和复核冒充开发完成。保留各任务自由分配与任意技术成员担任阶段角色，不恢复旧的 DSH-only 权限限制。
 
 v0.17.0 重构项目空间：群聊移除流程卡片，侧栏新增独立进度页，项目主按钮收起与展开；集中项目成员模型配置取代专属页顶层选择。项目任务复用成员已连接的原生客户端，任务与项目内私聊共用同一原生会话、上下文与工具入口。Agent 真实提问等待用户回答，收到回答后继续；中途纠正先讨论再调整，保留已完成改动。数据库升级至 schema 15，迁移保留原设置与会话映射。
 
