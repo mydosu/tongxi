@@ -1075,6 +1075,7 @@ mod tests {
         crate::project_store::Attempt {
             id: format!("attempt-{agent}-{stage}"),
             created_at: 1,
+            activity: None,
             workflow_id: "workflow".to_string(),
             task_id: None,
             agent_id: agent.to_string(),

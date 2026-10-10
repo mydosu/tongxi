@@ -126,6 +126,7 @@ pub struct ConversationDetail {
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub project_agent_inbox: Vec<crate::project_store::RoomAgentMessage>,
+    pub project_questions: Vec<crate::project_questions::Question>,
 }
 
 pub struct Store {
@@ -206,10 +207,10 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 14 {
+        if version > 15 {
             return Err("数据由更新的软件版本创建，请使用对应版本打开".into());
         }
-        if version > 0 && version < 14 && path.is_absolute() {
+        if version > 0 && version < 15 && path.is_absolute() {
             let backups = path.parent().ok_or("数据库目录无效")?.join("backups");
             std::fs::create_dir_all(&backups).map_err(|_| "迁移前数据库备份目录创建失败")?;
             let snapshot = backups.join(format!("hub-schema-v{version}-{}.db", Uuid::new_v4()));
@@ -366,7 +367,7 @@ impl Store {
                     .map_err(|e| e.to_string())?;
             }
         }
-        tx.execute_batch("PRAGMA user_version=14;")
+        tx.execute_batch("PRAGMA user_version=15;")
             .map_err(|e| e.to_string())?;
         let seeded = tx
             .query_row("SELECT value FROM metadata WHERE key='seeded'", [], |row| {
@@ -530,6 +531,7 @@ impl Store {
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
             project_agent_inbox: self.project_chat_messages(id)?,
+            project_questions: self.project_questions(id)?,
         })
     }
 
@@ -1603,7 +1605,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
         let room = direct(&mut store, "升级后");
         assert!(store

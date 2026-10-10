@@ -16,6 +16,7 @@ mod process_scope;
 mod project_memory;
 mod project_models;
 mod project_native;
+mod project_questions;
 mod project_store;
 #[cfg(test)]
 mod project_tests;
@@ -532,6 +533,18 @@ fn remove_conversation_item(
     })
 }
 #[tauri::command]
+fn answer_project_question(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    question_id: String,
+    message_id: String,
+    content: String,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.answer_project_question(&conversation_id, &question_id, &message_id, &content)
+    })
+}
+#[tauri::command]
 fn create_conversation(
     state: State<'_, AppState>,
     title: String,
@@ -889,6 +902,7 @@ fn main() {
             archive_conversation,
             delete_conversation,
             remove_conversation_item,
+            answer_project_question,
             update_group_members,
             save_local_message,
             app_info,

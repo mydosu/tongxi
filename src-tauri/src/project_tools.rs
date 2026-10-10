@@ -162,7 +162,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 14 {
+        if version != 15 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -246,6 +246,28 @@ impl Broker {
     }
 
     pub fn call(&mut self, tool: &str, args: Value) -> Result<Value> {
+        if tool == "hub_ask_user" {
+            Self::scope(&self.connection, &self.attempt_id)?;
+            let path: String = self
+                .connection
+                .query_row(
+                    "SELECT file FROM pragma_database_list WHERE name='main'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "问题数据库路径不可用")?;
+            let prompt = args["question"].as_str().ok_or("请输入问题")?;
+            let choices = args["options"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return crate::project_questions::post(Path::new(&path),&self.attempt_id,prompt,choices).map(|id|json!({"question_id":id,"awaiting_user":true,"instruction":"问题已发到用户会话。停止当前操作并结束本轮回复，等待用户回答后会从同一项目会话继续。不要猜测答案，也不要批准未验收的任务。"}));
+        }
         if tool.starts_with("hub_memory_") {
             let scope = Self::scope(&self.connection, &self.attempt_id)?;
             return crate::project_memory::call(&scope.project_id, &scope.agent_id, tool, args);
@@ -490,6 +512,7 @@ pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let nullable_hash = json!({"type":["string","null"],"description":"Current SHA256 from hub_read; null only for a new file."});
     let definitions=[
+        ("hub_ask_user","Ask the user a clarification question and wait for their reply. The question is shown in the team conversation; the same native turn continues after the answer.",json!({"question":string,"options":{"type":"array","items":string}}),vec!["question"]),
         ("hub_memory_search","Search shared memory for this project only; use before work to recall decisions and known pitfalls.",json!({"query":string}),vec!["query"]),
         ("hub_memory_write","Store concise project decisions, findings and verified results under your member's project notes. Do not store private chats, raw reasoning or credentials.",json!({"name":string,"content":string}),vec!["name","content"]),
         ("hub_memory_read","Read a note URI from the current project's shared memory; other project scopes are rejected.",json!({"uri":string}),vec!["uri"]),
@@ -544,21 +567,6 @@ pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Ve
 
 fn project_chat_tool_specs() -> Vec<Value> {
     tool_specs()
-        .into_iter()
-        .filter(|tool| {
-            matches!(
-                tool["name"].as_str(),
-                Some(
-                    "hub_message"
-                        | "hub_inbox"
-                        | "hub_broadcast"
-                        | "hub_memory_search"
-                        | "hub_memory_write"
-                        | "hub_memory_read"
-                )
-            )
-        })
-        .collect()
 }
 
 fn chat_context(
@@ -580,6 +588,19 @@ fn chat_tool(
     args: Value,
 ) -> Result<Value> {
     let (project, group, agent) = chat_context(connection, conversation_id)?;
+    let active: Option<String> = connection.query_row("SELECT a.id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.project_id=?1 AND w.conversation_id=?2 AND a.agent_id=?3 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing') ORDER BY a.rowid DESC LIMIT 1", params![project,group,agent], |row|row.get(0)).optional().map_err(|_|"当前成员任务读取失败")?;
+    if let Some(attempt) = active {
+        let path: String = connection
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name='main'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| "项目工具数据库路径不可用")?;
+        if !path.is_empty() {
+            return Broker::open(Path::new(&path), &attempt)?.call(name, args);
+        }
+    }
     match name {
         "hub_memory_search" | "hub_memory_write" | "hub_memory_read" => {
             crate::project_memory::call(&project, &agent, name, args)
@@ -920,7 +941,7 @@ mod agent_message_tests {
             project_chat_dynamic_tools(&store.path, &codex_chat.conversation_id)
                 .unwrap()
                 .len(),
-            6
+            12
         );
         assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
         assert_eq!(

@@ -2,6 +2,44 @@
 :root { font-family: 'Noto Sans SC', 'MiSans', HubSans, 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; color: #303844; background: #f8f9fb; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; font-size: 14px; --accent: #33383e; --line: #e3e5e8; --muted: #848990; }
 * { box-sizing: border-box; }
 body { margin: 0; }
+.project-chevron { color: #8a95a5; margin-left: auto; flex-shrink: 0; font-size: 13px; }
+.project-progress-content { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px; }
+.project-progress-overview { padding: 24px 26px; border: 1px solid #e2e7ef; background: #fff; border-radius: 13px; }
+.project-progress-heading { display: flex; align-items: center; justify-content: space-between; }
+.project-progress-heading h2 { margin: 9px 0 18px; font-size: 22px; font-weight: 500; color: #435369; }
+.project-progress-heading > strong { font-size: 35px; font-weight: 400; color: #748ba7; }
+.project-progress-heading > strong small { font-size: 15px; margin-left: 4px; }
+.project-progress-meter { height: 7px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
+.project-progress-meter span { display: block; height: 100%; background: #9aadc4; transition: width .2s; }
+.project-progress-overview p { margin: 10px 0 0; color: #8b96a5; font-size: 12px; }
+.project-member-status-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 18px 0 24px; }
+.project-member-status { display: flex; align-items: center; gap: 11px; padding: 17px 15px; border: 1px solid #e3e8ef; border-radius: 10px; background: #fff; text-align: left; }
+.project-member-status > div { display: grid; gap: 4px; min-width: 0; }
+.project-member-status strong { color: #56667c; font-size: 13px; font-weight: 500; }
+.project-member-status span:not(.avatar) { color: #8f9cad; font-size: 11px; }
+.project-member-status > i { width: 6px; height: 6px; background: #d0d6df; border-radius: 50%; margin-left: auto; }
+.project-member-status.working > i { background: #91a9c4; box-shadow: 0 0 0 3px #edf2f8; }
+.project-progress-work { border: 1px solid #e2e7ee; border-radius: 12px; padding: 18px 22px; background: #fff; }
+.project-progress-work > header { display: flex; align-items: center; gap: 14px; }
+.project-progress-work h3 { font-size: 14px; margin: 0; color: #516176; }
+.project-progress-work header > span { color: #8a96a6; font-size: 11px; }
+.project-progress-work header button { margin-left: auto; }
+.project-progress-work ol { list-style: none; padding: 4px 0 0; margin: 0; }
+.project-progress-work li { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #edf0f5; }
+.project-progress-work li:last-child { border-bottom: 0; }
+.project-progress-work li > div { display: grid; gap: 5px; }
+.project-progress-work li strong { color: #5b697d; font-size: 13px; font-weight: 400; }
+.project-progress-work li small { color: #98a3b3; font-size: 11px; }
+.progress-task-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid #e2e7ed; color: #abb4c1; }
+.progress-task-mark.completed { color: #88a295; background: #f0f5f2; border-color: #e4ece7; }
+.project-member-settings-row { display: flex; gap: 12px; border: 0; border-bottom: 1px solid #e8ecf2; padding: 16px 0 20px; margin: 8px 0 18px; flex-wrap: wrap; }
+.project-member-settings-row legend { color: #59697e; font-weight: 500; font-size: 14px; }
+.project-member-settings-row label { display: grid; gap: 7px; flex: 1 1 140px; min-width: 0; color: #8794a7; font-size: 11px; }
+.modal:has(#project-member-settings) { width: 720px; }
+.project-question-answer { margin-top: 10px; align-self: flex-start; }
+.project-member-settings-row select { min-width: 0; width: 100%; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; color: #5b6879; padding: 6px; background: #fff; }
+.project-member-settings-row small { flex-basis: 100%; color: #9da7b5; font-size: 10px; }
+@media(max-width:1050px) { .project-progress-content { padding: 22px; } .project-member-status-grid { gap: 8px; } .project-member-status { padding: 13px 10px; gap: 8px; } }
 .message-context-menu { position: fixed; z-index: 100; min-width: 190px; padding: 6px; border: 1px solid #e0e5ed; border-radius: 9px; background: #fff; box-shadow: 0 8px 28px #28344826; }
 .message-context-menu button { width: 100%; padding: 9px 10px; text-align: left; color: #ab6659; font-size: 13px; border-radius: 5px; }
 .message-context-menu button:hover { background: #faf1ef; }
@@ -418,21 +456,3 @@ html[data-hud] #hud-exit:hover { background: #f1f2f4; color: #2c3036; }
 .native-session strong { font-size: 12px; color: #2c3036; font-weight: 600; }
 .native-session small { font-size: 10px; color: #8b939d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .native-session code { font-size: 10px; color: #a2a9b2; }
-
-/* 角色配置面板：规划 / 执行 / 验收各一行，成员与参数并排；沿用模态自带底色，不再加框。 */
-.role-field { display: grid; grid-template-columns: 58px repeat(4, minmax(75px, 1fr)); gap: 8px; align-items: center; margin-bottom: 15px; }
-.role-field:not(.multi-provider) { grid-template-columns: 58px repeat(3, minmax(75px, 1fr)); }
-.role-field > span { font-size: 10px; color: #727c8b; }
-.role-field label { display: flex; flex-direction: column; gap: 5px; font-size: 10px; color: #8b94a0; }
-.role-field select { width: 100%; padding: 8px; border: 1px solid #dbdee2; border-radius: 7px; background: #fff; color: #4d555f; font-size: 11px; }
-
-/* 逐任务确认区：接在任务列表下方，只用一条分隔线，不另起框也不加阴影。 */
-.task-confirm { margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid #dddfe3; }
-.task-confirm-heading { font-size: 10px; color: #7e8895; margin-bottom: 10px; }
-.task-confirm-row { display: grid; grid-template-columns: minmax(100px,1fr) 104px 116px 126px 96px; gap: 8px; align-items: center; margin-bottom: 9px; }
-.task-confirm-row:not(.multi-provider) { grid-template-columns: minmax(100px,1fr) 104px 126px 96px; }
-.task-confirm-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.task-confirm-title span { color: #818a98; font-size: 10px; overflow-wrap: anywhere; }
-.task-confirm-row label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #8b94a0; }
-.task-confirm-row select { flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid #d9dce0; border-radius: 5px; background: #fff; color: #424850; font-size: 10px; }
-.task-confirm > .primary { margin-top: 6px; }

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 type Result<T> = std::result::Result<T, String>;
-const PLAN_PROMPT_WITH_TOOLS: &str = "你是项目团队的协作协调者。当前用户消息是本轮唯一目标来源，优先于历史讨论和旧计划；群聊历史只作背景，除非用户明确引用。必要时用本机 CLI、MCP、hub_list/hub_read了解项目；用 hub_message(to_agent,content)私下询问成员、hub_inbox()读收件箱、hub_broadcast(content)把适合团队共同查看的结论发布到团队会话。推理与工具细节不广播。先判断用户是在讨论还是希望实际推进项目；讨论时直接回答并返回 tasks=[]。若要求实施，尊重用户消息里明确指定的 Agent/角色；未指定的任务根据成员能力和默认角色安排，可将不同任务分给不同 Agent。每项任务明确目标、验收要点、文件范围和依赖；execution 可建议该 Agent 可用的模型与强度。框架会按依赖自动执行，无需二次确认。成员均保留自己的原生工具权限。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
+const PLAN_PROMPT_WITH_TOOLS: &str = "你是项目团队的协作协调者。当前用户消息是本轮唯一目标来源，优先于历史讨论和旧计划；群聊历史只作背景，除非用户明确引用。必要时用本机 CLI、MCP、hub_list/hub_read了解项目；用 hub_message(to_agent,content)私下询问成员、hub_inbox()读收件箱、hub_broadcast(content)把适合团队共同查看的结论发布到团队会话。推理与工具细节不广播。先判断用户是在讨论还是希望实际推进项目；讨论时直接回答并返回 tasks=[]。若要求实施，尊重用户消息里明确指定的 Agent/角色；未指定的任务根据成员能力和默认角色安排，可将不同任务分给不同 Agent。每项任务明确目标、验收要点、文件范围和依赖；模型与思考强度已由用户在项目成员配置中设置；不要建议或覆盖模型，省略 execution。框架会按依赖自动执行，无需二次确认。成员均保留自己的原生工具权限。depends_on 使用0基任务位置且只能指向更早任务。禁止输出代码补丁、凭据、.git 或框架数据。只返回 JSON {summary:string,tasks:[{title:string,agent_id:string,instructions:string,files:string[],depends_on:number[],execution?:{model:string,reasoning_effort:string|null,rationale:string}}]}。";
 
 fn review_context_failure(error: &str) -> bool {
     error.contains("上下文超限") || error.contains("模型上下文容量不足")
@@ -71,6 +71,22 @@ pub(crate) fn review_prompt(
         "task_results":tasks.iter().map(|task| json!({"position":task.position,"title":task.title,"instructions":task.instructions,"depends_on":task.depends_on,"status":task.status,"output_excerpt":task.output.chars().take(4000).collect::<String>(),"output_excerpt_truncated":task.output.chars().count()>4000})).collect::<Vec<_>>(),
         "handoff_inbox":{"tool":"hub_inbox","available_messages":workflow.agent_messages.iter().filter(|message|message.recipient_agent==agent).count()}
     })
+}
+
+/// Completed commits survive a change of direction; interrupted branches stay isolated.
+pub(crate) fn preserve_completed_work(root: &Path, previous: &Workflow) -> Result<()> {
+    for task in previous
+        .tasks
+        .iter()
+        .filter(|task| task.status == "completed")
+    {
+        if let Some(branch) = task.branch.as_deref() {
+            crate::project_worktree::merge(root, branch).map_err(|error| {
+                format!("保留已完成任务「{}」的提交时发生冲突：{error}", task.title)
+            })?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> Result<()> {
@@ -223,7 +239,7 @@ impl Runtime {
     pub fn new(
         app: tauri::AppHandle,
         store: Arc<Mutex<Store>>,
-        directory: PathBuf,
+        _directory: PathBuf,
         codex: Arc<codex::Runtime>,
         hermes: Arc<hermes::Runtime>,
         dsh: Arc<dsh::Runtime>,
@@ -242,12 +258,43 @@ impl Runtime {
                 );
             }
         });
+        let clients = {
+            let codex = codex.clone();
+            let hermes = hermes.clone();
+            let dsh = dsh.clone();
+            Arc::new(move |agent: &str| match agent {
+                "codex-win" => codex.shared_project_client(),
+                "hermes-win" => hermes.shared_project_client(),
+                "dsh-win" => dsh.shared_project_client(),
+                _ => Err("不是项目执行成员".into()),
+            })
+        };
+        let session_ready = {
+            let dsh = dsh.clone();
+            Arc::new(move |agent: &str, session: &str| {
+                if agent == "dsh-win" {
+                    dsh.shared_project_loaded(session);
+                }
+            })
+        };
+        let session_loaded = {
+            let dsh = dsh.clone();
+            Arc::new(move |agent: &str, session: &str| {
+                agent == "dsh-win" && dsh.project_session_is_loaded(session)
+            })
+        };
         Arc::new(Self {
             store: store.clone(),
             codex,
             hermes,
             dsh,
-            native: Runner::new(directory, store, notify.clone()),
+            native: Runner::new(
+                clients,
+                session_ready,
+                session_loaded,
+                store,
+                notify.clone(),
+            ),
             notify,
             stopping: AtomicBool::new(false),
         })
@@ -563,9 +610,21 @@ impl Runtime {
         ["继续协作", "恢复协作", "继续未完成任务", "恢复未完成任务"]
             .iter()
             .any(|prefix| text.starts_with(prefix))
-            && !["新增", "添加", "还要", "新目标", "新需求"]
-                .iter()
-                .any(|term| text.contains(term))
+            && ![
+                "新增",
+                "添加",
+                "还要",
+                "新目标",
+                "新需求",
+                "方向",
+                "纠正",
+                "需求改",
+                "目标改",
+                "改成",
+                "不要再",
+            ]
+            .iter()
+            .any(|term| text.contains(term))
     }
 
     /// 两段式第一段：只出方案并保存，状态停在 planning 等用户确认。
@@ -609,7 +668,11 @@ impl Runtime {
                 let attempts = self.store.lock().unwrap().attempts(id)?;
                 let attempt = attempts
                     .iter()
-                    .find(|attempt| attempt.stage == "plan" && attempt.status == "completed")
+                    .find(|attempt| {
+                        attempt.stage == "plan"
+                            && attempt.activity.as_deref() != Some("discussion")
+                            && attempt.status == "completed"
+                    })
                     .ok_or("没有可复用的已完成方案")?;
                 project_store::parse_plan(&attempt.output)?
             }
@@ -855,7 +918,7 @@ impl Runtime {
         if self.native.cancelled(id) {
             return Err("项目协作已停止，保留已产生的改动".into());
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline + self.store.lock().unwrap().project_wait_duration(id) {
             return Err("项目协作超过三十分钟上限，请拆分需求后重试".into());
         }
         Ok(())
@@ -891,11 +954,11 @@ impl Runtime {
                 return Err("项目成员已不在群中".into());
             }
             let roles = project_store::roles_of(&workflow)?;
-            // 验收只跑本地固定命令，不选模型。
-            // 任务级覆盖 > 匹配的阶段角色配置 > 规划建议 > 自动选型。
+            // Project member settings override older per-task or stage choices.
             let overrides = task.and_then(|task_id| store.task(task_id).ok());
             let role = match stage {
                 "plan" => Some(&roles.plan),
+                "discussion" => None,
                 "review" => Some(&roles.review),
                 "repair" => Some(&roles.implement),
                 "implement" => workflow
@@ -916,28 +979,27 @@ impl Runtime {
                         .into_iter()
                         .find(|session| session.agent_id == agent)
                 });
-            let manual_model = overrides
+            let manual_model = private_settings
                 .as_ref()
-                .and_then(|task| task.model.clone())
-                .or_else(|| {
-                    private_settings
-                        .as_ref()
-                        .and_then(|session| session.model.clone())
-                })
+                .and_then(|session| session.model.clone())
+                .or_else(|| overrides.as_ref().and_then(|task| task.model.clone()))
                 .or_else(|| role.and_then(|role| role.model.clone()))
                 .or_else(|| {
                     private_settings
                         .as_ref()
                         .and(snapshot.default_model.clone())
                 });
-            let manual_effort = overrides
+            let manual_effort = private_settings
                 .as_ref()
-                .and_then(|task| task.effort.clone())
+                .and_then(|session| session.reasoning_effort.clone())
                 .or_else(|| {
                     private_settings
                         .as_ref()
-                        .and_then(|session| session.reasoning_effort.clone())
+                        .and_then(|session| session.model.as_ref())
+                        .and_then(|model| snapshot.models.iter().find(|option| &option.id == model))
+                        .and_then(|option| option.default_effort.clone())
                 })
+                .or_else(|| overrides.as_ref().and_then(|task| task.effort.clone()))
                 .or_else(|| role.and_then(|role| role.effort.clone()))
                 .or_else(|| {
                     private_settings
@@ -995,7 +1057,7 @@ impl Runtime {
         {
             if let Some(instruction) = prompt.get("instruction").and_then(Value::as_str) {
                 prompt["instruction"] = json!(format!(
-                    "{instruction}\n\n项目记忆工具 hub_memory_search/hub_memory_read/hub_memory_write 只访问当前项目公共池。开始前按需检索，完成后保存可复用的决策、已验证结果和问题线索；不要保存私聊、完整思考或凭据。记忆服务不可用时继续任务。\n\n本项目通过 MCP 提供团队消息工具：mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox 用于 Agent 私下沟通，并检查团队新增消息/中断通知；mcp__agent_hub__hub_broadcast 用于向用户和团队发布简短公开消息。推理、完整回复和工具过程留在 Agent 专属会话。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
+                    "{instruction}\n\n项目记忆工具 hub_memory_search/hub_memory_read/hub_memory_write 只访问当前项目公共池。开始前按需检索，完成后保存可复用的决策、已验证结果和问题线索；不要保存私聊、完整思考或凭据。记忆服务不可用时继续任务。\n\n需要向用户澄清时调用 hub_ask_user 发布问题，然后停止本轮工具操作并结束回复；框架会等待用户回答后在同一项目会话继续，不要猜答案或让任务直接结束。\n\n本项目通过 MCP 提供团队消息工具：mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox 用于 Agent 私下沟通，并检查团队新增消息/中断通知；mcp__agent_hub__hub_broadcast 用于向用户和团队发布简短公开消息。推理、完整回复和工具过程留在 Agent 专属会话。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
                 ));
             }
         }
@@ -1079,6 +1141,40 @@ impl Runtime {
         let root = Path::new(&project.root);
         let files = manifest(root)?;
         let context = public_context(&self.store.lock().unwrap(), &workflow)?;
+        let previous = {
+            let store = self.store.lock().unwrap();
+            store
+                .workflows(&workflow.conversation_id)?
+                .into_iter()
+                .find(|old| {
+                    old.id != workflow.id
+                        && old.project_id == workflow.project_id
+                        && (old.status == "completed"
+                            || (matches!(old.status.as_str(), "failed" | "interrupted")
+                                && old.plan.is_some()))
+                })
+                .filter(|old| matches!(old.status.as_str(), "failed" | "interrupted"))
+        };
+        if let Some(previous) = &previous {
+            preserve_completed_work(root, previous)?;
+            let members = self
+                .store
+                .lock()
+                .unwrap()
+                .conversation(&workflow.conversation_id)?
+                .members;
+            for agent in members.iter().filter(|agent| {
+                project_store::EXECUTOR_AGENTS.contains(&agent.as_str())
+                    && **agent != roles.plan.agent
+            }) {
+                if self.snapshot(agent).connection != "connected" {
+                    continue;
+                }
+                let discussion = self.begin(id, None, agent, "discussion", deadline)?;
+                self.native(discussion,root,json!({"instruction":"用户在暂停协作后给出新目标或纠正方向。先讨论并提出调整建议：保留已完成改动，判断未完成工作如何调整；若需要回改，明确向用户说明。不要修改任何文件。用hub_broadcast向团队同步简短建议、hub_message给规划成员发送建议；需要用户澄清时hub_ask_user提问并等回复。自然回复即可，不返回计划JSON。","current_goal":workflow.request,"previous_request":previous.request,"previous_plan":previous.plan,"previous_tasks":previous.tasks.iter().map(|task|json!({"title":task.title,"status":task.status,"files":task.files,"worktree":task.worktree,"branch":task.branch})).collect::<Vec<_>>() }),deadline)?;
+            }
+        }
+
         // 规划只看本群已连接且具备写工具的成员；模型建议随各自目录一起给出。
         let members = self
             .store
@@ -1124,6 +1220,8 @@ impl Runtime {
                 "instruction": PLAN_PROMPT_WITH_TOOLS,
                 "request":workflow.request,
                 "public_group_context":context,
+                "correction_context":previous.as_ref().map(|old|json!({"original_request":old.request,"plan":old.plan,"tasks":old.tasks})),
+                "team_suggestions":self.store.lock().unwrap().workflow(id)?.agent_messages.iter().filter(|message|message.recipient_agent==roles.plan.agent).collect::<Vec<_>>(),
                 "existing_files":files,
                 "manifest_limit":"最多500文件，最大6层，构建/依赖/受保护目录已排除",
                 "available_agents":available_agents,
@@ -1422,7 +1520,7 @@ impl Runtime {
         let agent = task.agent_id.as_str();
         let attempt = self.begin(exec.id, Some(&task.id), agent, "implement", exec.deadline)?;
         let current = self.store.lock().unwrap().workflow(exec.id)?;
-        self.native(attempt,cwd,json!({"instruction":"按当前任务目标实际完成实现，可使用实现成员 CLI 中已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 管理项目文件。可用 hub_message/hub_inbox 与群内其他 Agent 直发消息和接收协作信息；本轮用户需求仍是目标来源。若验收成员与本任务实现者不同，完成前必须用 hub_message 向验收成员发送简短交接，说明改动文件、行为和需要复核的边界。完成后简短说明改了什么、依据是什么。","request":current.request,"plan":current.plan,"task":task,"review_agent":exec.roles.review.agent,"agent_messages":current.agent_messages.iter().filter(|message|message.recipient_agent==task.agent_id).collect::<Vec<_>>(),"completed_tasks":current.tasks.iter().filter(|task|task.status=="completed").collect::<Vec<_>>()}),exec.deadline)?;
+        self.native(attempt,cwd,json!({"instruction":"只执行 task 字段指定的当前任务。request 与 plan 是整体背景，其他任务尤其是后续依赖任务的操作、提问和等待条件不得提前执行；当前任务完成后立即交接返回，由框架启动下一项任务。共享会话中的旧任务与先前工具输出只作背景，当前 task 与本轮工作目录定义本次工作。按当前任务目标实际完成实现，可使用实现成员 CLI 中已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 管理项目文件。可用 hub_message/hub_inbox 与群内其他 Agent 直发消息和接收协作信息；本轮用户需求仍是目标来源。若验收成员与本任务实现者不同，完成前必须用 hub_message 向验收成员发送简短交接，说明改动文件、行为和需要复核的边界。完成后简短说明改了什么、依据是什么。","request":current.request,"plan":current.plan,"task":task,"review_agent":exec.roles.review.agent,"agent_messages":current.agent_messages.iter().filter(|message|message.recipient_agent==task.agent_id).collect::<Vec<_>>(),"completed_tasks":current.tasks.iter().filter(|task|task.status=="completed").collect::<Vec<_>>()}),exec.deadline)?;
         // 只提交任务授权文件，避免其他任务产物混入分支。
         crate::project_worktree::commit(cwd, &format!("hub: {}", task.title), &task.files)?;
         Ok(())

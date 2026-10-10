@@ -1,12 +1,11 @@
-//! Dedicated native project turns; private/group harnesses retain their own histories.
+//! Project turns reuse each member's native project conversation and connected harness.
 use crate::project_store::Attempt;
-use crate::project_tools::{tool_specs, Broker};
+use crate::project_tools::Broker;
 use crate::rpc::Client;
 use crate::store::Store;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -16,12 +15,18 @@ use std::time::{Duration, Instant};
 type Result<T> = std::result::Result<T, String>;
 pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
 
+type ClientProvider = Arc<dyn Fn(&str) -> Result<Arc<Client>> + Send + Sync>;
+type SessionReady = Arc<dyn Fn(&str, &str) + Send + Sync>;
+type SessionLoaded = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 pub struct Runner {
-    directory: PathBuf,
+    clients: ClientProvider,
+    session_ready: SessionReady,
+    session_loaded: SessionLoaded,
     store: Arc<Mutex<Store>>,
     notify: Notify,
-    /// attempt id → (workflow id, 客户端)。按 attempt 存：并行任务各自独立子进程，
-    /// 取消时按 workflow 过滤，不会互相覆盖。
+    /// attempt id → (workflow id, 客户端)。每位成员复用自己的连接，
+    /// 取消时按任务过滤；不同成员的独立任务不受影响。
     active: Mutex<HashMap<String, (String, Arc<Client>)>>,
     stopping: AtomicBool,
 }
@@ -176,17 +181,18 @@ fn persist(store: &Arc<Mutex<Store>>, notify: &Notify, wire: &mut Wire, force: b
     notify(&wire.attempt.workflow_id);
 }
 
-fn codex_command(executable: &Path) -> Result<Command> {
-    // 不关闭 Codex CLI 的原生工具、MCP 或插件；项目 turn 会显式启用完整工具权限。
-    let mut command = Command::new(executable);
-    command.args(["app-server", "--listen", "stdio://"]);
-    Ok(command)
-}
-
 impl Runner {
-    pub fn new(directory: PathBuf, store: Arc<Mutex<Store>>, notify: Notify) -> Arc<Self> {
+    pub fn new(
+        clients: ClientProvider,
+        session_ready: SessionReady,
+        session_loaded: SessionLoaded,
+        store: Arc<Mutex<Store>>,
+        notify: Notify,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            directory,
+            clients,
+            session_ready,
+            session_loaded,
             store,
             notify,
             active: Mutex::new(HashMap::new()),
@@ -218,21 +224,41 @@ impl Runner {
         drop(state);
         self.attempt_cancelled(&workflow, &attempt)
     }
+    fn interrupt(&self, attempt_id: &str, client: Arc<Client>) {
+        let attempt = self.store.lock().unwrap().attempt(attempt_id);
+        if let Ok(attempt) = attempt {
+            if let Some(session) = attempt.native_thread_id {
+                std::thread::spawn(move || {
+                    if attempt.agent_id == "codex-win" {
+                        if let Some(turn) = attempt.native_turn_id {
+                            let _ = client
+                                .rpc("turn/interrupt", json!({"threadId":session,"turnId":turn}));
+                        }
+                    } else {
+                        let _ = client.write(
+                            &json!({"method":"session/cancel","params":{"sessionId":session}}),
+                        );
+                    }
+                });
+            }
+        }
+    }
     pub fn cancel(&self, workflow: &str) {
-        // 先把要停的客户端 clone 到锁外再逐个 stop，别抱着锁调 stop()。
-        let clients = self
+        let _=self.store.lock().unwrap().connection.execute("UPDATE project_questions SET status='cancelled',answered_at=?1 WHERE workflow_id=?2 AND status='pending'",rusqlite::params![crate::store::now(),workflow]);
+        let active = self
             .active
             .lock()
             .unwrap()
-            .values()
-            .filter(|(workflow_id, _)| workflow_id == workflow)
-            .map(|(_, client)| client.clone())
+            .iter()
+            .filter(|(_, (owner, _))| owner == workflow)
+            .map(|(id, (_, client))| (id.clone(), client.clone()))
             .collect::<Vec<_>>();
-        for client in clients {
-            client.stop();
+        for (attempt, client) in active {
+            self.interrupt(&attempt, client);
         }
     }
     pub fn cancel_attempt(&self, attempt: &str) {
+        let _=self.store.lock().unwrap().connection.execute("UPDATE project_questions SET status='cancelled',answered_at=?1 WHERE attempt_id=?2 AND status='pending'",rusqlite::params![crate::store::now(),attempt]);
         let client = self
             .active
             .lock()
@@ -240,7 +266,7 @@ impl Runner {
             .get(attempt)
             .map(|(_, client)| client.clone());
         if let Some(client) = client {
-            client.stop();
+            self.interrupt(attempt, client);
         }
     }
     pub fn stop(&self) {
@@ -278,178 +304,129 @@ impl Runner {
             invalid: false,
             last_save: Instant::now(),
         }));
-        let folder = self
-            .directory
-            .join("project-native")
-            .join(&wire.lock().unwrap().attempt.id);
-        std::fs::create_dir_all(&folder).map_err(|_| "项目原生会话目录创建失败")?;
         let agent = wire.lock().unwrap().attempt.agent_id.clone();
-        let mut command = match agent.as_str() {
-            "codex-win" => {
-                codex_command(&crate::codex::discover_executable().ok_or("未找到 Codex 原生程序")?)?
-            }
-            "hermes-win" => crate::acp_transport::Target::windows().project_command(&folder)?,
-            "dsh-win" => {
-                let mut command =
-                    Command::new(crate::dsh::discover().ok_or("未找到 DSH Node 环境")?);
-                // 编码子进程必须使用当前安装记录里的 DSH SDK，避免更新后私聊已用新 SDK 而编码仍解析旧路径。
-                let installation = crate::service_install::dsh_path(&self.directory)?;
-                command
-                    .args(["--input-type=module", "-e", include_str!("dsh_bridge.mjs")])
-                    .arg(installation)
-                    .arg(folder.join("dsh-native"));
-                command
-                    .env(
-                        "AGENT_HUB_DSH_AUTH_BRIDGE",
-                        include_str!("dsh_hermes_auth.py"),
-                    )
-                    .env(
-                        "AGENT_HUB_DSH_FALLBACK_BRIDGE",
-                        include_str!("dsh_fallback.mjs"),
-                    )
-                    .env("AGENT_HUB_DSH_PROJECT_MODE", "1");
-                command
-            }
-            _ => return Err("不支持此项目成员".into()),
-        };
-        command.current_dir(&folder);
+        let client = (self.clients)(&agent)?;
+        let previous_handler = client.swap_request_handler(None);
         let notifications = wire.clone();
-        let exited = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
         let is_codex = agent == "codex-win";
-        let client = Client::spawn_command(
-            command,
-            move |value| {
-                let mut state = notifications.lock().unwrap();
-                let params = &value["params"];
-                let mut force = false;
-                if is_codex {
-                    if !state.accepts(params) {
-                        return;
-                    }
-                    if state.attempt.native_turn_id.is_none() && value["method"] != "turn/started" {
-                        return;
-                    }
-                    match value["method"].as_str().unwrap_or("") {
-                        "turn/started" => {
-                            if let Some(turn) = params["turn"]["id"].as_str() {
-                                state.attempt.native_turn_id = Some(turn.into());
-                                state.attempt.status = "running".into();
-                                force = true;
-                            }
-                        }
-                        "item/agentMessage/delta" => {
-                            if let (Some(id), Some(text)) =
-                                (params["itemId"].as_str(), params["delta"].as_str())
-                            {
-                                state.text(id, text, false);
-                            }
-                        }
-                        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                            if let Some(text) = params["delta"].as_str() {
-                                state.append_thought(text);
-                            }
-                        }
-                        "item/started" => {
-                            if let Some(event) = crate::codex::codex_tool_event(params, false) {
-                                crate::codex::upsert_tool_event(
-                                    &mut state.attempt.tool_events,
-                                    &event,
-                                );
-                                force = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        "item/completed" => {
-                            if let Some(event) = crate::codex::codex_tool_event(params, true) {
-                                crate::codex::upsert_tool_event(
-                                    &mut state.attempt.tool_events,
-                                    &event,
-                                );
-                            } else if params["item"]["type"] == "agentMessage" {
-                                if let (Some(id), Some(text)) = (
-                                    params["item"]["id"].as_str(),
-                                    params["item"]["text"].as_str(),
-                                ) {
-                                    state.completed_message(
-                                        id,
-                                        text,
-                                        params["item"]["phase"].as_str(),
-                                    );
-                                }
-                            } else {
-                                return;
-                            }
+        let subscription = client.listen(Arc::new(move |value| {
+            let mut state = notifications.lock().unwrap();
+            if value["method"] == "agent_hub/transport_closed" {
+                state.disconnected = true;
+                return;
+            }
+            let params = &value["params"];
+            let mut force = false;
+            if is_codex {
+                if !state.accepts(params) {
+                    return;
+                }
+                if state.attempt.native_turn_id.is_none() && value["method"] != "turn/started" {
+                    return;
+                }
+                match value["method"].as_str().unwrap_or("") {
+                    "turn/started" => {
+                        if let Some(turn) = params["turn"]["id"].as_str() {
+                            state.attempt.native_turn_id = Some(turn.into());
+                            state.attempt.status = "running".into();
                             force = true;
                         }
-                        "turn/completed" => {
-                            state.completed =
-                                Some(params["turn"]["status"].as_str().unwrap_or("failed").into());
-                            if let Some(category) = failure_category(&params["turn"]["error"]) {
-                                state.failure = Some(category);
-                            }
-                            if state.completed.as_deref() == Some("completed") {
-                                state.finish_plan_output();
-                            }
-                            force = true;
+                    }
+                    "item/agentMessage/delta" => {
+                        if let (Some(id), Some(text)) =
+                            (params["itemId"].as_str(), params["delta"].as_str())
+                        {
+                            state.text(id, text, false);
                         }
-                        "error" => {
-                            if let Some(category) = failure_category(&params["error"]) {
-                                state.failure = Some(category);
-                            }
+                    }
+                    "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
+                        if let Some(text) = params["delta"].as_str() {
+                            state.append_thought(text);
+                        }
+                    }
+                    "item/started" => {
+                        if let Some(event) = crate::codex::codex_tool_event(params, false) {
+                            crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
+                            force = true;
+                        } else {
                             return;
                         }
+                    }
+                    "item/completed" => {
+                        if let Some(event) = crate::codex::codex_tool_event(params, true) {
+                            crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
+                        } else if params["item"]["type"] == "agentMessage" {
+                            if let (Some(id), Some(text)) = (
+                                params["item"]["id"].as_str(),
+                                params["item"]["text"].as_str(),
+                            ) {
+                                state.completed_message(id, text, params["item"]["phase"].as_str());
+                            }
+                        } else {
+                            return;
+                        }
+                        force = true;
+                    }
+                    "turn/completed" => {
+                        state.completed =
+                            Some(params["turn"]["status"].as_str().unwrap_or("failed").into());
+                        if let Some(category) = failure_category(&params["turn"]["error"]) {
+                            state.failure = Some(category);
+                        }
+                        if state.completed.as_deref() == Some("completed") {
+                            state.finish_plan_output();
+                        }
+                        force = true;
+                    }
+                    "error" => {
+                        if let Some(category) = failure_category(&params["error"]) {
+                            state.failure = Some(category);
+                        }
+                        return;
+                    }
+                    _ => return,
+                }
+            } else {
+                if state.attempt.native_thread_id.as_deref() != params["sessionId"].as_str()
+                    || params["sessionId"].is_null()
+                {
+                    return;
+                }
+                if value["method"] == "agent_hub/model_route" && state.attempt.agent_id == "dsh-win"
+                {
+                    if let Some((model, event)) = crate::dsh::route_notice(params) {
+                        let changed = state.attempt.model.as_deref() != Some(&model);
+                        state.attempt.model = Some(model);
+                        if changed || params["fallback"] == true {
+                            crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
+                        }
+                        persist(&store, &notify, &mut state, true);
+                    }
+                    return;
+                }
+                if value["method"] != "session/update" {
+                    return;
+                }
+                let update = &params["update"];
+                if let Some(event) = crate::codex::acp_tool_event(update) {
+                    crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
+                    force = true;
+                } else {
+                    if update["content"]["type"] != "text" {
+                        return;
+                    }
+                    let text = update["content"]["text"].as_str().unwrap_or("");
+                    match update["sessionUpdate"].as_str().unwrap_or("") {
+                        "agent_message_chunk" => state.text("acp-message", text, false),
+                        "agent_thought_chunk" => state.append_thought(text),
                         _ => return,
                     }
-                } else {
-                    if state.attempt.native_thread_id.as_deref() != params["sessionId"].as_str()
-                        || params["sessionId"].is_null()
-                    {
-                        return;
-                    }
-                    if value["method"] == "agent_hub/model_route"
-                        && state.attempt.agent_id == "dsh-win"
-                    {
-                        if let Some((model, event)) = crate::dsh::route_notice(params) {
-                            let changed = state.attempt.model.as_deref() != Some(&model);
-                            state.attempt.model = Some(model);
-                            if changed || params["fallback"] == true {
-                                crate::codex::upsert_tool_event(
-                                    &mut state.attempt.tool_events,
-                                    &event,
-                                );
-                            }
-                            persist(&store, &notify, &mut state, true);
-                        }
-                        return;
-                    }
-                    if value["method"] != "session/update" {
-                        return;
-                    }
-                    let update = &params["update"];
-                    if let Some(event) = crate::codex::acp_tool_event(update) {
-                        crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
-                        force = true;
-                    } else {
-                        if update["content"]["type"] != "text" {
-                            return;
-                        }
-                        let text = update["content"]["text"].as_str().unwrap_or("");
-                        match update["sessionUpdate"].as_str().unwrap_or("") {
-                            "agent_message_chunk" => state.text("acp-message", text, false),
-                            "agent_thought_chunk" => state.append_thought(text),
-                            _ => return,
-                        }
-                    }
                 }
-                persist(&store, &notify, &mut state, force);
-            },
-            move || {
-                exited.lock().unwrap().disconnected = true;
-            },
-        )?;
+            }
+            persist(&store, &notify, &mut state, force);
+        }));
         let (workflow, attempt_id) = {
             let state = wire.lock().unwrap();
             (state.attempt.workflow_id.clone(), state.attempt.id.clone())
@@ -458,18 +435,91 @@ impl Runner {
             .lock()
             .unwrap()
             .insert(attempt_id.clone(), (workflow.clone(), client.clone()));
-        let outcome = (|| -> Result<()> {
+        let mut next_prompt = prompt.to_owned();
+        let mut handled = std::collections::HashSet::new();
+        let outcome = loop {
             if self.attempt_cancelled(&workflow, &attempt_id) {
-                return Err("项目协作已停止".into());
+                break Err("项目协作已停止".into());
             }
-            if is_codex {
-                self.codex_turn(&client, &wire, root, prompt, deadline)
+            {
+                let mut state = wire.lock().unwrap();
+                state.completed = None;
+                state.failure = None;
+                state.attempt.native_turn_id = None;
+                if !handled.is_empty()
+                    && matches!(state.attempt.stage.as_str(), "plan" | "repair" | "review")
+                {
+                    state.pieces.clear();
+                    state.attempt.output.clear();
+                }
+            }
+            let effective = deadline + self.store.lock().unwrap().project_wait_duration(&workflow);
+            let result = if is_codex {
+                self.codex_turn(&client, &wire, root, &next_prompt, deadline)
             } else {
-                self.acp_turn(&client, &wire, root, prompt, deadline)
+                self.acp_turn(&client, &wire, root, &next_prompt, effective)
+            };
+            if result.is_err() {
+                break result;
             }
-        })();
-        // Terminal state and lease release happen only after the owned process tree stops.
-        client.stop();
+            let questions = {
+                let store = self.store.lock().unwrap();
+                store
+                    .workflow(&workflow)
+                    .and_then(|job| store.project_questions(&job.conversation_id))
+            };
+            let questions = match questions {
+                Ok(questions) => questions
+                    .into_iter()
+                    .filter(|question| {
+                        question.workflow_id == workflow
+                            && question.attempt_id.as_deref() == Some(attempt_id.as_str())
+                            && question.delivery != "native"
+                            && !handled.contains(&question.id)
+                    })
+                    .collect::<Vec<_>>(),
+                Err(error) => break Err(error),
+            };
+            if questions.is_empty() {
+                break Ok(());
+            }
+            let mut answers = Vec::new();
+            for question in questions {
+                loop {
+                    if self.attempt_cancelled(&workflow, &attempt_id) {
+                        break;
+                    }
+                    let current = self
+                        .store
+                        .lock()
+                        .unwrap()
+                        .project_questions(&question.conversation_id)
+                        .ok()
+                        .and_then(|questions| {
+                            questions.into_iter().find(|row| row.id == question.id)
+                        });
+                    if let Some(current) = current {
+                        if current.status == "answered" {
+                            answers
+                                .push(json!({"question":current.prompt,"answer":current.answer}));
+                            handled.insert(current.id);
+                            break;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            if self.attempt_cancelled(&workflow, &attempt_id) {
+                break Err("项目协作已停止".into());
+            }
+            next_prompt = format!(
+                "{}\n用户已回答：{}\n从停下的位置继续同一项目目标，不重做已完成工具操作。",
+                prompt,
+                json!(answers)
+            );
+        };
+        client.unlisten(subscription);
+        client.swap_request_handler(previous_handler);
         self.active.lock().unwrap().remove(&attempt_id);
         let mut result = wire.lock().unwrap().attempt.clone();
         if self.attempt_cancelled(&workflow, &attempt_id) {
@@ -507,20 +557,25 @@ impl Runner {
             return Err("当前项目步骤不支持此原生成员".into());
         }
         // Agent Hub 的附加文件工具按阶段区分；CLI 自带工具不受此集合限制。
-        let writable = matches!(stage.as_str(), "implement" | "repair");
-        client.rpc("initialize",json!({"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
-        client.write(&json!({"method":"initialized","params":{}}))?;
         let db = self.store.lock().unwrap().path.clone();
         let attempt = wire.lock().unwrap().attempt.clone();
         let broker = Arc::new(Mutex::new(Broker::open(&db, &attempt.id)?));
         let binding = wire.clone();
+        let db_for_question = db.clone();
+        let attempt_for_question = attempt.id.clone();
         client.set_request_handler(Arc::new(move |method, params| {
             if method != "item/tool/call" {
                 return Some(Ok(match method {
                     "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                         json!({"decision":"decline"})
                     }
-                    "item/tool/requestUserInput" => json!({"answers":{}}),
+                    "item/tool/requestUserInput" => {
+                        return Some(crate::project_questions::ask_native(
+                            &db_for_question,
+                            &attempt_for_question,
+                            params,
+                        ))
+                    }
                     _ => return None,
                 }));
             }
@@ -546,41 +601,29 @@ impl Runner {
                 json!({"contentItems":[{"type":"inputText","text":text}],"success":success}),
             ))
         }));
-        let tools = tool_specs()
-            .into_iter()
-            .filter(|tool| {
-                let name = tool["name"].as_str().unwrap_or("");
-                writable
-                    || matches!(
-                        name,
-                        "hub_list" | "hub_read" | "hub_message" | "hub_inbox" | "hub_broadcast"
-                    )
-            })
-            .map(|mut tool| {
-                tool["type"] = json!("function");
-                tool["deferLoading"] = json!(false);
-                tool
-            })
-            .collect::<Vec<_>>();
-        let instructions = match stage.as_str() {
-            "plan" => {
-                "你是本项目群的协作协调者。先理解本轮明确目标，并遵守用户消息中指定的角色；用户未指定的任务由你结合成员能力和当前上下文安排，可将不同任务分配给不同 Agent。可使用本机 CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read 查看项目文件，使用 hub_message(to_agent,content) 与成员私下协作、hub_inbox() 读收件箱、hub_broadcast(content) 向用户和团队发布简短进展。只把应公开的进展发到团队会话；推理、命令细节和工具过程留在自己的 Agent 会话。"
-            }
-            "implement" => {
-                "你是本项目的实现者。按当前任务目标完成实现，使用本机 CLI 已启用的工具、MCP 与插件，也可用 hub_list/hub_read/hub_write/hub_edit/hub_delete 操作项目文件，用 hub_message/hub_inbox 与其他项目成员私下沟通；需要向用户和团队同步时，用 hub_broadcast 发简短进度或完成说明。推理和工具轨迹会留在你的专属 Agent 会话中。最终由验收角色对照需求与源码复核。"
-            }
-            "review" => {
-                "你是本项目的验收者。依据本轮目标、方案和源码独立判断项目是否达到目的。可使用本机 CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与执行者私下沟通。验收结论会显示在团队会话中；按提示词要求的结构化 JSON 给出结论。"
-            }
-            _ => {
-                "你是本项目的修复者。验收角色对照用户需求和源码后指出了具体缺陷；据此完成修复。可使用本机 CLI 已启用的工具、MCP 与插件，并用 hub_message/hub_inbox 与验收者私下沟通。修复后由验收角色再次复核。"
-            }
-        };
-        let thread=client.rpc("thread/start",json!({"cwd":root,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":true,"model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":instructions,"dynamicTools":tools}))?;
+        let (chat, previous, project_root) = self.project_session(&attempt)?;
+        let mut params = json!({"cwd":project_root,"approvalPolicy":"never","sandbox":"danger-full-access","model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":"你是该项目的协作成员。同一项目的用户私聊、团队任务和历史共用此会话。按当前消息决定职责；仅在当前请求明确要求结构化计划或验收时返回对应JSON，正常交流自然回答。模型与提供商使用项目配置。"});
+        if let Some(thread) = previous {
+            params["threadId"] = json!(thread);
+            params["excludeTurns"] = json!(true);
+        } else {
+            params["dynamicTools"] = json!(crate::project_tools::project_chat_dynamic_tools(
+                &db, &chat
+            )?);
+        }
+        let thread = client.rpc(
+            if params.get("threadId").is_some() {
+                "thread/resume"
+            } else {
+                "thread/start"
+            },
+            params,
+        )?;
         let thread_id = thread["thread"]["id"]
             .as_str()
             .ok_or("Codex 项目会话 ID 缺失")?
             .to_owned();
+        self.bind_project_session(&chat, &attempt.agent_id, &thread_id, &project_root)?;
         {
             let mut state = wire.lock().unwrap();
             state.attempt.native_thread_id = Some(thread_id.clone());
@@ -589,7 +632,7 @@ impl Runner {
         if self.wire_cancelled(wire) {
             return Err("项目协作已停止".into());
         }
-        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"cwd":root,"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 项目运行 ID 缺失")?
@@ -608,6 +651,7 @@ impl Runner {
             state.attempt.status = "running".into();
             persist(&self.store, &self.notify, &mut state, true);
         }
+        let mut cancelling_since = None;
         loop {
             let state = wire.lock().unwrap();
             if let Some(status) = &state.completed {
@@ -625,13 +669,53 @@ impl Runner {
             }
             drop(state);
             if self.wire_cancelled(wire) {
-                return Err("项目协作已停止".into());
+                let since = cancelling_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > Duration::from_secs(15) {
+                    client.stop();
+                    return Err("原生停止未确认，已终止连接并保留项目会话".into());
+                }
             }
-            if Instant::now() >= deadline {
+            let workflow = wire.lock().unwrap().attempt.workflow_id.clone();
+            if Instant::now()
+                >= deadline + self.store.lock().unwrap().project_wait_duration(&workflow)
+            {
+                client.stop();
                 return Err("项目协作超时，已停止当前原生任务".into());
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    fn project_session(&self, attempt: &Attempt) -> Result<(String, Option<String>, PathBuf)> {
+        let mut store = self.store.lock().unwrap();
+        let workflow = store.workflow(&attempt.workflow_id)?;
+        let project = store.project(&workflow.project_id)?;
+        let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
+        let chat = chats
+            .iter()
+            .find(|chat| chat.agent_id == attempt.agent_id)
+            .ok_or("项目成员会话不存在")?;
+        let session = store
+            .detail(&chat.conversation_id)?
+            .sessions
+            .into_iter()
+            .find(|session| session.agent_id == attempt.agent_id)
+            .ok_or("项目成员原生会话不存在")?;
+        Ok((
+            chat.conversation_id.clone(),
+            session.native_session_id,
+            PathBuf::from(project.root),
+        ))
+    }
+    fn bind_project_session(
+        &self,
+        chat: &str,
+        agent: &str,
+        session: &str,
+        root: &Path,
+    ) -> Result<()> {
+        self.store.lock().unwrap().connection.execute("UPDATE sessions SET native_session_id=?1,native_cwd=?2 WHERE conversation_id=?3 AND agent_id=?4",rusqlite::params![session,root.to_string_lossy(),chat,agent]).map_err(|_|"项目会话绑定失败")?;
+        Ok(())
     }
 
     fn acp_turn(
@@ -642,21 +726,36 @@ impl Runner {
         prompt: &str,
         deadline: Instant,
     ) -> Result<()> {
-        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"agent_hub_project","version":env!("CARGO_PKG_VERSION")}}))?;
         let attempt = wire.lock().unwrap().attempt.clone();
         let dsh = attempt.agent_id == "dsh-win";
-        let project_tools = matches!(attempt.agent_id.as_str(), "dsh-win" | "hermes-win");
         let db = self.store.lock().unwrap().path.clone();
-        let servers = if project_tools {
-            json!([{"name":"agent_hub","command":std::env::current_exe().map_err(|_|"项目工具程序不可用")?,"args":["--project-tools",db.to_string_lossy(),attempt.id],"env":[]}])
+        let (chat, previous, project_root) = self.project_session(&attempt)?;
+        let servers = crate::project_tools::project_chat_mcp_server(&db, &chat)?
+            .map_or_else(|| json!([]), |server| json!([server]));
+        let response = if let Some(session) = &previous {
+            if dsh && (self.session_loaded)(&attempt.agent_id, session) {
+                Value::Null
+            } else {
+                client.rpc(
+                    if dsh {
+                        "session/resume"
+                    } else {
+                        "session/load"
+                    },
+                    json!({"sessionId":session,"cwd":project_root,"mcpServers":servers}),
+                )?
+            }
         } else {
-            json!([])
+            client.rpc(
+                "session/new",
+                json!({"cwd":project_root,"mcpServers":servers}),
+            )?
         };
-        let response = client.rpc("session/new", json!({"cwd":root,"mcpServers":servers}))?;
-        let session = response["sessionId"]
-            .as_str()
-            .ok_or("项目 ACP 会话 ID 缺失")?
-            .to_owned();
+        let session = previous
+            .or_else(|| response["sessionId"].as_str().map(String::from))
+            .ok_or("项目 ACP 会话 ID 缺失")?;
+        self.bind_project_session(&chat, &attempt.agent_id, &session, &project_root)?;
+        (self.session_ready)(&attempt.agent_id, &session);
         {
             let mut state = wire.lock().unwrap();
             state.attempt.native_thread_id = Some(session.clone());
@@ -698,7 +797,7 @@ impl Runner {
         let notify = self.notify.clone();
         let result = match client.rpc_timeout_with_sent(
             "session/prompt",
-            json!({"sessionId":session,"prompt":[{"type":"text","text":prompt}]}),
+            json!({"sessionId":session,"prompt":[{"type":"text","text":format!("本轮工作目录：{}。所有实现、修改和测试只在此目录；项目原生会话保持同一会话，目录可能随任务切换。\n{}",root.display(),prompt)}]}),
             timeout,
             move || {
                 let mut state = sent_wire.lock().unwrap();
@@ -709,6 +808,7 @@ impl Runner {
         ) {
             Ok(result) => result,
             Err(error) if error.contains("session/prompt 超时") => {
+                client.stop();
                 return Err(
                     "项目成员的推理或工具调用超过当前工作流剩余时间；现有项目记录与文件改动已保留，可直接继续协作。".into(),
                 )
@@ -733,6 +833,7 @@ mod tests {
             attempt: Attempt {
                 id: "test".into(),
                 created_at: 1,
+                activity: None,
                 workflow_id: "workflow".into(),
                 task_id: None,
                 agent_id: "codex-win".into(),
