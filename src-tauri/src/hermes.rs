@@ -504,7 +504,7 @@ impl Runtime {
         self.emit();
         let result = client.rpc_timeout(
             "session/prompt",
-            json!({"sessionId":session_id,"prompt":[{"type":"text","text":content}]}),
+            json!({"sessionId":session_id,"prompt":[{"type":"text","text":format!("{}\n\n{}",content,crate::chat_questions::GUIDANCE)}]}),
             Duration::from_secs(600),
         );
         match result {

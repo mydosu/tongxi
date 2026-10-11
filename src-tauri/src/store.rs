@@ -127,6 +127,7 @@ pub struct ConversationDetail {
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub project_agent_inbox: Vec<crate::project_store::RoomAgentMessage>,
     pub project_questions: Vec<crate::project_questions::Question>,
+    pub chat_questions: Vec<crate::chat_questions::Question>,
 }
 
 pub struct Store {
@@ -207,10 +208,10 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 15 {
+        if version > 16 {
             return Err("数据由更新的软件版本创建，请使用对应版本打开".into());
         }
-        if version > 0 && version < 15 && path.is_absolute() {
+        if version > 0 && version < 16 && path.is_absolute() {
             let backups = path.parent().ok_or("数据库目录无效")?.join("backups");
             std::fs::create_dir_all(&backups).map_err(|_| "迁移前数据库备份目录创建失败")?;
             let snapshot = backups.join(format!("hub-schema-v{version}-{}.db", Uuid::new_v4()));
@@ -367,7 +368,7 @@ impl Store {
                     .map_err(|e| e.to_string())?;
             }
         }
-        tx.execute_batch("PRAGMA user_version=15;")
+        tx.execute_batch("PRAGMA user_version=16;")
             .map_err(|e| e.to_string())?;
         let seeded = tx
             .query_row("SELECT value FROM metadata WHERE key='seeded'", [], |row| {
@@ -393,6 +394,7 @@ impl Store {
             tx.execute("INSERT INTO metadata(key,value) VALUES('seeded','1')", [])
                 .map_err(|e| e.to_string())?;
         }
+        crate::chat_questions::migrate(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         let mut store = Self {
             connection,
@@ -532,6 +534,7 @@ impl Store {
             project_team_messages: self.team_messages(id)?,
             project_agent_inbox: self.project_chat_messages(id)?,
             project_questions: self.project_questions(id)?,
+            chat_questions: self.chat_questions(id)?,
         })
     }
 
@@ -975,10 +978,12 @@ impl Store {
             params![now(), record.conversation_id],
         )
         .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())
+        tx.commit().map_err(|e| e.to_string())?;
+        self.capture_chat_question(record, content)
     }
 
     fn recover_runs(&mut self) -> Result<()> {
+        self.connection.execute_batch("UPDATE chat_questions SET status='cancelled',delivery='cancelled' WHERE status='pending' AND (mode='native' OR run_id IN (SELECT id FROM runs WHERE status IN ('starting','running','cancelling','failed','interrupted'))); UPDATE chat_questions SET delivery='sent' WHERE delivery='queued' AND answer_message_id IN (SELECT user_message_id FROM runs); UPDATE chat_questions SET status='pending',delivery='awaiting' WHERE delivery='queued';") .map_err(|e|e.to_string())?;
         self.connection.execute_batch(
             "UPDATE messages SET status='interrupted' WHERE id IN (SELECT assistant_message_id FROM runs WHERE status IN ('starting','running','cancelling'));
              UPDATE messages SET status='failed' WHERE status='pending' AND id IN (SELECT user_message_id FROM runs WHERE status IN ('starting','running','cancelling'));
@@ -1605,7 +1610,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
         let room = direct(&mut store, "升级后");
         assert!(store

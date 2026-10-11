@@ -2270,7 +2270,7 @@ mod tests {
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 15);
+        assert_eq!(version(&store), 16);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
         assert!(columns(&store, "project_attempts")
             .iter()
@@ -2342,7 +2342,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 15);
+        assert_eq!(version(&store), 16);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 

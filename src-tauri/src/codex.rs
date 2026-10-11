@@ -608,7 +608,12 @@ impl Runtime {
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                     Some(Ok(json!({"decision":"accept"})))
                 }
-                "item/tool/requestUserInput" => Some(Ok(json!({"answers":{}}))),
+                "item/tool/requestUserInput" => Some(
+                    request_weak
+                        .upgrade()
+                        .ok_or("同席已关闭".into())
+                        .and_then(|runtime| runtime.private_user_input(params)),
+                ),
                 _ => None,
             }));
             {
@@ -899,7 +904,7 @@ impl Runtime {
                 return Ok(());
             }
         }
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":[{"type":"text","text":content}],"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":[{"type":"text","text":format!("{}\n\n{}",content,crate::chat_questions::GUIDANCE)}],"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?
@@ -993,19 +998,32 @@ impl Runtime {
         Ok(self.snapshot())
     }
 
+    fn private_user_input(&self, params: &Value) -> Result<Value> {
+        let run = {
+            let inner = self.inner.lock().unwrap();
+            let run = inner.active.as_ref().ok_or("没有正在运行的私聊")?;
+            if !busy(&run.snapshot.record.status)
+                || run.snapshot.record.native_thread_id.as_deref() != params["threadId"].as_str()
+                || run
+                    .snapshot
+                    .record
+                    .native_turn_id
+                    .as_deref()
+                    .is_some_and(|id| Some(id) != params["turnId"].as_str())
+            {
+                return Err("私聊问题身份不匹配".into());
+            }
+            run.snapshot.record.id.clone()
+        };
+        let db = self.store.lock().unwrap().path.clone();
+        crate::chat_questions::ask_native(&db, &run, params)
+    }
+
     fn project_chat_tool(&self, params: &Value) -> Option<Result<Value>> {
         let (conversation_id, thread_id, turn_id) = {
             let inner = self.inner.lock().unwrap();
             let run = inner.active.as_ref()?;
             let record = &run.snapshot.record;
-            let context = self
-                .store
-                .lock()
-                .unwrap()
-                .project_agent_chat_context(&record.conversation_id)
-                .ok()
-                .flatten();
-            context?;
             if record.native_thread_id.as_deref() != params["threadId"].as_str()
                 || record.native_turn_id.as_deref() != params["turnId"].as_str()
             {
@@ -1018,8 +1036,9 @@ impl Runtime {
             )
         };
         let _ = (thread_id, turn_id);
+        let db = self.store.lock().unwrap().path.clone();
         let result = crate::project_tools::call_from_project_chat(
-            &self.store.lock().unwrap().path,
+            &db,
             &conversation_id,
             params["tool"].as_str().unwrap_or(""),
             params["arguments"].clone(),

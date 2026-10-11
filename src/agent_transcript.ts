@@ -1,4 +1,5 @@
 import { entryBusy, type AgentEntry } from './agent_timeline';
+import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
 
 interface TranscriptFormat {
@@ -120,7 +121,7 @@ export class AgentTranscript {
       if (follow) body.scrollTop = body.scrollHeight;
     }
     const text = node.querySelector<HTMLElement>('.agent-turn-text')!;
-    const output = entry.body || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
+    const output = (entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
     if (text.dataset.output !== output) {
       if (entry.kind === 'agent') text.innerHTML = agentMarkdown(output, escape); else text.textContent = output;
       text.dataset.output = output;

@@ -162,7 +162,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 15 {
+        if version != 16 {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -542,7 +542,10 @@ pub fn project_chat_mcp_server(db: &Path, conversation_id: &str) -> Result<Optio
         )
         .map_err(|_| "项目 Agent 会话映射不可用")?;
     if !linked {
-        return Ok(None);
+        let direct:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1 AND kind='direct' AND archived=0)",[conversation_id],|row|row.get(0)).map_err(|_|"私聊工具归属不可用")?;
+        if !direct {
+            return Ok(None);
+        }
     }
     let command = std::env::current_exe().map_err(|_| "项目消息工具程序不可用")?;
     Ok(Some(
@@ -555,14 +558,29 @@ pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Ve
     if server.is_none() {
         return Ok(Vec::new());
     }
-    Ok(project_chat_tool_specs()
-        .into_iter()
-        .map(|mut tool| {
-            tool["type"] = json!("function");
-            tool["deferLoading"] = json!(false);
-            tool
-        })
-        .collect())
+    let connection = Connection::open(db).map_err(|_| "私聊工具目录不可用")?;
+    let linked: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE conversation_id=?1)",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "私聊工具目录不可用")?;
+    Ok(if linked {
+        project_chat_tool_specs()
+    } else {
+        tool_specs()
+            .into_iter()
+            .filter(|tool| tool["name"] == "hub_ask_user")
+            .collect()
+    }
+    .into_iter()
+    .map(|mut tool| {
+        tool["type"] = json!("function");
+        tool["deferLoading"] = json!(false);
+        tool
+    })
+    .collect())
 }
 
 fn project_chat_tool_specs() -> Vec<Value> {
@@ -587,6 +605,29 @@ fn chat_tool(
     name: &str,
     args: Value,
 ) -> Result<Value> {
+    let linked: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE conversation_id=?1)",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "私聊工具归属不可用")?;
+    if !linked || name == "hub_ask_user" {
+        let private_run:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND discussion_id IS NULL AND status IN ('starting','running'))",[conversation_id],|row|row.get(0)).map_err(|_|"私聊状态不可用")?;
+        if !linked || private_run {
+            if name != "hub_ask_user" {
+                return Err("普通私聊不提供项目协作工具".into());
+            }
+            let path: String = connection
+                .query_row(
+                    "SELECT file FROM pragma_database_list WHERE name='main'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "私聊数据库路径不可用")?;
+            return crate::chat_questions::tool(Path::new(&path), conversation_id, args);
+        }
+    }
     let (project, group, agent) = chat_context(connection, conversation_id)?;
     let active: Option<String> = connection.query_row("SELECT a.id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.project_id=?1 AND w.conversation_id=?2 AND a.agent_id=?3 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing') ORDER BY a.rowid DESC LIMIT 1", params![project,group,agent], |row|row.get(0)).optional().map_err(|_|"当前成员任务读取失败")?;
     if let Some(attempt) = active {
@@ -755,7 +796,10 @@ pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
         )
         .map_err(|_| "项目 Agent 会话映射不可用")?;
     if !linked {
-        return Err("项目 Agent 会话映射不存在".into());
+        let direct:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1 AND kind='direct' AND archived=0)",[conversation_id],|row|row.get(0)).map_err(|_|"私聊归属不可用")?;
+        if !direct {
+            return Err("私聊会话不存在".into());
+        }
     }
     let input = std::io::stdin();
     let mut reader = input.lock();
@@ -787,7 +831,7 @@ pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
             }
             "ping" => json!({"result":{}}),
             "tools/list" if initialized => {
-                json!({"result":{"tools":project_chat_tool_specs()}})
+                json!({"result":{"tools":if linked {project_chat_tool_specs()} else {tool_specs().into_iter().filter(|tool|tool["name"]=="hub_ask_user").collect::<Vec<_>>()}}})
             }
             "tools/call" if initialized => {
                 match chat_tool(

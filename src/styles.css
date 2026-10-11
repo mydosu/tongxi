@@ -456,3 +456,14 @@ html[data-hud] #hud-exit:hover { background: #f1f2f4; color: #2c3036; }
 .native-session strong { font-size: 12px; color: #2c3036; font-weight: 600; }
 .native-session small { font-size: 10px; color: #8b939d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .native-session code { font-size: 10px; color: #a2a9b2; }
+
+.chat-question-card { margin: 12px 0; padding: 15px 17px; border: 1px solid #dce5ed; border-radius: 10px; background: #f7fafc; }
+.chat-question-card header { display: flex; align-items: center; gap: 8px; color: #5e7891; font-size: 12px; }
+.question-dot { width: 6px; height: 6px; border-radius: 50%; background: #819bb4; }
+.chat-question-card p { margin: 10px 0 14px; white-space: pre-wrap; color: #4e6073; font-size: 14px; line-height: 1.7; }
+.chat-question-actions { display: flex; align-items: center; gap: 14px; }
+.chat-question-answered { color: #8191a3; display: block; white-space: pre-wrap; }
+.question-sidebar-badge { color: #7792ae; font-size: 10px; white-space: nowrap; }
+.question-notice { flex: none; padding: 11px 16px; margin: 8px 16px; border: 1px solid #dce4ed; border-radius: 9px; color: #617f9d; background: #f7fafc; text-align: left; font-size: 12px; }
+
+.message .bubble:empty { display: none; }
