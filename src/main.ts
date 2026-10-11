@@ -12,6 +12,8 @@ import { installMessageMenu } from './message_menu';
 import { projectProgressPage, progressContent } from './project_progress';
 import { projectSettings } from './project_settings';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
+import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
+import { mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
 import './styles.css';
 import './agent_transcript.css';
 
@@ -138,6 +140,7 @@ app.innerHTML = `
 `;
 
 const main = document.querySelector<HTMLDivElement>('#main')!;
+new MutationObserver(()=>hydrateAttachments(main)).observe(main,{childList:true,subtree:true});
 let pendingQuestions:PendingChatQuestion[]=[];
 const noticedQuestions=new Set<string>();
 main.addEventListener('focusout', () => { setTimeout(() => renderLiveSettings(), 0); });
@@ -166,7 +169,7 @@ if (isTauri()) {
     void window.show();
     // 「光标在输入框里」才亮起正文画布（Hermes 的 data-hud-typing 同理）。要查询 :focus 而不是
     // 读 activeElement——切到别的 App 时窗口失焦但 activeElement 不动，查询才不会把画布一直点亮。
-    const applyTyping = () => document.documentElement.toggleAttribute('data-hud-typing', !!(document.querySelector('#message-input:focus') || (modal.open && modal.contains(document.activeElement))));
+    const applyTyping = () => document.documentElement.toggleAttribute('data-hud-typing', !!(document.querySelector('#message-input:focus,[data-project-agent-chat-input]:focus') || (modal.open && modal.contains(document.activeElement))));
     applyTyping();
     document.addEventListener('focusin', applyTyping);
     document.addEventListener('focusout', applyTyping);
@@ -303,7 +306,7 @@ function renderList() {
     const active = screen === 'chat' && conversation.id === selectedId;
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
       ${agent ? avatar(agent) : `<span class="avatar group-avatar">${icon('group')}</span>`}
-      <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(visibleQuestionReply(conversation.preview,true) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
+      <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(attachmentText(visibleQuestionReply(conversation.preview,true)) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return row;
@@ -387,12 +390,11 @@ function renderMessage(message: Message, includeDetails = true) {
     ? `<details class="thought"${thinking ? ' open' : ''}><summary>${thinking ? '思考中…' : '思考过程'}</summary><div class="thought-body">${escape(thought)}</div></details>`
     : '';
   const toolEvents = includeDetails ? message.tool_events || [] : [];
-  const eventStatus = (status: string) => status === 'running' ? '进行中' : status === 'failed' ? '失败' : '完成';
-  const toolsHtml = toolEvents.length ? `<details class="message-tool-trace" ${message.status === 'streaming' ? 'open' : ''}><summary>工具活动 · ${toolEvents.length}</summary>${toolEvents.map(event => `<details class="message-tool-event" ${event.status === 'running' ? 'open' : ''}><summary><span>${escape(event.title || event.kind)}</span><small>${eventStatus(event.status)}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</details>` : '';
-  const shown=own?message.content:visibleQuestionReply(message.content,message.status==='streaming');
+  const toolsHtml = toolActivity(toolEvents, escape);
+  const shown=attachmentText(own?message.content:visibleQuestionReply(message.content,message.status==='streaming'));
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
-  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
+  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>${attachmentHtml(message.content,message.conversation_id,escape)}<div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
 }
 
 function projectChatFor(agentId: string) {
@@ -400,6 +402,8 @@ function projectChatFor(agentId: string) {
 }
 
 function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string) {
+  const input=host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
+  if(input)mountAttachments(input,chatId,escape,message=>toast(message,true));
   if (host.dataset.bound === 'true') return;
   host.dataset.bound = 'true';
   host.addEventListener('input', event => {
@@ -522,7 +526,8 @@ async function refreshProjectAgentChat(chatId: string) {
 
 async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: string) {
   const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
-  const text = input?.value.trim();
+  if(attachmentsBusy(chatId)){toast('附件正在保存，请稍后发送',true);return;}
+  const text = composeMessage(chatId,input?.value||'');
   if (!text || !detail) return;
   if (runtimes[agentId]?.connection !== 'connected') { toast(`请先连接${member(agentId).name}`, true); return; }
   if (projectAgentBusy(agentId)) { toast(`${member(agentId).name} 正在执行项目任务；可在该模块中断后再私聊`, true); return; }
@@ -531,8 +536,9 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
   if (button) { button.disabled = true; button.textContent = '发送中…'; }
   try {
     await invoke<RunRecord>(`send_${harnessKey(agentId)}_message`, { conversationId: chatId, messageId: crypto.randomUUID(), content: text });
-    if (input?.value.trim() === text) input.value = '';
-    if (readDraft(chatId).trim() === text) localStorage.removeItem(draftKey(chatId));
+    submittedAttachments(chatId,text);
+    if (input?.value.trim() === attachmentText(text)) input.value = '';
+    if (readDraft(chatId).trim() === attachmentText(text)) localStorage.removeItem(draftKey(chatId));
     const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
     projectAgentChatDetails.set(chatId, saved);
     syncProjectAgentChat(host, agentId, saved);
@@ -584,12 +590,14 @@ function updateRuntimeControls() {
     const messages = main.querySelector('#messages')!;
     const old = messages.querySelector(`[data-message-id="${active.assistant_message_id}"]`);
     const thoughtScroll = captureThoughtScroll(old as HTMLElement | null);
+    const toolState = captureToolState(old);
     const html = renderMessage({ id: active.assistant_message_id, conversation_id: selectedId, sender_id: active.agent_id, content: active.text, thought: active.thought, tool_events: active.tool_events, status: busySnapshot(snapshot) ? 'streaming' : active.status as Message['status'], created_at: detail.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now() }, detail.conversation.kind !== 'group');
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
     if (old) old.outerHTML = html;
     else { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
     const updated = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
     if (updated) restoreThoughtScroll(updated, thoughtScroll);
+    if (updated) restoreToolState(updated, toolState);
     if (nearBottom) pinToBottom(messages);
   }
   syncChatQuestions();
@@ -607,7 +615,8 @@ async function disconnectAgent(agentId = currentAgentId()) {
 async function sendNative() {
   if (!detail || !nativeChat() || sending || settingsPending > 0 || runBusy() || projectAgentBusy(currentAgentId()) || detail.conversation.archived || currentRuntime().connection !== 'connected') return;
   const input = main.querySelector<HTMLTextAreaElement>('#message-input')!;
-  const content = input.value.trim();
+  if(attachmentsBusy(detail.conversation.id)){toast('附件正在保存，请稍后发送',true);return;}
+  const content = composeMessage(detail.conversation.id,input.value);
   if (!content) { input.focus(); return; }
   const id = detail.conversation.id;
   if (!pendingSend || pendingSend.conversationId !== id || pendingSend.content !== content) pendingSend = { conversationId: id, messageId: crypto.randomUUID(), content };
@@ -616,7 +625,8 @@ async function sendNative() {
   try {
     await invoke<RunRecord>(`send_${harnessKey()}_message`, request);
     pendingSend = null;
-    if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+    submittedAttachments(id,content);
+    if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
     await refreshList();
     if (selectedId === id && screen === 'chat') await selectConversation(id);
   } catch (error) { toast(errorText(error), true); }
@@ -719,12 +729,13 @@ async function sendGroupMessage() {
   await settingsQueue;
   if (!detail || detail.conversation.kind !== 'group' || sending || detail.conversation.archived || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion)) return;
   const id = detail.conversation.id;
-  const content = main.querySelector<HTMLTextAreaElement>('#message-input')!.value.trim();
+  if(attachmentsBusy(id)){toast('附件正在保存，请稍后发送',true);return;}
+  const content = composeMessage(id,main.querySelector<HTMLTextAreaElement>('#message-input')!.value);
   if (!content) return;
   const question=detail.project_questions?.find(question=>question.status==='pending');
   if(question){
     try { await invoke('answer_project_question',{conversationId:detail.conversation.id,questionId:question.id,messageId:crypto.randomUUID(),content});
-      localStorage.removeItem(draftKey(detail.conversation.id));await selectConversation(detail.conversation.id);
+      submittedAttachments(id,content);localStorage.removeItem(draftKey(detail.conversation.id));await selectConversation(detail.conversation.id);
     } catch(error){toast(errorText(error),true);}return;
   }
   if (detail.project) {
@@ -734,8 +745,9 @@ async function sendGroupMessage() {
       try {
         await invoke('post_project_team_message', { conversationId: id, content });
         const refreshed = await invoke<ConversationDetail>('get_conversation', { id });
+        submittedAttachments(id,content);
         if (selectedId === id) detail = refreshed;
-        if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+        if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
       } catch (error) { toast(errorText(error), true); }
       finally { sending = false; updateRuntimeControls(); }
       return;
@@ -750,7 +762,8 @@ async function sendGroupMessage() {
     try {
       adoptProject(await invoke<Workflow>('start_project', { conversationId: id, messageId: pendingProject.messageId, content }));
       pendingProject = null;
-      if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+      submittedAttachments(id,content);
+      if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
       await refreshList();
       if (screen === 'chat' && selectedId === id) await selectConversation(id);
     } catch (error) { toast(errorText(error), true); }
@@ -764,7 +777,8 @@ async function sendGroupMessage() {
   try {
     const job = await invoke<Discussion>('start_discussion', pendingDiscussion);
     adoptDiscussion(job); pendingDiscussion = null;
-    if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+    submittedAttachments(id,content);
+    if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
     await refreshList();
     if (screen === 'chat' && selectedId === id) await selectConversation(id);
   } catch (error) { toast(errorText(error), true); }
@@ -1042,6 +1056,7 @@ function renderConversationChat() {
   main.querySelector(`#cancel-${key}`)?.addEventListener('click', () => void cancelNative());
   main.querySelector('#save-message')!.addEventListener('click', () => void saveMessage());
   const input = document.querySelector<HTMLTextAreaElement>('#message-input')!;
+  mountAttachments(input,conversation.id,escape,message=>toast(message,true));
   input.value = readDraft(conversation.id);
   input.addEventListener('input', () => localStorage.setItem(draftKey(conversation.id), input.value));
   const submit = () => isGroup ? sendGroupMessage() : nativeChat() && currentRuntime().connection === 'connected' ? sendNative() : saveMessage();
@@ -1067,7 +1082,8 @@ function renderConversationChat() {
 async function saveMessage() {
   if (!detail || sending || detail.conversation.archived) return;
   const input = document.querySelector<HTMLTextAreaElement>('#message-input')!;
-  const content = input.value.trim();
+  if(attachmentsBusy(detail.conversation.id)){toast('附件正在保存，请稍后发送',true);return;}
+  const content = composeMessage(detail.conversation.id,input.value);
   if (!content) { input.focus(); return; }
   const id = detail.conversation.id;
   if (!pendingSave || pendingSave.conversationId !== id || pendingSave.content !== content) pendingSave = { conversationId: id, messageId: crypto.randomUUID(), content };
@@ -1077,8 +1093,9 @@ async function saveMessage() {
   try {
     await invoke<Message>('save_local_message', { ...request });
     pendingSave = null;
+    submittedAttachments(id,content);
     // A switch during persistence must not clear another room's text or repaint it.
-    if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+    if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
     await refreshList();
     if (selectedId === id && screen === 'chat') await selectConversation(id);
     toast('草稿已保存到本机，尚未发送给成员');

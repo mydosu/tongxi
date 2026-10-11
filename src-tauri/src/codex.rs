@@ -904,7 +904,8 @@ impl Runtime {
                 return Ok(());
             }
         }
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":[{"type":"text","text":format!("{}\n\n{}",content,crate::chat_questions::GUIDANCE)}],"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let input = crate::attachments::prompt(&project_db, &conversation_id, content, true)?;
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":input,"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?

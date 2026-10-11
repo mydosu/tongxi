@@ -502,9 +502,10 @@ impl Runtime {
             }
         }
         self.emit();
+        let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
         let result = client.rpc_timeout(
             "session/prompt",
-            json!({"sessionId":session_id,"prompt":[{"type":"text","text":format!("{}\n\n{}",content,crate::chat_questions::GUIDANCE)}]}),
+            json!({"sessionId":session_id,"prompt":input}),
             Duration::from_secs(600),
         );
         match result {

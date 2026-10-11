@@ -4,6 +4,9 @@ mod acp_transport;
 mod albion;
 mod albion_openai;
 #[cfg(test)]
+mod attachment_tests;
+mod attachments;
+#[cfg(test)]
 mod chat_question_tests;
 mod chat_questions;
 mod chat_text;
@@ -556,6 +559,38 @@ fn cancel_chat_question(
 }
 
 #[tauri::command]
+fn stage_attachment(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    name: String,
+    mime: String,
+    data: String,
+) -> Result<attachments::Attachment, String> {
+    with_store(&state, |store| {
+        store.stage_attachment(&conversation_id, &name, &mime, &data)
+    })
+}
+#[tauri::command]
+fn attachment_data(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    attachment_id: String,
+) -> Result<String, String> {
+    with_store(&state, |store| {
+        store.attachment_data(&conversation_id, &attachment_id)
+    })
+}
+#[tauri::command]
+fn paste_clipboard_files(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<attachments::Attachment>, String> {
+    with_store(&state, |store| {
+        store.paste_clipboard_files(&conversation_id)
+    })
+}
+
+#[tauri::command]
 fn answer_chat_question(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -998,6 +1033,9 @@ fn main() {
             pending_chat_questions,
             answer_chat_question,
             cancel_chat_question,
+            stage_attachment,
+            attachment_data,
+            paste_clipboard_files,
             answer_project_question,
             update_group_members,
             save_local_message,

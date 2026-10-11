@@ -1,6 +1,8 @@
 import { entryBusy, type AgentEntry } from './agent_timeline';
 import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
+import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
+import { attachmentHtml, attachmentText } from './attachments';
 
 interface TranscriptFormat {
   escape: (value: string | number) => string;
@@ -121,12 +123,16 @@ export class AgentTranscript {
       if (follow) body.scrollTop = body.scrollHeight;
     }
     const text = node.querySelector<HTMLElement>('.agent-turn-text')!;
-    const output = (entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
+    const output = attachmentText(entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
     if (text.dataset.output !== output) {
       if (entry.kind === 'agent') text.innerHTML = agentMarkdown(output, escape); else text.textContent = output;
       text.dataset.output = output;
     }
     text.hidden = !output;
+    let attached=node.querySelector<HTMLElement>('.agent-turn-attachments');
+    if(!attached){attached=document.createElement('div');attached.className='agent-turn-attachments';text.after(attached);}
+    const attachment=attachmentHtml(entry.body,entry.attachmentRoom||'',escape);
+    if(attached.innerHTML!==attachment)attached.innerHTML=attachment;
     const protocol = node.querySelector<HTMLDetailsElement>('.agent-protocol')!;
     protocol.hidden = !entry.protocol;
     protocol.querySelector('summary')!.textContent = entry.protocol?.label || '';
@@ -137,10 +143,9 @@ export class AgentTranscript {
     const tools = node.querySelector<HTMLElement>('.agent-turn-tools')!;
     const signature = JSON.stringify(entry.tools);
     if (tools.dataset.paint !== signature) {
-      const disclosures = new Map([...tools.querySelectorAll<HTMLDetailsElement>('details')].map(detail => [detail.dataset.toolKey!, detail.open]));
-      const last = entry.tools.at(-1);
-      tools.innerHTML = last ? `<details class="agent-tools-summary" data-tool-key="all"><summary>${escape(entry.tools.some(tool => tool.status === 'running') ? '正在运行' : '已运行')} ${escape(last.title || last.kind)}${entry.tools.length > 1 ? ` · ${entry.tools.length} 项工具` : ''}</summary>${entry.tools.map(tool => `<details class="agent-tool-detail" data-tool-key="${escape(tool.event_id)}"><summary>${escape(tool.title || tool.kind)}<small>${escape(tool.status === 'running' ? '进行中' : tool.status === 'failed' ? '失败' : '完成')}</small></summary>${tool.input ? `<pre>${escape(tool.input)}</pre>` : ''}${tool.output ? `<pre>${escape(tool.output)}</pre>` : ''}</details>`).join('')}</details>` : '';
-      tools.querySelectorAll<HTMLDetailsElement>('details').forEach(detail => { detail.open = disclosures.get(detail.dataset.toolKey!) || false; });
+      const disclosures = captureToolState(tools);
+      tools.innerHTML = toolActivity(entry.tools, escape);
+      restoreToolState(tools, disclosures);
       tools.dataset.paint = signature;
     }
     const actions = node.querySelector<HTMLElement>('.agent-turn-actions')!;
