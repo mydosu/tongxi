@@ -3,6 +3,9 @@
 mod acp_transport;
 mod albion;
 mod albion_openai;
+#[cfg(test)]
+mod chat_question_tests;
+mod chat_questions;
 mod chat_text;
 mod clients;
 mod codex;
@@ -533,6 +536,95 @@ fn remove_conversation_item(
         store.remove_conversation_item(&conversation_id, &kind, &id)
     })
 }
+
+#[tauri::command]
+fn pending_chat_questions(
+    state: State<'_, AppState>,
+) -> Result<Vec<chat_questions::Pending>, String> {
+    with_store(&state, |store| store.pending_chat_questions())
+}
+
+#[tauri::command]
+fn cancel_chat_question(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    question_id: String,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.cancel_chat_question(&conversation_id, &question_id)
+    })
+}
+
+#[tauri::command]
+fn answer_chat_question(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    question_id: String,
+    content: String,
+) -> Result<chat_questions::Question, String> {
+    let question = with_store(&state, |store| {
+        store.answer_chat_question(&conversation_id, &question_id, &content)
+    })?;
+    if question.mode == "deferred" {
+        let store = state.store.clone();
+        let codex = app.state::<Arc<codex::Runtime>>().inner().clone();
+        let hermes = app.state::<Arc<hermes::Runtime>>().inner().clone();
+        let dsh = app.state::<Arc<dsh::Runtime>>().inner().clone();
+        let queued = question.clone();
+        std::thread::spawn(move || {
+            loop {
+                let ready = {
+                    let store = store.lock().unwrap();
+                    let Ok(rows) = store.chat_questions(&queued.conversation_id) else {
+                        return;
+                    };
+                    if !rows.iter().any(|row| {
+                        row.id == queued.id && row.status == "answered" && row.delivery == "queued"
+                    }) {
+                        return;
+                    }
+                    store.connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling')) AND NOT EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",[&queued.agent_id],|row|row.get::<_,bool>(0)).unwrap_or(false)
+                };
+                if ready {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let message = queued.answer_message_id.as_deref().unwrap_or_default();
+            let reply = format!(
+                "对你刚才的问题“{}”，我的回答是：{}。请按这个实际回答继续，保留已完成工作。",
+                queued.prompt,
+                queued.answer.as_deref().unwrap_or_default()
+            );
+            let result = match queued.agent_id.as_str() {
+                "codex-win" => codex
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                "hermes-win" => hermes
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                "dsh-win" => dsh
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                _ => Err("提问成员不可用".into()),
+            };
+            let store = store.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    let _ = store.connection.execute(
+                        "UPDATE chat_questions SET delivery='sent' WHERE id=?1",
+                        [&queued.id],
+                    );
+                }
+                Err(_) => {
+                    let _=store.connection.execute("UPDATE chat_questions SET status='pending',delivery='awaiting',error='回答未能送达，请连接成员或等待当前任务完成后重试' WHERE id=?1 AND delivery='queued'",[&queued.id]);
+                }
+            }
+        });
+    }
+    Ok(question)
+}
 #[tauri::command]
 fn answer_project_question(
     state: State<'_, AppState>,
@@ -903,6 +995,9 @@ fn main() {
             archive_conversation,
             delete_conversation,
             remove_conversation_item,
+            pending_chat_questions,
+            answer_chat_question,
+            cancel_chat_question,
             answer_project_question,
             update_group_members,
             save_local_message,

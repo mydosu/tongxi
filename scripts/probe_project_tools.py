@@ -19,7 +19,7 @@ def fixture(agent='codex-win'):
     base=ROOT/'artifacts'/('project-tools-probe-'+uuid.uuid4().hex[:10]);project=base/'project';data=base/'data'
     project.mkdir(parents=True);data.mkdir();db=data/'hub.db';attempt=str(uuid.uuid4());task=str(uuid.uuid4())
     with sqlite3.connect(db) as connection:
-        connection.executescript('''PRAGMA user_version=15;
+        connection.executescript('''PRAGMA user_version=16;
         CREATE TABLE projects(id TEXT PRIMARY KEY,root TEXT,checks TEXT);
         CREATE TABLE workflows(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,plan TEXT,conversation_id TEXT,updated_at INTEGER);
         CREATE TABLE project_tasks(id TEXT PRIMARY KEY,files TEXT,worktree TEXT,assigned_agent TEXT);

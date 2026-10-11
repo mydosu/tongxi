@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
+import type { Agent, ChatQuestion, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBusy } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -11,6 +11,7 @@ import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_v
 import { installMessageMenu } from './message_menu';
 import { projectProgressPage, progressContent } from './project_progress';
 import { projectSettings } from './project_settings';
+import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import './styles.css';
 import './agent_transcript.css';
 
@@ -137,6 +138,8 @@ app.innerHTML = `
 `;
 
 const main = document.querySelector<HTMLDivElement>('#main')!;
+let pendingQuestions:PendingChatQuestion[]=[];
+const noticedQuestions=new Set<string>();
 main.addEventListener('focusout', () => { setTimeout(() => renderLiveSettings(), 0); });
 const modal = document.querySelector<HTMLDialogElement>('#modal')!;
 installMessageMenu(main, () => selectedId, async target => {
@@ -300,11 +303,11 @@ function renderList() {
     const active = screen === 'chat' && conversation.id === selectedId;
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
       ${agent ? avatar(agent) : `<span class="avatar group-avatar">${icon('group')}</span>`}
-      <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(conversation.preview || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
-      ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
+      <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(visibleQuestionReply(conversation.preview,true) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
+      ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return row;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(member(chat.agent_id).name)} 专属会话</span>${projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(member(chat.agent_id).name)} 专属会话</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-branch ${expanded ? 'expanded' : ''}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -386,8 +389,10 @@ function renderMessage(message: Message, includeDetails = true) {
   const toolEvents = includeDetails ? message.tool_events || [] : [];
   const eventStatus = (status: string) => status === 'running' ? '进行中' : status === 'failed' ? '失败' : '完成';
   const toolsHtml = toolEvents.length ? `<details class="message-tool-trace" ${message.status === 'streaming' ? 'open' : ''}><summary>工具活动 · ${toolEvents.length}</summary>${toolEvents.map(event => `<details class="message-tool-event" ${event.status === 'running' ? 'open' : ''}><summary><span>${escape(event.title || event.kind)}</span><small>${eventStatus(event.status)}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</details>` : '';
+  const shown=own?message.content:visibleQuestionReply(message.content,message.status==='streaming');
+  const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
-  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(message.content || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
+  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}<div class="bubble">${escape(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div><div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
 }
 
 function projectChatFor(agentId: string) {
@@ -459,6 +464,7 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
     projectTranscript = new AgentTranscript(viewport, { escape, name: id => member(id).name, empty: agentEmpty(member(agentId).name, escape) });
   }
   projectTranscript!.update(agentTimeline(agentId, chat, roomProjects(), runtimes[agentId]));
+  syncChatQuestions();
   const active = runtimes[agentId]?.active;
   const stop = host.querySelector<HTMLButtonElement>('[data-stop-project-chat-run]');
   if (active?.conversation_id === chat.conversation.id && busySnapshot(runtimes[agentId])) {
@@ -568,7 +574,7 @@ function updateRuntimeControls() {
   const cancel = main.querySelector<HTMLButtonElement>(`#cancel-${harnessKey()}`);
   if (cancel) { cancel.hidden = !currentRun; cancel.disabled = currentRuntime().active?.status === 'cancelling'; cancel.textContent = currentRuntime().active?.status === 'cancelling' ? '正在停止…' : '停止回复'; }
   const note = main.querySelector('#runtime-note');
-  if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (currentRuntime().active?.status === 'starting' ? '正在准备原生会话…' : currentRuntime().active?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复…`) : runBusy() ? `${member(currentAgentId()).name} 正在其他会话回复，完成或停止后可发送。` : `${member(currentAgentId()).name} 私聊已接入；${currentAgentId() === 'hermes-win' ? '当前仅聊天，工具未启用' : '当前为只读对话模式'}，尚未绑定项目。`);
+  if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (currentRuntime().active?.status === 'starting' ? '正在准备原生会话…' : currentRuntime().active?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复…`) : runBusy() ? `${member(currentAgentId()).name} 正在其他会话回复，完成或停止后可发送。` : `${member(currentAgentId()).name} 私聊已接入；原生工具和问答可用。`);
   renderLiveSettings();
   updateDiscussionControls();
   updateProjectControls();
@@ -586,6 +592,7 @@ function updateRuntimeControls() {
     if (updated) restoreThoughtScroll(updated, thoughtScroll);
     if (nearBottom) pinToBottom(messages);
   }
+  syncChatQuestions();
 }
 
 async function connectAgent(agentId = currentAgentId()) {
@@ -888,6 +895,60 @@ function renderChat() {
   }
   renderConversationChat();
 }
+
+function currentChatQuestions():ChatQuestion[] {
+  const agent=activeProjectAgent();
+  const privateQuestions=agent ? projectAgentChatDetails.get(projectChatFor(agent)?.conversation_id||'')?.chat_questions || [] : detail?.conversation.kind==='direct' ? detail.chat_questions || [] : [];
+  const publicQuestions:ChatQuestion[]=agent ? (detail?.project_questions||[]).filter(q=>q.agent_id===agent).map(q=>({id:q.id,conversation_id:q.conversation_id,run_id:'',message_id:q.attempt_id||'',agent_id:q.agent_id,prompt:q.prompt,options:q.options,status:q.status,mode:'project',answer:q.answer,delivery:'sent',error:null})) : [];
+  return [...privateQuestions,...publicQuestions];
+}
+function syncChatQuestions() {
+  const questions=currentChatQuestions();
+  for(const question of questions) {
+    const row=main.querySelector<HTMLElement>(question.mode==='project'?`[data-attempt-id="${question.message_id}"]`:`[data-message-id="${question.message_id}"]`);
+    if(!row)continue;
+    let slot=row.querySelector<HTMLElement>('.chat-question-slot');
+    if(!slot){slot=document.createElement('div');slot.className='chat-question-slot';row.append(slot);}
+    const html=questions.filter(q=>q.message_id===question.message_id).map(q=>questionCard(q,escape)).join('');
+    if(slot.innerHTML!==html)slot.innerHTML=html;
+    if(question.status==='pending'&&question.mode==='native'){const bubble=row.querySelector<HTMLElement>('.bubble');if(bubble?.textContent==='正在等待回复…')bubble.hidden=true;}
+  }
+  const waiting=questions.some(q=>q.status==='pending');
+  const note=main.querySelector<HTMLElement>('#runtime-note,.project-chat-settings-note');
+  if(waiting&&note)note.textContent='等待你的回答 · 点击问题下的“回答”选择选项或输入内容';
+  if(!waiting&&note?.textContent?.startsWith('等待你的回答'))note.textContent=questions.some(q=>q.delivery==='queued')?'回答已保存 · 等待成员继续':'会话就绪 · 问答已接通';
+}
+main.addEventListener('click',event=>{
+  const button=(event.target as HTMLElement).closest<HTMLButtonElement>('[data-answer-chat-question],[data-cancel-chat-question]');
+  if(!button)return;
+  const id=button.dataset.answerChatQuestion||button.dataset.cancelChatQuestion!;
+  const question=currentChatQuestions().find(q=>q.id===id);if(!question)return;
+  if(button.dataset.cancelChatQuestion){void invoke('cancel_chat_question',{conversationId:question.conversation_id,questionId:id}).then(()=>refreshQuestionState()).catch(error=>toast(errorText(error),true));return;}
+  if(question.mode==='project'){void answerProjectQuestion(question.id);return;}
+  void answerDialog(question,{modal,escape,open:openModal,name:id=>member(id).name,saved:refreshQuestionState});
+});
+let questionRefreshBusy=false;
+async function refreshQuestionState() {
+  if(questionRefreshBusy)return;questionRefreshBusy=true;
+  try {
+    const result=await invoke<PendingChatQuestion[]|null>('pending_chat_questions');
+    const latest=Array.isArray(result)?result:[];
+    const changed=JSON.stringify(latest)!==JSON.stringify(pendingQuestions);pendingQuestions=latest;
+    if(changed)renderList();
+    const unseen=latest.find(q=>!noticedQuestions.has(q.id));
+    if(unseen){noticedQuestions.add(unseen.id);toast(`${member(unseen.agent_id).name} 等待你的回答；请打开对应私聊点击“回答”`);}
+    let notice=document.querySelector<HTMLButtonElement>('#question-notice');
+    if(latest.length&&!notice){notice=document.createElement('button');notice.id='question-notice';notice.className='question-notice';document.querySelector('.sidebar')!.append(notice);notice.addEventListener('click',()=>{const q=pendingQuestions[0];if(q)void(q.group_id?selectProjectModule(q.group_id,q.agent_id):selectConversation(q.conversation_id));});}
+    if(notice){notice.hidden=!latest.length;notice.textContent=latest.length?`${member(latest[0].agent_id).name} 等待回答 · ${latest.length}`:'';}
+    if(screen==='chat'&&detail) {
+      const agent=activeProjectAgent(),chat=agent?projectChatFor(agent):null;
+      const id=chat?.conversation_id || (detail.conversation.kind==='direct'?detail.conversation.id:null);
+      if(id){const fresh=await invoke<ConversationDetail>('get_conversation',{id});if(chat)projectAgentChatDetails.set(id,fresh);else if(selectedId===id)detail=fresh;syncChatQuestions();}
+    }
+  }catch{/* A stopped application or an older mock has no question endpoint. */}
+  finally{questionRefreshBusy=false;}
+}
+setInterval(()=>void refreshQuestionState(),1000);
 
 async function answerProjectQuestion(id:string) {
   const question=detail?.project_questions?.find(question=>question.id===id&&question.status==='pending');

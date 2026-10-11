@@ -25,6 +25,7 @@ export interface ConversationDetail {
   project_team_messages: ProjectTeamMessage[];
   project_agent_inbox?: ProjectRoomAgentMessage[];
   project_questions?: ProjectQuestion[];
+  chat_questions?: ChatQuestion[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
 export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; }
@@ -92,4 +93,6 @@ export interface ServiceUpdateStatus {
   rollback_available: boolean;
 }
 
-export interface ProjectQuestion { id:string;workflow_id:string;conversation_id:string;agent_id:string;prompt:string;options:string[];status:string;answer:string|null; }
+export interface ProjectQuestion { attempt_id?:string|null;id:string;workflow_id:string;conversation_id:string;agent_id:string;prompt:string;options:string[];status:string;answer:string|null; }
+export interface ChatQuestion { id:string;conversation_id:string;run_id:string;message_id:string;agent_id:string;prompt:string;options:string[];status:string;mode:string;answer:string|null;delivery:string;error:string|null; }
+export interface PendingChatQuestion { kind?:string;id:string;conversation_id:string;agent_id:string;group_id:string|null; }
