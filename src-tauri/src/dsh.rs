@@ -654,9 +654,10 @@ impl Runtime {
                 .mark_turn(&mut run.record, run_id)?;
         }
         self.emit();
+        let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
         let result = client.rpc_timeout(
             "session/prompt",
-            json!({"sessionId":session_id,"prompt":[{"type":"text","text":format!("{}\n\n{}",content,crate::chat_questions::GUIDANCE)}]}),
+            json!({"sessionId":session_id,"prompt":input}),
             Duration::from_secs(1800),
         );
         match result {

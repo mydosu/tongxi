@@ -16,6 +16,7 @@ export interface AgentEntry {
   model?: string | null;
   effort?: string | null;
   messageId?: string;
+  attachmentRoom?: string;
   attemptId?: string;
   workflowId?: string;
   protocol?: { label: string; raw: string };
@@ -30,7 +31,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
     rows.set(`message:${message.id}`, {
       id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
       source: 'private', author: message.sender_id, body: message.content, thought: message.thought || '',
-      tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id,
+      tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
   }
   const active = runtime.active;
@@ -48,7 +49,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
     const attempts = job.attempts.filter(attempt => attempt.agent_id === agent && attempt.stage !== 'verify');
     if (attempts.length) rows.set(`request:${job.id}`, {
       id: `request:${job.id}`, at: job.created_at, kind: 'user', source: 'project', author: 'user', body: job.request,
-      thought: '', tools: [], status: 'delivered', error: null, workflowId: job.id,
+      thought: '', tools: [], status: 'delivered', error: null, workflowId: job.id, attachmentRoom: job.conversation_id,
     });
     attempts.forEach((attempt, index) => rows.set(`attempt:${attempt.id}`, {
       id: `attempt:${attempt.id}`, at: attempt.created_at ?? job.created_at + index + 1,

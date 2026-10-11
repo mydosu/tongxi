@@ -1,6 +1,6 @@
 [package]
 name = "local-agent-hub"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "Personal desktop agent collaboration workspace"
 
@@ -15,10 +15,11 @@ serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+base64 = "0.22"
 tauri-plugin-global-shortcut = "2.4.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_UI_Shell"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
