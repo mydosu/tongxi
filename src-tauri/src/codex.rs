@@ -70,7 +70,11 @@ pub struct RuntimeSnapshot {
     pub executable: Option<String>,
     pub version: Option<String>,
     pub error: Option<String>,
+    /// 最近一次（优先正在进行的）运行，旧界面与群聊判断沿用它。
     pub active: Option<RunSnapshot>,
+    /// 同一成员可同时在多个同席会话里回复；每个会话保留最近一次运行。
+    #[serde(default)]
+    pub runs: Vec<RunSnapshot>,
     pub models: Vec<ModelOption>,
     pub default_model: Option<String>,
     pub default_effort: Option<String>,
@@ -86,6 +90,65 @@ struct ActiveRun {
 fn busy(status: &str) -> bool {
     matches!(status, "starting" | "running" | "cancelling")
 }
+
+/// 各成员运行表的公共操作：一个成员可以同时在多个会话里回复，按运行 ID 或会话找到对应运行。
+pub(crate) trait Run {
+    fn record(&self) -> &RunRecord;
+}
+impl Run for RunSnapshot {
+    fn record(&self) -> &RunRecord {
+        &self.record
+    }
+}
+impl Run for ActiveRun {
+    fn record(&self) -> &RunRecord {
+        &self.snapshot.record
+    }
+}
+pub(crate) fn run_busy<T: Run>(run: &T) -> bool {
+    busy(&run.record().status)
+}
+/// 新运行替换同一会话里已结束的旧运行；已结束的运行最多留 16 条，供界面收尾显示。
+pub(crate) fn insert_run<T: Run>(runs: &mut Vec<T>, run: T) {
+    let conversation = run.record().conversation_id.clone();
+    runs.retain(|old| old.record().conversation_id != conversation || run_busy(old));
+    runs.push(run);
+    while runs.iter().filter(|old| !run_busy(*old)).count() > 16 {
+        let Some(index) = runs.iter().position(|old| !run_busy(old)) else {
+            break;
+        };
+        runs.remove(index);
+    }
+}
+pub(crate) fn run_mut<'a, T: Run>(runs: &'a mut [T], id: &str) -> Option<&'a mut T> {
+    runs.iter_mut().find(|run| run.record().id == id)
+}
+pub(crate) fn run_ref<'a, T: Run>(runs: &'a [T], id: &str) -> Option<&'a T> {
+    runs.iter().find(|run| run.record().id == id)
+}
+/// 这个会话正在进行的运行（同一会话同时只会有一条）。
+pub(crate) fn live_in<'a, T: Run>(runs: &'a mut [T], conversation: &str) -> Option<&'a mut T> {
+    runs.iter_mut()
+        .find(|run| run.record().conversation_id == conversation && run_busy(*run))
+}
+pub(crate) fn busy_in<T: Run>(runs: &[T], conversation: &str) -> bool {
+    runs.iter()
+        .any(|run| run.record().conversation_id == conversation && run_busy(run))
+}
+pub(crate) fn busy_ids<T: Run>(runs: &[T]) -> Vec<String> {
+    runs.iter()
+        .filter(|run| run_busy(*run))
+        .map(|run| run.record().id.clone())
+        .collect()
+}
+/// 快照里的 `active`：最近一条正在进行的运行，没有就取最近一条。
+pub(crate) fn headline(runs: &[RunSnapshot]) -> Option<RunSnapshot> {
+    runs.iter()
+        .rev()
+        .find(|run| run_busy(*run))
+        .or_else(|| runs.last())
+        .cloned()
+}
 pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToolEvent> {
     let item = params.get("item")?;
     let kind = item["type"].as_str()?;
@@ -98,6 +161,10 @@ pub(crate) fn codex_tool_event(params: &Value, completed: bool) -> Option<RunToo
             | "hookPrompt"
             | "plan"
             | "functionCallOutput"
+            | "subAgentActivity"
+            | "enteredReviewMode"
+            | "exitedReviewMode"
+            | "contextCompaction"
     ) {
         return None;
     }
@@ -310,7 +377,7 @@ fn apply_reasoning_delta(run: &mut ActiveRun, method: &str, params: &Value) -> b
 impl ActiveRun {
     /// 推理增量直接累加：思考块不分段、不参与正文拼接。
     fn thought(&mut self, delta: &str) {
-        self.snapshot.thought.push_str(delta);
+        crate::store::push_thought(&mut self.snapshot.thought, &self.snapshot.text, delta);
     }
     fn text(&mut self, item: &str, text: &str, replace: bool) {
         if !self.items.contains_key(item) {
@@ -350,7 +417,7 @@ struct Inner {
     connection: String,
     version: Option<String>,
     error: Option<String>,
-    active: Option<ActiveRun>,
+    runs: Vec<ActiveRun>,
     models: Vec<ModelOption>,
     default_model: Option<String>,
     default_effort: Option<String>,
@@ -447,6 +514,24 @@ pub(crate) fn native_version(executable: &PathBuf) -> Option<String> {
 }
 
 impl Runtime {
+    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
+        self.shared_project_client()?;
+        let executable = self
+            .executable
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("Codex程序不可用")?;
+        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
+        let mut command = Command::new(executable);
+        command
+            .args(crate::coordinator_clients::codex_arguments())
+            .current_dir(directory);
+        let client = Client::spawn_command(command, |_| {}, || {})?;
+        client.rpc("initialize",json!({"clientInfo":{"name":"tongxi_coordinator","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
+        client.write(&json!({"method":"initialized","params":{}}))?;
+        Ok(client)
+    }
     /// 只读列出 codex 自己的历史会话（app-server 的 thread/list）。
     pub fn list_sessions(&self) -> Result<Vec<NativeSession>> {
         let client = {
@@ -483,15 +568,19 @@ impl Runtime {
                     .to_string();
                 Some(NativeSession {
                     id,
-                    title: item["title"]
-                        .as_str()
-                        .or_else(|| item["preview"].as_str())
+                    // 用户在 Codex 里起的会话名（name）优先，没有再用首条消息预览。
+                    title: ["name", "title", "preview"]
+                        .iter()
+                        .find_map(|key| item[*key].as_str().filter(|text| !text.trim().is_empty()))
                         .map(str::to_string),
                     cwd: item["cwd"].as_str().map(str::to_string),
-                    updated_at: item["updatedAt"]
-                        .as_str()
-                        .or_else(|| item["createdAt"].as_str())
-                        .map(str::to_string),
+                    // app-server 给的是 Unix 秒；界面按 ISO 时间解析。
+                    updated_at: ["updatedAt", "createdAt"].iter().find_map(|key| {
+                        item[*key]
+                            .as_str()
+                            .map(str::to_string)
+                            .or_else(|| item[*key].as_i64().map(crate::quota_reset::iso_utc))
+                    }),
                     occupied_by: None,
                     current: false,
                 })
@@ -515,7 +604,7 @@ impl Runtime {
                 connection: "disconnected".into(),
                 version: None,
                 error: slot_error,
-                active: None,
+                runs: Vec::new(),
                 models: Vec::new(),
                 default_model: None,
                 default_effort: None,
@@ -539,6 +628,7 @@ impl Runtime {
     }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();
+        let runs: Vec<RunSnapshot> = inner.runs.iter().map(|run| run.snapshot.clone()).collect();
         RuntimeSnapshot {
             revision: self.revision.fetch_add(1, Ordering::Relaxed),
             connection: inner.connection.clone(),
@@ -550,7 +640,8 @@ impl Runtime {
                 .map(|path| path.to_string_lossy().into()),
             version: inner.version.clone(),
             error: inner.error.clone(),
-            active: inner.active.as_ref().map(|run| run.snapshot.clone()),
+            active: headline(&runs),
+            runs,
             models: inner.models.clone(),
             default_model: inner.default_model.clone(),
             default_effort: inner.default_effort.clone(),
@@ -663,9 +754,7 @@ impl Runtime {
 
     pub fn mutate<T>(&self, id: &str, action: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
         let inner = self.inner.lock().map_err(|_| "运行状态不可用")?;
-        if inner.active.as_ref().is_some_and(|run| {
-            busy(&run.snapshot.record.status) && run.snapshot.record.conversation_id == id
-        }) {
+        if busy_in(&inner.runs, id) {
             return Err("会话正在运行，请先停止并等待完成".into());
         }
         let mut store = self.store.lock().map_err(|_| "存储不可用")?;
@@ -690,12 +779,8 @@ impl Runtime {
         if inner.connection != "connected" {
             return Err("请先连接 Codex".into());
         }
-        if inner
-            .active
-            .as_ref()
-            .is_some_and(|run| busy(&run.snapshot.record.status))
-        {
-            return Err("Codex 正在处理上一条消息，请等待或停止".into());
+        if busy_in(&inner.runs, conversation_id) {
+            return Err("Codex 正在处理这个会话的上一条消息，请等待或停止".into());
         }
         let client = inner.client.clone().ok_or("Codex 接口不可用")?;
         let settings = self
@@ -718,17 +803,20 @@ impl Runtime {
             message_id,
             content,
         )?;
-        inner.active = Some(ActiveRun {
-            snapshot: RunSnapshot {
-                record: record.clone(),
-                text: String::new(),
-                thought: String::new(),
-                tool_events: Vec::new(),
+        insert_run(
+            &mut inner.runs,
+            ActiveRun {
+                snapshot: RunSnapshot {
+                    record: record.clone(),
+                    text: String::new(),
+                    thought: String::new(),
+                    tool_events: Vec::new(),
+                },
+                items: BTreeMap::new(),
+                order: Vec::new(),
+                last_checkpoint: Instant::now(),
             },
-            items: BTreeMap::new(),
-            order: Vec::new(),
-            last_checkpoint: Instant::now(),
-        });
+        );
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -748,13 +836,8 @@ impl Runtime {
         round: u32,
     ) -> Result<RunRecord> {
         let mut inner = self.inner.lock().map_err(|_| "运行状态不可用")?;
-        if inner.connection != "connected"
-            || inner
-                .active
-                .as_ref()
-                .is_some_and(|r| busy(&r.snapshot.record.status))
-        {
-            return Err("Codex 尚未连接或正在其他会话回复".into());
+        if inner.connection != "connected" {
+            return Err("Codex 尚未连接".into());
         }
         let client = inner.client.clone().ok_or("Codex 接口不可用")?;
         let (record, text) =
@@ -762,17 +845,20 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .begin_discussion_turn(discussion, "codex-win", round)?;
-        inner.active = Some(ActiveRun {
-            snapshot: RunSnapshot {
-                record: record.clone(),
-                text: String::new(),
-                thought: String::new(),
-                tool_events: Vec::new(),
+        insert_run(
+            &mut inner.runs,
+            ActiveRun {
+                snapshot: RunSnapshot {
+                    record: record.clone(),
+                    text: String::new(),
+                    thought: String::new(),
+                    tool_events: Vec::new(),
+                },
+                items: BTreeMap::new(),
+                order: Vec::new(),
+                last_checkpoint: Instant::now(),
             },
-            items: BTreeMap::new(),
-            order: Vec::new(),
-            last_checkpoint: Instant::now(),
-        });
+        );
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -788,11 +874,7 @@ impl Runtime {
     fn start_turn(&self, client: &Client, run_id: &str, content: &str) -> Result<()> {
         let (conversation_id, previous, native_cwd) = {
             let inner = self.inner.lock().unwrap();
-            let run = inner
-                .active
-                .as_ref()
-                .filter(|run| run.snapshot.record.id == run_id)
-                .ok_or("运行已取消")?;
+            let run = run_ref(&inner.runs, run_id).ok_or("运行已取消")?;
             if run.snapshot.record.status == "cancelling" {
                 drop(inner);
                 self.finish(run_id, "interrupted", None);
@@ -837,10 +919,7 @@ impl Runtime {
         }
         let (model, effort) = {
             let inner = self.inner.lock().unwrap();
-            let settings = &inner
-                .active
-                .as_ref()
-                .filter(|run| run.snapshot.record.id == run_id)
+            let settings = &run_ref(&inner.runs, run_id)
                 .ok_or("运行已结束")?
                 .snapshot
                 .record;
@@ -889,10 +968,8 @@ impl Runtime {
             .to_owned();
         {
             let mut inner = self.inner.lock().unwrap();
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| run.snapshot.record.id == run_id && busy(&run.snapshot.record.status))
+            let run = run_mut(&mut inner.runs, run_id)
+                .filter(|run| run_busy(*run))
                 .ok_or("运行已结束")?;
             self.store
                 .lock()
@@ -905,7 +982,9 @@ impl Runtime {
             }
         }
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, true)?;
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":self.snapshot().active.as_ref().map(|run|run.record.user_message_id.clone()),"input":input,"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let user_message = run_ref(&self.inner.lock().unwrap().runs, run_id)
+            .map(|run| run.snapshot.record.user_message_id.clone());
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":user_message,"input":input,"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?
@@ -914,32 +993,25 @@ impl Runtime {
         // Record the acknowledged turn/start overrides for this run instead.
         {
             let mut inner = self.inner.lock().unwrap();
-            if let Some(run) = inner
-                .active
-                .as_mut()
-                .filter(|run| run.snapshot.record.id == run_id)
-            {
+            if let Some(run) = run_mut(&mut inner.runs, run_id) {
                 self.store
                     .lock()
                     .unwrap()
                     .record_model(&mut run.snapshot.record, model, effort)?;
             }
         }
-        let cancelling =
-            {
-                let mut inner = self.inner.lock().unwrap();
-                if let Some(run) = inner.active.as_mut().filter(|run| {
-                    run.snapshot.record.id == run_id && busy(&run.snapshot.record.status)
-                }) {
-                    self.store
-                        .lock()
-                        .unwrap()
-                        .mark_turn(&mut run.snapshot.record, &turn_id)?;
-                    run.snapshot.record.status == "cancelling"
-                } else {
-                    false
-                }
-            };
+        let cancelling = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(run) = run_mut(&mut inner.runs, run_id).filter(|run| run_busy(*run)) {
+                self.store
+                    .lock()
+                    .unwrap()
+                    .mark_turn(&mut run.snapshot.record, &turn_id)?;
+                run.snapshot.record.status == "cancelling"
+            } else {
+                false
+            }
+        };
         self.emit();
         if cancelling {
             client.rpc(
@@ -950,8 +1022,46 @@ impl Runtime {
         Ok(())
     }
 
+    /// 把会话交给 CLI 前卸下 app-server 里已载入的线程；下次 thread/resume 会从磁盘重读 CLI 写下的内容。
+    pub(crate) fn release_native(&self, thread_id: &str) {
+        let client = self.inner.lock().unwrap().client.clone();
+        if let Some(client) = client {
+            let _ = client.rpc("thread/unsubscribe", json!({"threadId":thread_id}));
+        }
+    }
     pub fn cancel(&self, conversation_id: &str) -> Result<RuntimeSnapshot> {
         self.cancel_expected(conversation_id, None)
+    }
+    /// 回复进行中插话：用原生 turn/steer 把引导追加进当前回合，不打断。
+    pub fn steer(&self, conversation_id: &str, content: &str) -> Result<()> {
+        let (client, thread_id, turn_id) = {
+            let inner = self.inner.lock().unwrap();
+            let client = inner.client.clone().ok_or("Codex 未连接")?;
+            let run = inner
+                .runs
+                .iter()
+                .find(|run| {
+                    run.snapshot.record.conversation_id == conversation_id
+                        && run_busy(*run)
+                        && run.snapshot.record.status != "cancelling"
+                })
+                .ok_or("这个会话没有正在进行的回复")?;
+            (
+                client,
+                run.snapshot.record.native_thread_id.clone(),
+                run.snapshot.record.native_turn_id.clone(),
+            )
+        };
+        let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) else {
+            return Err("回复还没真正开始，请稍后再插话".into());
+        };
+        let db = self.store.lock().unwrap().path.clone();
+        let input = crate::attachments::prompt(&db, conversation_id, content, true)?;
+        client.rpc(
+            "turn/steer",
+            json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":input}),
+        )?;
+        Ok(())
     }
     pub(crate) fn cancel_expected(
         &self,
@@ -961,14 +1071,8 @@ impl Runtime {
         let (client, thread_id, turn_id, run_id) = {
             let mut inner = self.inner.lock().unwrap();
             let client = inner.client.clone().ok_or("Codex 未连接")?;
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| {
-                    run.snapshot.record.conversation_id == conversation_id
-                        && busy(&run.snapshot.record.status)
-                        && expected.is_none_or(|id| run.snapshot.record.id == id)
-                })
+            let run = live_in(&mut inner.runs, conversation_id)
+                .filter(|run| expected.is_none_or(|id| run.snapshot.record.id == id))
                 .ok_or("这个会话没有正在运行的任务")?;
             run.snapshot.record.status = "cancelling".into();
             self.store.lock().unwrap().checkpoint(
@@ -1002,15 +1106,20 @@ impl Runtime {
     fn private_user_input(&self, params: &Value) -> Result<Value> {
         let run = {
             let inner = self.inner.lock().unwrap();
-            let run = inner.active.as_ref().ok_or("没有正在运行的私聊")?;
-            if !busy(&run.snapshot.record.status)
-                || run.snapshot.record.native_thread_id.as_deref() != params["threadId"].as_str()
-                || run
-                    .snapshot
-                    .record
-                    .native_turn_id
-                    .as_deref()
-                    .is_some_and(|id| Some(id) != params["turnId"].as_str())
+            let run = inner
+                .runs
+                .iter()
+                .find(|run| {
+                    run.snapshot.record.native_thread_id.as_deref() == params["threadId"].as_str()
+                        && run_busy(*run)
+                })
+                .ok_or("没有正在运行的私聊")?;
+            if run
+                .snapshot
+                .record
+                .native_turn_id
+                .as_deref()
+                .is_some_and(|id| Some(id) != params["turnId"].as_str())
             {
                 return Err("私聊问题身份不匹配".into());
             }
@@ -1023,7 +1132,9 @@ impl Runtime {
     fn project_chat_tool(&self, params: &Value) -> Option<Result<Value>> {
         let (conversation_id, thread_id, turn_id) = {
             let inner = self.inner.lock().unwrap();
-            let run = inner.active.as_ref()?;
+            let run = inner.runs.iter().find(|run| {
+                run.snapshot.record.native_thread_id.as_deref() == params["threadId"].as_str()
+            })?;
             let record = &run.snapshot.record;
             if record.native_thread_id.as_deref() != params["threadId"].as_str()
                 || record.native_turn_id.as_deref() != params["turnId"].as_str()
@@ -1052,13 +1163,11 @@ impl Runtime {
         if inner.connection_id != connection_id {
             return;
         }
-        let Some(run) = inner.active.as_mut() else {
+        let params = &value["params"];
+        let Some(index) = inner.runs.iter().position(|run| run.accepts(params)) else {
             return;
         };
-        let params = &value["params"];
-        if !run.accepts(params) {
-            return;
-        }
+        let run = &mut inner.runs[index];
         let method = value["method"].as_str().unwrap_or("");
         if method != "turn/started" && run.snapshot.record.native_turn_id.is_none() {
             return;
@@ -1125,7 +1234,7 @@ impl Runtime {
             }
             _ => return,
         }
-        let run = inner.active.as_mut().unwrap();
+        let run = &mut inner.runs[index];
         if final_event || run.last_checkpoint.elapsed() > Duration::from_millis(350) {
             if self
                 .store
@@ -1149,11 +1258,7 @@ impl Runtime {
 
     fn finish(&self, run_id: &str, status: &str, error: Option<String>) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(run) = inner
-            .active
-            .as_mut()
-            .filter(|run| run.snapshot.record.id == run_id && busy(&run.snapshot.record.status))
-        {
+        if let Some(run) = run_mut(&mut inner.runs, run_id).filter(|run| run_busy(*run)) {
             run.snapshot.record.status = status.into();
             run.snapshot.record.error = error;
             if self
@@ -1177,9 +1282,7 @@ impl Runtime {
     fn abort(&self, run_id: &str, error: String) {
         let client = {
             let mut inner = self.inner.lock().unwrap();
-            let Some(run) = inner.active.as_mut().filter(|run| {
-                run.snapshot.record.id == run_id && busy(&run.snapshot.record.status)
-            }) else {
+            let Some(run) = run_mut(&mut inner.runs, run_id).filter(|run| run_busy(*run)) else {
                 return;
             };
             run.snapshot.record.status = "failed".into();
@@ -1189,10 +1292,15 @@ impl Runtime {
                 &run.snapshot.text,
                 &run.snapshot.thought,
             );
-            inner.connection_id.clear();
-            inner.connection = "disconnected".into();
-            inner.error = Some(error);
-            inner.client.take()
+            // 其他会话可能还在同一连接上回复：只有没有别的运行时才断开重来。
+            if inner.runs.iter().any(|run| run_busy(run)) {
+                None
+            } else {
+                inner.connection_id.clear();
+                inner.connection = "disconnected".into();
+                inner.error = Some(error);
+                inner.client.take()
+            }
         };
         if let Some(client) = client {
             client.stop();
@@ -1208,12 +1316,9 @@ impl Runtime {
             }
             inner.connection = "disconnected".into();
             inner.error = Some("Codex 原生进程已退出，可以重新连接".into());
-            inner
-                .active
-                .as_ref()
-                .map(|run| run.snapshot.record.id.clone())
+            busy_ids(&inner.runs)
         };
-        if let Some(id) = run_id {
+        for id in run_id {
             self.finish(&id, "failed", Some("Codex 连接中断".into()));
         }
         self.emit();
@@ -1225,28 +1330,18 @@ impl Runtime {
     pub(crate) fn stop_expected(&self, expected: Option<&str>) {
         let (client, run_id) = {
             let mut inner = self.inner.lock().unwrap();
-            if expected.is_some_and(|id| {
-                !inner.active.as_ref().is_some_and(|run| {
-                    run.snapshot.record.id == id && busy(&run.snapshot.record.status)
-                })
-            }) {
+            if expected.is_some_and(|id| !run_ref(&inner.runs, id).is_some_and(run_busy)) {
                 return;
             }
             inner.connection_id.clear();
             inner.connection = "disconnected".into();
             inner.error = None;
-            (
-                inner.client.take(),
-                inner
-                    .active
-                    .as_ref()
-                    .map(|run| run.snapshot.record.id.clone()),
-            )
+            (inner.client.take(), busy_ids(&inner.runs))
         };
         if let Some(client) = client {
             client.stop();
         }
-        if let Some(id) = run_id {
+        for id in run_id {
             self.finish(&id, "interrupted", Some("连接已主动断开".into()));
         }
         self.emit();

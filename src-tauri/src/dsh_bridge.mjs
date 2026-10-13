@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 
 const [installation, data] = process.argv.slice(1);
 const projectMode = process.env.AGENT_HUB_DSH_PROJECT_MODE === '1';
+const coordinatorMode = process.env.AGENT_HUB_COORDINATOR_MODE === '1';
 const requireNative = createRequire(join(installation, 'package.json'));
 const load = name => import(pathToFileURL(requireNative.resolve(name)).href);
 let ctx;
@@ -56,7 +57,7 @@ try {
   // Keep DSH's native coding tools instead of composing an ACP-only chat shell.
   // These are the base CLI tools with the Windows PowerShell executor; Hermes still
   // supplies the selected model route and credentials to this owned child process.
-  process.env.DSH_PERMISSION_MODE = 'danger-full-access';
+  process.env.DSH_PERMISSION_MODE = coordinatorMode ? 'read-only' : 'danger-full-access';
   const plugins = [
     ['llm', 'dsh-llm'], ['session', 'dsh-session'], ['agent', 'dsh-agent'],
     ['jobs-local', 'dsh-jobs-local'], ['tools', 'dsh-tools'], ['system-prompt', 'dsh-system-prompt'],
@@ -89,7 +90,7 @@ try {
     root: join(dshHome, 'sessions'), compression: sharedHome ? 'zstd' : 'none' };
   entries.find(item => item.id === 'system-prompt').config = {
     persona: projectMode
-      ? '你是同席项目群中的实现 Agent DSH，按规划承担分配的任务。使用你在 DSH CLI 中配置的工具处理工作，也可调用 hub_message 直接联系群内其他项目 Agent，并用 hub_inbox 读取发给你的消息；如果验收成员不同，完成前须给验收者发简短交接。验收 Agent 会独立复核项目结果。'
+      ? '你是同席项目成员 DSH。方案、实现、验证、文档或收尾职责均以本轮用户原话和当前 assigned_excerpt 为准，不自行承担其他成员的工作。使用原生 CLI 工具处理当前任务，可用 hub_message 联系项目成员、hub_inbox 接收协作消息。'
       : '你是同席中独立的 DSH 私聊成员，负责简单编码建议和小问题分析。像在 DSH CLI 中一样，按需使用可用工具解决用户任务；直接回答用户，不引用其他会话内容。'
   };
   entries.find(item => item.id === 'sandbox-policy').config = {
@@ -118,6 +119,15 @@ try {
   entries.push({ id: 'acp', name: requireNative.resolve('@deepseek-ai/dsh-acp'), inject: ['agentLoop'], config: {
     provider: routes[0].id, model: routes[0].model
   }});
+  if (coordinatorMode) {
+    // Permission presets depend on a shell executor. The tool-free coordinator
+    // deliberately has none; keeping that plugin pending makes boot's activation
+    // audit dispose ACP after initialize, before session/new can complete.
+    const allowed = new Set(['llm','session','agent','jobs-local','tools','system-prompt','session-persistence-jsonl','session-projection','llm-pi-ai','agent-loop','sandbox','sandbox-policy','subprocess','approval','token-meter','compaction-pruner','compaction','acp']);
+    for (let index=entries.length-1;index>=0;index--) if (!allowed.has(entries[index].id)) entries.splice(index,1);
+    entries.find(item => item.id === 'system-prompt').config = {persona:'你是同席项目的隐藏调度管家。只返回引用用户原文和成员结果的路由JSON，不编写方案、代码或额外成员指令；没有任何项目、shell、文件、MCP、技能或委派工具。'};
+    entries.find(item => item.id === 'sandbox-policy').config = {mode:'read-only',workspaceRoot:process.cwd()};
+  }
   const config = join(resolve(data), projectMode ? 'project-composition.json' : 'chat-composition.json');
   writeFileSync(config, JSON.stringify(entries));
   // Internal diagnostics may contain configuration; never forward their text.

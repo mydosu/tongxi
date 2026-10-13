@@ -47,6 +47,7 @@ MOCK = r"""
   globalThis.__collaborationCalls=0;
   globalThis.__continueCalls=0;
   globalThis.__roleUpdate=null;
+  globalThis.__coordinatorUpdate=null;
   const runtime=id=>({revision:1,connection:'connected',executable:null,version:'test',error:null,active:null,models:models[id],default_model:models[id][0]?.id||null,default_effort:models[id][0]?.default_effort||null});
   let callback=0;
   globalThis.isTauri=true;
@@ -68,6 +69,7 @@ MOCK = r"""
     if(command==='set_session_settings'){const current=chatDetails[args.id]||detail;const session=current.sessions.find(s=>s.agent_id===args.agentId);session.model=args.model;session.reasoning_effort=args.reasoningEffort;return current;}
     if(command==='remove_conversation_item'){globalThis.__removedItem=args;const workflow=detail.workflows.find(job=>job.id===args.id);if(args.kind==='workflow')detail.workflows=detail.workflows.filter(job=>job.id!==args.id);else detail.messages=detail.messages.filter(message=>message.id!==args.id);return {workflow_id:workflow?.id||null};}
     if(command==='set_project_roles'){detail.project_roles=args.roles;return detail;}
+    if(command==='set_project_coordinator'){globalThis.__coordinatorUpdate=args.coordinator;detail.project_coordinator=args.coordinator;return detail;}
     if(command==='cancel_project_agent'){globalThis.__cancelledAgent=args;const job=detail.workflows.find(job=>job.id===args.workflowId);job.status='interrupted';job.attempts.forEach(attempt=>attempt.status='interrupted');return job;}
     if(command==='start_project'){
       globalThis.__collaborationRequest=args;
@@ -100,7 +102,7 @@ MOCK = r"""
 
 
 def main() -> None:
-    server = subprocess.Popen(f"npm run dev -- --host 127.0.0.1 --port {PORT} --strictPort", cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    server = subprocess.Popen(["node", str(ROOT / "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", PORT, "--strictPort"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:
         for _ in range(100):
             try:
@@ -112,16 +114,19 @@ def main() -> None:
             browser=p.chromium.launch(headless=True)
             page=browser.new_page(viewport={"width":1440,"height":1000})
             page.add_init_script(MOCK)
-            page.goto(f"http://127.0.0.1:{PORT}",wait_until="networkidle")
-            expect(page.locator('[data-project-module]')).to_have_count(4)
+            page.goto(f"http://127.0.0.1:{PORT}",wait_until="domcontentloaded")
+            expect(page.locator('[data-project-module]')).to_have_count(5)
+            expect(page.locator('[data-project-module="isolated-coordinator"]')).to_have_count(0)
             assert not page.locator('#project-roles').count()
             expect(page.locator('#live-settings')).to_be_hidden()
             print('PASS team navigation exposes project agent modules without stage controls or duplicate model controls')
-            page.locator('[data-project-expand]').click()
+            parent=page.locator('[data-conversation="provider-test"]')
+            parent.click()
             expect(page.locator('[data-project-module="team"]')).to_be_hidden()
-            page.locator('[data-project-expand]').click()
+            parent.click()
             expect(page.locator('[data-project-module="team"]')).to_be_visible()
-            print('PASS sidebar project modules expand and collapse')
+            assert not page.locator('[data-project-expand]').count()
+            print('PASS parent row toggles project modules without a separate expand control')
             page.locator('[data-project-module="dsh-win"]').click()
             page.locator('[data-project-chat-provider]').select_option('route-b')
             page.wait_for_function("() => __providerDemo.chats['project-chat-dsh-win'].sessions[0].model === '[\"route-b\",\"model-two\"]'")
@@ -241,7 +246,9 @@ def main() -> None:
     finally:
         server.terminate()
         try: server.wait(timeout=5)
-        except subprocess.TimeoutExpired: server.kill()
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
 
 
 if __name__ == '__main__':

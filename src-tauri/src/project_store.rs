@@ -45,10 +45,10 @@ pub struct Roles {
 }
 
 /// 可参与项目的 Windows 成员；阿尔比恩（WSL Pi）不加入项目工作流。
-pub const EXECUTOR_AGENTS: [&str; 3] = ["codex-win", "hermes-win", "dsh-win"];
-/// project_tasks.agent_id 的旧约束只允许 Codex/DSH，Hermes 用 assigned_agent 列存放。
-const TASK_ROW_BASE_AGENTS: [&str; 2] = ["codex-win", "dsh-win"];
-pub const REVIEWER_AGENTS: [&str; 3] = EXECUTOR_AGENTS;
+pub const EXECUTOR_AGENTS: [&str; 4] = ["codex-win", "hermes-win", "dsh-win", "claude-win"];
+/// project_tasks.agent_id 的约束只允许 Codex/DSH/Claude（v18 起含 Claude），Hermes 用 assigned_agent 列存放。
+const TASK_ROW_BASE_AGENTS: [&str; 3] = ["codex-win", "dsh-win", "claude-win"];
+pub const REVIEWER_AGENTS: [&str; 4] = EXECUTOR_AGENTS;
 
 impl Roles {
     /// 缺省组合＝旧行为：Codex 规划、DSH 执行、Hermes 验收。
@@ -77,13 +77,13 @@ impl Roles {
 
     pub fn validate(&self) -> Result<()> {
         if !REVIEWER_AGENTS.contains(&self.plan.agent.as_str()) {
-            return Err("规划角色只能选 Codex、Hermes 或 DSH".into());
+            return Err("规划角色只能选 Codex、Hermes、DSH 或 Claude".into());
         }
         if !EXECUTOR_AGENTS.contains(&self.implement.agent.as_str()) {
-            return Err("执行角色只能选 Codex、Hermes 或 DSH".into());
+            return Err("执行角色只能选 Codex、Hermes、DSH 或 Claude".into());
         }
         if !REVIEWER_AGENTS.contains(&self.review.agent.as_str()) {
-            return Err("验收角色只能选 Codex、Hermes 或 DSH".into());
+            return Err("验收角色只能选 Codex、Hermes、DSH 或 Claude".into());
         }
         Ok(())
     }
@@ -99,7 +99,7 @@ pub fn roles_of(workflow: &Workflow) -> Result<Roles> {
 #[cfg(test)]
 pub fn bind_plan_to_executor(plan: &mut Plan, executor: &str) -> Result<()> {
     if !EXECUTOR_AGENTS.contains(&executor) {
-        return Err("实现角色只能选 Codex、Hermes 或 DSH".into());
+        return Err("实现角色只能选 Codex、Hermes、DSH 或 Claude".into());
     }
     for task in &mut plan.tasks {
         if task.agent_id != executor {
@@ -139,7 +139,7 @@ pub struct Review {
 
 /// Accept one JSON document, optionally in one Markdown fence with brief prose.
 /// Never guess between multiple objects or extract commands from explanatory text.
-fn json_document(raw: &str, limit: usize) -> Result<&str> {
+pub(crate) fn json_document(raw: &str, limit: usize) -> Result<&str> {
     let raw = raw.trim();
     if raw.len() > limit + 2000 {
         return Err("结构化 JSON 结果过长".into());
@@ -329,6 +329,8 @@ pub struct Workflow {
     pub plan: Option<Plan>,
     /// 这次工作流的角色配置 JSON（规划/执行/验收的成员+模型+强度），NULL＝沿用旧行为。
     pub roles: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<crate::coordinator_store::Coordination>,
     pub summary: String,
     pub error: Option<String>,
     pub created_at: i64,
@@ -518,11 +520,12 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     ] {
         add_column(tx, table, column, definition)?;
     }
+    crate::coordinator_store::migrate(tx)?;
     Ok(())
 }
 
 /// 幂等加列：列已存在就跳过，老库补列、新库不重复加。
-fn add_column(tx: &Transaction<'_>, table: &str, column: &str, definition: &str) -> Result<()> {
+pub(crate) fn add_column(tx: &Transaction<'_>, table: &str, column: &str, definition: &str) -> Result<()> {
     let mut statement = tx
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|e| e.to_string())?;
@@ -699,7 +702,8 @@ fn validate_plan(plan: &Plan) -> Result<()> {
             || task.depends_on.iter().any(|d| *d as usize >= index)
         {
             return Err(
-                "新任务需为可执行的实现者（Codex、Hermes 或 DSH）、1—5 个文件且依赖有效".into(),
+                "新任务需为可执行的实现者（Codex、Hermes、DSH 或 Claude）、1—5 个文件且依赖有效"
+                    .into(),
             );
         }
         // execution 是规划给出的选型建议，用户可以在确认面板里改成别的；这里不再拒收。
@@ -895,7 +899,7 @@ impl Store {
             return Err("规划、执行、验收成员必须属于当前群聊".into());
         }
         self.guard_discussion(room)?;
-        self.guard_workflow(room)?;
+        // A workflow stores its Roles snapshot when it starts; editing project defaults only affects the next workflow.
         if self.conversation_project(room)?.is_none() {
             return Err("请先为群聊绑定一个 Git 项目".into());
         }
@@ -922,6 +926,15 @@ impl Store {
         }
         self.guard_discussion(room)?;
         self.guard_workflow(room)?;
+        let previous = self.conversation_project(room)?.map(|project| project.id);
+        if previous.as_deref() != project {
+            self.connection
+                .execute(
+                    "DELETE FROM project_coordinator_settings WHERE conversation_id=?1",
+                    [room],
+                )
+                .map_err(|_| "管家配置重置失败")?;
+        }
         if let Some(project) = project {
             self.project(project)?;
             self.connection.execute("INSERT INTO conversation_projects(conversation_id,project_id,roles) VALUES(?1,?2,NULL) ON CONFLICT(conversation_id) DO UPDATE SET project_id=excluded.project_id,roles=CASE WHEN conversation_projects.project_id=excluded.project_id THEN conversation_projects.roles ELSE NULL END",params![room,project]).map_err(|e|e.to_string())?;
@@ -970,7 +983,7 @@ impl Store {
             }
             return Ok((existing, false));
         }
-        for agent in ["hermes-win", "codex-win", "dsh-win"] {
+        for agent in EXECUTOR_AGENTS {
             self.guard_service_maintenance(agent)?;
         }
         self.guard_workflow(room)?;
@@ -997,7 +1010,7 @@ impl Store {
         let mut workflow=self.connection.query_row("SELECT id,project_id,conversation_id,user_message_id,request,status,plan,summary,error,created_at,updated_at,roles FROM workflows WHERE id=?1",[id],|r| {
             let plan:Option<String>=r.get(6)?;
             let plan=plan.map(|text|serde_json::from_str(&text)).transpose().map_err(|e|rusqlite::Error::FromSqlConversionFailure(6,rusqlite::types::Type::Text,Box::new(e)))?;
-            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![],agent_messages:vec![],team_messages:vec![]})
+            Ok(Workflow{id:r.get(0)?,project_id:r.get(1)?,conversation_id:r.get(2)?,user_message_id:r.get(3)?,request:r.get(4)?,status:r.get(5)?,plan,roles:r.get(11)?,coordination:None,summary:r.get(7)?,error:r.get(8)?,created_at:r.get(9)?,updated_at:r.get(10)?,tasks:vec![],attempts:vec![],changes:vec![],agent_messages:vec![],team_messages:vec![]})
         }).optional().map_err(|e|e.to_string())?.ok_or("项目协作不存在")?;
         let mut stmt = self
             .connection
@@ -1027,6 +1040,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         workflow.agent_messages = self.agent_messages(id)?;
         workflow.team_messages = self.workflow_team_messages(id)?;
+        workflow.coordination = self.coordination(id)?;
         Ok(workflow)
     }
 
@@ -1269,15 +1283,7 @@ impl Store {
             if exists {
                 continue;
             }
-            let title = format!(
-                "{} · {}",
-                project.name,
-                match agent {
-                    "codex-win" => "Codex",
-                    "hermes-win" => "Hermes",
-                    _ => "DSH",
-                }
-            );
+            let title = format!("{} · {}", project.name, crate::store::agent_name(agent));
             let chat = self.create(&title, "direct", &[agent.to_owned()])?;
             let saved_settings: (Option<String>, Option<String>) = self.connection.query_row(
                 "SELECT s.model,s.reasoning_effort FROM sessions s JOIN conversations c ON c.id=s.conversation_id WHERE s.agent_id=?1 AND c.kind='direct' AND c.id<>?2 ORDER BY c.updated_at DESC LIMIT 1",
@@ -1364,7 +1370,7 @@ impl Store {
     /// Change a queued task's executor while its workflow is still waiting for user confirmation.
     pub fn set_task_agent(&mut self, task_id: &str, agent: &str) -> Result<Task> {
         if !EXECUTOR_AGENTS.contains(&agent) {
-            return Err("实现成员只能选择 Codex、Hermes 或 DSH".into());
+            return Err("实现成员只能选择 Codex、Hermes、DSH 或 Claude".into());
         }
         let task = self.task(task_id)?;
         let workflow = self.workflow(&task.workflow_id)?;
@@ -1431,7 +1437,7 @@ impl Store {
         }
         let roles = Roles::parse(Some(roles))?;
         if !EXECUTOR_AGENTS.contains(&roles.implement.agent.as_str()) {
-            return Err("执行角色只能选 Codex、Hermes 或 DSH".into());
+            return Err("执行角色只能选 Codex、Hermes、DSH 或 Claude".into());
         }
         let encoded_roles = serde_json::to_string(&roles).map_err(|_| "角色配置序列化失败")?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
@@ -1837,7 +1843,13 @@ impl Store {
                         attempt.status == "completed"
                             && parse_review(&attempt.output).is_ok_and(|review| review.approved)
                     });
-            if !(reply_only || implementation_complete) {
+            let coordinated_complete = workflow.coordination.is_some()
+                && !workflow.tasks.is_empty()
+                && workflow
+                    .tasks
+                    .iter()
+                    .all(|task| matches!(task.status.as_str(), "completed" | "skipped"));
+            if !(reply_only || implementation_complete || coordinated_complete) {
                 return Err("实现与验收尚未完成".into());
             }
         }
@@ -1847,7 +1859,7 @@ impl Store {
             params![status, summary, error, now(), id],
         )
         .map_err(|e| e.to_string())?;
-        if status == "completed" && !summary.trim().is_empty() {
+        if status == "completed" && !summary.trim().is_empty() && workflow.coordination.is_none() {
             let final_attempt = workflow.attempts.iter().rev().find(|attempt| {
                 attempt.status == "completed" && matches!(attempt.stage.as_str(), "review" | "plan")
             });
@@ -1855,7 +1867,7 @@ impl Store {
                 tx.execute("INSERT OR IGNORE INTO project_team_messages(id,project_id,conversation_id,workflow_id,attempt_id,sender_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,'agent',?7,?8)",params![format!("result:{id}"),workflow.project_id,workflow.conversation_id,id,attempt.id,attempt.agent_id,summary,now()]).map_err(|_|"团队结果发布失败")?;
             }
         }
-        if status != "interrupted" {
+        if status != "interrupted" && workflow.coordination.is_none() {
             tx.execute(
                 "UPDATE project_tasks SET status='skipped' WHERE workflow_id=?1 AND status='queued'",
                 [id],
@@ -1885,16 +1897,9 @@ impl Store {
           UPDATE project_tasks SET status='interrupted',error='上次任务因退出中断' WHERE status='running';
           UPDATE messages SET status='failed' WHERE status='pending' AND id IN (SELECT user_message_id FROM workflows WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling'));
           UPDATE workflows SET status='interrupted',error='上次协作因软件退出中断，不会自动重放' WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling');
+          UPDATE coordination_runs SET status='paused' WHERE workflow_id IN (SELECT id FROM workflows WHERE status='interrupted');
           DELETE FROM project_leases;")
           .map_err(|e|e.to_string())
-    }
-
-    pub fn guard_project_agent(&self, agent: &str) -> Result<()> {
-        let busy=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",[agent],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
-        if busy {
-            return Err("该成员正在执行项目任务，请等待或停止任务".into());
-        }
-        Ok(())
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
@@ -2120,6 +2125,8 @@ impl Store {
             .into_iter()
             .filter(|attempt| {
                 attempt.agent_id == agent_id
+                    && attempt.activity.as_deref()
+                        != Some(crate::coordinator_policy::MANAGER_ACTIVITY)
                     && matches!(
                         attempt.status.as_str(),
                         "starting" | "running" | "cancelling"
@@ -2172,7 +2179,13 @@ impl Store {
             let state = if matches!(
                 attempt.status.as_str(),
                 "starting" | "running" | "cancelling"
-            ) {
+            ) || (attempt.status == "completed"
+                && attempt
+                    .activity
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("task:")))
+            {
+                // Coordinated output is complete only after its commit/merge succeeds.
                 "running"
             } else {
                 &attempt.status
@@ -2270,7 +2283,7 @@ mod tests {
             .unwrap();
         assert!(!columns(&store, "workflows").iter().any(|c| c == "roles"));
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 16);
+        assert_eq!(version(&store), crate::store::SCHEMA_VERSION);
         assert!(columns(&store, "workflows").iter().any(|c| c == "roles"));
         assert!(columns(&store, "project_attempts")
             .iter()
@@ -2342,7 +2355,7 @@ mod tests {
             .execute_batch("PRAGMA user_version=9;")
             .unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
-        assert_eq!(version(&store), 16);
+        assert_eq!(version(&store), crate::store::SCHEMA_VERSION);
         assert_eq!(store.workflow(&workflow).unwrap().tasks.len(), 1);
     }
 
@@ -2559,7 +2572,7 @@ mod tests {
         let listed = store.list("", false).unwrap();
         assert_eq!(
             listed.iter().filter(|item| item.kind == "direct").count(),
-            4
+            5
         );
         for chat in chats {
             let detail = store.detail(&chat.conversation_id).unwrap();

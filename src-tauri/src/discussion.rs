@@ -1,5 +1,5 @@
 use crate::{
-    codex, dsh,
+    claude, codex, dsh,
     group_store::{self, Discussion},
     hermes,
     store::{RunRecord, Store},
@@ -20,6 +20,7 @@ pub struct Runtime {
     codex: Arc<codex::Runtime>,
     hermes: Arc<hermes::Runtime>,
     dsh: Arc<dsh::Runtime>,
+    claude: Arc<claude::Runtime>,
     albion: Arc<crate::albion::Brain>,
     shutting_down: AtomicBool,
     revision: AtomicU64,
@@ -38,6 +39,7 @@ impl Runtime {
         codex: Arc<codex::Runtime>,
         hermes: Arc<hermes::Runtime>,
         dsh: Arc<dsh::Runtime>,
+        claude: Arc<claude::Runtime>,
         albion: Arc<crate::albion::Brain>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -46,6 +48,7 @@ impl Runtime {
             codex,
             hermes,
             dsh,
+            claude,
             albion,
             shutting_down: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -67,6 +70,7 @@ impl Runtime {
             "codex-win" => self.codex.snapshot(),
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
+            "claude-win" => self.claude.snapshot(),
             _ => self.albion.snapshot(),
         }
     }
@@ -75,6 +79,7 @@ impl Runtime {
             "codex-win" => self.codex.send_discussion(id, round),
             "hermes-win" => self.hermes.send_discussion(id, round),
             "dsh-win" => self.dsh.send_discussion(id, round),
+            "claude-win" => self.claude.send_discussion(id, round),
             "albion-wsl" => self.albion.send_discussion(id, round),
             _ => Err("成员不存在".into()),
         }
@@ -84,6 +89,7 @@ impl Runtime {
             "codex-win" => self.codex.cancel_expected(room, Some(run)).map(|_| ()),
             "hermes-win" => self.hermes.cancel_expected(room, Some(run)).map(|_| ()),
             "dsh-win" => self.dsh.cancel_expected(room, Some(run)).map(|_| ()),
+            "claude-win" => self.claude.cancel_expected(room, Some(run)).map(|_| ()),
             _ => self.albion.cancel_expected(room, Some(run)).map(|_| ()),
         }
     }
@@ -92,6 +98,7 @@ impl Runtime {
             "codex-win" => self.codex.stop_expected(Some(run)),
             "hermes-win" => self.hermes.stop_expected(Some(run)),
             "dsh-win" => self.dsh.stop_expected(Some(run)),
+            "claude-win" => self.claude.stop_expected(Some(run)),
             _ => self.albion.stop_expected(Some(run)),
         }
     }
@@ -110,13 +117,14 @@ impl Runtime {
         if existing.is_none() {
             for agent in participants {
                 let state = self.snapshot(agent);
+                // 成员可以同时在别的会话回复，只要求它在这个群里没有进行中的发言。
                 if state.connection != "connected"
-                    || state
-                        .active
-                        .as_ref()
-                        .is_some_and(|r| group_store::run_active(&r.record.status))
+                    || state.runs.iter().any(|r| {
+                        r.record.conversation_id == room
+                            && group_store::run_active(&r.record.status)
+                    })
                 {
-                    return Err("请先连接所有参与成员，并等待他们当前的回复完成".into());
+                    return Err("请先连接所有参与成员，并等待他们在本群的回复完成".into());
                 }
             }
         }

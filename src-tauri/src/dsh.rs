@@ -1,4 +1,6 @@
-use crate::codex::{RunSnapshot, RuntimeSnapshot};
+use crate::codex::{
+    busy_ids, busy_in, headline, insert_run, live_in, run_mut, RunSnapshot, RuntimeSnapshot,
+};
 use crate::models::ModelOption;
 use crate::rpc::Client;
 use crate::store::{RunRecord, Store};
@@ -53,7 +55,7 @@ struct Inner {
     client: Option<Arc<Client>>,
     version: Option<String>,
     error: Option<String>,
-    active: Option<RunSnapshot>,
+    runs: Vec<RunSnapshot>,
     models: Vec<ModelOption>,
     default_model: Option<String>,
     default_effort: Option<String>,
@@ -74,7 +76,7 @@ fn busy(run: &RunSnapshot) -> bool {
         "starting" | "running" | "cancelling"
     )
 }
-fn current_option(response: &Value, id: &str) -> Option<String> {
+pub(crate) fn current_option(response: &Value, id: &str) -> Option<String> {
     response["configOptions"]
         .as_array()?
         .iter()
@@ -83,7 +85,7 @@ fn current_option(response: &Value, id: &str) -> Option<String> {
         .map(String::from)
 }
 
-fn models_from_response(response: &Value) -> Vec<ModelOption> {
+pub(crate) fn models_from_response(response: &Value) -> Vec<ModelOption> {
     let Some(options) = response["configOptions"].as_array() else {
         return vec![];
     };
@@ -158,7 +160,7 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
 }
 /// DSH 家目录：与桥侧解析一致——外层设了 AGENT_HUB_DSH_HOME 就用（测试隔离），
 /// 否则用真实 ~/.dsh（必须已存在）；都没有返回 None，调用方回落到同席隔离目录。
-fn resolved_dsh_home() -> Option<PathBuf> {
+pub(crate) fn resolved_dsh_home() -> Option<PathBuf> {
     std::env::var_os("AGENT_HUB_DSH_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -214,6 +216,33 @@ pub(crate) fn discover() -> Option<PathBuf> {
     .then_some(path)
 }
 impl Runtime {
+    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
+        self.shared_project_client()?;
+        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
+        let node = self.node.as_ref().ok_or("Node运行时不可用")?;
+        let installation = crate::service_install::dsh_path(&self.directory)?;
+        let mut command = Command::new(node);
+        command
+            .args(["--input-type=module", "-e", include_str!("dsh_bridge.mjs")])
+            .arg(installation)
+            .arg(directory.join("dsh-native"))
+            .current_dir(directory);
+        command.env(
+            "AGENT_HUB_DSH_AUTH_BRIDGE",
+            include_str!("dsh_hermes_auth.py"),
+        );
+        command.env(
+            "AGENT_HUB_DSH_FALLBACK_BRIDGE",
+            include_str!("dsh_fallback.mjs"),
+        );
+        command
+            .env("AGENT_HUB_COORDINATOR_MODE", "1")
+            .env("AGENT_HUB_DSH_HOME", directory.join("dsh-native"))
+            .env_remove("AGENT_HUB_DSH_PROJECT_MODE");
+        let client = Client::spawn_command(command, |_| {}, || {})?;
+        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;
+        Ok(client)
+    }
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
         let client = {
@@ -228,7 +257,22 @@ impl Runtime {
             serde_json::json!({}),
             std::time::Duration::from_secs(20),
         )?;
-        let mut sessions = crate::codex::native_sessions_from_acp(&response);
+        // 同席每次连接都会在 dsh-workspaces/catalog 开一个空会话读模型目录，这些不是用户会话，不列出。
+        let catalog = self
+            .directory
+            .join("dsh-workspaces")
+            .join("catalog")
+            .to_string_lossy()
+            .to_lowercase();
+        let mut sessions: Vec<_> = crate::codex::native_sessions_from_acp(&response)
+            .into_iter()
+            .filter(|session| {
+                session
+                    .cwd
+                    .as_deref()
+                    .is_none_or(|cwd| cwd.trim_end_matches(['\\', '/']).to_lowercase() != catalog)
+            })
+            .collect();
         // 面板标题：尽量用 DSH 自己的投影缓存补上（已定标题 > 首句用户输入），
         // 读不到就保持原样，绝不编造。隔离模式下 home 是隔离目录，不碰真实 ~/.dsh。
         let home = resolved_dsh_home().unwrap_or_else(|| self.directory.join("dsh-native"));
@@ -257,7 +301,7 @@ impl Runtime {
                 client: None,
                 version: None,
                 error: None,
-                active: None,
+                runs: Vec::new(),
                 models: vec![],
                 default_model: None,
                 default_effort: None,
@@ -290,7 +334,8 @@ impl Runtime {
             executable: self.node.as_ref().map(|path| path.to_string_lossy().into()),
             version: inner.version.clone(),
             error: inner.error.clone(),
-            active: inner.active.clone(),
+            active: headline(&inner.runs),
+            runs: inner.runs.clone(),
             models: inner.models.clone(),
             default_model: inner.default_model.clone(),
             default_effort: inner.default_effort.clone(),
@@ -424,11 +469,7 @@ impl Runtime {
     }
     pub fn guard<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
         let inner = self.inner.lock().map_err(|_| "DSH 状态不可用")?;
-        if inner
-            .active
-            .as_ref()
-            .is_some_and(|run| run.record.conversation_id == id && busy(run))
-        {
+        if busy_in(&inner.runs, id) {
             return Err("DSH 正在回复，请完成或停止后再修改会话".into());
         }
         action()
@@ -455,8 +496,8 @@ impl Runtime {
         if inner.connection != "connected" {
             return Err("请先连接 DSH".into());
         }
-        if inner.active.as_ref().is_some_and(busy) {
-            return Err("DSH 正在处理上一条消息，请等待或停止".into());
+        if busy_in(&inner.runs, conversation_id) {
+            return Err("DSH 正在处理这个会话的上一条消息，请等待或停止".into());
         }
         let client = inner.client.clone().ok_or("DSH 接口不可用")?;
         let record = self.store.lock().unwrap().begin_agent_run(
@@ -465,12 +506,15 @@ impl Runtime {
             content,
             "dsh-win",
         )?;
-        inner.active = Some(RunSnapshot {
-            record: record.clone(),
-            text: String::new(),
-            thought: String::new(),
-            tool_events: Vec::new(),
-        });
+        insert_run(
+            &mut inner.runs,
+            RunSnapshot {
+                record: record.clone(),
+                text: String::new(),
+                thought: String::new(),
+                tool_events: Vec::new(),
+            },
+        );
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -489,8 +533,8 @@ impl Runtime {
         round: u32,
     ) -> Result<RunRecord> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" || inner.active.as_ref().is_some_and(busy) {
-            return Err("DSH 尚未连接或正在其他会话回复".into());
+        if inner.connection != "connected" {
+            return Err("DSH 尚未连接".into());
         }
         let client = inner.client.clone().ok_or("DSH 接口不可用")?;
         let (record, text) = self
@@ -498,12 +542,15 @@ impl Runtime {
             .lock()
             .unwrap()
             .begin_discussion_turn(discussion, "dsh-win", round)?;
-        inner.active = Some(RunSnapshot {
-            record: record.clone(),
-            text: String::new(),
-            thought: String::new(),
-            tool_events: Vec::new(),
-        });
+        insert_run(
+            &mut inner.runs,
+            RunSnapshot {
+                record: record.clone(),
+                text: String::new(),
+                thought: String::new(),
+                tool_events: Vec::new(),
+            },
+        );
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -517,13 +564,7 @@ impl Runtime {
     }
 
     fn prompt(&self, client: &Client, run_id: &str, content: &str) -> Result<()> {
-        let conversation_id = self
-            .inner
-            .lock()
-            .unwrap()
-            .active
-            .as_ref()
-            .filter(|run| run.record.id == run_id)
+        let conversation_id = crate::codex::run_ref(&self.inner.lock().unwrap().runs, run_id)
             .ok_or("运行已结束")?
             .record
             .conversation_id
@@ -539,10 +580,7 @@ impl Runtime {
             .ok_or("DSH 会话不存在")?;
         {
             let inner = self.inner.lock().unwrap();
-            let record = &inner
-                .active
-                .as_ref()
-                .filter(|run| run.record.id == run_id)
+            let record = &crate::codex::run_ref(&inner.runs, run_id)
                 .ok_or("运行已结束")?
                 .record;
             settings.model = record.model.clone();
@@ -588,10 +626,8 @@ impl Runtime {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.loaded.insert(session_id.clone());
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| run.record.id == run_id && busy(run))
+            let run = run_mut(&mut inner.runs, run_id)
+                .filter(|run| busy(run))
                 .ok_or("运行已结束")?;
             self.store
                 .lock()
@@ -633,10 +669,8 @@ impl Runtime {
         };
         {
             let mut inner = self.inner.lock().unwrap();
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| run.record.id == run_id && busy(run))
+            let run = run_mut(&mut inner.runs, run_id)
+                .filter(|run| busy(run))
                 .ok_or("运行已结束")?;
             if run.record.status == "cancelling" {
                 drop(inner);
@@ -683,7 +717,7 @@ impl Runtime {
             return;
         }
         let checkpoint = inner.last_checkpoint.elapsed() >= Duration::from_millis(350);
-        let Some(run) = inner.active.as_mut().filter(|run| {
+        let Some(run) = inner.runs.iter_mut().find(|run| {
             busy(run) && run.record.native_thread_id.as_deref() == params["sessionId"].as_str()
         }) else {
             return;
@@ -728,7 +762,7 @@ impl Runtime {
         let text = update["content"]["text"].as_str().unwrap_or("");
         // ACP 把「思考」和「正文」分成两种 chunk：思考进可折叠的思考块，正文进气泡。
         match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_thought_chunk" => append_stream_chunk(&mut run.thought, text),
+            "agent_thought_chunk" => crate::store::push_thought(&mut run.thought, &run.text, text),
             "agent_message_chunk" => append_stream_chunk(&mut run.text, text),
             _ => return,
         }
@@ -745,11 +779,7 @@ impl Runtime {
     }
     fn finish(&self, id: &str, status: &str, error: Option<String>) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(run) = inner
-            .active
-            .as_mut()
-            .filter(|run| run.record.id == id && busy(run))
-        {
+        if let Some(run) = run_mut(&mut inner.runs, id).filter(|run| busy(run)) {
             run.record.status = status.into();
             run.record.error = error;
             let _ = self
@@ -760,6 +790,17 @@ impl Runtime {
         }
         drop(inner);
         self.emit();
+    }
+    /// 把会话交给 CLI 前从桥里卸下这条会话；下次续聊重新载入，接上 CLI 里的新对话。
+    pub(crate) fn release_native(&self, session_id: &str) {
+        let client = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.loaded.remove(session_id);
+            inner.client.clone()
+        };
+        if let Some(client) = client {
+            let _ = client.rpc("session/close", json!({"sessionId":session_id}));
+        }
     }
     pub fn cancel(&self, conversation_id: &str) -> Result<RuntimeSnapshot> {
         self.cancel_expected(conversation_id, None)
@@ -772,14 +813,8 @@ impl Runtime {
         let (client, session) = {
             let mut inner = self.inner.lock().unwrap();
             let client = inner.client.clone().ok_or("DSH 已断开")?;
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| {
-                    run.record.conversation_id == conversation_id
-                        && busy(run)
-                        && expected.is_none_or(|id| run.record.id == id)
-                })
+            let run = live_in(&mut inner.runs, conversation_id)
+                .filter(|run| expected.is_none_or(|id| run.record.id == id))
                 .ok_or("这个会话没有正在进行的回复")?;
             run.record.status = "cancelling".into();
             self.store
@@ -802,13 +837,9 @@ impl Runtime {
             }
             inner.connection = "disconnected".into();
             inner.client = None;
-            inner
-                .active
-                .as_ref()
-                .filter(|run| busy(run))
-                .map(|run| run.record.id.clone())
+            busy_ids(&inner.runs)
         };
-        if let Some(id) = id {
+        for id in id {
             self.finish(&id, "interrupted", Some("DSH 原生连接已断开".into()));
         }
         self.emit();
@@ -819,29 +850,18 @@ impl Runtime {
     pub(crate) fn stop_expected(&self, expected: Option<&str>) {
         let (client, active) = {
             let mut inner = self.inner.lock().unwrap();
-            if expected.is_some_and(|id| {
-                !inner
-                    .active
-                    .as_ref()
-                    .is_some_and(|run| run.record.id == id && busy(run))
-            }) {
+            if expected.is_some_and(|id| !crate::codex::run_ref(&inner.runs, id).is_some_and(busy))
+            {
                 return;
             }
             inner.generation = Uuid::new_v4().to_string();
             inner.connection = "disconnected".into();
-            (
-                inner.client.take(),
-                inner
-                    .active
-                    .as_ref()
-                    .filter(|run| busy(run))
-                    .map(|run| run.record.id.clone()),
-            )
+            (inner.client.take(), busy_ids(&inner.runs))
         };
         if let Some(client) = client {
             client.stop();
         }
-        if let Some(id) = active {
+        for id in active {
             self.finish(&id, "interrupted", None);
         }
         self.emit();

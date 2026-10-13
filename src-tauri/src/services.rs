@@ -1,4 +1,4 @@
-//! Read-only service inventory for the four runtimes, maintenance lock,
+//! Read-only service inventory for the five runtimes, maintenance lock,
 //! per-member update checks, and DSH / Codex managed update transactions.
 
 use serde::Serialize;
@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// Managed services, in the order the inventory reports them.
-const MANAGED: [(&str, &str); 4] = [
+const MANAGED: [(&str, &str); 5] = [
     ("codex-win", "Codex"),
     ("hermes-win", "Hermes"),
     ("dsh-win", "DSH"),
+    ("claude-win", "Claude"),
     ("albion-wsl", "Albion"),
 ];
 
@@ -224,6 +225,17 @@ fn codex_installed() -> (Option<String>, &'static str) {
     }
 }
 
+/// Claude Code reports its installed version through `claude --version`.
+fn claude_installed() -> (Option<String>, &'static str) {
+    match crate::claude::discover_executable()
+        .as_deref()
+        .and_then(crate::claude::native_version)
+    {
+        Some(version) => (Some(version), "executable"),
+        None => (None, "unknown"),
+    }
+}
+
 /// DSH installs ship a package.json inside this app's own install slot; read its
 /// version without connecting. A missing/broken manifest stays `unknown` instead
 /// of falling back to some external installation path.
@@ -306,6 +318,10 @@ pub fn detect(app: &tauri::AppHandle, service_id: &str) -> Result<ServiceInfo, S
             app.state::<Arc<crate::hermes::Runtime>>().snapshot(),
             (None, "unknown"),
         ),
+        "claude-win" => (
+            app.state::<Arc<crate::claude::Runtime>>().snapshot(),
+            claude_installed(),
+        ),
         "dsh-win" => {
             // 已激活槽也走这里：安装版本从本 app 的安装槽 manifest 读，读不到就受控地
             // 报 unknown，绝不回退到外部安装目录去猜。
@@ -345,6 +361,7 @@ fn runtime_busy(app: &tauri::AppHandle, service_id: &str) -> bool {
         "codex-win" => snapshot_busy(&app.state::<Arc<crate::codex::Runtime>>().snapshot()),
         "hermes-win" => snapshot_busy(&app.state::<Arc<crate::hermes::Runtime>>().snapshot()),
         "dsh-win" => snapshot_busy(&app.state::<Arc<crate::dsh::Runtime>>().snapshot()),
+        "claude-win" => snapshot_busy(&app.state::<Arc<crate::claude::Runtime>>().snapshot()),
         "albion-wsl" => snapshot_busy(&app.state::<crate::albion::Runtime>().0.snapshot()),
         _ => false,
     }
@@ -450,6 +467,9 @@ fn update_blocker(service_id: &str) -> Result<&'static str, String> {
         "hermes-win" => {
             "Hermes 由它自己的更新器管理：同席只做只读的远程核对，更新交接给它自己的通道。"
         }
+        "claude-win" => {
+            "Claude Code 由它自己的更新通道（claude update 或原安装方式）管理：同席只核对 npm 发行版本，不覆盖安装。"
+        }
         "albion-wsl" => {
             "Albion 位于 WSL 内并带有本地定制改动，直接覆盖会丢失定制，暂不支持自动更新。"
         }
@@ -506,6 +526,21 @@ pub async fn check_service_update(
                         latest_is_newer,
                         "npm-registry",
                         "已核对 npm 发行版本".to_string(),
+                        None,
+                    )
+                }
+                "claude-win" => {
+                    let data = crate::service_updates::data_directory(&app)?;
+                    let (metadata, latest_is_newer) = crate::service_updates::check_release(
+                        &data,
+                        crate::claude::PACKAGE,
+                        info.installed_version.as_deref(),
+                    )?;
+                    (
+                        Some(metadata.version),
+                        latest_is_newer,
+                        "npm-registry",
+                        "已核对 npm 发行版本；更新请在终端运行 claude update".to_string(),
                         None,
                     )
                 }
@@ -731,6 +766,12 @@ fn restart_blocking(
             runtime.connect()?;
             runtime.snapshot()
         }
+        "claude-win" => {
+            let runtime = app.state::<Arc<crate::claude::Runtime>>();
+            runtime.stop();
+            runtime.connect()?;
+            runtime.snapshot()
+        }
         // 未知 id 已被上面的 `acquire` 拒掉，这里只剩 albion：runtime 放在 `.0`。
         _ => {
             let runtime = app.state::<crate::albion::Runtime>();
@@ -943,6 +984,7 @@ mod tests {
             version: version.map(str::to_owned),
             error: None,
             active: None,
+            runs: Vec::new(),
             models: Vec::new(),
             default_model: None,
             default_effort: None,
@@ -1059,6 +1101,7 @@ mod tests {
             status: status.to_string(),
             plan: None,
             roles: None,
+            coordination: None,
             summary: summary.to_string(),
             error: error.map(str::to_owned),
             created_at: 0,

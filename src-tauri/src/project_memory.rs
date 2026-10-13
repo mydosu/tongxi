@@ -12,6 +12,33 @@ pub fn call(project: &str, agent: &str, tool: &str, args: Value) -> Result<Value
     }
     let mut command = Command::new(python);
     command.env("PYTHONIOENCODING", "utf-8");
+    // 不继承启动同席那个环境里的 OpenViking 身份（例如某个 agent 终端注入的 OPENVIKING_API_KEY），
+    // 否则记忆会悄悄写成那个 agent；身份只来自下面指定的配置文件。
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("OPENVIKING_")
+        {
+            command.env_remove(name);
+        }
+    }
+    // 同席的记忆工具没有 harness 身份：用中立 tooling 身份的专属配置，不依赖共享 ovcli.conf 的顶层 key
+    // （那个顶层 key 会抢在各 harness 自己的 key 前面，留空才能保证各 agent 不被解析成别人）。
+    if let Some(config) = std::env::var_os("AGENT_HUB_OPENVIKING_CONFIG")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(|home| {
+                    PathBuf::from(home)
+                        .join(".openviking")
+                        .join("ovcli.tooling.conf")
+                })
+                .filter(|path| path.is_file())
+        })
+    {
+        command.env("OPENVIKING_CLI_CONFIG_FILE", config);
+    }
     command
         .args(["-u", "-c", include_str!("project_memory.py")])
         .stdin(Stdio::piped())

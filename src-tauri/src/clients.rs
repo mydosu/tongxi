@@ -1,6 +1,6 @@
 //! 在同席里一键打开各成员自己的客户端。
 //!
-//! 用户说明：Hermes 是那个桌面端 exe；codex 是命令行里敲 `codex`；DSH 是它的网页端
+//! 用户说明：Hermes 是那个桌面端 exe；codex / claude 是命令行里敲 `codex` / `claude`；DSH 是它的网页端
 //! （`dsh web`，地址形如 http://127.0.0.1:3080/?token=…，token 每次启动才生成、不落盘）；
 //! WSL 里的阿尔比恩不做。
 
@@ -177,6 +177,19 @@ pub fn open(agent_id: &str) -> Result<String, String> {
             Ok("已打开 codex（命令行）".into())
         }
         "dsh-win" => dsh_web(),
+        "claude-win" => {
+            // 与 codex 相同：开一个命令行窗口进入 Claude Code，退出后窗口保留。
+            let cli = setting("AGENT_HUB_CLAUDE_CLI", "claude");
+            shell(&[
+                "/c",
+                "start",
+                "",
+                "cmd",
+                "/k",
+                &format!("title 同席 · Claude Code & {cli}"),
+            ])?;
+            Ok("已打开 Claude Code（命令行）".into())
+        }
         "albion-wsl" => Err("阿尔比恩没有独立的桌面客户端，这里不做".into()),
         _ => Err("成员不存在".into()),
     }

@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 type Result<T> = std::result::Result<T, String>;
 pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
 
-type ClientProvider = Arc<dyn Fn(&str) -> Result<Arc<Client>> + Send + Sync>;
-type SessionReady = Arc<dyn Fn(&str, &str) + Send + Sync>;
-type SessionLoaded = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+type ClientProvider = Arc<dyn Fn(&Attempt) -> Result<Arc<Client>> + Send + Sync>;
+type SessionReady = Arc<dyn Fn(&Attempt, &str) + Send + Sync>;
+type SessionLoaded = Arc<dyn Fn(&Attempt, &str) -> bool + Send + Sync>;
 
 pub struct Runner {
     clients: ClientProvider,
@@ -52,8 +52,19 @@ pub(crate) fn failure_category(error: &Value) -> Option<String> {
     let name = if let Some(name) = info.as_str() {
         let label = match name {
             "contextWindowExceeded" => "上下文超限",
-            "sessionBudgetExceeded" | "usageLimitExceeded" => "额度限制",
-            "rateLimitExceeded" => "请求频率限制",
+            "sessionBudgetExceeded" | "usageLimitExceeded" | "rateLimitExceeded" => {
+                let label = if name == "rateLimitExceeded" {
+                    "请求频率限制"
+                } else {
+                    "额度限制"
+                };
+                // 只从原文里取重置时间，原文本身不外传。
+                let (offset, now) = crate::quota_reset::local_offset();
+                let reset = crate::quota_reset::reset_at(&error.to_string(), now, offset)
+                    .map(crate::quota_reset::marker)
+                    .unwrap_or_default();
+                return Some(format!("{label}{reset}"));
+            }
             "flexUnavailable" | "serverOverloaded" => "服务繁忙",
             "unauthorized" => "认证失败",
             "badRequest" => "请求不受支持",
@@ -152,7 +163,7 @@ impl Wire {
             self.invalid = true;
             return;
         }
-        self.attempt.thought.push_str(text);
+        crate::store::push_thought(&mut self.attempt.thought, &self.attempt.output, text);
     }
     fn accepts(&self, params: &Value) -> bool {
         self.attempt.native_thread_id.as_deref() == params["threadId"].as_str()
@@ -305,12 +316,14 @@ impl Runner {
             last_save: Instant::now(),
         }));
         let agent = wire.lock().unwrap().attempt.agent_id.clone();
-        let client = (self.clients)(&agent)?;
+        let client = (self.clients)(&wire.lock().unwrap().attempt)?;
         let previous_handler = client.swap_request_handler(None);
         let notifications = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
         let is_codex = agent == "codex-win";
+        let manager = wire.lock().unwrap().attempt.activity.as_deref()
+            == Some(crate::coordinator_policy::MANAGER_ACTIVITY);
         let subscription = client.listen(Arc::new(move |value| {
             let mut state = notifications.lock().unwrap();
             if value["method"] == "agent_hub/transport_closed" {
@@ -348,6 +361,10 @@ impl Runner {
                     }
                     "item/started" => {
                         if let Some(event) = crate::codex::codex_tool_event(params, false) {
+                            if manager {
+                                state.invalid = true;
+                                return;
+                            }
                             crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
                             force = true;
                         } else {
@@ -356,6 +373,10 @@ impl Runner {
                     }
                     "item/completed" => {
                         if let Some(event) = crate::codex::codex_tool_event(params, true) {
+                            if manager {
+                                state.invalid = true;
+                                return;
+                            }
                             crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
                         } else if params["item"]["type"] == "agentMessage" {
                             if let (Some(id), Some(text)) = (
@@ -494,6 +515,13 @@ impl Runner {
                     let planning = {
                         let state = wire.lock().unwrap();
                         state.attempt.stage == "plan"
+                            && state.attempt.activity.as_deref()
+                                != Some(crate::coordinator_policy::MANAGER_ACTIVITY)
+                            && !state
+                                .attempt
+                                .activity
+                                .as_deref()
+                                .is_some_and(|value| value.starts_with("task:"))
                             && state.attempt.activity.as_deref() != Some("discussion")
                     };
                     if !planning {
@@ -603,11 +631,24 @@ impl Runner {
         // Agent Hub 的附加文件工具按阶段区分；CLI 自带工具不受此集合限制。
         let db = self.store.lock().unwrap().path.clone();
         let attempt = wire.lock().unwrap().attempt.clone();
-        let broker = Arc::new(Mutex::new(Broker::open(&db, &attempt.id)?));
+        let manager =
+            attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY);
+        let broker = if manager {
+            None
+        } else {
+            Some(Arc::new(Mutex::new(Broker::open(&db, &attempt.id)?)))
+        };
         let binding = wire.clone();
         let db_for_question = db.clone();
         let attempt_for_question = attempt.id.clone();
         client.set_request_handler(Arc::new(move |method, params| {
+            if manager {
+                return Some(if method.contains("requestApproval") {
+                    Ok(json!({"decision":"decline"}))
+                } else {
+                    Err("管家仅调度，不能调用项目或原生工具".into())
+                });
+            }
             if method != "item/tool/call" {
                 return Some(Ok(match method {
                     "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
@@ -630,7 +671,7 @@ impl Runner {
                 && state.attempt.native_turn_id.as_deref() == params["turnId"].as_str();
             drop(state);
             let result = if authorized {
-                broker.lock().unwrap().call(
+                broker.as_ref().unwrap().lock().unwrap().call(
                     params["tool"].as_str().unwrap_or(""),
                     params["arguments"].clone(),
                 )
@@ -647,27 +688,44 @@ impl Runner {
         }));
         let (chat, previous, project_root) = self.project_session(&attempt)?;
         let mut params = json!({"cwd":project_root,"approvalPolicy":"never","sandbox":"danger-full-access","model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":"你是该项目的协作成员。同一项目的用户私聊、团队任务和历史共用此会话。按当前消息决定职责；仅在当前请求明确要求结构化计划或验收时返回对应JSON，正常交流自然回答。模型与提供商使用项目配置。"});
-        if let Some(thread) = previous {
+        if manager {
+            params["sandbox"] = json!("read-only");
+            params["approvalPolicy"] = json!("untrusted");
+            params["ephemeral"] = json!(true);
+            params["developerInstructions"] = json!(crate::coordinator_policy::MANAGER_INSTRUCTION);
+            params["dynamicTools"] = json!([]);
+        }
+        let loaded = previous
+            .as_ref()
+            .is_some_and(|session| manager && (self.session_loaded)(&attempt, session));
+        if let Some(thread) = previous.clone().filter(|_| !manager) {
             params["threadId"] = json!(thread);
             params["excludeTurns"] = json!(true);
-        } else {
+        } else if !manager {
             params["dynamicTools"] = json!(crate::project_tools::project_chat_dynamic_tools(
                 &db, &chat
             )?);
         }
-        let thread = client.rpc(
-            if params.get("threadId").is_some() {
-                "thread/resume"
-            } else {
-                "thread/start"
-            },
-            params,
-        )?;
+        let thread = if loaded {
+            json!({"thread":{"id":previous}})
+        } else {
+            client.rpc(
+                if params.get("threadId").is_some() {
+                    "thread/resume"
+                } else {
+                    "thread/start"
+                },
+                params,
+            )?
+        };
         let thread_id = thread["thread"]["id"]
             .as_str()
             .ok_or("Codex 项目会话 ID 缺失")?
             .to_owned();
-        self.bind_project_session(&chat, &attempt.agent_id, &thread_id, &project_root)?;
+        self.bind_project_session(&chat, &attempt, &thread_id, &project_root)?;
+        if manager {
+            (self.session_ready)(&attempt, &thread_id);
+        }
         {
             let mut state = wire.lock().unwrap();
             state.attempt.native_thread_id = Some(thread_id.clone());
@@ -676,7 +734,14 @@ impl Runner {
         if self.wire_cancelled(wire) {
             return Err("项目协作已停止".into());
         }
-        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"cwd":root,"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        // Keep this shape compatible with the installed app-server protocol. Tools
+        // remain disabled in the manager process and rejected by the request handler.
+        let sandbox = if manager {
+            json!({"type":"readOnly","networkAccess":false})
+        } else {
+            json!({"type":"dangerFullAccess"})
+        };
+        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"cwd":root,"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":if manager{"untrusted"}else{"never"},"sandboxPolicy":sandbox}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 项目运行 ID 缺失")?
@@ -734,6 +799,19 @@ impl Runner {
         let mut store = self.store.lock().unwrap();
         let workflow = store.workflow(&attempt.workflow_id)?;
         let project = store.project(&workflow.project_id)?;
+        if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY) {
+            let cwd = crate::coordinator_clients::manager_directory(
+                &store.path,
+                &workflow.id,
+                &attempt.agent_id,
+            )?;
+            std::fs::create_dir_all(&cwd).map_err(|_| "管家目录创建失败")?;
+            return Ok((
+                workflow.id.clone(),
+                store.manager_session(&workflow.id)?,
+                cwd,
+            ));
+        }
         let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
         let chat = chats
             .iter()
@@ -754,11 +832,19 @@ impl Runner {
     fn bind_project_session(
         &self,
         chat: &str,
-        agent: &str,
+        attempt: &Attempt,
         session: &str,
         root: &Path,
     ) -> Result<()> {
-        self.store.lock().unwrap().connection.execute("UPDATE sessions SET native_session_id=?1,native_cwd=?2 WHERE conversation_id=?3 AND agent_id=?4",rusqlite::params![session,root.to_string_lossy(),chat,agent]).map_err(|_|"项目会话绑定失败")?;
+        if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY) {
+            return self.store.lock().unwrap().bind_manager_session(
+                &attempt.workflow_id,
+                &attempt.agent_id,
+                session,
+                root,
+            );
+        }
+        self.store.lock().unwrap().connection.execute("UPDATE sessions SET native_session_id=?1,native_cwd=?2 WHERE conversation_id=?3 AND agent_id=?4",rusqlite::params![session,root.to_string_lossy(),chat,attempt.agent_id]).map_err(|_|"项目会话绑定失败")?;
         Ok(())
     }
 
@@ -771,13 +857,30 @@ impl Runner {
         deadline: Instant,
     ) -> Result<()> {
         let attempt = wire.lock().unwrap().attempt.clone();
-        let dsh = attempt.agent_id == "dsh-win";
+        // DSH 与 Claude 的桥都以 session/resume 续接，并用 config option 切换模型与强度。
+        let dsh = matches!(attempt.agent_id.as_str(), "dsh-win" | "claude-win");
+        let manager =
+            attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY);
         let db = self.store.lock().unwrap().path.clone();
         let (chat, previous, project_root) = self.project_session(&attempt)?;
-        let servers = crate::project_tools::project_chat_mcp_server(&db, &chat)?
-            .map_or_else(|| json!([]), |server| json!([server]));
+        let servers = if manager {
+            json!([])
+        } else {
+            crate::project_tools::project_chat_mcp_server(&db, &chat)?
+                .map_or_else(|| json!([]), |server| json!([server]))
+        };
+        // Claude 每轮新起进程、会话按 ID 续接，可以直接在本轮工作目录（任务工作树）里运行，
+        // 文件自然落在工作树而不是项目根目录；DSH/Hermes 的会话绑定目录，仍用项目根目录。
+        let session_cwd = if attempt.agent_id == "claude-win" && !manager {
+            root.to_path_buf()
+        } else {
+            project_root.clone()
+        };
         let response = if let Some(session) = &previous {
-            if dsh && (self.session_loaded)(&attempt.agent_id, session) {
+            if (dsh || manager)
+                && (self.session_loaded)(&attempt, session)
+                && attempt.agent_id != "claude-win"
+            {
                 Value::Null
             } else {
                 client.rpc(
@@ -786,20 +889,20 @@ impl Runner {
                     } else {
                         "session/load"
                     },
-                    json!({"sessionId":session,"cwd":project_root,"mcpServers":servers}),
+                    json!({"sessionId":session,"cwd":session_cwd,"mcpServers":servers}),
                 )?
             }
         } else {
             client.rpc(
                 "session/new",
-                json!({"cwd":project_root,"mcpServers":servers}),
+                json!({"cwd":session_cwd,"mcpServers":servers}),
             )?
         };
         let session = previous
             .or_else(|| response["sessionId"].as_str().map(String::from))
             .ok_or("项目 ACP 会话 ID 缺失")?;
-        self.bind_project_session(&chat, &attempt.agent_id, &session, &project_root)?;
-        (self.session_ready)(&attempt.agent_id, &session);
+        self.bind_project_session(&chat, &attempt, &session, &project_root)?;
+        (self.session_ready)(&attempt, &session);
         {
             let mut state = wire.lock().unwrap();
             state.attempt.native_thread_id = Some(session.clone());
@@ -816,6 +919,12 @@ impl Runner {
                 client.rpc(
                     "session/set_config_option",
                     json!({"sessionId":session,"configId":"reasoning_effort","value":effort}),
+                )?;
+            } else if attempt.agent_id == "claude-win" {
+                // 未指定强度＝回到 CLI 默认，不沿用同一会话上一轮的显式强度。
+                client.rpc(
+                    "session/set_config_option",
+                    json!({"sessionId":session,"configId":"reasoning_effort","value":""}),
                 )?;
             }
         } else {
@@ -839,9 +948,14 @@ impl Runner {
         let sent_wire = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
+        let work_prompt = if manager {
+            prompt.to_owned()
+        } else {
+            format!("本轮工作目录：{}。所有实现、修改和测试只在此目录；项目原生会话保持同一会话，目录可能随任务切换。\n{}",root.display(),prompt)
+        };
         let result = match client.rpc_timeout_with_sent(
             "session/prompt",
-            json!({"sessionId":session,"prompt":[{"type":"text","text":format!("本轮工作目录：{}。所有实现、修改和测试只在此目录；项目原生会话保持同一会话，目录可能随任务切换。\n{}",root.display(),prompt)}]}),
+            json!({"sessionId":session,"prompt":[{"type":"text","text":work_prompt}]}),
             timeout,
             move || {
                 let mut state = sent_wire.lock().unwrap();
@@ -855,7 +969,7 @@ impl Runner {
                 client.stop();
                 return Err(
                     "项目成员的推理或工具调用超过当前工作流剩余时间；现有项目记录与文件改动已保留，可直接继续协作。".into(),
-                )
+                );
             }
             Err(error) => return Err(error),
         };
@@ -909,7 +1023,10 @@ mod tests {
         state.append_thought("先检查工作区。");
         state.text("acp-message", "我开始处理。", false);
         state.append_thought("再验证恢复路径。");
-        assert_eq!(state.attempt.thought, "先检查工作区。再验证恢复路径。");
+        assert_eq!(
+            state.attempt.thought,
+            "先检查工作区。\u{1e}6\u{1f}再验证恢复路径。"
+        );
         assert_eq!(state.attempt.output, "我开始处理。");
     }
 

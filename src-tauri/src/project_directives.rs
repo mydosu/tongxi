@@ -31,6 +31,7 @@ fn assigned(request: &str, markers: &[&str]) -> Option<String> {
             ("hermes", "hermes-win"),
             ("dsh", "dsh-win"),
             ("deepseek harness", "dsh-win"),
+            ("claude", "claude-win"),
         ]
         .into_iter()
         .flat_map(|(label, id)| text.match_indices(label).map(move |(at, _)| (at, id)))
@@ -122,7 +123,9 @@ impl Store {
 pub fn encoded_roles(store: &Store, workflow: &str, content: &str) -> Result<String> {
     let job = store.workflow(workflow)?;
     let mut roles = crate::project_store::roles_of(&job)?;
-    apply(content, &mut roles);
+    if job.coordination.is_none() {
+        apply(content, &mut roles);
+    }
     roles.validate()?;
     let members = store.conversation(&job.conversation_id)?.members;
     if [

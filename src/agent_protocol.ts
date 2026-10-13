@@ -2,6 +2,8 @@ import type { ProjectAttempt, Workflow } from './types';
 
 /** Workflow JSON is control data, never a reasoning block or the reply body. */
 export function projectReply(attempt: ProjectAttempt, job: Workflow) {
+  if(attempt.activity==='coordinate')return {body:'',protocol:undefined};
+  if(attempt.activity?.startsWith('task:'))return {body:attempt.output,protocol:undefined};
   if (attempt.activity === 'discussion') return { body: attempt.output, protocol: undefined };
   if (attempt.stage === 'plan') {
     const plan = attempt.status === 'completed' ? job.plan : null;

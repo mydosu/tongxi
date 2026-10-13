@@ -1,8 +1,12 @@
-use crate::codex::{RunSnapshot, RuntimeSnapshot};
+use crate::codex::{
+    busy_ids, busy_in, headline, insert_run, live_in, run_mut, run_ref, RunSnapshot,
+    RuntimeSnapshot,
+};
 use crate::models::ModelOption;
 use crate::rpc::Client;
 use crate::store::{RunRecord, Store};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -19,8 +23,9 @@ struct Inner {
     client: Option<Arc<Client>>,
     version: Option<String>,
     error: Option<String>,
-    active: Option<RunSnapshot>,
-    wire_text: String,
+    runs: Vec<RunSnapshot>,
+    /// Albion 的原始正文（按运行 ID），可见性过滤从它算出 `run.text`。
+    wire_text: HashMap<String, String>,
     models: Vec<ModelOption>,
     default_model: Option<String>,
     last_checkpoint: Instant,
@@ -94,6 +99,17 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
 }
 
 impl Runtime {
+    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
+        self.shared_project_client()?;
+        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
+        let mut command = self.target.command(directory)?;
+        command
+            .env("AGENT_HUB_COORDINATOR_MODE", "1")
+            .env("AGENT_HUB_HERMES_SESSION_DB", directory.join("sessions.db"));
+        let client = Client::spawn_command(command, |_| {}, || {})?;
+        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;
+        Ok(client)
+    }
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
         let client = {
@@ -137,8 +153,8 @@ impl Runtime {
                 client: None,
                 version: None,
                 error: None,
-                active: None,
-                wire_text: String::new(),
+                runs: Vec::new(),
+                wire_text: HashMap::new(),
                 models: vec![],
                 default_model: None,
                 last_checkpoint: Instant::now(),
@@ -163,7 +179,8 @@ impl Runtime {
             executable: self.target.executable(),
             version: inner.version.clone(),
             error: inner.error.clone(),
-            active: inner.active.clone(),
+            active: headline(&inner.runs),
+            runs: inner.runs.clone(),
             models: inner.models.clone(),
             default_model: inner.default_model.clone(),
             default_effort: None,
@@ -229,6 +246,16 @@ impl Runtime {
             inner.default_model = catalog["models"]["currentModelId"]
                 .as_str()
                 .map(String::from);
+            // 同席自己定的默认模型优先（比如固定走某个提供商），目录里没有它才退回 harness 的默认。
+            if let Some(preferred) = self
+                .store
+                .lock()
+                .unwrap()
+                .agent_default_model(self.target.id())
+                .filter(|model| inner.models.iter().any(|entry| &entry.id == model))
+            {
+                inner.default_model = Some(preferred);
+            }
             inner.connection = "connected".into();
             Ok(())
         })();
@@ -243,11 +270,7 @@ impl Runtime {
     }
     pub fn guard<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
         let inner = self.inner.lock().map_err(|_| "Hermes 状态不可用")?;
-        if inner
-            .active
-            .as_ref()
-            .is_some_and(|run| run.record.conversation_id == id && busy(run))
-        {
+        if busy_in(&inner.runs, id) {
             return Err(format!(
                 "{} 正在回复，请完成或停止后再修改会话",
                 self.target.name()
@@ -277,9 +300,9 @@ impl Runtime {
         if inner.connection != "connected" {
             return Err(format!("请先连接 {}", self.target.name()));
         }
-        if inner.active.as_ref().is_some_and(busy) {
+        if busy_in(&inner.runs, conversation_id) {
             return Err(format!(
-                "{} 正在处理上一条消息，请等待或停止",
+                "{} 正在处理这个会话的上一条消息，请等待或停止",
                 self.target.name()
             ));
         }
@@ -290,13 +313,17 @@ impl Runtime {
             content,
             self.target.id(),
         )?;
-        inner.active = Some(RunSnapshot {
-            record: record.clone(),
-            text: String::new(),
-            thought: String::new(),
-            tool_events: Vec::new(),
-        });
-        inner.wire_text.clear();
+        insert_run(
+            &mut inner.runs,
+            RunSnapshot {
+                record: record.clone(),
+                text: String::new(),
+                thought: String::new(),
+                tool_events: Vec::new(),
+            },
+        );
+        let live: Vec<String> = inner.runs.iter().map(|run| run.record.id.clone()).collect();
+        inner.wire_text.retain(|id, _| live.contains(id));
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -315,8 +342,8 @@ impl Runtime {
         round: u32,
     ) -> Result<RunRecord> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" || inner.active.as_ref().is_some_and(busy) {
-            return Err(format!("{} 尚未连接或正在其他会话回复", self.target.name()));
+        if inner.connection != "connected" {
+            return Err(format!("{} 尚未连接", self.target.name()));
         }
         let client = inner.client.clone().ok_or("成员接口不可用")?;
         let (record, text) = self.store.lock().unwrap().begin_discussion_turn(
@@ -324,13 +351,17 @@ impl Runtime {
             self.target.id(),
             round,
         )?;
-        inner.active = Some(RunSnapshot {
-            record: record.clone(),
-            text: String::new(),
-            thought: String::new(),
-            tool_events: Vec::new(),
-        });
-        inner.wire_text.clear();
+        insert_run(
+            &mut inner.runs,
+            RunSnapshot {
+                record: record.clone(),
+                text: String::new(),
+                thought: String::new(),
+                tool_events: Vec::new(),
+            },
+        );
+        let live: Vec<String> = inner.runs.iter().map(|run| run.record.id.clone()).collect();
+        inner.wire_text.retain(|id, _| live.contains(id));
         drop(inner);
         self.emit();
         let runtime = self.clone();
@@ -348,9 +379,9 @@ impl Runtime {
             .inner
             .lock()
             .unwrap()
-            .active
-            .as_ref()
-            .filter(|run| run.record.id == run_id)
+            .runs
+            .iter()
+            .find(|run| run.record.id == run_id)
             .ok_or("运行已结束")?
             .record
             .conversation_id
@@ -366,12 +397,7 @@ impl Runtime {
             .ok_or("Hermes 会话不存在")?;
         {
             let inner = self.inner.lock().unwrap();
-            let record = &inner
-                .active
-                .as_ref()
-                .filter(|run| run.record.id == run_id)
-                .ok_or("运行已结束")?
-                .record;
+            let record = &run_ref(&inner.runs, run_id).ok_or("运行已结束")?.record;
             settings.model = record.model.clone();
             settings.reasoning_effort = record.reasoning_effort.clone();
             crate::models::validate_selection(
@@ -422,10 +448,8 @@ impl Runtime {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.models = models;
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| run.record.id == run_id && busy(run))
+            let run = run_mut(&mut inner.runs, run_id)
+                .filter(|run| busy(run))
                 .ok_or("运行已结束")?;
             self.store
                 .lock()
@@ -452,10 +476,8 @@ impl Runtime {
         let applied = &applied["_meta"]["agentHub"];
         {
             let mut inner = self.inner.lock().unwrap();
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| run.record.id == run_id && busy(run))
+            let run = run_mut(&mut inner.runs, run_id)
+                .filter(|run| busy(run))
                 .ok_or("运行已结束")?;
             if run.record.status == "cancelling" {
                 drop(inner);
@@ -542,9 +564,9 @@ impl Runtime {
         }
         let checkpoint = inner.last_checkpoint.elapsed() >= Duration::from_millis(350);
         let Inner {
-            active, wire_text, ..
+            runs, wire_text, ..
         } = &mut *inner;
-        let Some(run) = active.as_mut().filter(|run| {
+        let Some(run) = runs.iter_mut().find(|run| {
             busy(run) && run.record.native_thread_id.as_deref() == params["sessionId"].as_str()
         }) else {
             return;
@@ -567,11 +589,12 @@ impl Runtime {
         let text = update["content"]["text"].as_str().unwrap_or("");
         // 思考块与正文分开累积；Albion 的可见性过滤只作用于正文。
         match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_thought_chunk" => run.thought.push_str(text),
+            "agent_thought_chunk" => crate::store::push_thought(&mut run.thought, &run.text, text),
             "agent_message_chunk" => {
                 if self.target.id() == "albion-wsl" {
-                    wire_text.push_str(text);
-                    run.text = crate::chat_text::albion_visible(wire_text);
+                    let wire = wire_text.entry(run.record.id.clone()).or_default();
+                    wire.push_str(text);
+                    run.text = crate::chat_text::albion_visible(wire);
                 } else {
                     run.text.push_str(text);
                 }
@@ -591,13 +614,10 @@ impl Runtime {
     }
     fn finish(&self, id: &str, status: &str, error: Option<String>) {
         let mut inner = self.inner.lock().unwrap();
-        let visible = (self.target.id() == "albion-wsl")
-            .then(|| crate::chat_text::albion_complete(&inner.wire_text));
-        if let Some(run) = inner
-            .active
-            .as_mut()
-            .filter(|run| run.record.id == id && busy(run))
-        {
+        let visible = (self.target.id() == "albion-wsl").then(|| {
+            crate::chat_text::albion_complete(inner.wire_text.get(id).map_or("", String::as_str))
+        });
+        if let Some(run) = run_mut(&mut inner.runs, id).filter(|run| busy(run)) {
             run.record.status = status.into();
             run.record.error = error;
             if let Some(text) = visible {
@@ -612,6 +632,36 @@ impl Runtime {
         drop(inner);
         self.emit();
     }
+    /// 把会话交给 CLI 前从桥里卸下这条会话；下次续聊重新载入，接上 CLI 里的新对话。
+    pub(crate) fn release_native(&self, session_id: &str) {
+        let client = {
+            let inner = self.inner.lock().unwrap();
+            inner.client.clone()
+        };
+        if let Some(client) = client {
+            let _ = client.rpc("session/close", json!({"sessionId":session_id}));
+        }
+    }
+    /// 换同席给这个成员定的默认模型，已连接时立即生效（下一条消息起）。
+    pub(crate) fn set_default_model(&self, model: Option<&str>) -> Result<()> {
+        {
+            let inner = self.inner.lock().unwrap();
+            if let Some(model) = model {
+                if inner.connection == "connected" && !inner.models.iter().any(|entry| entry.id == model) {
+                    return Err("当前模型目录里没有这个模型".into());
+                }
+            }
+        }
+        self.store
+            .lock()
+            .unwrap()
+            .set_agent_default_model(self.target.id(), model)?;
+        if let Some(model) = model {
+            self.inner.lock().unwrap().default_model = Some(model.to_owned());
+        }
+        self.emit();
+        Ok(())
+    }
     pub fn cancel(&self, conversation_id: &str) -> Result<RuntimeSnapshot> {
         self.cancel_expected(conversation_id, None)
     }
@@ -623,14 +673,8 @@ impl Runtime {
         let (client, session) = {
             let mut inner = self.inner.lock().unwrap();
             let client = inner.client.clone().ok_or("Hermes 已断开")?;
-            let run = inner
-                .active
-                .as_mut()
-                .filter(|run| {
-                    run.record.conversation_id == conversation_id
-                        && busy(run)
-                        && expected.is_none_or(|id| run.record.id == id)
-                })
+            let run = live_in(&mut inner.runs, conversation_id)
+                .filter(|run| expected.is_none_or(|id| run.record.id == id))
                 .ok_or("这个会话没有正在进行的回复")?;
             run.record.status = "cancelling".into();
             self.store
@@ -653,13 +697,9 @@ impl Runtime {
             }
             inner.connection = "disconnected".into();
             inner.client = None;
-            inner
-                .active
-                .as_ref()
-                .filter(|run| busy(run))
-                .map(|run| run.record.id.clone())
+            busy_ids(&inner.runs)
         };
-        if let Some(id) = id {
+        for id in id {
             self.finish(&id, "interrupted", Some("Hermes 原生连接已断开".into()));
         }
         self.emit();
@@ -670,29 +710,17 @@ impl Runtime {
     pub(crate) fn stop_expected(&self, expected: Option<&str>) {
         let (client, active) = {
             let mut inner = self.inner.lock().unwrap();
-            if expected.is_some_and(|id| {
-                !inner
-                    .active
-                    .as_ref()
-                    .is_some_and(|run| run.record.id == id && busy(run))
-            }) {
+            if expected.is_some_and(|id| !run_ref(&inner.runs, id).is_some_and(busy)) {
                 return;
             }
             inner.generation = Uuid::new_v4().to_string();
             inner.connection = "disconnected".into();
-            (
-                inner.client.take(),
-                inner
-                    .active
-                    .as_ref()
-                    .filter(|run| busy(run))
-                    .map(|run| run.record.id.clone()),
-            )
+            (inner.client.take(), busy_ids(&inner.runs))
         };
         if let Some(client) = client {
             client.stop();
         }
-        if let Some(id) = active {
+        for id in active {
             self.finish(&id, "interrupted", None);
         }
         self.emit();

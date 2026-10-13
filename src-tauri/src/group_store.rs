@@ -170,8 +170,8 @@ impl Store {
         if conversation.kind != "group" || conversation.archived {
             return Err("请选择未归档的群聊".into());
         }
-        if !(1..=3).contains(&rounds) || !(2..=4).contains(&participants.len()) {
-            return Err("讨论需选择二至四位成员，轮次为 1—3".into());
+        if !(1..=3).contains(&rounds) || !(2..=5).contains(&participants.len()) {
+            return Err("讨论需选择二至五位成员，轮次为 1—3".into());
         }
         for (i, agent) in participants.iter().enumerate() {
             if !conversation.members.contains(agent) || participants[..i].contains(agent) {
@@ -596,15 +596,15 @@ mod tests {
                 1
             )
             .is_err());
-        assert!(store
-            .begin_discussion_turn(&job.id, &participants[0], 1)
-            .is_err());
-        assert!(store.discussion(&job.id).unwrap().turns.is_empty());
-        assert_eq!(store.detail(&room).unwrap().messages.len(), 1);
-        complete(&mut store, private_run, "私聊完成");
+        // 成员可以同时在私聊和群里回复：私聊进行中不挡本群发言，同一轮重复发言仍被拒绝。
         assert!(store
             .begin_discussion_turn(&job.id, &participants[0], 1)
             .is_ok());
+        assert!(store
+            .begin_discussion_turn(&job.id, &participants[0], 1)
+            .is_err());
+        assert_eq!(store.discussion(&job.id).unwrap().turns.len(), 1);
+        complete(&mut store, private_run, "私聊完成");
     }
 
     #[test]

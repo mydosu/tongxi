@@ -206,6 +206,6 @@ fn schema_fifteen_upgrade_keeps_history_and_adds_private_questions() {
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        16
+        crate::store::SCHEMA_VERSION
     );
 }

@@ -3,6 +3,7 @@ import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
 import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
 import { attachmentHtml, attachmentText } from './attachments';
+import { plainThought, thoughtFlow, type FlowPart } from './thought_flow';
 
 interface TranscriptFormat {
   escape: (value: string | number) => string;
@@ -84,7 +85,7 @@ export class AgentTranscript {
     const node = document.createElement('article');
     node.dataset.entryId = entry.id;
     node.className = `agent-transcript-entry ${entry.kind === 'user' ? 'agent-user-entry' : entry.kind === 'peer' ? 'agent-peer-entry' : 'agent-output-entry'}`;
-    node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
+    node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-flow" hidden></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
     const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
     thought.querySelector('summary')!.addEventListener('click', () => requestAnimationFrame(() => { thought.dataset.userOpen = String(thought.open); }));
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
@@ -107,23 +108,27 @@ export class AgentTranscript {
     const controls = node.querySelector<HTMLElement>('[data-entry-control]')!;
     const control = busy && entry.workflowId ? `<button type="button" class="text-button" data-stop-project-agent="${escape(entry.author)}" data-stop-project-workflow="${escape(entry.workflowId)}" ${entry.status === 'cancelling' ? 'disabled' : ''}>中断</button>` : '';
     if (controls.innerHTML !== control) controls.innerHTML = control;
-    const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
+    // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
+    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body) : null;
+    this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy);
+    const plain = flow ? '' : plainThought(entry.thought);
+    const thought = node.querySelector<HTMLDetailsElement>('.agent-turn-thought')!;
     const previousBusy = thought.dataset.active === 'true';
     const wasHidden = thought.hidden;
-    thought.hidden = !entry.thought;
+    thought.hidden = !plain;
     if (entry.attemptId) thought.dataset.thoughtAttemptId = entry.attemptId;
     thought.dataset.active = String(busy);
     if (thought.dataset.userOpen === undefined && (wasHidden || !thought.dataset.initialized || previousBusy !== busy)) thought.open = busy;
     thought.dataset.initialized = 'true';
     thought.querySelector('summary')!.textContent = busy ? '思考中' : '已思考';
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
-    if (body.textContent !== entry.thought) {
+    if (body.textContent !== plain) {
       const follow = body.dataset.follow !== 'false';
-      body.textContent = entry.thought;
+      body.textContent = plain;
       if (follow) body.scrollTop = body.scrollHeight;
     }
     const text = node.querySelector<HTMLElement>('.agent-turn-text')!;
-    const output = attachmentText(entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
+    const output = flow?.length ? '' : attachmentText(entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
     if (text.dataset.output !== output) {
       if (entry.kind === 'agent') text.innerHTML = agentMarkdown(output, escape); else text.textContent = output;
       text.dataset.output = output;
@@ -151,5 +156,48 @@ export class AgentTranscript {
     const actions = node.querySelector<HTMLElement>('.agent-turn-actions')!;
     const action = entry.source === 'private' && entry.kind === 'agent' && entry.status === 'completed' && entry.messageId ? `<button type="button" class="agent-chat-share" data-project-agent-chat-share="${escape(entry.messageId)}">分享到团队</button>` : '';
     if (actions.innerHTML !== action) actions.innerHTML = action;
+  }
+
+  /** 按片段逐个打补丁：已存在的段只更新文字，展开状态和滚动位置不被重绘打断。 */
+  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean) {
+    host.hidden = !flow?.length;
+    const parts = flow || [];
+    while (host.children.length > parts.length) host.lastElementChild!.remove();
+    parts.forEach((part, index) => {
+      let node = host.children[index] as HTMLElement | undefined;
+      if (node && node.dataset.kind !== part.kind) { while (host.children.length > index) host.lastElementChild!.remove(); node = undefined; }
+      if (!node) {
+        if (part.kind === 'thought') {
+          const details = document.createElement('details');
+          details.className = 'thought agent-turn-thought';
+          details.innerHTML = '<summary></summary><div class="thought-body"></div>';
+          details.querySelector('summary')!.addEventListener('click', () => requestAnimationFrame(() => { details.dataset.userOpen = String(details.open); }));
+          const body = details.querySelector<HTMLElement>('.thought-body')!;
+          body.addEventListener('scroll', () => { body.dataset.follow = String(body.scrollHeight - body.scrollTop - body.clientHeight < 28); }, { passive: true });
+          node = details;
+        } else {
+          node = document.createElement('div');
+          node.className = 'agent-turn-text';
+        }
+        node.dataset.kind = part.kind;
+        host.append(node);
+      }
+      if (part.kind === 'thought') {
+        const details = node as HTMLDetailsElement;
+        const live = busy && index === parts.length - 1;
+        if (details.dataset.userOpen === undefined && details.dataset.active !== String(live)) details.open = live;
+        details.dataset.active = String(live);
+        details.querySelector('summary')!.textContent = live ? '思考中' : '已思考';
+        const body = details.querySelector<HTMLElement>('.thought-body')!;
+        if (body.textContent !== part.text) {
+          const follow = body.dataset.follow !== 'false';
+          body.textContent = part.text;
+          if (follow) body.scrollTop = body.scrollHeight;
+        }
+      } else {
+        const output = attachmentText(part.text);
+        if (node.dataset.output !== output) { node.innerHTML = agentMarkdown(output, this.format.escape); node.dataset.output = output; }
+      }
+    });
   }
 }

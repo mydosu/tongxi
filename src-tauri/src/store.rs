@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -18,37 +18,118 @@ pub struct Agent {
     pub status: String,
 }
 
+/// 当前数据库 schema 版本；项目工具子进程据此拒绝不匹配的数据库。
+pub(crate) const SCHEMA_VERSION: i64 = 19;
+
+/// 把成员白名单 CHECK 约束里的 `existing` 后补上 `added`。
+///
+/// SQLite 不能 ALTER 约束；这些表又互相 `ON DELETE CASCADE`，重建表会在 DROP 旧表时
+/// 连带删掉子表数据。改用 SQLite 官方文档允许的做法（lang_altertable「其他表结构修改」）：
+/// 同一事务内只改 sqlite_schema 里的建表文本、递增 schema_version，再做完整性检查。
+/// 放宽约束不改变任何已存数据的含义，也不触碰磁盘上的行格式。
+pub(crate) fn allow_agent_in_checks(
+    tx: &rusqlite::Transaction<'_>,
+    existing: &str,
+    added: &str,
+) -> Result<()> {
+    let from = format!("'{existing}'");
+    let to = format!("'{existing}','{added}'");
+    let tables = {
+        let mut statement = tx
+            .prepare("SELECT name,sql FROM sqlite_schema WHERE type='table' AND sql IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(std::result::Result::ok)
+            .filter(|(_, sql)| sql.contains(&from) && !sql.contains(&format!("'{added}'")))
+            .collect::<Vec<_>>();
+        rows
+    };
+    if tables.is_empty() {
+        return Ok(());
+    }
+    let version: i64 = tx
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    tx.execute_batch("PRAGMA writable_schema=ON;")
+        .map_err(|e| e.to_string())?;
+    let patched = (|| -> Result<()> {
+        for (name, sql) in &tables {
+            tx.execute(
+                "UPDATE sqlite_schema SET sql=?1 WHERE type='table' AND name=?2",
+                rusqlite::params![sql.replace(&from, &to), name],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute_batch(&format!("PRAGMA schema_version={};", version + 1))
+            .map_err(|e| e.to_string())
+    })();
+    tx.execute_batch("PRAGMA writable_schema=OFF;")
+        .map_err(|e| e.to_string())?;
+    patched?;
+    let check: String = tx
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if check != "ok" {
+        return Err("成员约束升级后完整性检查失败，未提交迁移".into());
+    }
+    Ok(())
+}
+
+/// 成员显示名；未知 id 原样返回，不猜。
+pub(crate) fn agent_name(id: &str) -> &str {
+    match id {
+        "codex-win" => "Codex",
+        "hermes-win" => "Hermes",
+        "dsh-win" => "DSH",
+        "claude-win" => "Claude",
+        "albion-wsl" => "阿尔比恩",
+        other => other,
+    }
+}
+
 pub fn agents() -> Vec<Agent> {
     [
         (
             "hermes-win",
             "Hermes",
-            "管家与协调者",
-            "理解需求、分发任务、跟踪进展与协助功能验收",
+            "Hermes Agent",
+            "本机 Hermes，使用它自己配置的模型、工具、MCP 与插件",
             "Windows",
             "amber",
         ),
         (
             "codex-win",
             "Codex",
-            "方案与只读诊断",
-            "制定项目方案、疑难根因分析与复核，实际代码由 DSH 实现",
+            "Codex CLI",
+            "本机 Codex，使用它自己配置的模型、工具、MCP 与插件",
             "Windows",
             "green",
         ),
         (
             "dsh-win",
             "DSH",
-            "代码实现与修复",
-            "使用 DeepSeek 专用 harness，按 Codex 方案承担全部编码和实际修复",
+            "DeepSeek Harness",
+            "本机 DSH，经 Hermes 中配置的 DeepSeek 线路运行，使用它自己的原生工具",
             "Windows",
             "blue",
         ),
         (
+            "claude-win",
+            "Claude",
+            "Claude Code",
+            "本机 Claude Code，使用它自己配置的模型、工具、MCP 与插件",
+            "Windows",
+            "orange",
+        ),
+        (
             "albion-wsl",
             "阿尔比恩",
-            "陪伴与开发知情",
-            "与你交流、了解开发进展、提供情感支持",
+            "WSL 本机服务",
+            "通过她自己的本机服务对话，人格、记忆与工具都在该服务中",
             "WSL",
             "rose",
         ),
@@ -122,6 +203,7 @@ pub struct ConversationDetail {
     pub discussions: Vec<crate::group_store::Discussion>,
     pub project: Option<crate::project_store::Project>,
     pub project_roles: Option<crate::project_store::Roles>,
+    pub project_coordinator: Option<crate::project_store::RoleChoice>,
     pub workflows: Vec<crate::project_store::Workflow>,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
@@ -134,6 +216,8 @@ pub struct Store {
     pub(crate) connection: Connection,
     pub path: PathBuf,
     pub(crate) service_maintenance: HashSet<String>,
+    /// 交给 CLI 使用中的（会话, 成员）：同席暂停对这条原生会话的使用，CLI 关闭后自动收回。
+    pub(crate) cli_handoffs: HashSet<(String, String)>,
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -151,6 +235,23 @@ pub struct RunRecord {
     pub reasoning_effort: Option<String>,
     pub discussion_id: Option<String>,
     pub round: Option<u32>,
+}
+
+/// 思考与正文交替出现时，在思考文本里插入 `\u{1e}<正文 UTF-16 长度>\u{1f}`，
+/// 记下“下面这段思考出现在正文第几个字符之后”，界面据此把两者穿插显示（像各 CLI 那样）。
+pub(crate) fn push_thought(thought: &mut String, text: &str, delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    let at = text.encode_utf16().count();
+    let last = thought
+        .rfind('\u{1e}')
+        .and_then(|index| thought[index + 1..].split('\u{1f}').next()?.parse().ok())
+        .unwrap_or(0);
+    if at > last {
+        thought.push_str(&format!("\u{1e}{at}\u{1f}"));
+    }
+    thought.push_str(delta);
 }
 
 pub(crate) fn now() -> i64 {
@@ -173,9 +274,9 @@ fn valid_members(kind: &str, members: &[String]) -> Result<()> {
         return Err("不支持的会话类型".into());
     }
     if (kind == "direct" && members.len() != 1)
-        || (kind == "group" && !(2..=4).contains(&members.len()))
+        || (kind == "group" && !(2..=5).contains(&members.len()))
     {
-        return Err("私聊需选择一位成员，群聊需选择二至四位成员".into());
+        return Err("私聊需选择一位成员，群聊需选择二至五位成员".into());
     }
     let roster = agents();
     for (index, member) in members.iter().enumerate() {
@@ -208,10 +309,10 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 16 {
+        if version > SCHEMA_VERSION {
             return Err("数据由更新的软件版本创建，请使用对应版本打开".into());
         }
-        if version > 0 && version < 16 && path.is_absolute() {
+        if version > 0 && version < SCHEMA_VERSION && path.is_absolute() {
             let backups = path.parent().ok_or("数据库目录无效")?.join("backups");
             std::fs::create_dir_all(&backups).map_err(|_| "迁移前数据库备份目录创建失败")?;
             let snapshot = backups.join(format!("hub-schema-v{version}-{}.db", Uuid::new_v4()));
@@ -368,7 +469,47 @@ impl Store {
                     .map_err(|e| e.to_string())?;
             }
         }
-        tx.execute_batch("PRAGMA user_version=16;")
+        if version < 18 {
+            allow_agent_in_checks(&tx, "dsh-win", "claude-win")?;
+        }
+        if version < 19 {
+            // v19：同一句原文可以有返修/复核轮次，去掉“一句原文只能一个任务”的唯一约束，
+            // 去重改在 enqueue_routes 里判断。coordination_routes 是叶子表（没有表引用它），重建安全。
+            let unique: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='coordination_routes' AND sql LIKE '%UNIQUE(workflow_id,purpose,source_id,quote)%')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if unique {
+                tx.execute_batch(
+                    "CREATE TABLE coordination_routes_v19 (
+                       task_id TEXT PRIMARY KEY REFERENCES project_tasks(id) ON DELETE CASCADE,workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                       purpose TEXT NOT NULL,source_id TEXT NOT NULL,quote TEXT NOT NULL,context_ids TEXT NOT NULL,subagent INTEGER NOT NULL DEFAULT 0);
+                     INSERT INTO coordination_routes_v19(rowid,task_id,workflow_id,purpose,source_id,quote,context_ids)
+                       SELECT rowid,task_id,workflow_id,purpose,source_id,quote,context_ids FROM coordination_routes
+                       WHERE task_id IN (SELECT id FROM project_tasks) AND workflow_id IN (SELECT id FROM workflows);
+                     DROP TABLE coordination_routes;
+                     ALTER TABLE coordination_routes_v19 RENAME TO coordination_routes;
+                     CREATE INDEX IF NOT EXISTS coordination_route_key ON coordination_routes(workflow_id,purpose,source_id,quote);",
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        // 一个成员可以同时在多个会话里回复：进行中的运行改为“每个成员 × 会话”唯一。
+        // cli_handoffs：交给 CLI 使用中的会话，重启同席后仍能认出并在 CLI 关闭时收回。
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cli_handoffs (
+               conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+               agent_id TEXT NOT NULL, native_session_id TEXT NOT NULL, pid INTEGER NOT NULL DEFAULT 0,
+               since INTEGER NOT NULL, PRIMARY KEY(conversation_id, agent_id));
+             DROP INDEX IF EXISTS one_active_agent;
+             CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_conversation ON runs(agent_id,conversation_id)
+               WHERE status IN ('starting','running','cancelling');",
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
         let seeded = tx
             .query_row("SELECT value FROM metadata WHERE key='seeded'", [], |row| {
@@ -376,6 +517,10 @@ impl Store {
             })
             .optional()
             .map_err(|e| e.to_string())?;
+        if seeded.is_some() && version > 0 && version < 18 {
+            // 已有数据库：第五位成员 Claude 加入时补一个私聊；全新库由下面的初始化统一创建。
+            Self::insert_conversation(&tx, "与 Claude 私聊", "direct", &["claude-win".into()])?;
+        }
         if seeded.is_none() {
             for agent in agents() {
                 Self::insert_conversation(
@@ -400,7 +545,9 @@ impl Store {
             connection,
             path,
             service_maintenance: HashSet::new(),
+            cli_handoffs: HashSet::new(),
         };
+        store.cli_handoffs = store.saved_cli_handoffs()?.into_iter().map(|row| (row.0, row.1)).collect();
         store.recover_runs()?;
         store.recover_projects()?;
         Ok(store)
@@ -482,7 +629,80 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<String>, _>>()
             .map_err(|e| e.to_string())?;
-        ids.into_iter().map(|id| self.conversation(&id)).collect()
+        self.arrange(ids)?
+            .into_iter()
+            .map(|id| self.conversation(&id))
+            .collect()
+    }
+
+    /// 用户拖动保存的侧栏顺序（metadata.conversation_order）。
+    fn conversation_order(&self) -> Result<Vec<String>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key='conversation_order'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(stored
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default())
+    }
+
+    /// 按最近活动排好的 id 再套用手动顺序：还没被安排过的（新会话）留在最前，
+    /// 其余按用户拖出的先后排列。排序稳定，新会话之间仍按最近活动。
+    fn arrange(&self, mut ids: Vec<String>) -> Result<Vec<String>> {
+        let order = self.conversation_order()?;
+        if order.is_empty() {
+            return Ok(ids);
+        }
+        let rank: HashMap<&str, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index + 1))
+            .collect();
+        ids.sort_by_key(|id| rank.get(id.as_str()).copied().unwrap_or(0));
+        Ok(ids)
+    }
+
+    /// 保存拖动后的顺序。`ids` 是当前可见的那部分会话的新先后：只重排它们原本占据的位置，
+    /// 筛选、搜索或归档视图之外的会话位置不变。
+    pub fn set_conversation_order(&mut self, ids: &[String]) -> Result<()> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM conversations ORDER BY updated_at DESC,rowid DESC")
+            .map_err(|e| e.to_string())?;
+        let all = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(statement);
+        let moved: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        if moved.len() != ids.len() || ids.iter().any(|id| !all.contains(id)) {
+            return Err("会话顺序包含无效或重复的会话".into());
+        }
+        let mut next = ids.iter();
+        let full = self
+            .arrange(all)?
+            .into_iter()
+            .map(|id| {
+                if moved.contains(id.as_str()) {
+                    next.next().cloned().unwrap_or(id)
+                } else {
+                    id
+                }
+            })
+            .collect::<Vec<_>>();
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES('conversation_order',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [serde_json::to_string(&full).map_err(|e| e.to_string())?],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn detail(&self, id: &str) -> Result<ConversationDetail> {
@@ -529,6 +749,7 @@ impl Store {
             discussions: self.discussions(id)?,
             project: self.conversation_project(id)?,
             project_roles: self.conversation_project_roles(id)?,
+            project_coordinator: self.project_coordinator(id)?,
             workflows: self.workflows(id)?,
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
@@ -539,10 +760,7 @@ impl Store {
     }
 
     /// 已被同席会话占用的原生会话：native_session_id → 占用它的会话标题。
-    pub fn native_session_owners(
-        &self,
-        agent_id: &str,
-    ) -> Result<std::collections::HashMap<String, String>> {
+    pub fn native_session_owners(&self, agent_id: &str) -> Result<HashMap<String, String>> {
         let mut statement = self
             .connection
             .prepare(
@@ -725,6 +943,11 @@ impl Store {
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         if conversation.members != members {
             tx.execute(
+                "DELETE FROM project_coordinator_settings WHERE conversation_id=?1",
+                [id],
+            )
+            .map_err(|_| "管家配置重置失败")?;
+            tx.execute(
                 "UPDATE conversation_projects SET roles=NULL WHERE conversation_id=?1",
                 [id],
             )
@@ -776,6 +999,8 @@ impl Store {
         agent_id: &str,
     ) -> Result<RunRecord> {
         self.validate_private_target(conversation_id, agent_id)?;
+        // 交给 CLI 期间连消息也不存，免得拦下的话混进聊天记录。
+        self.guard_cli_handoff(conversation_id, agent_id)?;
         self.save_message(conversation_id, message_id, content)?;
         if let Some(existing) = self.run_for_message(message_id)? {
             return Ok(existing);
@@ -792,7 +1017,8 @@ impl Store {
         round: Option<u32>,
     ) -> Result<RunRecord> {
         self.guard_service_maintenance(agent_id)?;
-        self.guard_project_agent(agent_id)?;
+        self.guard_cli_handoff(conversation_id, agent_id)?;
+        // 项目任务与私聊走各自的原生会话，可以同时进行，不再互相等待。
         let settings = self
             .detail(conversation_id)?
             .sessions
@@ -1040,6 +1266,120 @@ impl Store {
         Ok(message)
     }
 
+    /// 已经交给原生会话的用户消息（如回复中途的插话）：保存并直接标为已提交。
+    pub fn save_delivered_message(
+        &mut self,
+        conversation_id: &str,
+        message_id: &str,
+        content: &str,
+    ) -> Result<Message> {
+        let mut message = self.save_message(conversation_id, message_id, content)?;
+        self.connection
+            .execute(
+                "UPDATE messages SET status='delivered' WHERE id=?1",
+                [message_id],
+            )
+            .map_err(|e| e.to_string())?;
+        message.status = "delivered".into();
+        Ok(message)
+    }
+
+    /// 移交记录：(会话, 成员, 原生会话, CLI 窗口进程号, 移交时刻毫秒)。
+    pub(crate) fn saved_cli_handoffs(&self) -> Result<Vec<(String, String, String, u32, i64)>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT conversation_id,agent_id,native_session_id,pid,since FROM cli_handoffs")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn save_cli_handoff(&mut self, conversation: &str, agent: &str, native: &str, pid: u32, since: i64) -> Result<()> {
+        self.connection
+            .execute(
+                "INSERT INTO cli_handoffs(conversation_id,agent_id,native_session_id,pid,since) VALUES(?1,?2,?3,?4,?5)
+                 ON CONFLICT(conversation_id,agent_id) DO UPDATE SET native_session_id=?3,pid=?4,since=?5",
+                params![conversation, agent, native, pid, since],
+            )
+            .map_err(|e| e.to_string())?;
+        self.cli_handoffs.insert((conversation.to_owned(), agent.to_owned()));
+        Ok(())
+    }
+
+    pub(crate) fn set_cli_handoff_pid(&mut self, conversation: &str, agent: &str, pid: u32) -> Result<()> {
+        self.connection
+            .execute("UPDATE cli_handoffs SET pid=?3 WHERE conversation_id=?1 AND agent_id=?2", params![conversation, agent, pid])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_cli_handoff(&mut self, conversation: &str, agent: &str) -> Result<()> {
+        self.cli_handoffs.remove(&(conversation.to_owned(), agent.to_owned()));
+        self.connection
+            .execute("DELETE FROM cli_handoffs WHERE conversation_id=?1 AND agent_id=?2", params![conversation, agent])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 把 CLI 里新增的对话补进同席的聊天记录（人说的话记为已送达，成员回复记为已完成）。
+    pub(crate) fn import_cli_turns(&mut self, conversation: &str, agent: &str, turns: &[crate::cli_transcript::Turn]) -> Result<usize> {
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        let mut latest = 0;
+        for turn in turns {
+            let (sender, status) = if turn.user { ("user", "delivered") } else { (agent, "completed") };
+            tx.execute(
+                "INSERT INTO messages(id,conversation_id,sender_id,content,status,created_at,thought) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![Uuid::new_v4().to_string(), conversation, sender, turn.text, status, turn.at, turn.thought],
+            )
+            .map_err(|e| e.to_string())?;
+            latest = latest.max(turn.at);
+        }
+        if latest > 0 {
+            tx.execute("UPDATE conversations SET updated_at=MAX(updated_at,?1) WHERE id=?2", params![latest, conversation])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(turns.len())
+    }
+
+    /// 同席给某个成员定的默认模型（会话没单独选模型时用它，而不是 harness 自己的默认）。
+    pub(crate) fn agent_default_model(&self, agent: &str) -> Option<String> {
+        self.connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key=?1",
+                [format!("default_model:{agent}")],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn set_agent_default_model(&mut self, agent: &str, model: Option<&str>) -> Result<()> {
+        let key = format!("default_model:{agent}");
+        match model {
+            Some(model) => self.connection.execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+                params![key, model],
+            ),
+            None => self.connection.execute("DELETE FROM metadata WHERE key=?1", [key]),
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub(crate) fn guard_cli_handoff(&self, conversation: &str, agent: &str) -> Result<()> {
+        if self
+            .cli_handoffs
+            .contains(&(conversation.to_owned(), agent.to_owned()))
+        {
+            return Err("这条会话正在 CLI 中使用，同席已暂停；关闭 CLI 窗口或点“收回到同席”后再发".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn guard_service_maintenance(&self, agent: &str) -> Result<()> {
         if self.service_maintenance.contains(agent) {
             return Err("该代理正在维护，请稍后再试".into());
@@ -1239,7 +1579,7 @@ mod tests {
         run.status = "completed".into();
         store.checkpoint(&run, "旧回复", "").unwrap();
         let old = store.detail(&room.id).unwrap();
-        store.connection.execute_batch("ALTER TABLE sessions DROP COLUMN model; ALTER TABLE sessions DROP COLUMN reasoning_effort; DROP INDEX one_active_agent; CREATE UNIQUE INDEX one_active_codex ON runs(agent_id) WHERE status IN ('starting','running','cancelling'); PRAGMA user_version=2;").unwrap();
+        store.connection.execute_batch("ALTER TABLE sessions DROP COLUMN model; ALTER TABLE sessions DROP COLUMN reasoning_effort; DROP INDEX IF EXISTS one_active_agent; DROP INDEX IF EXISTS one_active_agent_conversation; CREATE UNIQUE INDEX one_active_codex ON runs(agent_id) WHERE status IN ('starting','running','cancelling'); PRAGMA user_version=2;").unwrap();
         let store = Store::initialize(store.connection, PathBuf::from(":memory:")).unwrap();
         let migrated = store.detail(&room.id).unwrap();
         assert_eq!(
@@ -1428,6 +1768,179 @@ mod tests {
             .unwrap()
     }
 
+    /// 把当前库退回 v17 的样子：约束里去掉 Claude、删掉 Claude 私聊。
+    fn downgrade_to_v17(store: &Store) {
+        let tables: Vec<(String, String)> = store
+            .connection
+            .prepare(
+                "SELECT name,sql FROM sqlite_schema WHERE type='table' AND sql LIKE '%claude-win%'",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(!tables.is_empty());
+        let version: i64 = store
+            .connection
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .unwrap();
+        store
+            .connection
+            .execute("DELETE FROM conversations WHERE title='与 Claude 私聊'", [])
+            .unwrap();
+        store
+            .connection
+            .execute_batch("PRAGMA writable_schema=ON;")
+            .unwrap();
+        for (name, sql) in tables {
+            store
+                .connection
+                .execute(
+                    "UPDATE sqlite_schema SET sql=?1 WHERE type='table' AND name=?2",
+                    params![sql.replace(",'claude-win'", ""), name],
+                )
+                .unwrap();
+        }
+        store
+            .connection
+            .execute_batch(&format!(
+                "PRAGMA schema_version={}; PRAGMA writable_schema=OFF; PRAGMA user_version=17;",
+                version + 1
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn dragged_order_persists_and_only_permutes_the_visible_subset() {
+        let mut store = memory();
+        let ids = |store: &Store| -> Vec<String> {
+            store
+                .list("", false)
+                .unwrap()
+                .into_iter()
+                .map(|room| room.id)
+                .collect()
+        };
+        let before = ids(&store);
+        // 把最后一个拖到最前。
+        let mut moved = before.clone();
+        let last = moved.pop().unwrap();
+        moved.insert(0, last.clone());
+        store.set_conversation_order(&moved).unwrap();
+        assert_eq!(ids(&store), moved);
+        // 新消息不再把会话顶上去：手动顺序优先于最近活动。
+        message(&mut store, &moved[3], "有新消息");
+        assert_eq!(ids(&store), moved);
+        // 只重排一个子集（例如筛选后的两项互换），其他位置不动。
+        let subset = vec![moved[4].clone(), moved[1].clone()];
+        store.set_conversation_order(&subset).unwrap();
+        let mut expected = moved.clone();
+        expected.swap(1, 4);
+        assert_eq!(ids(&store), expected);
+        // 新建的会话出现在最前。
+        let fresh = direct(&mut store, "新会话");
+        assert_eq!(ids(&store)[0], fresh.id);
+        assert!(store
+            .set_conversation_order(&[fresh.id.clone(), fresh.id.clone()])
+            .is_err());
+        assert!(store.set_conversation_order(&["missing".into()]).is_err());
+    }
+
+    #[test]
+    fn v18_upgrade_admits_claude_without_touching_existing_rows() {
+        let root = std::env::temp_dir().join(format!("agent-hub-v18-{}", Uuid::new_v4()));
+        let path = root.join("hub.db");
+        let mut store = Store::open(&path).unwrap();
+        let room = direct(&mut store, "旧私聊");
+        let run = store
+            .begin_agent_run(&room.id, &Uuid::new_v4().to_string(), "旧问题", "codex-win")
+            .unwrap();
+        store
+            .append_tool_event(
+                &run,
+                &RunToolEvent {
+                    event_id: "tool-1".into(),
+                    kind: "read".into(),
+                    title: "读取".into(),
+                    input: None,
+                    output: Some("内容".into()),
+                    status: "completed".into(),
+                    created_at: now(),
+                },
+            )
+            .unwrap();
+        downgrade_to_v17(&store);
+        let rejected = store.connection.execute(
+            "UPDATE runs SET agent_id='claude-win' WHERE id=?1",
+            [&run.id],
+        );
+        assert!(rejected.is_err(), "v17 约束应拒绝 Claude");
+        let before = store.list("", false).unwrap().len();
+        drop(store);
+
+        let mut store = Store::open(&path).unwrap();
+        let count = |sql: &str| -> i64 {
+            store
+                .connection
+                .query_row(sql, [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION);
+        assert_eq!(count("SELECT COUNT(*) FROM runs"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM run_tool_events"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sqlite_schema WHERE sql LIKE '%''dsh-win''%' AND sql NOT LIKE '%''claude-win''%'"),
+            0
+        );
+        let rooms = store.list("", false).unwrap();
+        assert_eq!(rooms.len(), before + 1);
+        let claude = rooms
+            .iter()
+            .find(|room| room.members == ["claude-win"])
+            .expect("升级后应有与 Claude 的私聊");
+        // 约束已放宽：Claude 的运行记录可以写入。
+        store
+            .begin_agent_run(
+                &claude.id,
+                &Uuid::new_v4().to_string(),
+                "你好",
+                "claude-win",
+            )
+            .unwrap();
+        let five = [
+            "codex-win",
+            "hermes-win",
+            "dsh-win",
+            "claude-win",
+            "albion-wsl",
+        ]
+        .map(String::from);
+        store.create("一家五口", "group", &five).unwrap();
+        assert!(std::fs::read_dir(root.join("backups"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("hub-schema-v17-")));
+        drop(store);
+
+        // 再次打开不会重复补私聊。
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .list("", false)
+                .unwrap()
+                .iter()
+                .filter(|room| room.members == ["claude-win"])
+                .count(),
+            1
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn native_run_promotion_is_idempotent_and_rejects_payload_drift() {
         let mut store = memory();
@@ -1610,7 +2123,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            16
+            SCHEMA_VERSION
         );
         let room = direct(&mut store, "升级后");
         assert!(store
@@ -1633,11 +2146,11 @@ mod tests {
     }
 
     #[test]
-    fn seeds_four_private_and_one_technical_group() {
+    fn seeds_five_private_and_one_technical_group() {
         let store = memory();
         let rooms = store.list("", false).unwrap();
-        assert_eq!(rooms.len(), 5);
-        assert_eq!(rooms.iter().filter(|room| room.kind == "direct").count(), 4);
+        assert_eq!(rooms.len(), 6);
+        assert_eq!(rooms.iter().filter(|room| room.kind == "direct").count(), 5);
         assert_eq!(
             rooms
                 .iter()
@@ -1663,7 +2176,7 @@ mod tests {
         let detail = store.detail(&room.id).unwrap();
         assert_eq!(detail.messages[0].content, "恢复后仍应存在");
         assert_eq!(detail.sessions[0].session_key, key);
-        assert_eq!(store.list("", false).unwrap().len(), 6);
+        assert_eq!(store.list("", false).unwrap().len(), 7);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1856,5 +2369,20 @@ mod tests {
         assert!(store.detail(&room.id).unwrap().sessions[0]
             .native_session_id
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod thought_mark_tests {
+    use super::push_thought;
+
+    #[test]
+    fn marks_where_each_thought_segment_starts_in_the_reply() {
+        let mut thought = String::new();
+        push_thought(&mut thought, "", "先想。");
+        push_thought(&mut thought, "", "再想。");
+        push_thought(&mut thought, "答😀", "接着想。");
+        push_thought(&mut thought, "答😀", "还在想。");
+        assert_eq!(thought, "先想。再想。\u{1e}3\u{1f}接着想。还在想。");
     }
 }

@@ -73,7 +73,10 @@ pub fn post(connection: &Connection, run: &str, input: &Input, mode: &str) -> Re
         rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "问题数据库忙")?;
     let (room,agent,message):(String,String,String)=tx.query_row("SELECT r.conversation_id,r.agent_id,r.assistant_message_id FROM runs r JOIN conversations c ON c.id=r.conversation_id WHERE r.id=?1 AND r.discussion_id IS NULL AND c.kind='direct' AND c.archived=0 AND (r.status IN ('starting','running') OR (?2='deferred' AND r.status IN ('completed','succeeded')))",params![run,mode],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|_|"问题归属读取失败")?.ok_or("当前私聊任务不可提问")?;
-    if !matches!(agent.as_str(), "codex-win" | "hermes-win" | "dsh-win") {
+    if !matches!(
+        agent.as_str(),
+        "codex-win" | "hermes-win" | "dsh-win" | "claude-win"
+    ) {
         return Err("此成员尚未接入私聊问答".into());
     }
     let id = Uuid::new_v4().to_string();
@@ -116,7 +119,7 @@ impl Store {
         rows
     }
     pub fn pending_chat_questions(&self) -> Result<Vec<Pending>> {
-        let mut query=self.connection.prepare("SELECT q.id,q.conversation_id,q.agent_id,p.group_conversation_id,'chat' FROM chat_questions q LEFT JOIN project_agent_chats p ON p.conversation_id=q.conversation_id WHERE q.status='pending' UNION ALL SELECT id,conversation_id,agent_id,conversation_id,'project' FROM project_questions WHERE status='pending'").map_err(|_|"待答提示读取失败")?;
+        let mut query=self.connection.prepare("SELECT q.id,q.conversation_id,q.agent_id,p.group_conversation_id,'chat' FROM chat_questions q LEFT JOIN project_agent_chats p ON p.conversation_id=q.conversation_id WHERE q.status='pending' UNION ALL SELECT q.id,q.conversation_id,q.agent_id,q.conversation_id,CASE WHEN a.activity='coordinate' THEN 'coordination' ELSE 'project' END FROM project_questions q LEFT JOIN project_attempts a ON a.id=q.attempt_id WHERE q.status='pending'").map_err(|_|"待答提示读取失败")?;
         let rows = query
             .query_map([], |row| {
                 Ok(Pending {
@@ -172,7 +175,7 @@ impl Store {
         if record.discussion_id.is_some()
             || !matches!(
                 record.agent_id.as_str(),
-                "codex-win" | "hermes-win" | "dsh-win"
+                "codex-win" | "hermes-win" | "dsh-win" | "claude-win"
             )
         {
             return Ok(());

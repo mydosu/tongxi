@@ -11,6 +11,7 @@ from playwright.sync_api import sync_playwright, expect
 from verify_model_provider_ui import MOCK
 
 ROOT=Path(__file__).resolve().parents[1]
+PORT=1424
 checks=[]
 
 def check(name,condition=True):
@@ -18,19 +19,19 @@ def check(name,condition=True):
     checks.append(name); print('PASS '+name,flush=True)
 
 def main():
-    server=subprocess.Popen(['node',str(ROOT/'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port','1420','--strictPort'],cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW)
+    server=subprocess.Popen(['node',str(ROOT/'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port',str(PORT),'--strictPort'],cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW)
     success=False
     try:
         for _ in range(60):
             try:
-                urllib.request.urlopen('http://127.0.0.1:1420',timeout=.3).close();break
+                urllib.request.urlopen(f'http://127.0.0.1:{PORT}',timeout=.3).close();break
             except OSError: time.sleep(.2)
         with sync_playwright() as p:
             browser=p.chromium.launch(headless=True)
             page=browser.new_page(viewport={'width':1440,'height':1000})
             errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
             page.add_init_script(MOCK)
-            page.goto('http://127.0.0.1:1420',wait_until='networkidle')
+            page.goto(f'http://127.0.0.1:{PORT}',wait_until='domcontentloaded')
             expect(page.locator('[data-project-module]')).to_have_count(5)
             check('sidebar has team, progress, and three members')
             parent=page.locator('[data-conversation="provider-test"]')
@@ -48,6 +49,7 @@ def main():
             page.locator('#project-member-settings button.primary').click()
             expect(page.locator('#modal')).not_to_be_visible()
             check('central dialog saves all project member choices',page.evaluate("__providerDemo.chats['project-chat-dsh-win'].sessions[0].model==='[\"route-b\",\"model-two\"]'"))
+            check('legacy project settings fixture saves the default coordinator independently',page.evaluate("__coordinatorUpdate?.agent==='hermes-win' && __coordinatorUpdate?.model===null && __coordinatorUpdate?.effort===null && __providerDemo.detail.project_roles.plan.agent==='codex-win'"))
             page.fill('#message-input','Codex规划，DSH执行，Hermes验收')
             page.locator('#message-input').press('Enter')
             page.wait_for_function('__collaborationCalls===1')
@@ -89,7 +91,11 @@ def main():
             check('no JavaScript errors',not errors)
             browser.close();success=True
     finally:
-        server.terminate();server.wait(timeout=10)
+        server.terminate()
+        try: server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
         (ROOT/'artifacts/project-v17-ui.json').write_text(json.dumps({'success':success,'passed':len(checks),'checks':checks},ensure_ascii=False,indent=2),encoding='utf-8')
 
 if __name__=='__main__': main()
