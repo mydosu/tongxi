@@ -98,6 +98,18 @@ fn discover_node() -> Option<PathBuf> {
         .or_else(crate::dsh::discover)
 }
 
+/// 同席若是从某个 Claude Code 里启动的，会带着它的 CLAUDE_CODE_* 标记；Claude 继承后会把自己
+/// 当成嵌套子会话而不保存对话记录，原生会话就恢复不了，CLI 移交也导不回来。
+pub(crate) fn nested_session_markers() -> Vec<std::ffi::OsString> {
+    std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            name.starts_with("CLAUDE_CODE_") || name == "CLAUDECODE"
+        })
+        .collect()
+}
+
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
@@ -121,6 +133,9 @@ impl Runtime {
             .arg(data)
             .env_remove("AGENT_HUB_COORDINATOR_MODE")
             .env_remove("AGENT_HUB_COORDINATOR_INSTRUCTION");
+        for name in nested_session_markers() {
+            command.env_remove(name);
+        }
         Ok(command)
     }
     pub(crate) fn coordinator_client(&self, directory: &Path) -> Result<Arc<Client>> {
