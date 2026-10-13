@@ -182,7 +182,7 @@ pub(crate) fn launch(
     };
     let command = resume_command(agent, &target.native, executable)?;
     let script = format!(
-        "$Host.UI.RawUI.WindowTitle = {}; {command}; if ($LASTEXITCODE) {{ Read-Host 'CLI 异常退出，按回车关闭窗口并回到同席' }}",
+        "$Host.UI.RawUI.WindowTitle = {}; Get-ChildItem Env: | Where-Object {{ $_.Name -like 'CLAUDE_CODE_*' -or $_.Name -eq 'CLAUDECODE' }} | Remove-Item; {command}; if ($LASTEXITCODE) {{ Read-Host 'CLI 异常退出，按回车关闭窗口并回到同席' }}",
         quote(&target.title)
     );
     let encoded = base64::engine::general_purpose::STANDARD.encode(
