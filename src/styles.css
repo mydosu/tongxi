@@ -39,11 +39,26 @@ body { margin: 0; }
 .project-question-answer { margin-top: 10px; align-self: flex-start; }
 .project-member-settings-row select { min-width: 0; width: 100%; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; color: #5b6879; padding: 6px; background: #fff; }
 .project-member-settings-row small { flex-basis: 100%; color: #9da7b5; font-size: 10px; }
+.project-planner-settings { display: grid; gap: 8px; border: 1px solid #dfe6ef; border-radius: 10px; padding: 12px 14px 14px; margin: 2px 0 16px; background: #f7f9fc; }
+.project-planner-settings legend { color: #506781; font-size: 13px; font-weight: 600; padding: 0 5px; }
+.project-planner-settings label { display: grid; gap: 6px; color: #78879b; font-size: 11px; }
+.project-planner-settings select { width: 100%; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; color: #46566b; padding: 6px 9px; background: #fff; }
+.project-planner-settings small { color: #95a1b1; font-size: 11px; }
+.project-coordinator-settings { display: grid; gap: 10px; border: 1px solid #dbe5ef; border-radius: 12px; padding: 12px 14px 16px; margin: 2px 0 18px; background: #f4f7fb; }
+.project-coordinator-settings legend { font-weight: 600; color: #4b657f; font-size: 14px; padding: 0 5px; }
+.project-coordinator-settings label { display: grid; gap: 6px; color: #78879b; font-size: 11px; min-width: 0; }
+.project-coordinator-settings select { width: 100%; min-width: 0; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; background: #fff; padding: 6px 8px; color: #46566b; }
+.project-coordinator-settings [data-coordinator-model-controls] { display: flex; flex-wrap: wrap; gap: 10px; }
+.project-coordinator-settings [data-coordinator-model-controls] label { flex: 1 1 130px; }
+.project-coordinator-settings small { color: #8a9bb0; font-size: 11px; line-height: 1.6; }
 @media(max-width:1050px) { .project-progress-content { padding: 22px; } .project-member-status-grid { gap: 8px; } .project-member-status { padding: 13px 10px; gap: 8px; } }
 .message-context-menu { position: fixed; z-index: 100; min-width: 190px; padding: 6px; border: 1px solid #e0e5ed; border-radius: 9px; background: #fff; box-shadow: 0 8px 28px #28344826; }
 .message-context-menu button { width: 100%; padding: 9px 10px; text-align: left; color: #ab6659; font-size: 13px; border-radius: 5px; }
 .message-context-menu button:hover { background: #faf1ef; }
 .message-context-menu [data-message-copy] { color: #536277; }
+.conversation-context-menu { min-width: 140px; }
+.conversation-context-menu button { color: #536277; }
+.conversation-context-menu button.danger { color: #ab6659; }
 .message-context-menu small { display: block; padding: 2px 10px 6px; color: #96a0ae; font-size: 10px; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; border: none; color: inherit; background: none; }
@@ -95,6 +110,15 @@ body.maximized .resize-edge { display: none; }
 .conversation-list { overflow: auto; flex: 1; margin: 0 -7px; padding: 0 7px 16px; }
 .conversation { display: flex; width: 100%; align-items: center; gap: 10px; text-align: left; border-radius: 10px; padding: 13px 10px; margin-bottom: 5px; border: 1px solid transparent; }
 .conversation-branch { margin-bottom: 5px; }
+.conversation-item { position: relative; }
+.inline-rename { width: 100%; min-width: 0; font: inherit; color: inherit; padding: 2px 6px; margin: -3px -7px; border: 1px solid #b9bec6; border-radius: 6px; background: #fff; outline: none; }
+.inline-rename:focus { border-color: #545b66; box-shadow: 0 0 0 2px #545b6622; }
+.chat-heading h1 { cursor: default; }
+.conversation-item.dragging { opacity: .45; }
+body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !important; user-select: none; }
+.conversation-item.drop-before::before, .conversation-item.drop-after::after { content: ''; position: absolute; left: 8px; right: 8px; height: 2px; border-radius: 2px; background: #545b66; pointer-events: none; }
+.conversation-item.drop-before::before { top: -3px; }
+.conversation-item.drop-after::after { bottom: 1px; }
 .conversation-branch-row { display: flex; align-items: center; gap: 2px; }
 .conversation-branch-row > .conversation { flex: 1; min-width: 0; margin: 0; }
 .project-expand { width: 27px; height: 34px; flex: 0 0 auto; border-radius: 7px; color: #858d98; font-size: 17px; }
@@ -120,6 +144,7 @@ body.maximized .resize-edge { display: none; }
 .avatar.green { background: #e2e5e8; color: #59616c; }
 .avatar.blue { background: #e0e9f2; color: #5b7c9f; }
 .avatar.rose { background: #f1e3e1; color: #a77979; }
+.avatar.orange { background: #f4e6dc; color: #b06d45; }
 .avatar.group-avatar { color: #636c79; background: #e2e5e8; }
 .avatar.group-avatar .icon { width: 20px; }
 .avatar.large { width: 45px; height: 45px; font-size: 23px; border-radius: 13px; }
@@ -367,14 +392,14 @@ body.maximized .resize-edge { display: none; }
   *, *::before, *::after { transition: none !important; }
 }
 
-.thought { margin: 8px 2px 6px; font-size: 11px; color: #7b838d; }
+.thought { margin: 8px 2px 6px; font-size: 11px; color: #7b838d; min-width: 0; max-width: 100%; }
 .thought summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px;
   border: 1px solid #e3e5e8; border-radius: 999px; background: #f5f6f8; font-size: 11px; }
 .thought summary::-webkit-details-marker { display: none; }
 .thought summary::before { content: '›'; font-size: 12px; }
 .thought[open] summary::before { content: '⌄'; }
 .thought-body { margin-top: 6px; padding: 9px 11px; border-left: 2px solid #dfe2e6; background: #f7f8fa; border-radius: 0 8px 8px 0;
-  white-space: pre-wrap; line-height: 1.65; max-height: 220px; overflow: auto; color: #6a727c; }
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; box-sizing: border-box; max-width: 100%; line-height: 1.65; max-height: 220px; overflow: auto; color: #6a727c; }
 .message-tool-trace { margin: 7px 2px; color: #7a8491; font-size: 10px; }
 .message-tool-trace > summary { width: fit-content; padding: 4px 8px; border: 1px solid #e4e6e9; border-radius: 999px; background: #f7f8f9; cursor: pointer; list-style: none; }
 .message-tool-trace > summary::-webkit-details-marker, .message-tool-event > summary::-webkit-details-marker { display: none; }
@@ -412,6 +437,12 @@ html[data-hud] .composer-actions { display: flex; align-items: center; gap: 4px;
 /* 浮窗里不需要「发送给 XXX」：Enter 就是发送（和 Hermes 一样，输入栏只留图标）。 */
 html[data-hud] .composer-actions .primary { display: none; }
 html[data-hud] .composer-top { display: none; }
+.hud-grip { display: none; }
+html[data-hud] .hud-grip { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 26px; margin-left: -2px; border-radius: 6px; color: #8d939c; font-size: 15px; line-height: 1; cursor: grab; user-select: none; }
+html[data-hud] .hud-grip:hover { background: #eef0f2; color: #4b5059; }
+html[data-hud] .hud-grip:active { cursor: grabbing; }
+html[data-hud] .project-agent-chat-composer { cursor: grab; }
+html[data-hud] .project-agent-chat-composer textarea { cursor: text; }
 html[data-hud] .composer-bottom > span { display: none; }
 /* 正文：贴合自己的内容高度（这就是「不占位置」），超出才滚动。min-height 必须是 0——
    写死高度会让窗口拖小时它顶住不缩，思考块和回复被直接裁掉（真 bug）。 */
@@ -441,12 +472,11 @@ html[data-hud] #hud-model:hover { background: #f1f2f4; color: #2c3036; }
 /* 浮窗里不摆草稿按钮：那是主窗口的事，这里只留停止与发送。 */
 html[data-hud] #save-message { display: none; }
 /* 退出按钮就嵌在输入栏最右边（不是飘在角上的 ×）。 */
-#hud-exit { display: none; }
-html[data-hud] #hud-exit { display: inline-flex; align-items: center; justify-content: center;
+[data-hud-exit] { display: none; }
+html[data-hud] [data-hud-exit] { display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 13px; line-height: 1; color: #6b747f;
   background: transparent; border: 1px solid #e3e5e8; }
-html[data-hud] #hud-exit:hover { background: #f1f2f4; color: #2c3036; }
-
+html[data-hud] [data-hud-exit]:hover { background: #f1f2f4; color: #2c3036; }
 /* 原生会话列表（只读） */
 .native-session-list { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow: auto; margin-top: 6px; }
 .native-session { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #e3e5e8; border-radius: 10px; background: #fff; }
@@ -489,6 +519,7 @@ html[data-hud] .message-tool-event { border-color: rgb(220 230 245 / .2); }
 .attachment-picker:hover { background: #f2f5f9; color: #3e5575; }
 .attachment-tray, .message-attachments { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .attachment-tray { max-height: 140px; overflow: auto; padding: 4px 0; }
+form.drop-target { outline: 2px dashed #8aa0bd; outline-offset: -4px; }
 .attachment-tray[hidden] { display: none; }
 .message-attachments { margin: 8px 0; }
 .attachment-file { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 260px; padding: 6px 9px; border: 1px solid #e2e7ee; border-radius: 9px; color: #617189; background: #f7f9fc; }
@@ -516,3 +547,34 @@ html[data-hud] .agent-transcript-entry { padding: 0; }
 html[data-hud] .agent-turn-meta, html[data-hud] .agent-turn-actions { display: none; }
 html[data-hud] .agent-turn-text { color: #fff; font-size: 14.5px; }
 html[data-hud] .agent-user-entry { background: transparent; border: 0; color: #f0c04a; }
+
+.project-coordinator-status{display:flex;align-items:center;gap:12px;padding:16px 20px;margin-bottom:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel,#fff)}
+.project-coordinator-status>div{display:flex;flex-direction:column;gap:4px;flex:1}.project-coordinator-status span,.project-coordinator-status small{color:var(--muted);font-size:12px}
+
+/* HUD 输入栏：和 Hermes 一样是一条圆角胶囊——把手、附件、输入、模型、退出排成一行。
+   按钮区用 display:contents 摊平，再用 order 统一排序；附件托盘有内容时单独换到下一行。 */
+html[data-hud] .composer, html[data-hud] .project-agent-chat-composer { display: flex; flex-direction: row; min-height: 44px; padding: 6px 8px 6px 6px; gap: 6px;
+  flex-wrap: wrap; align-items: center; border-radius: 22px; border: 1px solid #e3e5e8; background: rgb(255 255 255 / .94);
+  box-shadow: 0 6px 22px rgb(20 24 30 / .14); backdrop-filter: blur(12px); }
+html[data-hud] .composer-bottom, html[data-hud] .composer-actions, html[data-hud] .project-chat-composer-bottom { display: contents; }
+html[data-hud] .hud-grip { order: 0; }
+html[data-hud] .composer .attachment-picker, html[data-hud] .project-agent-chat-composer .attachment-picker { order: 1; }
+html[data-hud] .composer textarea, html[data-hud] .project-agent-chat-composer textarea { order: 2; flex: 1 1 0; min-width: 0; width: auto;
+  height: 30px; min-height: 30px; max-height: 96px; margin: 0; padding: 4px 2px; border: 0; outline: none; resize: none;
+  background: transparent; font-size: 15px; line-height: 1.5; box-shadow: none; }
+html[data-hud] #hud-model, html[data-hud] .composer [id^="cancel-"] { order: 3; }
+html[data-hud] [data-hud-exit] { order: 4; }
+html[data-hud] .composer .attachment-tray, html[data-hud] .project-agent-chat-composer .attachment-tray { order: 5; flex-basis: 100%; }
+html[data-hud] .composer .attachment-picker, html[data-hud] .project-agent-chat-composer .attachment-picker,
+html[data-hud] #hud-model, html[data-hud] [data-hud-exit] { width: 30px; height: 30px; border: 0; border-radius: 50%;
+  color: #5f6670; background: transparent; font-size: 16px; }
+html[data-hud] .composer .attachment-picker:hover, html[data-hud] .project-agent-chat-composer .attachment-picker:hover,
+html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { background: #eef0f2; color: #2c3036; }
+/* 停止按钮：和各 CLI 的中断一样醒目，回复进行中常驻在发送按钮旁。 */
+.stop-reply { display: inline-flex; align-items: center; gap: 6px; color: #b4473a; border-color: #e6c3be; }
+.stop-reply:hover:not(:disabled) { background: #fbefed; }
+.stop-glyph { width: 8px; height: 8px; border-radius: 2px; background: currentColor; flex: none; }
+.stop-reply[hidden] { display: none; }
+/* KaTeX 公式：不继承气泡的 pre-wrap，长公式在自身范围内横向滚动。 */
+.bubble .katex, .agent-turn-text .katex { white-space: normal; font-size: 1.05em; }
+.bubble .katex-display, .agent-turn-text .katex-display { margin: 6px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }

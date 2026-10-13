@@ -3,7 +3,7 @@ use crate::project_native::{Notify, Runner};
 use crate::project_store::{self, Attempt, Plan, Project, Roles, Workflow};
 use crate::project_tools::Broker;
 use crate::store::Store;
-use crate::{codex, dsh, hermes};
+use crate::{claude, codex, dsh, hermes};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -94,12 +94,7 @@ pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> 
         !project_store::EXECUTOR_AGENTS.contains(&task.agent_id.as_str())
             || !available_agents.iter().any(|agent| agent == &task.agent_id)
     }) {
-        let name = match task.agent_id.as_str() {
-            "codex-win" => "Codex",
-            "hermes-win" => "Hermes",
-            "dsh-win" => "DSH",
-            _ => task.agent_id.as_str(),
-        };
+        let name = crate::store::agent_name(&task.agent_id);
         return Err(format!(
             "方案把任务「{}」分给了{}，但该成员当前未连接或不在本群；请连接后重试规划",
             task.title, name
@@ -108,13 +103,26 @@ pub(crate) fn validate_plan_agents(plan: &Plan, available_agents: &[String]) -> 
     Ok(())
 }
 
+/// 一次启动或继续协作的执行时长上限（等待用户回答的时间不计入）。真实验证常要跑整轮模型对话，
+/// 默认 4 小时；可用 AGENT_HUB_PROJECT_BUDGET_MINUTES 调整（1—1440 分钟）。
+pub(crate) fn workflow_budget() -> Duration {
+    let minutes = std::env::var("AGENT_HUB_PROJECT_BUDGET_MINUTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| (1..=1440).contains(value))
+        .unwrap_or(240);
+    Duration::from_secs(minutes * 60)
+}
+
 pub struct Runtime {
-    store: Arc<Mutex<Store>>,
-    codex: Arc<codex::Runtime>,
-    hermes: Arc<hermes::Runtime>,
-    dsh: Arc<dsh::Runtime>,
-    native: Arc<Runner>,
-    notify: Notify,
+    pub(crate) store: Arc<Mutex<Store>>,
+    pub(crate) codex: Arc<codex::Runtime>,
+    pub(crate) hermes: Arc<hermes::Runtime>,
+    pub(crate) dsh: Arc<dsh::Runtime>,
+    pub(crate) claude: Arc<claude::Runtime>,
+    pub(crate) native: Arc<Runner>,
+    pub(crate) notify: Notify,
+    pub(crate) coordinators: Arc<crate::coordinator_clients::Pool>,
     stopping: AtomicBool,
 }
 #[derive(Clone, Serialize)]
@@ -243,8 +251,16 @@ impl Runtime {
         codex: Arc<codex::Runtime>,
         hermes: Arc<hermes::Runtime>,
         dsh: Arc<dsh::Runtime>,
+        claude: Arc<claude::Runtime>,
     ) -> Arc<Self> {
         let revision = Arc::new(AtomicU64::new(0));
+        let coordinators = crate::coordinator_clients::Pool::new(
+            store.clone(),
+            codex.clone(),
+            hermes.clone(),
+            dsh.clone(),
+            claude.clone(),
+        );
         let emit_store = store.clone();
         let notify: Notify = Arc::new(move |id| {
             let result = emit_store.lock().unwrap().workflow(id);
@@ -262,25 +278,52 @@ impl Runtime {
             let codex = codex.clone();
             let hermes = hermes.clone();
             let dsh = dsh.clone();
-            Arc::new(move |agent: &str| match agent {
-                "codex-win" => codex.shared_project_client(),
-                "hermes-win" => hermes.shared_project_client(),
-                "dsh-win" => dsh.shared_project_client(),
-                _ => Err("不是项目执行成员".into()),
+            let claude = claude.clone();
+            let managers = coordinators.clone();
+            Arc::new(move |attempt: &Attempt| {
+                if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY)
+                {
+                    return managers.client(attempt);
+                }
+                match attempt.agent_id.as_str() {
+                    "codex-win" => codex.shared_project_client(),
+                    "hermes-win" => hermes.shared_project_client(),
+                    "dsh-win" => dsh.shared_project_client(),
+                    "claude-win" => claude.shared_project_client(),
+                    _ => Err("不是项目执行成员".into()),
+                }
             })
         };
         let session_ready = {
             let dsh = dsh.clone();
-            Arc::new(move |agent: &str, session: &str| {
-                if agent == "dsh-win" {
+            let claude = claude.clone();
+            let managers = coordinators.clone();
+            Arc::new(move |attempt: &Attempt, session: &str| {
+                if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY)
+                {
+                    managers.ready(attempt, session);
+                } else if attempt.agent_id == "dsh-win" {
                     dsh.shared_project_loaded(session);
+                } else if attempt.agent_id == "claude-win" {
+                    claude.shared_project_loaded(session);
                 }
             })
         };
         let session_loaded = {
             let dsh = dsh.clone();
-            Arc::new(move |agent: &str, session: &str| {
-                agent == "dsh-win" && dsh.project_session_is_loaded(session)
+            let claude = claude.clone();
+            let managers = coordinators.clone();
+            Arc::new(move |attempt: &Attempt, session: &str| {
+                if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY)
+                {
+                    managers.loaded(attempt, session)
+                } else {
+                    match attempt.agent_id.as_str() {
+                        "dsh-win" => dsh.project_session_is_loaded(session),
+                        "claude-win" => claude.project_session_is_loaded(session),
+                        _ => false,
+                    }
+                }
             })
         };
         Arc::new(Self {
@@ -288,6 +331,8 @@ impl Runtime {
             codex,
             hermes,
             dsh,
+            claude,
+            coordinators,
             native: Runner::new(
                 clients,
                 session_ready,
@@ -299,14 +344,15 @@ impl Runtime {
             stopping: AtomicBool::new(false),
         })
     }
-    fn snapshot(&self, agent: &str) -> codex::RuntimeSnapshot {
+    pub(crate) fn snapshot(&self, agent: &str) -> codex::RuntimeSnapshot {
         match agent {
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
+            "claude-win" => self.claude.snapshot(),
             _ => self.codex.snapshot(),
         }
     }
-    fn default_roles_for_room(&self, room: &str) -> Result<Roles> {
+    pub(crate) fn default_roles_for_room(&self, room: &str) -> Result<Roles> {
         let native_defaults = project_store::EXECUTOR_AGENTS
             .iter()
             .map(|agent| {
@@ -346,9 +392,9 @@ impl Runtime {
             })
         };
         Ok(Roles {
-            plan: choose(&["codex-win", "hermes-win", "dsh-win"])?,
-            implement: choose(&["dsh-win", "codex-win", "hermes-win"])?,
-            review: choose(&["hermes-win", "codex-win", "dsh-win"])?,
+            plan: choose(&["codex-win", "hermes-win", "claude-win", "dsh-win"])?,
+            implement: choose(&["dsh-win", "codex-win", "claude-win", "hermes-win"])?,
+            review: choose(&["hermes-win", "codex-win", "claude-win", "dsh-win"])?,
         })
     }
 
@@ -387,12 +433,22 @@ impl Runtime {
         store.detail(room)
     }
     /// 建工作流并写入角色配置：不启动后台线程，由调用方决定两段式还是兼容的一段式。
-    fn create(
+    pub(crate) fn create(
         self: &Arc<Self>,
         room: &str,
         message: &str,
         content: &str,
         roles: &Roles,
+    ) -> Result<(Workflow, bool)> {
+        self.create_with_connections(room, message, content, roles, true)
+    }
+    pub(crate) fn create_with_connections(
+        self: &Arc<Self>,
+        room: &str,
+        message: &str,
+        content: &str,
+        roles: &Roles,
+        require_connected: bool,
     ) -> Result<(Workflow, bool)> {
         if self.stopping.load(Ordering::SeqCst) {
             return Err("软件正在关闭".into());
@@ -437,7 +493,7 @@ impl Runtime {
         if !crate::project_worktree::is_repo(&project_root) {
             return Err("项目必须是 Git 仓库，不能启动项目协作".into());
         }
-        if existing.is_none() {
+        if require_connected && existing.is_none() {
             for agent in members.iter().filter(|agent| chosen.contains(agent)) {
                 if self.snapshot(agent).connection != "connected" {
                     return Err("请先连接三个角色选定的成员，再启动项目协作".into());
@@ -463,13 +519,13 @@ impl Runtime {
     }
 
     /// 后台跑一段流水线；出错时统一停原生进程、标记 attempt、收尾工作流。
-    fn spawn<F>(self: &Arc<Self>, id: String, work: F)
+    pub(crate) fn spawn<F>(self: &Arc<Self>, id: String, work: F)
     where
         F: FnOnce(&Arc<Self>, Instant) -> Result<()> + Send + 'static,
     {
         let runtime = self.clone();
         std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(1800);
+            let deadline = Instant::now() + workflow_budget();
             if let Err(error) = work(&runtime, deadline) {
                 runtime.abort(&id, &error);
             }
@@ -478,10 +534,15 @@ impl Runtime {
 
     fn abort(&self, id: &str, error: &str) {
         self.native.cancel(id);
+        self.coordinators.stop(id);
         let interrupted = self.native.cancelled(id)
             || error.contains("用户单独中断")
             || error.contains("依赖它的任务等待恢复");
         let mut store = self.store.lock().unwrap();
+        if store.coordination(id).ok().flatten().is_some() {
+            let _ = store.coordination_status(id, if interrupted { "paused" } else { "failed" });
+            let _=store.connection.execute("UPDATE project_tasks SET status=?1,error=?2 WHERE workflow_id=?3 AND status='running'",rusqlite::params![if interrupted{"interrupted"}else{"failed"},error,id]);
+        }
         if let Ok(attempts) = store.attempts(id) {
             for mut attempt in attempts
                 .into_iter()
@@ -504,6 +565,18 @@ impl Runtime {
 
     /// 缺省角色的兼容壳：走「规划后立刻按缺省参数确认并执行」的一段式。
     pub fn start(self: &Arc<Self>, room: &str, message: &str, content: &str) -> Result<Workflow> {
+        let paused = self
+            .store
+            .lock()
+            .unwrap()
+            .workflows(room)?
+            .into_iter()
+            .find(|job| matches!(job.status.as_str(), "failed" | "interrupted"));
+        let legacy_resume = Self::resume_directive(content)
+            && paused.is_some_and(|job| job.coordination.is_none() && job.plan.is_some());
+        if !legacy_resume {
+            return self.start_coordinated(room, message, content);
+        }
         if Self::resume_directive(content) {
             let paused = self
                 .store
@@ -743,6 +816,9 @@ impl Runtime {
     }
 
     fn continue_auto_as(self: &Arc<Self>, id: &str, executor: Option<&str>) -> Result<Workflow> {
+        if self.store.lock().unwrap().coordination(id)?.is_some() {
+            return self.resume_coordinated(id);
+        }
         let workflow = self.continue_open(id)?;
         if workflow.tasks.is_empty() {
             let mut store = self.store.lock().unwrap();
@@ -853,7 +929,9 @@ impl Runtime {
             if !project_store::EXECUTOR_AGENTS.contains(&agent)
                 || !conversation.members.iter().any(|member| member == agent)
             {
-                return Err("每项任务的执行成员必须是当前群中已连接的 Codex、Hermes 或 DSH".into());
+                return Err(
+                    "每项任务的执行成员必须是当前群中已连接的 Codex、Hermes、DSH 或 Claude".into(),
+                );
             }
             let snapshot = snapshots.get(agent).ok_or("任务成员不是可执行的 Agent")?;
             if snapshot.connection != "connected" {
@@ -884,12 +962,15 @@ impl Runtime {
         // 只写覆盖并保持 planning：真正的状态提升由后台的 execute_work 调 begin_execution 完成。
         store.workflow(id)
     }
-    fn ensure_active(&self, id: &str, deadline: Instant) -> Result<()> {
+    pub(crate) fn ensure_active(&self, id: &str, deadline: Instant) -> Result<()> {
         if self.native.cancelled(id) {
             return Err("项目协作已停止，保留已产生的改动".into());
         }
         if Instant::now() >= deadline + self.store.lock().unwrap().project_wait_duration(id) {
-            return Err("项目协作超过三十分钟上限，请拆分需求后重试".into());
+            return Err(format!(
+                "项目协作超过 {} 分钟执行上限；已有结果与工作树都已保留，可直接继续协作",
+                workflow_budget().as_secs() / 60
+            ));
         }
         Ok(())
     }
@@ -909,12 +990,6 @@ impl Runtime {
             }
             let mut store = self.store.lock().unwrap();
             let workflow = store.workflow(id)?;
-            let chatting=store.connection.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",[agent],|r|r.get::<_,bool>(0)).map_err(|_|"成员状态查询失败")?;
-            if chatting {
-                drop(store);
-                std::thread::sleep(Duration::from_millis(150));
-                continue;
-            }
             if !store
                 .detail(&workflow.conversation_id)?
                 .sessions
@@ -1027,7 +1102,7 @@ impl Runtime {
         {
             if let Some(instruction) = prompt.get("instruction").and_then(Value::as_str) {
                 prompt["instruction"] = json!(format!(
-                    "{instruction}\n\n项目记忆工具 hub_memory_search/hub_memory_read/hub_memory_write 只访问当前项目公共池。开始前按需检索，完成后保存可复用的决策、已验证结果和问题线索；不要保存私聊、完整思考或凭据。记忆服务不可用时继续任务。\n\n需要向用户澄清时调用 hub_ask_user 发布问题，然后停止本轮工具操作并结束回复；框架会等待用户回答后在同一项目会话继续，不要猜答案或让任务直接结束。\n\n本项目通过 MCP 提供团队消息工具：mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox 用于 Agent 私下沟通，并检查团队新增消息/中断通知；mcp__agent_hub__hub_broadcast 用于向用户和团队发布简短公开消息。推理、完整回复和工具过程留在 Agent 专属会话。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
+                    "{instruction}\n\n项目记忆分两层：本项目所有成员共享的公共池，以及只有你自己可见的私有笔记。hub_memory_write 默认写入私有笔记，scope=shared 直接写入公共池；hub_memory_share 把你挑选的私有笔记分享到公共池；hub_memory_search/hub_memory_list/hub_memory_read 访问公共池和你自己的私有笔记。开始前按需检索，完成后把值得团队复用的决策、已验证结果和问题线索写入或分享到公共池；不要保存私聊、完整思考或凭据。记忆服务不可用时继续任务。\n\n需要向用户澄清时调用 hub_ask_user 发布问题，然后停止本轮工具操作并结束回复；框架会等待用户回答后在同一项目会话继续，不要猜答案或让任务直接结束。\n\n本项目通过 MCP 提供团队消息工具：mcp__agent_hub__hub_message 与 mcp__agent_hub__hub_inbox 用于 Agent 私下沟通，并检查团队新增消息/中断通知；mcp__agent_hub__hub_broadcast 用于向用户和团队发布简短公开消息。推理、完整回复和工具过程留在 Agent 专属会话。文件工具为 mcp__agent_hub__hub_list、mcp__agent_hub__hub_read、mcp__agent_hub__hub_write、mcp__agent_hub__hub_edit、mcp__agent_hub__hub_delete。其余工具由成员自己的 CLI 配置提供。"
                 ));
             }
         }
@@ -1174,17 +1249,13 @@ impl Runtime {
             available_agent_ids.push(agent.to_owned());
             available_agents.push(json!({
                 "agent_id": agent,
-                "name": match agent {
-                    "codex-win" => "Codex",
-                    "hermes-win" => "Hermes",
-                    _ => "DSH",
-                },
+                "name": crate::store::agent_name(agent),
                 "default_model": snapshot.default_model,
                 "models": snapshot.models,
             }));
         }
         if available_agents.is_empty() {
-            return Err("本群没有已连接的 Codex、Hermes 或 DSH，无法规划实现任务".into());
+            return Err("本群没有已连接的 Codex、Hermes、DSH 或 Claude，无法规划实现任务".into());
         }
         let attempt = self.begin(id, None, &roles.plan.agent, "plan", deadline)?;
         // 三个 Windows 项目成员都能通过受限的项目 MCP 查看授权文件。
@@ -1340,6 +1411,7 @@ impl Runtime {
                             )?
                         }
                     } else {
+                        self.checkpoint_source(exec.id, exec.root, exec.deadline)?;
                         crate::project_worktree::create(exec.root, &worktree_root, &name, &branch)?
                     };
                     if reuse.is_none() {
@@ -1504,11 +1576,9 @@ impl Runtime {
 
     /// 该成员是否正在执行项目任务（存在活动态 attempt）。供维护锁互斥判断使用。
     pub fn agent_project_busy(&self, agent: &str) -> bool {
-        self.store
-            .lock()
-            .unwrap()
-            .guard_project_agent(agent)
-            .is_err()
+        self.store.lock().unwrap().connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",
+            [agent],|row|row.get::<_,bool>(0)).unwrap_or(true)
     }
     pub fn cancel(&self, id: &str) -> Result<Workflow> {
         let job = self.store.lock().unwrap().cancel_workflow(id)?;
@@ -1520,11 +1590,7 @@ impl Runtime {
         let attempts = {
             let mut store = self.store.lock().unwrap();
             let attempts = store.cancel_agent_attempts(id, agent_id)?;
-            let agent_name = match agent_id {
-                "codex-win" => "Codex",
-                "hermes-win" => "Hermes",
-                _ => "DSH",
-            };
+            let agent_name = crate::store::agent_name(agent_id);
             let _ = store.add_system_team_message(
                 id,
                 &format!(
@@ -1567,6 +1633,7 @@ impl Runtime {
             let _ = self.store.lock().unwrap().cancel_workflow(&job.id);
         }
         self.native.stop();
+        self.coordinators.stop_all();
     }
 }
 

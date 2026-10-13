@@ -78,7 +78,17 @@ class ChatSessions(SessionManager):
 
     def _make_agent(self, **kwargs):
         self._relaxed_db()
+        coordinator = os.environ.get('AGENT_HUB_COORDINATOR_MODE') == '1'
+        if coordinator:
+            kwargs['enabled_toolsets'] = []
+            kwargs['disabled_toolsets'] = []
         agent = super()._make_agent(**kwargs)
+        if coordinator:
+            import types
+            agent.tools = []
+            def reject_tools(_self, *_args, **_kwargs):
+                raise RuntimeError('Coordinator has no project tool permissions')
+            agent._execute_tool_calls = types.MethodType(reject_tools, agent)
         agent._hub_default_reasoning = copy.deepcopy(agent.reasoning_config)
         # 思考块只从流式增量推给 ACP 客户端：profile 里 model.streaming=false 的会话
         # （例如阿尔比恩）非流式请求，Hermes 的非流式兜底又要求「未设 stream_delta_callback」，
@@ -94,6 +104,15 @@ class ChatACP(HermesACPAgent):
         from acp_adapter.model_catalog import encode_model_choice
         state.agent._hub_model_choice = encode_model_choice(result[1], result[2])
         return result
+
+    async def close_session(self, session_id, **kwargs):
+        """把会话移交给 CLI 时卸下内存里的这一份；下次载入从库里重读，接上 CLI 里的新对话。"""
+        manager = self.session_manager
+        with manager._lock:
+            state = manager._sessions.get(session_id)
+            if state is not None and not state.is_running:
+                manager._sessions.pop(session_id, None)
+        return None
 
     async def set_config_option(self, config_id, session_id, value, **kwargs):
         if config_id not in ('reasoning_effort', 'hub_development_digest'):

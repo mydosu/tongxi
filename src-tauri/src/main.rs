@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod quota_reset;
+mod cli_open;
+mod cli_transcript;
 mod acp_transport;
 mod albion;
 mod albion_openai;
@@ -10,15 +13,22 @@ mod attachments;
 mod chat_question_tests;
 mod chat_questions;
 mod chat_text;
+mod claude;
 mod clients;
 mod codex;
 mod conversation_cleanup;
+mod coordinator_clients;
+mod coordinator_policy;
+mod coordinator_store;
+#[cfg(test)]
+mod coordinator_tests;
 mod discussion;
 mod dsh;
 mod group_store;
 mod hermes;
 mod models;
 mod process_scope;
+mod project_coordinator;
 mod project_directives;
 mod project_memory;
 mod project_models;
@@ -165,6 +175,8 @@ async fn open_hud(app: &tauri::AppHandle, directory: &std::path::Path) -> Result
     let hud =
         tauri::WebviewWindowBuilder::new(app, "hud", tauri::WebviewUrl::App("index.html".into()))
             .title("同席 HUD")
+            // 交给网页处理文件拖放（输入框接收资源管理器拖入的文件）。
+            .disable_drag_drop_handler()
             .inner_size(HUD_WIDTH, HUD_HEIGHT)
             .min_inner_size(380.0, 160.0)
             .decorations(false)
@@ -343,6 +355,54 @@ fn cancel_dsh_run(
 }
 
 #[tauri::command]
+fn claude_status(runtime: State<'_, Arc<claude::Runtime>>) -> codex::RuntimeSnapshot {
+    runtime.snapshot()
+}
+#[tauri::command]
+async fn connect_claude(
+    app: tauri::AppHandle,
+    runtime: State<'_, Arc<claude::Runtime>>,
+    lock: State<'_, services::MaintenanceLock>,
+) -> Result<codex::RuntimeSnapshot, String> {
+    let _guard = services::acquire(&app, lock.inner(), claude::AGENT_ID, "connect")?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.connect())
+        .await
+        .map_err(|_| "Claude 连接任务异常".to_string())?
+}
+#[tauri::command]
+async fn disconnect_claude(
+    app: tauri::AppHandle,
+    runtime: State<'_, Arc<claude::Runtime>>,
+    lock: State<'_, services::MaintenanceLock>,
+) -> Result<codex::RuntimeSnapshot, String> {
+    let _guard = services::acquire_shutdown(&app, lock.inner(), claude::AGENT_ID)?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.stop();
+        runtime.snapshot()
+    })
+    .await
+    .map_err(|_| "Claude 停止任务异常".into())
+}
+#[tauri::command]
+fn send_claude_message(
+    runtime: State<'_, Arc<claude::Runtime>>,
+    conversation_id: String,
+    message_id: String,
+    content: String,
+) -> Result<store::RunRecord, String> {
+    runtime.send(&conversation_id, &message_id, &content)
+}
+#[tauri::command]
+fn cancel_claude_run(
+    runtime: State<'_, Arc<claude::Runtime>>,
+    conversation_id: String,
+) -> Result<codex::RuntimeSnapshot, String> {
+    runtime.cancel(&conversation_id)
+}
+
+#[tauri::command]
 fn codex_status(runtime: State<'_, Arc<codex::Runtime>>) -> codex::RuntimeSnapshot {
     runtime.snapshot()
 }
@@ -408,12 +468,13 @@ fn set_session_settings(
     let snapshot = match agent_id.as_str() {
         "codex-win" => app.state::<Arc<codex::Runtime>>().snapshot(),
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
+        "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "albion-wsl" => app.state::<albion::Runtime>().0.snapshot(),
         _ => app.state::<Arc<hermes::Runtime>>().snapshot(),
     };
     if matches!(
         agent_id.as_str(),
-        "codex-win" | "hermes-win" | "dsh-win" | "albion-wsl"
+        "codex-win" | "hermes-win" | "dsh-win" | "claude-win" | "albion-wsl"
     ) && snapshot.connection == "connected"
     {
         models::validate_selection(
@@ -485,6 +546,171 @@ async fn cancel_codex_run(
         .map_err(|_| "取消任务异常".to_string())?
 }
 
+/// 回复进行中插话。Codex（turn/steer）与 Claude（写入运行中会话）原生支持，不打断当前回复；
+/// 其他成员返回 NO_NATIVE_STEER，由界面改为“先打断再发送”。插话成功后作为用户消息存入会话。
+#[tauri::command]
+async fn steer_agent_message(
+    state: State<'_, AppState>,
+    codex: State<'_, Arc<codex::Runtime>>,
+    claude: State<'_, Arc<claude::Runtime>>,
+    agent_id: String,
+    conversation_id: String,
+    message_id: String,
+    content: String,
+) -> Result<store::Message, String> {
+    let (codex, claude) = (codex.inner().clone(), claude.inner().clone());
+    let (room, text) = (conversation_id.clone(), content.clone());
+    tauri::async_runtime::spawn_blocking(move || match agent_id.as_str() {
+        "codex-win" => codex.steer(&room, &text),
+        "claude-win" => claude.steer(&room, &text),
+        _ => Err("NO_NATIVE_STEER".into()),
+    })
+    .await
+    .map_err(|_| "插话异常".to_string())??;
+    with_store(&state, |store| {
+        store.save_delivered_message(&conversation_id, &message_id, &content)
+    })
+}
+
+fn native_snapshot(app: &tauri::AppHandle, agent: &str) -> Result<codex::RuntimeSnapshot, String> {
+    Ok(match agent {
+        "codex-win" => app.state::<Arc<codex::Runtime>>().snapshot(),
+        "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
+        "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
+        "hermes-win" => app.state::<Arc<hermes::Runtime>>().snapshot(),
+        _ => return Err("阿尔比恩运行在 WSL 里，暂不支持在 CLI 中打开".into()),
+    })
+}
+
+fn emit_cli_handoffs(app: &tauri::AppHandle) {
+    let _ = tauri::Emitter::emit(app, "cli-handoffs", list_cli_handoffs(app));
+}
+
+fn list_cli_handoffs(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    let state = app.state::<AppState>();
+    let store = state.store.lock().unwrap();
+    store
+        .cli_handoffs
+        .iter()
+        .map(|(conversation, agent)| serde_json::json!({"conversation_id":conversation,"agent_id":agent}))
+        .collect()
+}
+
+/// 把这条原生会话移交给该成员自己的 CLI：同席暂停使用、卸下已载入的会话，新终端里的 CLI 续上同一条会话。
+/// CLI 窗口关闭后自动收回。回复进行中不移交，免得两边同时写同一条会话。
+#[tauri::command]
+fn open_in_cli(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    agent_id: String,
+) -> Result<(), String> {
+    native_snapshot(&app, &agent_id)?;
+    // 先登记移交（之后不会再开始新回复），再确认当前没有进行中的回复。
+    let target = with_store(&state, |store| {
+        cli_open::begin(store, &state.directory, &conversation_id, &agent_id)
+    })?;
+    let undo = |error: String| {
+        if let Ok(mut store) = state.store.lock() {
+            let _ = store.clear_cli_handoff(&conversation_id, &agent_id);
+        }
+        Err(error)
+    };
+    if native_snapshot(&app, &agent_id)?.runs.iter().any(|run| {
+        run.record.conversation_id == conversation_id
+            && matches!(run.record.status.as_str(), "starting" | "running" | "cancelling")
+    }) {
+        return undo("这条会话正在回复，请等回复结束或停止后再在 CLI 中打开".into());
+    }
+    match agent_id.as_str() {
+        "codex-win" => app.state::<Arc<codex::Runtime>>().release_native(&target.native),
+        "dsh-win" => app.state::<Arc<dsh::Runtime>>().release_native(&target.native),
+        "claude-win" => app.state::<Arc<claude::Runtime>>().release_native(&target.native),
+        _ => app.state::<Arc<hermes::Runtime>>().release_native(&target.native),
+    }
+    let executable = match agent_id.as_str() {
+        "codex-win" => codex::discover_executable(),
+        "claude-win" => claude::discover_executable(),
+        _ => None,
+    };
+    let (window, pid) =
+        match cli_open::launch(&target, &agent_id, executable.as_deref(), &conversation_id) {
+            Ok(launched) => launched,
+            Err(error) => return undo(error),
+        };
+    with_store(&state, |store| {
+        store.set_cli_handoff_pid(&conversation_id, &agent_id, pid)
+    })?;
+    emit_cli_handoffs(&app);
+    watch_cli(app, window, conversation_id, agent_id);
+    Ok(())
+}
+
+/// 等 CLI 窗口关闭，然后收回会话并通知界面。
+fn watch_cli(app: tauri::AppHandle, window: cli_open::Window, conversation_id: String, agent_id: String) {
+    std::thread::spawn(move || {
+        window.wait();
+        let imported = cli_open::finish(&app.state::<AppState>().store, &conversation_id, &agent_id);
+        let _ = tauri::Emitter::emit(
+            &app,
+            "cli-returned",
+            serde_json::json!({"conversation_id":conversation_id,"agent_id":agent_id,"imported":imported}),
+        );
+        emit_cli_handoffs(&app);
+    });
+}
+
+/// 同席启动时：还开着的 CLI 窗口继续盯着；已经关掉的立刻收回（补上 CLI 里的对话）。
+fn restore_cli_handoffs(app: &tauri::AppHandle) {
+    let saved = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| store.saved_cli_handoffs().ok())
+        .unwrap_or_default();
+    for (conversation_id, agent_id, _, pid, _) in saved {
+        match cli_open::Window::attach(pid) {
+            Some(window) => watch_cli(app.clone(), window, conversation_id, agent_id),
+            None => {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    cli_open::finish(&app.state::<AppState>().store, &conversation_id, &agent_id);
+                    emit_cli_handoffs(&app);
+                });
+            }
+        }
+    }
+}
+
+/// 同席给成员定的默认模型：会话没单独选模型时使用（目前用于 Hermes）。传 null 清除，回到 harness 默认。
+#[tauri::command]
+fn set_agent_default_model(
+    hermes: State<'_, Arc<hermes::Runtime>>,
+    agent_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    match agent_id.as_str() {
+        "hermes-win" => hermes.set_default_model(model.as_deref()),
+        _ => Err("暂只支持为 Hermes 设置同席默认模型".into()),
+    }
+}
+
+/// 主动收回：结束 CLI 窗口，会话回到同席。
+#[tauri::command]
+fn reclaim_cli_session(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    agent_id: String,
+) -> Result<(), String> {
+    with_store(&state, |store| cli_open::reclaim(store, &conversation_id, &agent_id))
+}
+
+#[tauri::command]
+fn cli_handoffs(app: tauri::AppHandle) -> Vec<serde_json::Value> {
+    list_cli_handoffs(&app)
+}
+
 fn with_store<T>(
     state: &State<'_, AppState>,
     action: impl FnOnce(&mut Store) -> Result<T, String>,
@@ -510,6 +736,10 @@ fn list_conversations(
     with_store(&state, |store| store.list(&search, archived))
 }
 #[tauri::command]
+fn set_conversation_order(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    with_store(&state, |store| store.set_conversation_order(&ids))
+}
+#[tauri::command]
 fn get_conversation(state: State<'_, AppState>, id: String) -> Result<ConversationDetail, String> {
     with_store(&state, |store| {
         store.ensure_project_agent_chats(&id)?;
@@ -531,13 +761,18 @@ fn share_project_agent_message(
 #[tauri::command]
 fn remove_conversation_item(
     state: State<'_, AppState>,
+    runtime: State<'_, Arc<projects::Runtime>>,
     conversation_id: String,
     kind: String,
     id: String,
 ) -> Result<conversation_cleanup::RemovedItem, String> {
-    with_store(&state, |store| {
+    let removed = with_store(&state, |store| {
         store.remove_conversation_item(&conversation_id, &kind, &id)
-    })
+    })?;
+    if let Some(workflow) = &removed.workflow_id {
+        runtime.coordinators.remove(workflow)?;
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -606,6 +841,7 @@ fn answer_chat_question(
         let codex = app.state::<Arc<codex::Runtime>>().inner().clone();
         let hermes = app.state::<Arc<hermes::Runtime>>().inner().clone();
         let dsh = app.state::<Arc<dsh::Runtime>>().inner().clone();
+        let claude = app.state::<Arc<claude::Runtime>>().inner().clone();
         let queued = question.clone();
         std::thread::spawn(move || {
             loop {
@@ -640,6 +876,9 @@ fn answer_chat_question(
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 "dsh-win" => dsh
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                "claude-win" => claude
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 _ => Err("提问成员不可用".into()),
@@ -693,6 +932,7 @@ fn rename_conversation(
 fn archive_conversation(
     albion: State<'_, albion::Runtime>,
     dsh: State<'_, Arc<dsh::Runtime>>,
+    claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     id: String,
@@ -700,30 +940,48 @@ fn archive_conversation(
 ) -> Result<Conversation, String> {
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
-            hermes.guard(&id, || {
-                runtime.mutate(&id, |store| store.archive(&id, archived))
+            claude.guard(&id, || {
+                hermes.guard(&id, || {
+                    runtime.mutate(&id, |store| store.archive(&id, archived))
+                })
             })
         })
     })
 }
 #[tauri::command]
 fn delete_conversation(
+    projects: State<'_, Arc<projects::Runtime>>,
     albion: State<'_, albion::Runtime>,
     dsh: State<'_, Arc<dsh::Runtime>>,
+    claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     id: String,
 ) -> Result<(), String> {
+    let ids = runtime.mutate(&id, |store| {
+        Ok(store
+            .workflows(&id)?
+            .into_iter()
+            .map(|job| job.id)
+            .collect::<Vec<_>>())
+    })?;
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
-            hermes.guard(&id, || runtime.mutate(&id, |store| store.delete(&id)))
+            claude.guard(&id, || {
+                hermes.guard(&id, || runtime.mutate(&id, |store| store.delete(&id)))
+            })
         })
-    })
+    })?;
+    for workflow in ids {
+        projects.coordinators.remove(&workflow)?;
+    }
+    Ok(())
 }
 #[tauri::command]
 fn update_group_members(
     albion: State<'_, albion::Runtime>,
     dsh: State<'_, Arc<dsh::Runtime>>,
+    claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     id: String,
@@ -731,8 +989,10 @@ fn update_group_members(
 ) -> Result<Conversation, String> {
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
-            hermes.guard(&id, || {
-                runtime.mutate(&id, |store| store.replace_members(&id, &members))
+            claude.guard(&id, || {
+                hermes.guard(&id, || {
+                    runtime.mutate(&id, |store| store.replace_members(&id, &members))
+                })
             })
         })
     })
@@ -793,6 +1053,7 @@ async fn native_sessions(
     let mut sessions = match agent_id.as_str() {
         "codex-win" => app.state::<Arc<codex::Runtime>>().list_sessions()?,
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().list_sessions()?,
+        "claude-win" => app.state::<Arc<claude::Runtime>>().list_sessions()?,
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().list_sessions()?,
         "albion-wsl" => app.state::<albion::Runtime>().0.list_sessions()?,
         _ => return Err("成员不存在".into()),
@@ -826,6 +1087,7 @@ fn attach_native_session(
     agent_id: String,
     native_session_id: String,
     native_cwd: Option<String>,
+    title: Option<String>,
 ) -> Result<store::ConversationDetail, String> {
     with_store(&state, |store| {
         store.attach_native_session(
@@ -834,6 +1096,20 @@ fn attach_native_session(
             &native_session_id,
             native_cwd.as_deref(),
         )?;
+        // 接入后沿用原生会话原本的名称（去掉换行、截到 80 字）；名称不可用时保留原名。
+        if let Some(title) = title {
+            let title: String = title
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(80)
+                .collect();
+            if !title.is_empty() {
+                store.rename(&conversation_id, &title)?;
+            }
+        }
         store.detail(&conversation_id)
     })
 }
@@ -934,6 +1210,11 @@ fn main() {
                 store.clone(),
                 directory.clone(),
             ));
+            app.manage(claude::Runtime::new(
+                app.handle().clone(),
+                store.clone(),
+                directory.clone(),
+            ));
             app.manage(albion::Runtime::new(
                 app.handle().clone(),
                 store.clone(),
@@ -945,6 +1226,7 @@ fn main() {
                 app.state::<Arc<codex::Runtime>>().inner().clone(),
                 app.state::<Arc<hermes::Runtime>>().inner().clone(),
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
+                app.state::<Arc<claude::Runtime>>().inner().clone(),
                 app.state::<albion::Runtime>().0.clone(),
             ));
             app.manage(projects::Runtime::new(
@@ -954,12 +1236,14 @@ fn main() {
                 app.state::<Arc<codex::Runtime>>().inner().clone(),
                 app.state::<Arc<hermes::Runtime>>().inner().clone(),
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
+                app.state::<Arc<claude::Runtime>>().inner().clone(),
             ));
             app.manage(services::MaintenanceLock::default());
             app.manage(AppState {
                 store,
                 directory: directory.clone(),
             });
+            restore_cli_handoffs(app.handle());
             tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
                 .data_directory(directory.join("webview"))
                 .build()?;
@@ -1024,6 +1308,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_agents,
             list_conversations,
+            set_conversation_order,
             get_conversation,
             create_conversation,
             rename_conversation,
@@ -1056,6 +1341,16 @@ fn main() {
             disconnect_dsh,
             send_dsh_message,
             cancel_dsh_run,
+            claude_status,
+            connect_claude,
+            disconnect_claude,
+            send_claude_message,
+            steer_agent_message,
+            open_in_cli,
+            set_agent_default_model,
+            reclaim_cli_session,
+            cli_handoffs,
+            cancel_claude_run,
             albion::albion_status,
             albion::connect_albion,
             albion::disconnect_albion,
@@ -1074,6 +1369,7 @@ fn main() {
             projects::continue_project,
             projects::update_paused_project_roles,
             projects::set_project_roles,
+            project_coordinator::set_project_coordinator,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,
@@ -1101,6 +1397,7 @@ fn main() {
                 app.state::<Arc<codex::Runtime>>().stop();
                 app.state::<Arc<hermes::Runtime>>().stop();
                 app.state::<Arc<dsh::Runtime>>().stop();
+                app.state::<Arc<claude::Runtime>>().stop();
                 app.state::<albion::Runtime>().0.stop();
             }
         });

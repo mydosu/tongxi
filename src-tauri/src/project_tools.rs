@@ -22,6 +22,7 @@ struct Scope {
     root: PathBuf,
     files: Vec<String>,
     writable: bool,
+    whole_project: bool,
     project_id: String,
     workflow_id: String,
     conversation_id: String,
@@ -162,7 +163,7 @@ impl Broker {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| "项目数据库版本不可用")?;
-        if version != 16 {
+        if version != crate::store::SCHEMA_VERSION {
             return Err("项目工具与数据库版本不匹配".into());
         }
         Ok(Self {
@@ -173,6 +174,16 @@ impl Broker {
     }
 
     fn scope(connection: &Connection, attempt: &str) -> Result<Scope> {
+        let manager: bool = connection
+            .query_row(
+                "SELECT COALESCE(activity,'')='coordinate' FROM project_attempts WHERE id=?1",
+                [attempt],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if manager {
+            return Err("管家只负责调度，不开放项目工具".into());
+        }
         let row=connection.query_row("SELECT p.root,a.stage,a.task_id,t.files,t.worktree,w.plan,l.root_key,a.agent_id,w.id,w.conversation_id,w.project_id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN projects p ON p.id=w.project_id JOIN project_leases l ON l.workflow_id=w.id LEFT JOIN project_tasks t ON t.id=a.task_id WHERE a.id=?1 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing')", [attempt], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?))).optional().map_err(|_| "任务授权查询失败")?.ok_or("任务已停止或不再持有项目租约")?;
         let project_root = Path::new(&row.0)
             .canonicalize()
@@ -189,8 +200,15 @@ impl Broker {
                 project_root
             }
         };
+        let whole_project: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM coordination_routes WHERE task_id=?1)",
+                [&row.2],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
         let writable = EXECUTOR_AGENTS.contains(&row.7.as_str())
-            && matches!(row.1.as_str(), "implement" | "repair");
+            && (whole_project || matches!(row.1.as_str(), "implement" | "repair"));
         let files: Vec<String> = if row.1 == "plan" && row.2.is_none() {
             crate::projects::manifest(&root)?
         } else if let Some(text) = row.3 {
@@ -207,6 +225,7 @@ impl Broker {
             root,
             files,
             writable,
+            whole_project,
             project_id: row.10,
             workflow_id: row.8,
             conversation_id: row.9,
@@ -230,10 +249,11 @@ impl Broker {
 
     fn target(scope: &Scope, relative: &str, write: bool) -> Result<PathBuf> {
         let wanted = path_key(relative)?;
-        if !scope
-            .files
-            .iter()
-            .any(|p| path_key(p).is_ok_and(|p| p == wanted))
+        if !scope.whole_project
+            && !scope
+                .files
+                .iter()
+                .any(|p| path_key(p).is_ok_and(|p| p == wanted))
         {
             return Err("文件未列入当前任务授权范围".into());
         }
@@ -388,7 +408,12 @@ impl Broker {
                 if args != json!({}) {
                     return Err("hub_list 不接收参数".into());
                 }
-                json!({"files":scope.files,"writable":scope.writable})
+                let files = if scope.whole_project {
+                    crate::projects::manifest(&scope.root)?
+                } else {
+                    scope.files.clone()
+                };
+                json!({"files":files,"writable":scope.writable,"scope":if scope.whole_project {"project"}else{"listed_files"}})
             }
             "hub_read" => {
                 let arg: FileArg = serde_json::from_value(args).map_err(|_| "读取参数无效")?;
@@ -513,9 +538,11 @@ pub fn tool_specs() -> Vec<Value> {
     let nullable_hash = json!({"type":["string","null"],"description":"Current SHA256 from hub_read; null only for a new file."});
     let definitions=[
         ("hub_ask_user","Ask the user a clarification question and wait for their reply. The question is shown in the team conversation; the same native turn continues after the answer.",json!({"question":string,"options":{"type":"array","items":string}}),vec!["question"]),
-        ("hub_memory_search","Search shared memory for this project only; use before work to recall decisions and known pitfalls.",json!({"query":string}),vec!["query"]),
-        ("hub_memory_write","Store concise project decisions, findings and verified results under your member's project notes. Do not store private chats, raw reasoning or credentials.",json!({"name":string,"content":string}),vec!["name","content"]),
-        ("hub_memory_read","Read a note URI from the current project's shared memory; other project scopes are rejected.",json!({"uri":string}),vec!["uri"]),
+        ("hub_memory_search","Search this project's memory: the shared team pool plus your own private notes (scope: all | shared | private, default all). Use before work to recall decisions and known pitfalls.",json!({"query":string,"scope":{"type":"string","enum":["all","shared","private"]}}),vec!["query"]),
+        ("hub_memory_write","Save a concise note. scope=private (default) keeps it to yourself; scope=shared publishes it to every member of this project. Shared notes can only be updated by their author. Do not store private chats, raw reasoning or credentials.",json!({"name":string,"content":string,"scope":{"type":"string","enum":["private","shared"]}}),vec!["name","content"]),
+        ("hub_memory_read","Read a note URI from this project's shared pool or your own private notes.",json!({"uri":string}),vec!["uri"]),
+        ("hub_memory_list","List note URIs in this project's shared pool and/or your private notes (scope: all | shared | private).",json!({"scope":{"type":"string","enum":["all","shared","private"]}}),vec![]),
+        ("hub_memory_share","Choose one of your private notes to share with the whole project team. The private original is kept; the shared copy records you as author and its source. Optional name renames the shared copy; optional note adds a short preface.",json!({"uri":string,"name":string,"note":string}),vec!["uri"]),
         ("hub_list","List files explicitly authorized for the current task.",json!({}),vec![]),
         ("hub_read","Read one authorized UTF-8 file and its SHA256.",json!({"path":string}),vec!["path"]),
         ("hub_message","Send a direct message to another project agent in this group. The recipient can read it from their project inbox.",json!({"to_agent":string,"content":string}),vec!["to_agent","content"]),
@@ -629,7 +656,7 @@ fn chat_tool(
         }
     }
     let (project, group, agent) = chat_context(connection, conversation_id)?;
-    let active: Option<String> = connection.query_row("SELECT a.id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.project_id=?1 AND w.conversation_id=?2 AND a.agent_id=?3 AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing') ORDER BY a.rowid DESC LIMIT 1", params![project,group,agent], |row|row.get(0)).optional().map_err(|_|"当前成员任务读取失败")?;
+    let active: Option<String> = connection.query_row("SELECT a.id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.project_id=?1 AND w.conversation_id=?2 AND a.agent_id=?3 AND COALESCE(a.activity,'')!='coordinate' AND a.status IN ('starting','running') AND w.status IN ('planning','running','reviewing') ORDER BY a.rowid DESC LIMIT 1", params![project,group,agent], |row|row.get(0)).optional().map_err(|_|"当前成员任务读取失败")?;
     if let Some(attempt) = active {
         let path: String = connection
             .query_row(
@@ -643,9 +670,8 @@ fn chat_tool(
         }
     }
     match name {
-        "hub_memory_search" | "hub_memory_write" | "hub_memory_read" => {
-            crate::project_memory::call(&project, &agent, name, args)
-        }
+        "hub_memory_search" | "hub_memory_write" | "hub_memory_read" | "hub_memory_list"
+        | "hub_memory_share" => crate::project_memory::call(&project, &agent, name, args),
         "hub_broadcast" => {
             let arg: BroadcastArg = serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
             chat_broadcast(connection, conversation_id, &arg.content)
@@ -981,12 +1007,11 @@ mod agent_message_tests {
         )
         .unwrap();
         assert_eq!(direct["audience"], "project_agent");
-        assert_eq!(
-            project_chat_dynamic_tools(&store.path, &codex_chat.conversation_id)
-                .unwrap()
-                .len(),
-            12
-        );
+        let tools = project_chat_dynamic_tools(&store.path, &codex_chat.conversation_id).unwrap();
+        assert!(["hub_memory_list", "hub_memory_share"]
+            .iter()
+            .all(|name| tools.iter().any(|tool| tool["name"] == *name)));
+        assert_eq!(tools.len(), 14);
         assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
         assert_eq!(
             store

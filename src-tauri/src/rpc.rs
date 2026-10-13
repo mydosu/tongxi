@@ -64,9 +64,17 @@ fn native_error_summary(error: &Value) -> String {
     } else {
         "原生成员执行失败，已保留现有记录，可继续当前协作"
     };
+    // 限流/额度类失败只额外带出重置时间（不带原文），协调器据此等到重置再继续。
+    let reset = if category.starts_with("模型服务限流") || category.starts_with("模型服务额度") {
+        let (offset, now) = crate::quota_reset::local_offset();
+        crate::quota_reset::reset_at(&text, now, offset).map(crate::quota_reset::marker)
+    } else {
+        None
+    };
     format!(
-        "{category}（协议代码 {}）",
-        error["code"].as_i64().unwrap_or(-1)
+        "{category}（协议代码 {}）{}",
+        error["code"].as_i64().unwrap_or(-1),
+        reset.unwrap_or_default()
     )
 }
 
@@ -395,5 +403,26 @@ for line in sys.stdin:
         let result = client.rpc_timeout("outer", json!({}), Duration::from_secs(5));
         client.stop();
         assert_eq!(result.unwrap(), json!({"nested":true}));
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::native_error_summary;
+    use serde_json::json;
+
+    #[test]
+    fn rate_limit_summary_carries_only_the_reset_time() {
+        let at = crate::quota_reset::now_secs() + 3600;
+        let summary = native_error_summary(&json!({
+            "code": -32603,
+            "message": "Claude 返回额度或频率限制（HTTP 429 rate limit exceeded） token=secret",
+            "data": {"resets_at": at}
+        }));
+        assert!(summary.starts_with("模型服务限流"), "{summary}");
+        assert!(summary.contains(&format!("resets_at={at}")), "{summary}");
+        assert!(!summary.contains("secret"), "{summary}");
+        let plain = native_error_summary(&json!({"code": -32603, "message": "HTTP 429"}));
+        assert!(!plain.contains("resets_at"), "{plain}");
     }
 }

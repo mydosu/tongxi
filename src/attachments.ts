@@ -80,11 +80,16 @@ export function mountAttachments(input: HTMLTextAreaElement, room: string, escap
       void invoke<Attachment[]>('paste_clipboard_files', { conversationId: room }).then(items => { if (read(room).length + items.length > 20) throw new Error('一条消息最多20个附件'); if (items.length) write(room, [...read(room), ...items]); }).catch(failure => error(String(failure))).finally(() => { pending.set(room, Math.max(0, (pending.get(room) || 1) - 1)); refresh(room); });
     }
   });
-  input.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
-  input.addEventListener('drop', event => { const files = [...event.dataTransfer?.files || []]; if (files.length) { event.preventDefault(); void receive(files); } });
+  // 整个输入区都可以接收从文件资源管理器拖进来的文件（窗口已关闭 Tauri 自带的拖放拦截）。
+  form.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; form.classList.add('drop-target'); } });
+  form.addEventListener('dragleave', event => { if (!form.contains(event.relatedTarget as Node)) form.classList.remove('drop-target'); });
+  form.addEventListener('drop', event => { form.classList.remove('drop-target'); const files = [...event.dataTransfer?.files || []]; if (files.length) { event.preventDefault(); event.stopPropagation(); void receive(files); } });
   tray.addEventListener('click', event => { const button = (event.target as Element).closest<HTMLElement>('[data-attachment-remove]'); if (button) write(room, read(room).filter(item => item.id !== button.dataset.attachmentRemove)); });
   paint();
 }
+
+// 文件拖到输入区以外时不让 WebView 直接打开它（那会把整个页面换成该文件）。
+for (const type of ['dragover', 'drop'] as const) document.addEventListener(type, event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
 
 document.addEventListener('click', event => {
   const button = (event.target as Element).closest<HTMLElement>('[data-attachment-download]');

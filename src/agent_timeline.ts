@@ -34,7 +34,9 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
       tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
   }
-  const active = runtime.active;
+  // 同一成员可能同时在多个会话回复，只取这个会话的运行。
+  const own = (runtime.runs?.length ? runtime.runs : runtime.active ? [runtime.active] : []).filter(run => run.conversation_id === chat.conversation.id);
+  const active = own.find(run => entryBusy(run.status)) || own[own.length - 1];
   if (active?.conversation_id === chat.conversation.id && (entryBusy(active.status) || rows.has(`message:${active.assistant_message_id}`))) {
     const key = `message:${active.assistant_message_id}`;
     const saved = rows.get(key);
@@ -46,7 +48,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
     });
   }
   for (const job of jobs) {
-    const attempts = job.attempts.filter(attempt => attempt.agent_id === agent && attempt.stage !== 'verify');
+    const attempts = job.attempts.filter(attempt => attempt.agent_id === agent && attempt.stage !== 'verify' && attempt.activity !== 'coordinate');
     if (attempts.length) rows.set(`request:${job.id}`, {
       id: `request:${job.id}`, at: job.created_at, kind: 'user', source: 'project', author: 'user', body: job.request,
       thought: '', tools: [], status: 'delivered', error: null, workflowId: job.id, attachmentRoom: job.conversation_id,

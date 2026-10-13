@@ -68,6 +68,7 @@ impl Brain {
             version: Some("pi".into()),
             error: inner.error.clone(),
             active: inner.active.clone(),
+            runs: inner.active.clone().into_iter().collect(),
             models: inner
                 .models
                 .iter()
