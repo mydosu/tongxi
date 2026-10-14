@@ -332,6 +332,7 @@ pub(crate) fn acp_tool_event(update: &Value) -> Option<RunToolEvent> {
 }
 fn remember_tool_event(run: &mut ActiveRun, event: RunToolEvent, store: &Arc<Mutex<Store>>) {
     let event = upsert_tool_event(&mut run.snapshot.tool_events, &event);
+    crate::store::push_tool(&mut run.snapshot.thought, &run.snapshot.text, &event.event_id);
     let _ = store
         .lock()
         .unwrap()

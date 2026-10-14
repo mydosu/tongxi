@@ -235,6 +235,16 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .agent-message .message-author, .agent-message .message-delivery { justify-content: flex-start; }
 .agent-message .bubble { background: #fff; border-color: #dddfe3; border-radius: 2px 12px 12px 12px; color: #383d45; }
 .message-turn { display: contents; }
+.tool-inline { margin: 4px 2px; font-size: 12px; color: #7b838d; min-width: 0; max-width: 100%; }
+.tool-inline summary { cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center; padding: 3px 4px; border-radius: 6px; min-width: 0; }
+.tool-inline summary::-webkit-details-marker { display: none; }
+.tool-inline summary:hover { background: #f0f2f4; }
+.tool-inline .tool-glyph { flex: none; font: 600 10px 'Cascadia Code', Consolas, monospace; color: #fff; background: #9aa3ad; border-radius: 3px; padding: 1px 3px; }
+.tool-inline .tool-inline-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tool-inline small { flex: none; color: #a0a8b2; }
+.tool-inline[data-status="running"] .tool-glyph { background: #6f8fb8; }
+.tool-inline[data-status="failed"] .tool-glyph { background: #c46a6a; }
+.tool-inline pre { margin: 4px 0 6px 26px; padding: 8px 10px; border-radius: 6px; background: #f7f8fa; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 'Cascadia Code', Consolas, monospace; color: #57677b; }
 .agent-message .bubble + .bubble { margin-top: 10px; }
 .bubble.markdown { white-space: normal; }
 .bubble.markdown p { margin: 0 0 10px; }

@@ -14,7 +14,7 @@ import { installMessageMenu } from './message_menu';
 import { projectProgressPage, progressContent } from './project_progress';
 import { projectSettings } from './project_settings';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
-import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
+import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
 import './styles.css';
 import './agent_transcript.css';
@@ -566,19 +566,22 @@ function renderMessage(message: Message, includeDetails = true) {
   // 后端推理块，放在正文之前；没有就不占位。
   // 思考中保持展开（Hermes 那种边想边看，内容随流式增长）；回复结束自动收成一行。
   const streaming = message.status === 'streaming';
-  const thoughtBlock = (text: string, live: boolean) => `<details class="thought" data-live="${live}"${live ? ' open' : ''}><summary>${live ? '思考中…' : '思考过程'}</summary><div class="thought-body">${escape(text)}</div></details>`;
+  const thoughtBlock = (text: string, live: boolean) => `<details class="thought" data-live="${live}"${live ? ' open' : ''}><summary>${live ? '思考中…' : '已思考'}</summary><div class="thought-body">${escape(text)}</div></details>`;
   // 思考和正文交替出现时按顺序穿插（一段想、一段说）；带提问卡片的回复仍用老布局。
   const flow = includeDetails && !own && !message.content.includes('```tongxi-question') ? thoughtFlow(message.thought || '', message.content) : null;
   const thought = includeDetails ? plainThought(message.thought || '') : '';
   const thoughtHtml = !flow && thought ? thoughtBlock(thought, streaming) : '';
   const toolEvents = includeDetails ? message.tool_events || [] : [];
-  const toolsHtml = toolActivity(toolEvents, escape);
+  // 带位置标记的工具调用穿插在回复里显示；没有标记的（旧消息）仍汇总在回复顶部。
+  const placed = new Set(flow?.flatMap(part => part.kind === 'tool' ? [part.text] : []));
+  const toolsHtml = toolActivity(toolEvents.filter(event => !placed.has(event.event_id)), escape);
   const shown=attachmentText(own?message.content:visibleQuestionReply(message.content,message.status==='streaming'));
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
   // 正文每一段各占一个气泡（像 CLI 那样一条一条地出），思考穿插其间。
   const lastPart = flow?.[flow.length - 1];
-  const partsHtml = (parts: FlowPart[]) => parts.map(part => part.kind === 'thought' ? thoughtBlock(part.text, streaming && part === lastPart) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('');
+  const toolHtml = (id: string) => { const event = toolEvents.find(item => item.event_id === id); return event ? toolLine(event, escape) : ''; };
+  const partsHtml = (parts: FlowPart[]) => parts.map(part => part.kind === 'thought' ? thoughtBlock(part.text, streaming && part === lastPart) : part.kind === 'tool' ? toolHtml(part.text) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('');
   const bodyHtml = flow?.length
     ? partsHtml(flow)
     : `<div class="bubble${own ? '' : ' markdown'}">${(own ? escape : (value: string) => agentMarkdown(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>`;
