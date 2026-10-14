@@ -1102,6 +1102,24 @@ impl Store {
         if content.is_empty() || content.chars().count() > 4000 {
             return Err("团队状态消息无效".into());
         }
+        // 同一条状态（例如额度用完、每次重试前的提示）连着出现时只留一条，不刷屏。
+        let repeated: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT CASE WHEN message_kind='system' AND content=?2 THEN id END FROM project_team_messages WHERE workflow_id=?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                params![workflow_id, content],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        if let Some(id) = repeated {
+            return self
+                .team_messages(&workflow.conversation_id)?
+                .into_iter()
+                .find(|message| message.id == id)
+                .ok_or("团队状态消息不可用".into());
+        }
         let id = Uuid::new_v4().to_string();
         let created_at = now();
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;

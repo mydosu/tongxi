@@ -1416,6 +1416,21 @@ fn cancelling_one_agent_marks_only_its_attempt_and_keeps_other_tasks_running() {
         )
         .unwrap();
     assert_eq!(notice.kind, "system");
+    let again = f
+        .store
+        .add_system_team_message(&running.id, "用户单独中断了 DSH；Codex 的独立任务继续运行。")
+        .unwrap();
+    assert_eq!(again.id, notice.id);
+    let other = f
+        .store
+        .add_system_team_message(&running.id, "另一条状态")
+        .unwrap();
+    assert_ne!(other.id, notice.id);
+    let back = f
+        .store
+        .add_system_team_message(&running.id, "用户单独中断了 DSH；Codex 的独立任务继续运行。")
+        .unwrap();
+    assert_ne!(back.id, notice.id);
 }
 
 #[test]
