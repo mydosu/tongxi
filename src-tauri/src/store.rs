@@ -264,6 +264,17 @@ pub(crate) fn push_break(thought: &mut String, text: &str) {
     }
 }
 
+/// 工具调用第一次出现：记 `\u{1b}<正文 UTF-16 长度>:<工具事件 id>\u{1f}`，
+/// 界面把这次调用插在思考与正文之间显示（像 Hermes 那样一行一个），之后的正文另起一个气泡。
+pub(crate) fn push_tool(thought: &mut String, text: &str, event_id: &str) {
+    let tail = format!(":{event_id}\u{1f}");
+    if thought.contains(&tail) {
+        return;
+    }
+    let at = text.encode_utf16().count();
+    thought.push_str(&format!("\u{1b}{at}{tail}"));
+}
+
 /// 回复中途用户插话：记 `\u{1c}<正文 UTF-16 长度>:<插话消息 id>\u{1f}`，
 /// 界面把这条插话放在这里，之后的回复接在插话下面另起一条。
 pub(crate) fn push_steer(thought: &mut String, text: &str, message_id: &str) {
@@ -2391,7 +2402,7 @@ mod tests {
 
 #[cfg(test)]
 mod thought_mark_tests {
-    use super::{push_break, push_steer, push_thought};
+    use super::{push_break, push_steer, push_thought, push_tool};
 
     #[test]
     fn marks_where_each_thought_segment_starts_in_the_reply() {
@@ -2411,5 +2422,9 @@ mod thought_mark_tests {
         push_break(&mut thought, "第一段");
         push_steer(&mut thought, "第一段", "m-1");
         assert_eq!(thought, "\u{1d}3\u{1f}\u{1c}3:m-1\u{1f}");
+        let mut thought = String::new();
+        push_tool(&mut thought, "说", "call-1");
+        push_tool(&mut thought, "说完了", "call-1");
+        assert_eq!(thought, "\u{1b}1:call-1\u{1f}");
     }
 }

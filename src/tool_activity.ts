@@ -9,6 +9,12 @@ export function toolActivity(events: RunToolEvent[], escape: Escape) {
   return `<details class="tool-activity message-tool-trace agent-tools-summary" data-tool-key="all"><summary><span class="tool-chevron">›</span><span class="tool-latest">${escape(last.title || last.kind)}</span><small>${status(last.status)} · ${events.length} 项</small></summary><div class="tool-history">${events.map(event => `<details class="message-tool-event agent-tool-detail" data-tool-key="${escape(event.event_id)}"><summary><span>${escape(event.title || event.kind)}</span><small>${status(event.status)}</small></summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`).join('')}</div></details>`;
 }
 
+/** 穿插在回复里的单次工具调用：一行摘要（像 Hermes 那样），点开看输入与输出。 */
+export function toolLine(event: RunToolEvent, escape: Escape) {
+  const status = event.status === 'running' ? '进行中' : event.status === 'failed' ? '失败' : '';
+  return `<details class="tool-inline" data-tool-key="${escape(event.event_id)}" data-status="${escape(event.status)}"><summary><span class="tool-glyph">›_</span><span class="tool-inline-title">${escape(event.title || event.kind)}</span>${status ? `<small>${status}</small>` : ''}</summary>${event.input ? `<pre>${escape(event.input)}</pre>` : ''}${event.output ? `<pre>${escape(event.output)}</pre>` : ''}</details>`;
+}
+
 export function captureToolState(root: Element | null) {
   return [...(root?.querySelectorAll<HTMLDetailsElement>('[data-tool-key]') || [])].map(node => ({ key: node.dataset.toolKey!, open: node.open, scroll: node.querySelector('.tool-history')?.scrollTop || 0 }));
 }
