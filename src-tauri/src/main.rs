@@ -1247,16 +1247,27 @@ fn main() {
             tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
                 .data_directory(directory.join("webview"))
                 .build()?;
-            // 关闭按钮只把主窗口收进托盘；真正退出走托盘菜单，保证 RunEvent::Exit 的清理照常执行。
+            // 最小化收进托盘；关闭按钮直接退出程序（走 app.exit，RunEvent::Exit 的清理照常执行）。
+            // 是否已最小化要问窗口本身；事件回调跑在主线程事件循环里，直接查询会自锁，挪到后台线程去问。
             let window = app
                 .get_webview_window("main")
                 .ok_or_else(|| "主窗口未创建".to_string())?;
             let hidden = window.clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            let handle = app.handle().clone();
+            window.on_window_event(move |event| match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    let _ = hidden.hide();
+                    handle.exit(0);
                 }
+                tauri::WindowEvent::Resized(_) => {
+                    let window = hidden.clone();
+                    std::thread::spawn(move || {
+                        if window.is_minimized().unwrap_or(false) {
+                            let _ = window.hide();
+                        }
+                    });
+                }
+                _ => {}
             });
             let menu = tauri::menu::MenuBuilder::new(app)
                 .item(&tauri::menu::MenuItem::with_id(

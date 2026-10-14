@@ -143,7 +143,7 @@ app.innerHTML = `
     </aside>
     <main id="main" class="main"><div class="loading">正在打开你的工作空间…</div></main>
   </div>
-  <div class="window-controls" aria-label="窗口操作"><button id="hud-toggle" aria-label="HUD 模式" title="HUD 模式">▣</button><button id="window-minimize" aria-label="最小化" title="最小化">−</button><button id="window-maximize" aria-label="最大化" title="最大化">□</button><button id="window-close" aria-label="关闭窗口" title="关闭窗口">×</button></div>
+  <div class="window-controls" aria-label="窗口操作"><button id="hud-toggle" aria-label="HUD 模式" title="HUD 模式">▣</button><button id="window-minimize" aria-label="最小化到托盘" title="最小化到托盘">−</button><button id="window-maximize" aria-label="最大化" title="最大化">□</button><button id="window-close" aria-label="退出同席" title="退出同席">×</button></div>
   ${(['North', 'South', 'East', 'West', 'NorthEast', 'NorthWest', 'SouthEast', 'SouthWest'] as const).map(direction => `<div class="resize-edge resize-${direction}" data-resize="${direction}" aria-hidden="true"></div>`).join('')}
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <dialog id="modal" class="modal"></dialog>
@@ -200,7 +200,7 @@ if (isTauri()) {
     resizeComposer(input);
   });
   const action = (work: () => Promise<unknown>) => void work().catch(error => toast(errorText(error), true));
-  document.querySelector('#window-minimize')!.addEventListener('click', () => action(() => window.hide()));
+  document.querySelector('#window-minimize')!.addEventListener('click', () => action(() => window.minimize()));
   document.querySelector('#window-maximize')!.addEventListener('click', () => action(() => window.toggleMaximize()));
   document.querySelector('#window-close')!.addEventListener('click', () => action(() => window.close()));
   const hudButton = document.querySelector<HTMLButtonElement>('#hud-toggle')!;
@@ -828,7 +828,7 @@ function updateRuntimeControls() {
   if (cliButton) cliButton.textContent = cli ? '收回到同席' : '在 CLI 中打开';
   const note = main.querySelector('#runtime-note');
   if (note && isNative && cli) note.textContent = `这条会话已交给 ${member(currentAgentId()).name} 的 CLI，同席暂停使用；关闭 CLI 窗口或点“收回到同席”后继续。`;
-  else if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (selectedRun?.status === 'starting' ? '正在准备原生会话…' : selectedRun?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复… 可直接输入插话${NATIVE_STEER.has(currentAgentId()) ? '引导，不会打断' : '，发送时会先停止当前回复'} · Esc 停止`) : `${member(currentAgentId()).name} 私聊已接入；原生工具和问答可用。`);
+  else if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (selectedRun?.status === 'starting' ? '正在准备原生会话…' : selectedRun?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复… 可直接输入插话${NATIVE_STEER.has(currentAgentId()) ? '引导，不会打断' : '，发送时会先停止当前回复'} · Esc 停止`) : currentRuntime().connection === 'connected' ? `${member(currentAgentId()).name} 已连接；原生工具和问答可用。` : currentRuntime().connection === 'connecting' ? `正在连接 ${member(currentAgentId()).name}…` : `${member(currentAgentId()).name} 未连接；连接后才能发送。`);
   renderLiveSettings();
   updateDiscussionControls();
   updateProjectControls();
