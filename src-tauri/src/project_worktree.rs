@@ -709,8 +709,73 @@ pub fn merge(root: &Path, branch: &str) -> Result<String> {
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
+    // 主仓库里未提交的改动碰到了任务分支改过的文件时，git 会拒绝合并（怕覆盖本地改动）。
+    // 常见情形是成员先在主目录试改、再把同样的改动提交进任务分支：这些文件内容和合并结果逐字相同，
+    // 就先把它们暂存起来再合并，合并成功后内容本就一致，丢掉暂存；合并失败就原样放回。
+    // 内容不一致的不碰，明确列出文件，等人处理。
+    let local: Vec<String> = git(root, &["diff", "--name-only", "HEAD"])?
+        .lines()
+        .chain(git(root, &["ls-files", "--others", "--exclude-standard"])?.lines())
+        .map(String::from)
+        .collect();
+    let range = format!("HEAD...{branch}");
+    let touched: Vec<String> = git(root, &["diff", "--name-only", &range])?
+        .lines()
+        .map(String::from)
+        .collect();
+    let overlap: Vec<String> = local
+        .into_iter()
+        .filter(|path| touched.contains(path))
+        .collect();
+    let mut stashed = false;
+    if !overlap.is_empty() {
+        let tree = git(root, &["merge-tree", "--write-tree", "HEAD", branch]).ok();
+        let differs: Vec<&String> = overlap
+            .iter()
+            .filter(|path| {
+                let ours = git(root, &["hash-object", "--", path.as_str()]).ok();
+                let merged = tree
+                    .as_ref()
+                    .and_then(|tree| git(root, &["rev-parse", &format!("{tree}:{path}")]).ok());
+                ours.is_none() || ours != merged
+            })
+            .collect();
+        if !differs.is_empty() {
+            let names = differs
+                .iter()
+                .map(|path| path.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            return Err(format!(
+                "合并 {branch} 未完成：主仓库有未提交的改动和任务分支改了同样的文件（{names}），内容不一致；请先提交或还原这些改动，再点“继续协作”"
+            ));
+        }
+        let message = format!("tongxi: 合并 {branch} 前暂存与任务分支相同的本地改动");
+        let mut args = vec!["stash", "push", "--include-untracked", "-m", &message, "--"];
+        args.extend(overlap.iter().map(String::as_str));
+        git(root, &args).map_err(|_| {
+            format!("合并 {branch} 未完成：主仓库有与任务分支相同的未提交改动，暂存失败")
+        })?;
+        stashed = true;
+    }
     match git(root, &["merge", "--no-edit", branch]) {
-        Ok(_) => Ok(format!("分支 {branch} 已合并进当前分支")),
+        Ok(_) => {
+            if stashed {
+                let _ = git(root, &["stash", "drop"]);
+            }
+            Ok(format!("分支 {branch} 已合并进当前分支"))
+        }
+        Err(error) if stashed => {
+            let restored = git(root, &["stash", "pop"]).is_ok();
+            Err(format!(
+                "合并 {branch} 未完成：{error}；{}",
+                if restored {
+                    "合并前暂存的本地改动已放回"
+                } else {
+                    "合并前暂存的本地改动还在 git stash 里，请人工取回"
+                }
+            ))
+        }
         Err(error) => {
             let conflicted = git(root, &["ls-files", "-u"])
                 .map(|text| !text.is_empty())
@@ -1110,6 +1175,34 @@ mod tests {
         let content = std::fs::read_to_string(repo.join("base.txt")).unwrap();
         assert!(content.contains("from-main") && content.contains("from-task"));
         assert!(content.contains("<<<<<<<"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn merge_sets_aside_identical_local_edits_but_stops_on_different_ones() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let repo = base.join("repo");
+        let worktree_root = base.join("wt");
+        assert!(init_repo(&exe, &repo));
+
+        let path = create(&repo, &worktree_root, "task-d", "hub/task-d").unwrap();
+        std::fs::write(path.join("base.txt"), "same\n").unwrap();
+        assert!(git_ok(&exe, &path, &["commit", "-q", "-am", "task change"]));
+        std::fs::write(repo.join("base.txt"), "same\n").unwrap();
+        merge(&repo, "hub/task-d").unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("base.txt")).unwrap(), "same\n");
+        assert!(git(&repo, &["status", "--porcelain"]).unwrap().is_empty());
+        assert!(git(&repo, &["stash", "list"]).unwrap().is_empty());
+
+        let path = create(&repo, &worktree_root, "task-e", "hub/task-e").unwrap();
+        std::fs::write(path.join("base.txt"), "task\n").unwrap();
+        assert!(git_ok(&exe, &path, &["commit", "-q", "-am", "task change"]));
+        std::fs::write(repo.join("base.txt"), "mine\n").unwrap();
+        let error = merge(&repo, "hub/task-e").unwrap_err();
+        assert!(error.contains("base.txt"));
+        assert_eq!(std::fs::read_to_string(repo.join("base.txt")).unwrap(), "mine\n");
 
         let _ = std::fs::remove_dir_all(&base);
     }
