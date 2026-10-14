@@ -1730,8 +1730,10 @@ impl Store {
             }
             return Ok(saved);
         }
+        // 失败的任务也保留工作树和分支：常见的失败是成员已经做完、只是合并没成功，
+        // 继续协作时在原分支上接着做，不丢已经提交的改动、也不从头再来。
         tx.execute(
-            "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=CASE WHEN status IN ('completed','interrupted') THEN worktree ELSE NULL END,branch=CASE WHEN status IN ('completed','interrupted') THEN branch ELSE NULL END WHERE workflow_id=?1",
+            "UPDATE project_tasks SET status=CASE WHEN status='completed' THEN 'completed' ELSE 'queued' END,output=CASE WHEN status='completed' THEN output ELSE '' END,error=CASE WHEN status='completed' THEN error ELSE NULL END,worktree=CASE WHEN status IN ('completed','interrupted','failed') THEN worktree ELSE NULL END,branch=CASE WHEN status IN ('completed','interrupted','failed') THEN branch ELSE NULL END WHERE workflow_id=?1",
             [id],
         )
         .map_err(|e| e.to_string())?;

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Conversation, Project, ProjectTeamMessage, Workflow } from './types';
 import { attachmentHtml, attachmentText } from './attachments';
+import { agentMarkdown } from './agent_markdown';
 
 type Escape = (value: string | number) => string;
 interface DialogHost { escape: Escape; modal: HTMLDialogElement; open: (title: string, subtitle: string, body: string) => void; saved: (id: string) => Promise<void>; }
@@ -10,7 +11,7 @@ export function projectTeamMessages(room: string, saved: ProjectTeamMessage[], j
 export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Escape, name: (id: string) => string, avatar: (id: string) => string) {
   const author = message.kind === 'user' ? '你' : message.sender_agent ? name(message.sender_agent) : '同席';
   const portrait = message.sender_agent ? avatar(message.sender_agent) : `<span class="system-avatar">${message.kind === 'user' ? '你' : '·'}</span>`;
-  return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.created_at)}</time></div><div class="bubble">${escape(attachmentText(message.content))}</div>${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
+  return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.created_at)}</time></div>${message.kind === 'user' ? `<div class="bubble">${escape(attachmentText(message.content))}</div>` : `<div class="bubble markdown">${agentMarkdown(attachmentText(message.content), escape)}</div>`}${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
 }
 export const workflowBusy = (job: Workflow | null | undefined) => !!job && ['queued', 'planning', 'running', 'verifying', 'reviewing', 'cancelling'].includes(job.status);
 export async function bindingDialog(room: Conversation, current: Project | null, host: DialogHost) {
