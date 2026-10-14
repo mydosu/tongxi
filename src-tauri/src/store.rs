@@ -254,6 +254,23 @@ pub(crate) fn push_thought(thought: &mut String, text: &str, delta: &str) {
     thought.push_str(delta);
 }
 
+/// 正文另起一段（新的回复条目，或工具调用之后再开口）：记 `\u{1d}<正文 UTF-16 长度>\u{1f}`，
+/// 界面在这里另起一个气泡，像 CLI 那样一条一条地出。
+pub(crate) fn push_break(thought: &mut String, text: &str) {
+    let at = text.encode_utf16().count();
+    let mark = format!("\u{1d}{at}\u{1f}");
+    if at > 0 && !thought.ends_with(&mark) {
+        thought.push_str(&mark);
+    }
+}
+
+/// 回复中途用户插话：记 `\u{1c}<正文 UTF-16 长度>:<插话消息 id>\u{1f}`，
+/// 界面把这条插话放在这里，之后的回复接在插话下面另起一条。
+pub(crate) fn push_steer(thought: &mut String, text: &str, message_id: &str) {
+    let at = text.encode_utf16().count();
+    thought.push_str(&format!("\u{1c}{at}:{message_id}\u{1f}"));
+}
+
 pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2374,7 +2391,7 @@ mod tests {
 
 #[cfg(test)]
 mod thought_mark_tests {
-    use super::push_thought;
+    use super::{push_break, push_steer, push_thought};
 
     #[test]
     fn marks_where_each_thought_segment_starts_in_the_reply() {
@@ -2384,5 +2401,15 @@ mod thought_mark_tests {
         push_thought(&mut thought, "答😀", "接着想。");
         push_thought(&mut thought, "答😀", "还在想。");
         assert_eq!(thought, "先想。再想。\u{1e}3\u{1f}接着想。还在想。");
+    }
+
+    #[test]
+    fn marks_bubble_breaks_once_and_steers_with_their_message() {
+        let mut thought = String::new();
+        push_break(&mut thought, "");
+        push_break(&mut thought, "第一段");
+        push_break(&mut thought, "第一段");
+        push_steer(&mut thought, "第一段", "m-1");
+        assert_eq!(thought, "\u{1d}3\u{1f}\u{1c}3:m-1\u{1f}");
     }
 }

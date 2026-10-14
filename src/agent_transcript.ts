@@ -109,7 +109,7 @@ export class AgentTranscript {
     const control = busy && entry.workflowId ? `<button type="button" class="text-button" data-stop-project-agent="${escape(entry.author)}" data-stop-project-workflow="${escape(entry.workflowId)}" ${entry.status === 'cancelling' ? 'disabled' : ''}>中断</button>` : '';
     if (controls.innerHTML !== control) controls.innerHTML = control;
     // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
-    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body) : null;
+    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind !== 'steer') ?? null : null;
     this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy);
     const plain = flow ? '' : plainThought(entry.thought);
     const thought = node.querySelector<HTMLDetailsElement>('.agent-turn-thought')!;

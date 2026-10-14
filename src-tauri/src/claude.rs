@@ -65,8 +65,9 @@ pub(crate) fn discover_executable() -> Option<PathBuf> {
     }
     crate::service_install::on_path(&["claude.exe"])
         .or_else(|| {
-            crate::service_install::on_path(&["claude.cmd"])
-                .and_then(|shell| absolute_file(shell.parent()?.join(NATIVE_EXE)))
+            crate::service_install::on_path_find(&["claude.cmd"], |shell| {
+                absolute_file(shell.parent()?.join(NATIVE_EXE))
+            })
         })
         .or_else(|| {
             let home = std::env::var_os("USERPROFILE")?;
@@ -553,6 +554,7 @@ impl Runtime {
         let update = &params["update"];
         if let Some(event) = crate::codex::acp_tool_event(update) {
             let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);
+            crate::store::push_break(&mut run.thought, &run.text);
             let _ = self
                 .store
                 .lock()
@@ -611,7 +613,7 @@ impl Runtime {
         self.cancel_expected(conversation_id, None)
     }
     /// 回复进行中插话：桥接把引导写进正在运行的 Claude 进程，Claude 在下一步原生采纳，不打断。
-    pub fn steer(&self, conversation_id: &str, content: &str) -> Result<()> {
+    pub fn steer(&self, conversation_id: &str, content: &str, message_id: &str) -> Result<()> {
         let (client, session) = {
             let inner = self.inner.lock().unwrap();
             let client = inner.client.clone().ok_or("Claude 已断开")?;
@@ -630,6 +632,16 @@ impl Runtime {
         let db = self.store.lock().unwrap().path.clone();
         let input = crate::attachments::prompt(&db, conversation_id, content, false)?;
         client.rpc("session/steer", json!({"sessionId":session,"prompt":input}))?;
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(run) = inner
+            .runs
+            .iter_mut()
+            .find(|run| run.record.conversation_id == conversation_id && busy(run))
+        {
+            crate::store::push_steer(&mut run.thought, &run.text, message_id);
+        }
+        drop(inner);
+        self.emit();
         Ok(())
     }
     pub(crate) fn cancel_expected(
