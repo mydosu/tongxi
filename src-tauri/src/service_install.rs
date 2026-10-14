@@ -177,6 +177,16 @@ pub(crate) fn on_path(names: &[&str]) -> Option<PathBuf> {
     find_in(&path_roots(), names)
 }
 
+/// 在 PATH 上按顺序找第一个让 `pick` 成立的文件：有的壳只是转发到别处安装的小脚本，
+/// 旁边没有真正的程序，要接着往后找。
+pub(crate) fn on_path_find<T>(names: &[&str], pick: impl Fn(PathBuf) -> Option<T>) -> Option<T> {
+    path_roots()
+        .iter()
+        .flat_map(|root| names.iter().map(move |name| root.join(name)))
+        .filter(|candidate| candidate.is_file())
+        .find_map(pick)
+}
+
 /// 从 CLI 壳反推 npm 式安装的包目录：壳所在目录下的 `node_modules/<scope>/<package>`。
 /// npm -g 全局前缀（`<prefix>/codex.cmd`）与自带 `node_modules` 的独立安装
 /// （`<dir>/bin/dsh.cmd`）两种布局都成立——所以默认值不是某个人的安装路径。

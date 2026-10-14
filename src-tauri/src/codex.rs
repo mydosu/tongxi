@@ -381,6 +381,9 @@ impl ActiveRun {
     }
     fn text(&mut self, item: &str, text: &str, replace: bool) {
         if !self.items.contains_key(item) {
+            if !self.order.is_empty() {
+                crate::store::push_break(&mut self.snapshot.thought, &self.snapshot.text);
+            }
             self.order.push(item.into());
         }
         let content = self.items.entry(item.into()).or_default();
@@ -1034,7 +1037,7 @@ impl Runtime {
         self.cancel_expected(conversation_id, None)
     }
     /// 回复进行中插话：用原生 turn/steer 把引导追加进当前回合，不打断。
-    pub fn steer(&self, conversation_id: &str, content: &str) -> Result<()> {
+    pub fn steer(&self, conversation_id: &str, content: &str, message_id: &str) -> Result<()> {
         let (client, thread_id, turn_id) = {
             let inner = self.inner.lock().unwrap();
             let client = inner.client.clone().ok_or("Codex 未连接")?;
@@ -1062,6 +1065,13 @@ impl Runtime {
             "turn/steer",
             json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":input}),
         )?;
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(run) = live_in(&mut inner.runs, conversation_id) {
+            let snapshot = &mut run.snapshot;
+            crate::store::push_steer(&mut snapshot.thought, &snapshot.text, message_id);
+        }
+        drop(inner);
+        self.emit();
         Ok(())
     }
     pub(crate) fn cancel_expected(

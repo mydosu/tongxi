@@ -5,7 +5,7 @@ import type { Agent, ChatQuestion, PendingChatQuestion, AppInfo, Conversation, C
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBusy } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
-import { plainThought, thoughtFlow } from './thought_flow';
+import { plainThought, steerIds, thoughtFlow, type FlowPart } from './thought_flow';
 import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
@@ -576,10 +576,29 @@ function renderMessage(message: Message, includeDetails = true) {
   const shown=attachmentText(own?message.content:visibleQuestionReply(message.content,message.status==='streaming'));
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
+  // 正文每一段各占一个气泡（像 CLI 那样一条一条地出），思考穿插其间。
+  const lastPart = flow?.[flow.length - 1];
+  const partsHtml = (parts: FlowPart[]) => parts.map(part => part.kind === 'thought' ? thoughtBlock(part.text, streaming && part === lastPart) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('');
   const bodyHtml = flow?.length
-    ? flow.map((part, index) => part.kind === 'thought' ? thoughtBlock(part.text, streaming && index === flow.length - 1) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('')
+    ? partsHtml(flow)
     : `<div class="bubble${own ? '' : ' markdown'}">${(own ? escape : (value: string) => agentMarkdown(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>`;
-  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}${bodyHtml}${attachmentHtml(message.content,message.conversation_id,escape)}<div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
+  const delivery = `${attachmentHtml(message.content,message.conversation_id,escape)}<div class="message-delivery">${icon('check')}${labels[message.status]}</div>`;
+  if (flow?.some(part => part.kind === 'steer')) {
+    // 回复中途插过话：插话之前的回复留在原处，插话消息跟在后面，之后的回复在插话下面另起一条。
+    const turns: FlowPart[][] = [[]];
+    const steered: string[] = [];
+    for (const part of flow) if (part.kind === 'steer') { steered.push(part.text); turns.push([]); } else turns[turns.length - 1].push(part);
+    const author = (at?: number) => `<div class="message-author"><strong>${escape(member(message.sender_id)?.name || '成员')}</strong>${at ? `<time>${time(at)}</time>` : ''}</div>`;
+    const reply = (parts: FlowPart[], at: number | undefined, extra: string, last: boolean) => `<article class="message agent-message">${author(at)}${extra}${parts.length ? partsHtml(parts) : last && streaming ? '<div class="bubble markdown">正在等待回复…</div>' : ''}${last ? delivery : ''}</article>`;
+    let html = reply(turns[0], message.created_at, toolsHtml, false);
+    steered.forEach((id, index) => {
+      const said = detail?.messages.find(item => item.id === id);
+      if (said) html += renderMessage(said, includeDetails);
+      html += reply(turns[index + 1], said?.created_at, '', index === steered.length - 1);
+    });
+    return `<div class="message-turn" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${html}</div>`;
+  }
+  return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}${bodyHtml}${delivery}${includeDetails ? '' : '</div>'}</article>`;
 }
 
 function projectChatFor(agentId: string) {
@@ -821,6 +840,8 @@ function updateRuntimeControls() {
     if (old) old.outerHTML = html;
     else { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
     const updated = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
+    // 插话已经挪进这条回复里显示，去掉按时间单独排的那一份。
+    for (const id of steerIds(active.thought)) for (const node of messages.querySelectorAll(`[data-message-id="${CSS.escape(id)}"]`)) if (!updated?.contains(node)) node.remove();
     if (updated) restoreThoughtScroll(updated, thoughtScroll);
     if (updated) restoreToolState(updated, toolState);
     if (nearBottom) pinToBottom(messages);
@@ -879,7 +900,7 @@ async function sendNative() {
     if (outcome && selectedId === conversationId && detail) {
       detail.messages.push(outcome);
       const messages = main.querySelector<HTMLElement>('#messages');
-      if (messages) { messages.insertAdjacentHTML('beforeend', renderMessage(outcome, detail.conversation.kind !== 'group')); pinToBottom(messages); }
+      if (messages && !messages.querySelector(`[data-message-id="${CSS.escape(outcome.id)}"]`)) { messages.insertAdjacentHTML('beforeend', renderMessage(outcome, detail.conversation.kind !== 'group')); pinToBottom(messages); }
     }
     return;
   }
@@ -1335,11 +1356,13 @@ function renderConversationChat() {
   const directAgent = conversation.kind === 'direct' ? roster[0] : null;
   const isNative = nativeChat();
   const key = harnessKey();
+  // 回复中途的插话跟着那条回复显示，不再按自己的时间单独排。
+  const steered = new Set([...detail.messages.map(message => message.thought), ...Object.values(runtimes).flatMap(snapshot => runsOf(snapshot).map(run => run.thought))].flatMap(steerIds));
   const name = directAgent?.name || ''; 
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : `<span class="avatar group-avatar">${icon('group')}</span>`}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
-    <div class="chat-layout"><section class="chat-content"><div class="milestone-note"><span class="note-mark">07</span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
+    <div class="chat-layout"><section class="chat-content"><div class="milestone-note"><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
       <div id="live-settings" class="live-settings" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls" aria-label="群聊设置"></div><div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">项目成员配置</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
-      ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.map(message => renderMessage(message, !isGroup)).join('')}` : `<div class="welcome"><div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div><span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
+      ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.filter(message => !steered.has(message.id)).map(message => renderMessage(message, !isGroup)).join('')}` : `<div class="welcome"><div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div><span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
       <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : detail.project ? 'Enter 发送给项目组 · Shift + Enter 换行' : 'Enter 开始群聊 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>

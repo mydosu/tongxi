@@ -559,10 +559,10 @@ async fn steer_agent_message(
     content: String,
 ) -> Result<store::Message, String> {
     let (codex, claude) = (codex.inner().clone(), claude.inner().clone());
-    let (room, text) = (conversation_id.clone(), content.clone());
+    let (room, text, steer_id) = (conversation_id.clone(), content.clone(), message_id.clone());
     tauri::async_runtime::spawn_blocking(move || match agent_id.as_str() {
-        "codex-win" => codex.steer(&room, &text),
-        "claude-win" => claude.steer(&room, &text),
+        "codex-win" => codex.steer(&room, &text, &steer_id),
+        "claude-win" => claude.steer(&room, &text, &steer_id),
         _ => Err("NO_NATIVE_STEER".into()),
     })
     .await
