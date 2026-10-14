@@ -1195,11 +1195,10 @@ fn main() {
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
             ));
-            app.manage(codex::Runtime::new(
-                app.handle().clone(),
-                store.clone(),
-                directory.clone(),
-            ));
+            let codex_runtime =
+                codex::Runtime::new(app.handle().clone(), store.clone(), directory.clone());
+            codex_runtime.watch_quota_resume();
+            app.manage(codex_runtime);
             app.manage(hermes::Runtime::new(
                 app.handle().clone(),
                 store.clone(),

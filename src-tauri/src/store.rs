@@ -1010,6 +1010,30 @@ impl Store {
         ).optional().map_err(|e| e.to_string())
     }
 
+    /// 因额度或频率限制失败、之后会话里再没有新消息和新运行的私聊运行：
+    /// (会话 ID, 错误摘要, 失败那条回复的创建时间毫秒)。运行中插话（steer）记在回复的思考标记里，不算接手。
+    pub fn quota_stalled_runs(&self, agent_id: &str) -> Result<Vec<(String, String, i64)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT r.conversation_id,r.error,a.created_at FROM runs r
+                 JOIN conversations c ON c.id=r.conversation_id AND c.archived=0
+                 JOIN messages a ON a.id=r.assistant_message_id
+                 WHERE r.agent_id=?1 AND r.status='failed' AND r.discussion_id IS NULL
+                   AND (r.error LIKE '%额度限制%' OR r.error LIKE '%请求频率限制%')
+                   AND NOT EXISTS(SELECT 1 FROM runs n WHERE n.conversation_id=r.conversation_id AND n.rowid>r.rowid)
+                   AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=r.conversation_id AND m.sequence>a.sequence AND instr(coalesce(a.thought,''),m.id)=0)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([agent_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     pub fn begin_run(
         &mut self,
         conversation_id: &str,
@@ -2171,6 +2195,29 @@ mod tests {
         let detail = store.detail(&room.id).unwrap();
         assert_eq!(detail.messages[0].status, "failed");
         assert_eq!(detail.messages[1].status, "failed");
+    }
+
+    #[test]
+    fn quota_stalled_runs_only_lists_untouched_quota_failures() {
+        let mut store = memory();
+        let room = direct(&mut store, "额度");
+        let mut run = store
+            .begin_run(&room.id, &Uuid::new_v4().to_string(), "做事")
+            .unwrap();
+        run.status = "failed".into();
+        run.error =
+            Some("Codex 额度限制（额度预计 10月14日 14:29 重置，resets_at=1792006140）".into());
+        store.checkpoint(&run, "做了一半", "").unwrap();
+        let stalled = store.quota_stalled_runs("codex-win").unwrap();
+        assert_eq!(stalled.len(), 1);
+        assert_eq!(stalled[0].0, room.id);
+        assert!(stalled[0].1.contains("resets_at=1792006140"));
+        assert!(store.quota_stalled_runs("claude-win").unwrap().is_empty());
+        // 用户在失败后自己又说了话：交给用户，不再自动续。
+        store
+            .save_message(&room.id, &Uuid::new_v4().to_string(), "先别做了")
+            .unwrap();
+        assert!(store.quota_stalled_runs("codex-win").unwrap().is_empty());
     }
 
     #[test]

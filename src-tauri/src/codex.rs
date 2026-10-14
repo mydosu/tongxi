@@ -15,6 +15,38 @@ use tauri::Emitter;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
+
+const QUOTA_RESUME_PROMPT: &str = "额度已恢复，请接着完成上一条没做完的任务，保留已经完成的工作。";
+
+fn is_quota_stall(category: &str) -> bool {
+    category.starts_with("额度限制") || category.starts_with("请求频率限制")
+}
+
+/// 是否到了自动续跑的时间：有 `resets_at` 就等它过 1 分钟；读不到时额度按 30 分钟、
+/// 频率限制按 5 分钟后再试。到点超过 12 小时的不再续（多半是早就放下的旧任务）。
+fn quota_resume_due(error: &str, failed_at_ms: i64, now: i64) -> bool {
+    let failed = failed_at_ms / 1000;
+    let due = error
+        .split("resets_at=")
+        .nth(1)
+        .and_then(|rest| {
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse::<i64>()
+                .ok()
+        })
+        .map(|at| at + 60)
+        .unwrap_or(
+            failed
+                + if error.contains("请求频率限制") {
+                    300
+                } else {
+                    1800
+                },
+        );
+    now >= due && now < due + 12 * 3600
+}
+
 #[derive(Clone, Serialize)]
 pub struct RunSnapshot {
     #[serde(flatten)]
@@ -834,6 +866,60 @@ impl Runtime {
         Ok(record)
     }
 
+    /// 额度重置后自动接着做：私聊里因额度或频率限制停下、之后没人接手的运行，
+    /// 到重置时间在原会话里补发一条“继续”。启动时也会把关闭期间到点的补上。
+    pub fn watch_quota_resume(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            let mut last_connect: Option<Instant> = None;
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+                let Some(runtime) = weak.upgrade() else {
+                    return;
+                };
+                runtime.resume_after_quota(&mut last_connect);
+            }
+        });
+    }
+
+    fn resume_after_quota(self: &Arc<Self>, last_connect: &mut Option<Instant>) {
+        let Ok(Ok(stalled)) = self
+            .store
+            .lock()
+            .map(|store| store.quota_stalled_runs("codex-win"))
+        else {
+            return;
+        };
+        let now = crate::quota_reset::now_secs();
+        let due = stalled
+            .into_iter()
+            .filter(|(_, error, failed_at)| quota_resume_due(error, *failed_at, now))
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return;
+        }
+        let connection = self.inner.lock().unwrap().connection.clone();
+        if connection != "connected" {
+            // 断开了就自己连一次；连不上隔 10 分钟再试，不反复拉起进程。
+            if connection != "disconnected"
+                || last_connect.is_some_and(|at| at.elapsed() < Duration::from_secs(600))
+            {
+                return;
+            }
+            *last_connect = Some(Instant::now());
+            if self.connect().is_err() {
+                return;
+            }
+        }
+        for (conversation_id, _, _) in due {
+            let _ = self.send(
+                &conversation_id,
+                &Uuid::new_v4().to_string(),
+                QUOTA_RESUME_PROMPT,
+            );
+        }
+    }
+
     pub(crate) fn send_discussion(
         self: &Arc<Self>,
         discussion: &str,
@@ -1238,9 +1324,13 @@ impl Runtime {
                     let category =
                         crate::project_native::failure_category(&params["turn"]["error"])
                             .unwrap_or_else(|| "原生执行失败".into());
-                    run.snapshot.record.error = Some(format!(
-                        "Codex {category}，已保留会话记录，可调整当前模型后重试"
-                    ));
+                    run.snapshot.record.error = Some(if is_quota_stall(&category) {
+                        format!(
+                            "Codex {category}，额度恢复后同席会自动继续；也可调整当前模型后重试"
+                        )
+                    } else {
+                        format!("Codex {category}，已保留会话记录，可调整当前模型后重试")
+                    });
                 }
                 final_event = true;
             }
@@ -1362,6 +1452,37 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quota_resume_waits_for_the_reset_time_and_skips_stale_runs() {
+        let error = "Codex 额度限制（额度预计 10月14日 14:29 重置，resets_at=1792006140），额度恢复后同席会自动继续";
+        let failed = 1_791_993_022_941;
+        assert!(!super::quota_resume_due(error, failed, 1_792_006_140));
+        assert!(super::quota_resume_due(error, failed, 1_792_006_200));
+        assert!(!super::quota_resume_due(
+            error,
+            failed,
+            1_792_006_200 + 13 * 3600
+        ));
+        // 读不到重置时间：额度 30 分钟、频率限制 5 分钟后再试。
+        let at = failed / 1000;
+        assert!(!super::quota_resume_due(
+            "Codex 额度限制，…",
+            failed,
+            at + 1700
+        ));
+        assert!(super::quota_resume_due(
+            "Codex 额度限制，…",
+            failed,
+            at + 1800
+        ));
+        assert!(super::quota_resume_due(
+            "Codex 请求频率限制，…",
+            failed,
+            at + 300
+        ));
+        assert!(super::is_quota_stall("额度限制（额度预计…）"));
+        assert!(!super::is_quota_stall("服务繁忙"));
+    }
     #[test]
     fn sparse_other_kind_completion_keeps_the_original_acp_tool_name() {
         let started = super::acp_tool_event(&serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"call","kind":"other","title":"mcp__agent_hub_project__hub_memory_read","rawInput":{"uri":"project-note"}})).unwrap();
