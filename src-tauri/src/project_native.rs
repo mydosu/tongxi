@@ -687,7 +687,7 @@ impl Runner {
             ))
         }));
         let (chat, previous, project_root) = self.project_session(&attempt)?;
-        let mut params = json!({"cwd":project_root,"approvalPolicy":"never","sandbox":"danger-full-access","model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort},"developerInstructions":"你是该项目的协作成员。同一项目的用户私聊、团队任务和历史共用此会话。按当前消息决定职责；仅在当前请求明确要求结构化计划或验收时返回对应JSON，正常交流自然回答。模型与提供商使用项目配置。"});
+        let mut params = json!({"cwd":project_root,"approvalPolicy":"never","sandbox":"danger-full-access","model":attempt.model,"config":{"model_reasoning_effort":attempt.reasoning_effort,"model_reasoning_summary":"auto"},"developerInstructions":"你是该项目的协作成员。同一项目的用户私聊、团队任务和历史共用此会话。按当前消息决定职责；仅在当前请求明确要求结构化计划或验收时返回对应JSON，正常交流自然回答。模型与提供商使用项目配置。"});
         if manager {
             params["sandbox"] = json!("read-only");
             params["approvalPolicy"] = json!("untrusted");
@@ -741,7 +741,7 @@ impl Runner {
         } else {
             json!({"type":"dangerFullAccess"})
         };
-        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"cwd":root,"model":attempt.model,"effort":attempt.reasoning_effort,"approvalPolicy":if manager{"untrusted"}else{"never"},"sandboxPolicy":sandbox}))?;
+        let turn=client.rpc("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"cwd":root,"model":attempt.model,"effort":attempt.reasoning_effort,"summary":"auto","approvalPolicy":if manager{"untrusted"}else{"never"},"sandboxPolicy":sandbox}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 项目运行 ID 缺失")?

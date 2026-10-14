@@ -6,7 +6,7 @@ import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBus
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
 import { plainThought, thoughtFlow } from './thought_flow';
-import { withMath } from './math';
+import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
@@ -577,8 +577,8 @@ function renderMessage(message: Message, includeDetails = true) {
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
   const bodyHtml = flow?.length
-    ? flow.map((part, index) => part.kind === 'thought' ? thoughtBlock(part.text, streaming && index === flow.length - 1) : `<div class="bubble">${withMath(attachmentText(part.text), escape)}</div>`).join('')
-    : `<div class="bubble">${(own ? escape : (value: string) => withMath(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>`;
+    ? flow.map((part, index) => part.kind === 'thought' ? thoughtBlock(part.text, streaming && index === flow.length - 1) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('')
+    : `<div class="bubble${own ? '' : ' markdown'}">${(own ? escape : (value: string) => agentMarkdown(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>`;
   return `<article class="message ${own ? 'own' : 'agent-message'} ${includeDetails ? '' : 'project-team-message'}" data-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="0">${includeDetails ? '' : `${portrait}<div class="project-team-message-body">`}<div class="message-author"><strong>${own ? '你' : escape(member(message.sender_id)?.name || '成员')}</strong><time>${time(message.created_at)}</time></div>${thoughtHtml}${toolsHtml}${bodyHtml}${attachmentHtml(message.content,message.conversation_id,escape)}<div class="message-delivery">${icon('check')}${labels[message.status]}</div>${includeDetails ? '' : '</div>'}</article>`;
 }
 

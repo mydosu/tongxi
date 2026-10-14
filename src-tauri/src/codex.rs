@@ -947,7 +947,8 @@ impl Runtime {
             (model, effort)
         };
         params["model"] = json!(model);
-        params["config"] = json!({"model_reasoning_effort":effort});
+        // 有的模型默认不出思考摘要（summary=none），同席就看不到思考；显式要 auto。
+        params["config"] = json!({"model_reasoning_effort":effort,"model_reasoning_summary":"auto"});
         if let Some(server) =
             crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
         {
@@ -984,7 +985,7 @@ impl Runtime {
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, true)?;
         let user_message = run_ref(&self.inner.lock().unwrap().runs, run_id)
             .map(|run| run.snapshot.record.user_message_id.clone());
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":user_message,"input":input,"model":model,"effort":effort,"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":user_message,"input":input,"model":model,"effort":effort,"summary":"auto","approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?

@@ -235,6 +235,16 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .agent-message { margin-left: 0; margin-right: auto; }
 .agent-message .message-author, .agent-message .message-delivery { justify-content: flex-start; }
 .agent-message .bubble { background: #fff; border-color: #dddfe3; border-radius: 2px 12px 12px 12px; color: #383d45; }
+.bubble.markdown { white-space: normal; }
+.bubble.markdown p { margin: 0 0 10px; }
+.bubble.markdown > :last-child { margin-bottom: 0; }
+.bubble.markdown h3 { font-size: 15px; font-weight: 600; margin: 14px 0 8px; }
+.bubble.markdown ul, .bubble.markdown ol { padding-left: 22px; margin: 6px 0 10px; }
+.bubble.markdown li { margin: 2px 0; }
+.bubble.markdown blockquote { margin: 6px 0; padding-left: 12px; border-left: 3px solid #dde1e6; color: #6b7582; }
+.bubble.markdown code { padding: 1px 4px; border-radius: 4px; background: #f2f4f7; color: #57677b; font: .9em 'Cascadia Code', Consolas, monospace; }
+.bubble.markdown pre { margin: 8px 0; padding: 11px 13px; border-radius: 7px; background: #f7f8fa; overflow: auto; white-space: pre; font-size: 12.5px; line-height: 1.7; }
+.bubble.markdown pre code { padding: 0; background: transparent; }
 .composer-actions { display: flex; gap: 8px; align-items: center; }
 .live-settings { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 0 4px; flex-shrink: 0; }
 .live-settings label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #727c8b; min-width: 0; }
