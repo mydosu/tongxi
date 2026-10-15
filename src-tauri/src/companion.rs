@@ -128,7 +128,7 @@ impl Store {
             return Err("Key 来源无效".into());
         }
         if let Some(avatar) = &input.avatar {
-            if !avatar.is_empty() && (!avatar.starts_with("data:image/") || avatar.len() > 400_000) {
+            if !avatar.is_empty() && !crate::avatars::valid(avatar) {
                 return Err("头像需要是图片，且不超过 300KB".into());
             }
         }

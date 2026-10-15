@@ -90,7 +90,13 @@ export async function companionDialog(host: Host & { saved: () => Promise<void> 
   const source = form.querySelector<HTMLSelectElement>('[name=key_source]')!;
   source.value = config.key_source;
   const preview = form.querySelector<HTMLElement>('[data-avatar-preview]')!;
-  const paintAvatar = () => { preview.style.backgroundImage = avatar ? `url('${avatar}')` : ''; preview.textContent = avatar ? '' : (form.querySelector<HTMLInputElement>('[name=name]')!.value.trim()[0] || '伴'); };
+  const paintAvatar = () => {
+    const solid = /^color:#[0-9a-f]{6}$/i.test(avatar || '') ? avatar!.slice(6) : '';
+    preview.style.backgroundImage = avatar && !solid ? `url('${avatar}')` : '';
+    preview.style.backgroundColor = solid;
+    preview.style.color = solid ? '#fff' : '';
+    preview.textContent = avatar && !solid ? '' : (form.querySelector<HTMLInputElement>('[name=name]')!.value.trim()[0] || '伴');
+  };
   const paintKey = () => form.querySelectorAll<HTMLElement>('[data-key]').forEach(block => { block.hidden = block.dataset.key !== source.value; });
   paintAvatar(); paintKey();
   source.addEventListener('change', paintKey);
