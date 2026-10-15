@@ -126,8 +126,16 @@ def main() -> int:
         expect(page.locator("#project-member-settings")).to_be_visible()
         page.wait_for_timeout(400)
         check("project settings show the extra seat as its own row", page.locator('.project-member-settings-row.seat-row[data-settings-seat="codex-win-2"]').count() == 1)
+        name = page.locator('[data-seat-rename="codex-win-2"]')
+        name.fill("审稿")
+        name.press("Enter")
+        expect(page.locator('[data-project-module="codex-win-2"]')).to_contain_text("审稿", timeout=10000)
+        check("seat renamed inline and the sidebar follows", True)
         shot("member-settings")
         page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+        chats = sd.ipc(page, "get_conversation", id=room["id"])["project_agent_chats"]
+        check("renamed seat label is stored", any(c["agent_id"] == "codex-win-2" and c.get("label") == "审稿" for c in chats), chats)
         check("sidebar lists the seat's own chat", page.locator('[data-project-module="codex-win-2"]').count() == 1)
 
         # 已归档的项目群不再占着目录：可以改名沿用，也可以「解除登记」。

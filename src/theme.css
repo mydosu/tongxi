@@ -345,3 +345,8 @@ html[data-hud] .chat-tools { display: none; }
 .registered-project { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .registered-project #release-project { flex: none; color: #ad6659; }
 .registered-project #release-project[data-armed="1"] { font-weight: 600; }
+.project-member-settings-row.seat-row .seat-name { width: 150px; padding: 4px 8px; border: 1px solid transparent; border-radius: 8px; background: rgb(255 255 255 / .5);
+  font: inherit; font-size: 14px; font-weight: 500; color: #4d567c; transition: border-color .15s, background .15s; }
+.project-member-settings-row.seat-row .seat-name:hover { border-color: rgb(165 152 216 / .4); }
+.project-member-settings-row.seat-row .seat-name:focus { outline: none; border-color: rgb(165 152 216 / .7); background: #fff; box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
+.project-member-settings-row.seat-row .seat-of { font-size: 11px; font-weight: 400; color: #8a90ad; }

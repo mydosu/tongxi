@@ -265,6 +265,31 @@ impl Store {
     }
 
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
+    /// 给额外席位改名：调度、侧栏和席位专属会话的标题都用新名字。
+    pub fn rename_project_seat(&mut self, room: &str, seat: &str, label: &str) -> Result<String> {
+        let label: String = label.trim().chars().filter(|c| !c.is_control()).take(20).collect();
+        if label.is_empty() {
+            return Err("席位名不能为空".into());
+        }
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE project_seats SET label=?1 WHERE conversation_id=?2 AND seat_id=?3",
+                params![label, room, seat],
+            )
+            .map_err(|_| "席位改名失败")?;
+        if changed == 0 {
+            return Err("只能给额外开的席位改名".into());
+        }
+        if let (Some(project), Some(chat)) = (
+            self.conversation_project(room)?,
+            self.project_agent_chats(room)?.into_iter().find(|chat| chat.agent_id == seat),
+        ) {
+            self.rename(&chat.conversation_id, &format!("{} · {label}", project.name))?;
+        }
+        Ok(label)
+    }
+
     pub fn remove_project_seat(&mut self, room: &str, seat: &str) -> Result<()> {
         if base_agent(seat) == seat || !is_executor(seat) {
             return Err("只能撤掉额外开的席位".into());
@@ -416,6 +441,16 @@ pub fn remove_project_seat(
     let mut store = runtime.store.lock().unwrap();
     store.remove_project_seat(&conversation_id, &seat_id)?;
     store.detail(&conversation_id)
+}
+
+#[tauri::command]
+pub fn rename_project_seat(
+    runtime: tauri::State<'_, Arc<crate::projects::Runtime>>,
+    conversation_id: String,
+    seat_id: String,
+    label: String,
+) -> Result<String> {
+    runtime.store.lock().unwrap().rename_project_seat(&conversation_id, &seat_id, &label)
 }
 
 /// 一次保存多行绑定；任一行失败就停下并报出是哪位成员，已保存的行保留。
@@ -639,6 +674,19 @@ mod tests {
         assert_eq!(store.workflows(&room).unwrap().len(), 1, "协作历史保留");
         let fresh = store.register_project("另一个", root.to_str().unwrap()).unwrap();
         assert_ne!(fresh.id, project.id, "目录空出来，能登记成新项目");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn extra_seats_can_be_renamed_but_primary_seats_cannot() {
+        let (mut store, room, base) = room();
+        let seat = store.add_project_seat(&room, "codex-win", None).unwrap();
+        assert_eq!(store.rename_project_seat(&room, &seat, "  审稿  ").unwrap(), "审稿");
+        let chat = store.project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == seat).unwrap();
+        assert_eq!(chat.label.as_deref(), Some("审稿"));
+        assert_eq!(store.conversation(&chat.conversation_id).unwrap().title, "绑定项目 · 审稿", "专属会话标题跟着改");
+        assert!(store.rename_project_seat(&room, &seat, " ").is_err());
+        assert!(store.rename_project_seat(&room, "codex-win", "主力").is_err(), "主席位保持成员本名");
         let _ = std::fs::remove_dir_all(base);
     }
 }
