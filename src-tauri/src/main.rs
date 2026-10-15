@@ -1427,6 +1427,7 @@ fn main() {
             projects::cancel_project_agent,
             projects::post_project_team_message,
             projects::set_project_summary,
+            projects::release_project,
             services::service_inventory,
             services::check_service_update,
             services::prepare_service_update,

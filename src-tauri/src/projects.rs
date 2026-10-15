@@ -1766,6 +1766,12 @@ pub fn post_project_team_message(
     runtime.post_team_message(&conversation_id, &content)
 }
 #[tauri::command]
+pub fn release_project(runtime: State<'_, Arc<Runtime>>, project_id: String) -> Result<Vec<Project>> {
+    let mut store = runtime.store.lock().unwrap();
+    store.release_project(&project_id)?;
+    store.projects()
+}
+#[tauri::command]
 pub fn set_project_summary(
     runtime: State<'_, Arc<Runtime>>,
     project_id: String,

@@ -342,3 +342,6 @@ html:not([data-hud]) .chat-heading { flex: 1; }
 .discussion-controls.tool-pop.open:not([hidden]) { display: block !important; border-bottom: 1px solid rgb(255 255 255 / .95); }
 .tool-pop .discussion-status, .tool-pop #live-setting-status { flex-basis: 100%; }
 html[data-hud] .chat-tools { display: none; }
+.registered-project { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.registered-project #release-project { flex: none; color: #ad6659; }
+.registered-project #release-project[data-armed="1"] { font-weight: 600; }

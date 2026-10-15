@@ -130,6 +130,28 @@ def main() -> int:
         page.keyboard.press("Escape")
         check("sidebar lists the seat's own chat", page.locator('[data-project-module="codex-win-2"]').count() == 1)
 
+        # 已归档的项目群不再占着目录：可以改名沿用，也可以「解除登记」。
+        sd.ipc(page, "archive_conversation", id=room["id"], archived=True)
+        renamed = sd.ipc(page, "register_project", name="改个名字", root=str(root))
+        check("archived group's directory can be registered under a new name", renamed["name"] == "改个名字", renamed["name"])
+        other = sd.ipc(page, "create_conversation", title="解除登记验收", kind="group", members=["codex-win", "hermes-win"])
+        page.evaluate("() => location.reload()")
+        page.wait_for_timeout(1200)
+        sd.choose(page, other["id"])
+        page.locator("#bind-project").click()
+        page.locator("#project-choice").select_option(renamed["id"])
+        release = page.locator("#release-project")
+        check("release button shows for a registered project", release.is_visible())
+        release.click(); release.click()
+        expect(page.locator(f'#project-choice option[value="{renamed["id"]}"]')).to_have_count(0, timeout=10000)
+        check("released project leaves the list and pre-fills its directory", page.locator("#project-root").input_value() == str(root), page.locator("#project-root").input_value())
+        shot("release-project")
+        page.locator("#project-name").fill("重新登记")
+        page.locator("#project-form button.primary").click()
+        page.wait_for_function("() => !document.querySelector('#modal').open || document.querySelector('#project-form .form-error').textContent", timeout=30000)
+        bound = sd.ipc(page, "get_conversation", id=other["id"]).get("project") or {}
+        check("freed directory binds as a new project", bound.get("name") == "重新登记" and bound.get("id") != renamed["id"], bound.get("name"))
+
         # 窄窗口：成员栏改成浮出的抽屉，头像堆照样能开合。
         page.set_viewport_size({"width": 940, "height": 820})
         page.wait_for_timeout(300)
