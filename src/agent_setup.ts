@@ -29,13 +29,13 @@ export function setupBanner(escape: Escape) {
   return `<section class="setup-center" id="setup-center"><div class="setup-copy"><span class="eyebrow">接入成员</span><strong>${envs.length ? `本机找到 ${ready}/${envs.length} 位成员` : '正在扫描本机…'}</strong><small>同席自动发现本机装好的 Codex、Claude Code、Hermes、DSH 并连上；没装的点「下载安装」，会在终端里跑官方安装命令，装好接着做登录。伴侣用你自己的服务接入。</small></div><div class="setup-actions"><label class="setup-auto"><input type="checkbox" id="auto-connect" ${autoConnectEnabled() ? 'checked' : ''}>启动时自动接入</label><button type="button" class="secondary" id="setup-rescan">重新扫描</button><button type="button" class="primary" id="setup-connect-all" ${ready ? '' : 'disabled'}>接入已安装的成员</button></div>${envs.length ? '' : `<p class="model-setting-note">${escape('扫描只读取安装位置和版本，不会连接或改动任何配置。')}</p>`}</section>`;
 }
 
-/// 每张成员卡上的安装状态与按钮。
+/// 每张成员卡上的安装状态（只是状态文字；安装、登录、说明这些操作在卡片按钮和「更多」里）。
 export function setupLine(id: string, escape: Escape) {
-  if (id === 'albion-wsl') return `<div class="setup-line"><span>用你自己的伴侣服务接入（OpenAI 兼容接口）</span><button type="button" class="secondary" data-companion-config>配置伴侣</button></div>`;
+  if (id === 'albion-wsl') return '<div class="setup-line installed"><span class="fact-label">接入</span><span>你自己的伴侣服务（OpenAI 兼容接口）</span></div>';
   const env = envs.find(item => item.id === id);
-  if (!env) return '<div class="setup-line"><span>扫描中…</span></div>';
-  const where = env.installed ? `已安装${env.version ? ` · ${escape(env.version)}` : ''}` : '未安装';
-  return `<div class="setup-line${env.installed ? ' installed' : ''}"><span title="${escape(env.executable || '')}">${where}${env.missing ? ` · <em>${escape(env.missing)}</em>` : ''}</span><button type="button" class="secondary" data-agent-install="${escape(id)}" ${env.installed ? 'hidden' : ''}>下载安装</button><button type="button" class="secondary" data-agent-setup="${escape(id)}" ${env.installed ? '' : 'hidden'} title="${escape(env.setup_command)}">登录 / 初次配置</button><a class="text-button" href="${escape(env.docs)}" target="_blank" rel="noreferrer">官方说明</a></div>`;
+  if (!env) return '<div class="setup-line"><span class="fact-label">安装</span><span>扫描中…</span></div>';
+  const state = env.installed ? `已安装${env.version ? ` · ${escape(env.version)}` : ''}` : '未安装';
+  return `<div class="setup-line${env.installed ? ' installed' : ''}" title="${escape(env.executable || '')}"><span class="fact-label">安装</span><span>${state}${env.missing ? ` · <em>${escape(env.missing)}</em>` : ''}</span></div>`;
 }
 
 /// 安装前把要执行的命令给用户看，确认后才开终端。

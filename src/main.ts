@@ -45,7 +45,9 @@ const icon = (name: string, className = '') => `<svg class="icon ${className}" v
 const escape = (value: string | number) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 // 伴侣上传了头像就用头像（data URL 只含 base64 字符，可以直接放进 style）。
 const portrait = (agent: Agent) => agent.avatar && /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+$/.test(agent.avatar) ? agent.avatar : '';
-const avatar = (agent: Agent, size = '') => portrait(agent) ? `<span class="avatar albion-portrait ${size}" style="background-image:url('${portrait(agent)}')" aria-hidden="true"></span>` : isSeat(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${member(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatSlot(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${agent.name[0]}</span>`;
+const avatar = (agent: Agent, size = '') => portrait(agent) ? `<span class="avatar albion-portrait ${size}" style="background-image:url('${portrait(agent)}')" aria-hidden="true"></span>` : seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
+/// 同一成员在当前项目里开了多个会话时的编号（1、2、3…）；只有一个会话就不编号。
+const seatNumber = (id: string) => isSeat(id) ? seatSlot(id) : detail?.project_agent_chats?.some(chat => isSeat(chat.agent_id) && baseAgent(chat.agent_id) === id) ? '1' : '';
 const brand = `<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><defs><linearGradient id="brand-silver" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7c8590"/><stop offset="1" stop-color="#4a5158"/></linearGradient></defs><rect width="40" height="40" rx="12" fill="url(#brand-silver)"/><path d="M13 13h14v14H13z" stroke="#f0f3f6" stroke-width="1.2" fill="none"/><circle cx="13" cy="13" r="3" fill="#e7ca87"/><circle cx="27" cy="13" r="3" fill="#e2efe5"/><circle cx="27" cy="27" r="3" fill="#97bce0"/><circle cx="13" cy="27" r="3" fill="#e5b8b5"/></svg>`;
 
 let agents: Agent[] = [];
@@ -75,7 +77,7 @@ const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, Runti
   get: (target, key) => typeof key === 'string' ? target[baseAgent(key)] : undefined,
   set: (target, key, value) => { target[baseAgent(String(key))] = value; return true; },
 });
-const seatLabels = new Map<string, string>();
+
 const currentAgentId = () => detail?.conversation.kind === 'direct' ? detail.conversation.members[0] : detail?.conversation.kind === 'group' && activeProjectModule !== 'team' ? activeProjectModule : 'codex-win';
 const activeProjectAgent = () => detail?.conversation.kind === 'group' && detail.project && activeProjectModule !== 'team' && detail.project_agent_chats.some(chat => chat.agent_id === activeProjectModule) ? activeProjectModule : null;
 const currentRuntime = () => runtimes[currentAgentId()] || emptyRuntime();
@@ -343,9 +345,16 @@ function toast(text: string, error = false) {
 function errorText(error: unknown) { return typeof error === 'string' ? error : error instanceof Error ? error.message : '操作未完成，请重试'; }
 // agents 要等 boot 里那次 list_agents 回来才有；在这之前事件回调（runtime state）也会
 // 走到这里，取不到成员就用 id 兜底——不能让它抛 "reading 'name'"，那会在 HUD 打开时弹错。
+/// 成员名分两级：globalMember 是成员本身（「成员与服务」里的名字）；member 在项目群里优先用
+/// 本项目给这个会话起的名字（后端算好的 name，含多会话编号），其他地方等同 globalMember。
 function member(id: string): Agent {
+  const chat = detail?.project ? detail.project_agent_chats?.find(item => item.agent_id === id) : null;
+  const global = globalMember(id);
+  return chat?.name ? { ...global, name: chat.name } : global;
+}
+function globalMember(id: string): Agent {
   const owner = isSeat(id) ? agents.find(agent => agent.id === baseAgent(id)) : null;
-  if (owner) return { ...owner, id, name: seatLabels.get(id) || `${owner.name} ${seatSlot(id)}号` };
+  if (owner) return { ...owner, id, name: `${owner.name} ${seatSlot(id)}号` };
   return agents.find(agent => agent.id === id) || { id, name: id, subtitle: '', role: '', location: '', accent: '', status: 'not_connected' };
 }
 function time(timestamp: number) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(timestamp); }
@@ -362,7 +371,7 @@ function renderList() {
   const visible = conversations.filter(conversation => filter === 'all' || conversation.kind === filter);
   const list = document.querySelector<HTMLDivElement>('#conversation-list')!;
   list.innerHTML = visible.length ? visible.map(conversation => {
-    const agent = conversation.kind === 'direct' ? member(conversation.members[0]) : null;
+    const agent = conversation.kind === 'direct' ? globalMember(conversation.members[0]) : null;
     const rooms = conversation.kind === 'group' ? projectRoomsByGroup.get(conversation.id) || [] : [];
     const expanded = conversation.id === expandedProjectGroup && rooms.length > 0;
     const active = screen === 'chat' && conversation.id === selectedId;
@@ -372,7 +381,7 @@ function renderList() {
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(member(chat.agent_id).name)} 专属会话</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -562,7 +571,6 @@ async function selectConversation(id: string) {
     if (generation !== detailGeneration || screen !== 'chat') return;
     detail = result;
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
-    for (const chat of result.project_agent_chats || []) if (chat.label) seatLabels.set(chat.agent_id, chat.label);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
     activeProjectModule = (savedModule === 'team' || savedModule === 'progress' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
     expandedProjectGroup = result.project ? id : '';
@@ -1372,7 +1380,7 @@ setInterval(()=>{
 
 async function configureProjectMembers() {
   if (!detail?.project) return;
-  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},renamed:(seat,label)=>{seatLabels.set(seat,label);renderList();toast(`席位已改名为「${label}」`);}}); }
+  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
   catch(error){toast(errorText(error),true);}
 }
 
@@ -1866,8 +1874,9 @@ function serviceStatusHtml(info: ServiceInfo | undefined, snapshot: RuntimeSnaps
   const connection = info?.connection ?? snapshot.connection;
   const busy = info ? info.busy : snapshot.connection === 'connecting' || busySnapshot(snapshot);
   const label = connection === 'connected' ? '接口已连接' : connection === 'connecting' ? '正在连接' : '未连接';
-  const update = info ? `<span data-service-update>更新：${info.update_state === 'unchecked' ? '未检测' : escape(info.update_state)}</span>` : '';
-  return `<span class="status-dot ${connection === 'connected' ? '' : 'muted'}"></span>${label}${busy ? ' · 运行中' : ''}<span>${serviceVersionText(info, snapshot)}</span>${update}`;
+  const update = info ? (info.update_state === 'unchecked' ? '未检测' : escape(info.update_state)) : '未检测';
+  // 状态块两行对齐：连接（含运行版本）/ 更新；安装那一行由接入扫描画在上面。
+  return `<div class="fact-row"><span class="fact-label">连接</span><span class="status-dot ${connection === 'connected' ? '' : 'muted'}"></span><span>${label}${busy ? ' · 运行中' : ''}</span><span class="fact-sub">${serviceVersionText(info, snapshot)}</span></div><div class="fact-row"><span class="fact-label">更新</span><span data-service-update>${update}</span></div>`;
 }
 
 // The backend re-detects the service under its maintenance lock and reports the
@@ -1881,7 +1890,7 @@ function applyCheckResult(card: HTMLElement, agentId: string) {
   const saved = serviceChecks[agentId];
   if (!saved) return;
   const badge = card.querySelector<HTMLElement>('[data-service-update]');
-  if (badge) badge.textContent = saved.badge;
+  if (badge) badge.textContent = saved.badge.replace(/^更新：/, '');
   const host = card.querySelector<HTMLElement>('.service-check-result');
   // 结论行不显示（保留在 DOM 里给验收读），细节挂卡片悬停。
   if (host) { host.innerHTML = saved.detail; host.title = saved.tip; }
@@ -2080,7 +2089,12 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
 function renderServices() {
   disposeProjectTranscript();
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的伴侣</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 伴侣在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="service-grid">${agents.map(agent => `<article class="service-card" data-service-id="${escape(agent.id)}">${avatar(agent, 'large')}<div class="service-card-heading"><h3>${escape(agent.name)}</h3><span>${escape(agent.location)}</span></div><strong>${escape(agent.subtitle)}</strong><p>${escape(agent.role)}</p>${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button><button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button><button data-service-restart class="secondary" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${['dsh-win', 'codex-win'].includes(agent.id) ? `<button data-service-prepare class="secondary" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply class="secondary" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback class="secondary" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div><div class="service-check-result" hidden></div>${['dsh-win', 'codex-win'].includes(agent.id) ? '<div class="service-update" hidden></div>' : ''}</article>`).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
+  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的伴侣</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 伴侣在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="service-grid">${agents.map(agent => {
+    const companion = agent.id === 'albion-wsl';
+    const managed = ['dsh-win', 'codex-win'].includes(agent.id);
+    // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置伴侣、更多）。
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatar(agent, 'large')}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+  }).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   const cards = [...main.querySelectorAll<HTMLElement>('.service-card')];
   const paint = (inventory?: Map<string, ServiceInfo>) => {
@@ -2092,6 +2106,9 @@ function renderServices() {
   };
   paint();
   wireSetup();
+  wireServiceMenus();
+  wireAgentRename();
+  main.querySelectorAll<HTMLElement>('.service-card').forEach(paintInstall);
   if (!scanned().length) void scanAgents().then(paintSetup).catch(error => toast(errorText(error), true));
   // Read-only inventory merge; on failure keep the runtime-based cards instead of blanking the screen.
   // 失败要说出来：静默 catch 只会让「卡片停在占位符」变成一个查不出的幽灵。
@@ -2137,8 +2154,63 @@ document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.t
 function paintSetup() {
   if (screen !== 'services') return;
   main.querySelector('#setup-center')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: setupBanner(escape) }).firstElementChild!);
-  for (const card of main.querySelectorAll<HTMLElement>('.service-card')) card.querySelector('.setup-line')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: setupLine(card.dataset.serviceId!, escape) }).firstElementChild!);
+  for (const card of main.querySelectorAll<HTMLElement>('.service-card')) { card.querySelector('.setup-line')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: setupLine(card.dataset.serviceId!, escape) }).firstElementChild!); paintInstall(card); }
   wireSetup();
+}
+
+function paintInstall(card: HTMLElement) {
+  const env = scanned().find(item => item.id === card.dataset.serviceId);
+  const install = card.querySelector<HTMLButtonElement>('[data-agent-install]');
+  const connect = card.querySelector<HTMLButtonElement>('[data-service-connect]');
+  if (install && connect) { install.hidden = !env || env.installed; connect.hidden = !!env && !env.installed; }
+  const setup = card.querySelector<HTMLButtonElement>('[data-agent-setup]');
+  if (setup && env) { setup.title = `在终端里运行：${env.setup_command}`; setup.disabled = !env.installed; }
+  const docs = card.querySelector<HTMLAnchorElement>('[data-agent-docs]');
+  if (docs && env) docs.href = env.docs;
+}
+
+/// 「更多」菜单：点开 / 点外面或 Esc 收起；同一时刻只开一个。
+function wireServiceMenus() {
+  const close = () => main.querySelectorAll<HTMLElement>('.service-more.open').forEach(menu => { menu.classList.remove('open'); menu.querySelector('[data-service-more]')?.setAttribute('aria-expanded', 'false'); });
+  main.querySelectorAll<HTMLButtonElement>('[data-service-more]').forEach(button => button.onclick = event => {
+    event.stopPropagation();
+    const menu = button.closest<HTMLElement>('.service-more')!;
+    const opening = !menu.classList.contains('open');
+    close();
+    if (opening) { menu.classList.add('open'); button.setAttribute('aria-expanded', 'true'); }
+  });
+  main.querySelectorAll<HTMLElement>('.service-menu').forEach(menu => menu.addEventListener('click', event => { if ((event.target as HTMLElement).closest('button:not(:disabled), a')) setTimeout(close, 0); }));
+  const outside = (event: Event) => {
+    if (screen !== 'services') { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', key, true); return; }
+    if (!(event.target as HTMLElement).closest?.('.service-more')) close();
+  };
+  const key = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+  document.addEventListener('pointerdown', outside, true);
+  document.addEventListener('keydown', key, true);
+}
+
+/// 改成员名（全局）：卡片标题就地变输入框，回车或点开保存，Esc 放弃，清空恢复默认名。
+function wireAgentRename() {
+  main.querySelectorAll<HTMLButtonElement>('[data-rename-agent]').forEach(button => button.onclick = () => {
+    const card = button.closest<HTMLElement>('.service-card')!;
+    const title = card.querySelector<HTMLElement>('[data-agent-name]')!;
+    const id = button.dataset.renameAgent!;
+    const input = Object.assign(document.createElement('input'), { className: 'agent-name-input', value: globalMember(id).name, maxLength: 20 });
+    input.setAttribute('aria-label', '成员名');
+    title.replaceWith(input); input.focus(); input.select();
+    let done = false;
+    const finish = async (save: boolean) => {
+      if (done) return; done = true;
+      const name = input.value.trim();
+      if (save && name !== globalMember(id).name) {
+        try { const saved = await invoke<string>('rename_agent', { agentId: id, name }); toast(`已改名为「${saved}」`); await reloadAgents(); return; }
+        catch (error) { toast(errorText(error), true); }
+      }
+      input.replaceWith(title);
+    };
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void finish(true); } if (event.key === 'Escape') { event.preventDefault(); void finish(false); } });
+    input.addEventListener('blur', () => void finish(true));
+  });
 }
 
 function wireSetup() {

@@ -412,9 +412,11 @@ impl Runtime {
                         })
                         .map(|chat| (chat.agent_id, chat.label)),
                 )
-                .map(|(agent, label)| {
+                .map(|(agent, _)| {
                     let runtime = self.snapshot(&agent);
-                    json!({"agent_id":agent,"base_agent":crate::project_store::base_agent(&agent),"seat_label":label,"connection":runtime.connection,"models":runtime.models,"project_settings":self.member_settings(&workflow.conversation_id,&agent).ok()})
+                    // display_name：用户给这位成员 / 这个席位起的名字，原话里可能用它称呼。
+                    let display = self.store.lock().unwrap().seat_name(&workflow.conversation_id, &agent);
+                    json!({"agent_id":agent,"base_agent":crate::project_store::base_agent(&agent),"display_name":display,"connection":runtime.connection,"models":runtime.models,"project_settings":self.member_settings(&workflow.conversation_id,&agent).ok()})
                 })
                 .collect::<Vec<_>>();
             self.store

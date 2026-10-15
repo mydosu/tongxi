@@ -258,7 +258,7 @@ html:not([data-hud]) .main.view-enter > :nth-child(2) { animation-delay: .05s; }
 .project-module-avatar .seat-badge { min-width: 11px; height: 11px; font-size: 7px; line-height: 11px; right: -3px; bottom: -3px; }
 .seat-plus { flex: none; width: 28px; height: 28px; border-radius: 9px; font-size: 16px; line-height: 1; color: #6c62a8; background: rgb(255 255 255 / .6); border: 1px solid rgb(255 255 255 / .9); }
 .seat-plus:hover { background: rgb(255 255 255 / .95); box-shadow: 0 2px 8px rgb(90 96 160 / .16); }
-.session-bind-row[data-bind-target="seat"] { margin-left: 22px; border-style: dashed; border-color: rgb(165 152 216 / .45); }
+/* 同一成员的几个会话平行排列，样式一致，不分主次。 */
 .project-seat-settings { display: grid; gap: 8px; border: 1px solid rgb(255 255 255 / .85); border-radius: 12px; padding: 12px 14px 14px; margin: 2px 0 16px; background: rgb(255 255 255 / .45); }
 .project-seat-settings legend { color: #4d567c; font-size: 13px; font-weight: 600; padding: 0 5px; }
 .project-seat-settings small { color: #8a90ad; font-size: 11px; line-height: 1.6; }
@@ -350,3 +350,46 @@ html[data-hud] .chat-tools { display: none; }
 .project-member-settings-row.seat-row .seat-name:hover { border-color: rgb(165 152 216 / .4); }
 .project-member-settings-row.seat-row .seat-name:focus { outline: none; border-color: rgb(165 152 216 / .7); background: #fff; box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
 .project-member-settings-row.seat-row .seat-of { font-size: 11px; font-weight: 400; color: #8a90ad; }
+
+/* ---------- 成员卡：同一套结构 ---------- */
+html:not([data-hud]) .service-grid { align-items: stretch; }
+html:not([data-hud]) .service-card { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.service-card-head { display: flex; align-items: center; gap: 14px; }
+.service-card-title { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.service-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.service-name h3 { margin: 0; font-size: 17px; font-weight: 600; color: #3a4157; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-card-title strong { font-size: 12px; font-weight: 500; color: #7a82a0; }
+.rename-agent { flex: none; width: 24px; height: 24px; border-radius: 7px; font-size: 13px; color: #9a97c2; opacity: 0; }
+.service-card:hover .rename-agent, .rename-agent:focus-visible { opacity: 1; }
+.rename-agent:hover { background: rgb(255 255 255 / .8); color: #6c62a8; }
+.agent-name-input { width: 100%; max-width: 220px; height: 30px; padding: 0 8px; border: 1px solid rgb(165 152 216 / .7); border-radius: 8px; font: inherit; font-size: 15px; font-weight: 600; color: #3a4157; background: #fff; box-shadow: 0 0 0 3px rgb(165 152 216 / .16); outline: none; }
+.service-location { align-self: flex-start; font-size: 11px; color: #959da8; }
+html:not([data-hud]) .service-role { margin: 0; min-height: 0; font-size: 12px; line-height: 1.7; color: #8a90a8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.service-facts { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: rgb(255 255 255 / .55); border: 1px solid rgb(255 255 255 / .85); }
+.service-facts .setup-line, html:not([data-hud]) .service-facts .service-status { display: contents; }
+.service-facts .setup-line > span:not(.fact-label), .fact-row { font-size: 12px; color: #5d6584; }
+.setup-line, .fact-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.service-facts .setup-line { display: flex; margin: 0; padding: 0; background: none; color: #a06a5a; }
+.service-facts .setup-line.installed > span:not(.fact-label) { color: #4f8a6c; }
+.fact-label { flex: none; width: 30px; font-size: 11px; color: #9a9fb8; }
+.fact-sub { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #9a9fb8; }
+html:not([data-hud]) .service-card .service-status { border: 0; padding: 0; margin: 0; }
+html:not([data-hud]) .service-card > button { width: auto; }
+.service-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: auto; }
+.service-actions > button, .service-more > button { width: 100%; justify-content: center; white-space: nowrap; }
+.service-actions > button[hidden] { display: none; }
+.service-more { position: relative; }
+.service-more > button span { margin-left: 4px; font-size: 11px; transition: transform .18s; }
+.service-more.open > button span { transform: rotate(180deg); }
+.service-menu { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 170px; padding: 6px; border-radius: 12px;
+  background: rgb(251 251 255 / .96); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 16px 40px rgb(70 74 130 / .2); backdrop-filter: blur(20px); }
+.service-more.open .service-menu { display: grid; gap: 2px; animation: modal-in .2s var(--ease); }
+.service-menu > button, .service-menu > a { display: block; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; font-size: 12px; color: #4f5878; text-decoration: none; cursor: pointer; }
+.service-menu > button:hover:not(:disabled), .service-menu > a:hover { background: rgb(236 232 252 / .8); }
+.service-menu > button[hidden] { display: none; }
+.service-menu > button:disabled { color: #b2b5c8; cursor: default; }
+.service-menu-group { padding: 8px 10px 2px; font-size: 10px; color: #9a9fb8; letter-spacing: .5px; border-top: 1px solid var(--glass-line); margin-top: 4px; }
+.service-update:not([hidden]) { display: grid; gap: 2px; font-size: 11px; color: #7a82a0; }
+.service-facts .setup-line > .fact-label { flex: none; min-width: 0; }
+.service-facts .setup-line > span:not(.fact-label) { flex: 0 1 auto; min-width: 0; }
+.service-more > button span { font-size: 10px; }
