@@ -393,3 +393,15 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .service-facts .setup-line > .fact-label { flex: none; min-width: 0; }
 .service-facts .setup-line > span:not(.fact-label) { flex: 0 1 auto; min-width: 0; }
 .service-more > button span { font-size: 10px; }
+
+/* ---------- 项目成员勾选 ---------- */
+.project-roster { display: grid; gap: 8px; border: 1px solid rgb(255 255 255 / .85); border-radius: 12px; padding: 12px 14px 14px; margin: 2px 0 16px; background: rgb(255 255 255 / .45); }
+.project-roster legend { color: #4d567c; font-size: 13px; font-weight: 600; padding: 0 5px; }
+.project-roster small { color: #8a90ad; font-size: 11px; line-height: 1.6; }
+.roster-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.roster-option { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px 6px 8px; border-radius: 999px; border: 1px solid rgb(255 255 255 / .9); background: rgb(255 255 255 / .6); font-size: 12px; color: #4f5878; cursor: pointer; }
+.roster-option:has(input:checked) { background: rgb(232 228 250 / .9); border-color: rgb(165 152 216 / .55); }
+.roster-option:has(input:disabled) { opacity: .6; cursor: default; }
+.roster-option input { accent-color: var(--accent-2); margin: 0; }
+.roster-option .avatar { width: 22px; height: 22px; font-size: 11px; border-radius: 7px; }
+.roster-options [data-roster-save] { margin-left: auto; padding: 6px 12px; }

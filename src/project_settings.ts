@@ -5,7 +5,8 @@ import { isSeat } from './seats';
 
 type Escape=(value:string|number)=>string;
 const effortNames:Record<string,string>={none:'关闭',off:'关闭',low:'低',medium:'中',high:'高',xhigh:'很高',max:'最大',ultra:'Ultra'};
-interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; renamed:(seat:string,label:string)=>void; globalName:(id:string)=>string; }
+interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; renamed:(seat:string,label:string)=>void; globalName:(id:string)=>string; busy:boolean; toast:(text:string,error?:boolean)=>void; avatar:(id:string)=>string; }
+const PROJECT_AGENTS=['codex-win','hermes-win','dsh-win','claude-win'];
 
 export async function projectSettings(detail:ConversationDetail, host:Host) {
   const {escape}=host;
@@ -21,7 +22,7 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     review:available(current?.review.agent,['hermes-win','codex-win','claude-win','dsh-win']),
   };
   const coordinator:RoleChoice={agent:available(detail.project_coordinator?.agent,['hermes-win','codex-win','dsh-win','claude-win']),model:detail.project_coordinator?.model||null,effort:detail.project_coordinator?.effort||null};
-  host.open('项目成员配置','管家按原话协调任务，方案与实际工作交给项目成员。',`<form id="project-member-settings"><fieldset class="project-coordinator-settings"><legend>调度管家</legend><label>协调需求与分工<select data-project-coordinator aria-label="调度管家">${ids.map(id=>`<option value="${escape(id)}" ${coordinator.agent===id?'selected':''}>${escape(host.globalName(id))}</option>`).join('')}</select></label><div data-coordinator-model-controls></div><small>管家用所选成员另开的一个隐藏会话，不占用下面列出的任何一个会话；只调度，不给成员追加业务指示。配置影响接下来启动的协作。</small></fieldset><fieldset class="project-planner-settings"><legend>默认方案者</legend><label>未点名时由谁出方案<select data-project-planner aria-label="默认方案者">${ids.map(id=>`<option value="${escape(id)}" ${initial.plan===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><small>你在消息里指定的成员、模型和任务范围优先。</small></fieldset><fieldset class="project-seat-settings"><legend>同一成员多开会话</legend><div class="seat-add-row"><select data-seat-agent aria-label="成员">${ids.map(id=>`<option value="${escape(id)}">${escape(host.globalName(id))}</option>`).join('')}</select><input data-seat-label maxlength="20" placeholder="新会话的名字（可选，如：快手、审稿）"><button type="button" class="secondary" data-seat-add>再开一个会话</button></div><small>同一成员最多开 4 个会话，彼此平行、不分主次：每个都是独立的原生会话，模型可以相同也可以不同，调度把它们当作不同成员分工。名字只在本项目里生效，成员本身的名字在「成员与服务」里改。</small></fieldset>${chats.map(chat=>{
+  host.open('项目成员配置','管家按原话协调任务，方案与实际工作交给项目成员。',`<form id="project-member-settings"><fieldset class="project-roster"><legend>项目成员</legend><div class="roster-options">${PROJECT_AGENTS.map(id=>`<label class="roster-option"><input type="checkbox" data-roster value="${escape(id)}" ${detail.conversation.members.includes(id)?'checked':''} ${host.busy?'disabled':''}>${host.avatar(id)}<span>${escape(host.globalName(id))}</span></label>`).join('')}<button type="button" class="secondary" data-roster-save ${host.busy?'disabled':''}>更新成员</button></div><small>${host.busy?'有协作正在进行，结束或停止后才能调整成员。':'勾选参加这个项目的成员（至少两位）。新加入的成员会自动建好专属会话；移出的成员会话和历史都保留，加回来就恢复。'}</small></fieldset><fieldset class="project-coordinator-settings"><legend>调度管家</legend><label>协调需求与分工<select data-project-coordinator aria-label="调度管家">${ids.map(id=>`<option value="${escape(id)}" ${coordinator.agent===id?'selected':''}>${escape(host.globalName(id))}</option>`).join('')}</select></label><div data-coordinator-model-controls></div><small>管家用所选成员另开的一个隐藏会话，不占用下面列出的任何一个会话；只调度，不给成员追加业务指示。配置影响接下来启动的协作。</small></fieldset><fieldset class="project-planner-settings"><legend>默认方案者</legend><label>未点名时由谁出方案<select data-project-planner aria-label="默认方案者">${ids.map(id=>`<option value="${escape(id)}" ${initial.plan===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><small>你在消息里指定的成员、模型和任务范围优先。</small></fieldset><fieldset class="project-seat-settings"><legend>同一成员多开会话</legend><div class="seat-add-row"><select data-seat-agent aria-label="成员">${ids.map(id=>`<option value="${escape(id)}">${escape(host.globalName(id))}</option>`).join('')}</select><input data-seat-label maxlength="20" placeholder="新会话的名字（可选，如：快手、审稿）"><button type="button" class="secondary" data-seat-add>再开一个会话</button></div><small>同一成员最多开 4 个会话，彼此平行、不分主次：每个都是独立的原生会话，模型可以相同也可以不同，调度把它们当作不同成员分工。名字只在本项目里生效，成员本身的名字在「成员与服务」里改。</small></fieldset>${chats.map(chat=>{
     const agent=chat.conversation.members[0],seat=seatOf(chat),runtime=host.snapshot(agent),settings=chat.sessions[0];
     const model=settings.model || runtime.default_model || '';
     const provider=selectedProvider(runtime.models,model);
@@ -62,6 +63,18 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     try{await work();host.modal.close();await host.reopen();}
     catch(error){form.querySelector('.form-error')!.textContent=String(error);form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=false;});}
   };
+  // 增减项目成员：立即生效（协作运行中锁住）；移出的若是调度管家，会回到默认管家。
+  form.querySelector('[data-roster-save]')!.addEventListener('click',()=>{
+    const chosen=[...form.querySelectorAll<HTMLInputElement>('[data-roster]:checked')].map(input=>input.value);
+    if(chosen.length<2){form.querySelector('.form-error')!.textContent='项目至少需要两位成员';return;}
+    const others=detail.conversation.members.filter(id=>!PROJECT_AGENTS.includes(id));
+    const dropped=detail.conversation.members.filter(id=>PROJECT_AGENTS.includes(id)&&!chosen.includes(id));
+    void seatAction(async()=>{
+      await invoke('update_group_members',{id:detail.conversation.id,members:[...chosen,...others]});
+      if(dropped.includes(coordinator.agent))host.toast(`调度管家 ${host.globalName(coordinator.agent)} 已移出，已换回默认管家`);
+      else host.toast('项目成员已更新');
+    });
+  });
   form.querySelector('[data-seat-add]')!.addEventListener('click',()=>void seatAction(()=>invoke('add_project_seat',{conversationId:detail.conversation.id,agentId:form.querySelector<HTMLSelectElement>('[data-seat-agent]')!.value,label:form.querySelector<HTMLInputElement>('[data-seat-label]')!.value.trim()||null})));
   // 席位改名：失焦或回车就保存，不用等「保存项目配置」。
   form.querySelectorAll<HTMLInputElement>('[data-seat-rename]').forEach(input=>{

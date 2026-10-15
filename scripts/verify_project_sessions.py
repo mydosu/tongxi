@@ -149,6 +149,23 @@ def main() -> int:
         check("coordinator is labelled by the member, not one of its sessions", coordinator_label == "Codex", coordinator_label)
         shot("member-settings-parallel")
         page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+        # 项目开始前增减成员：移出 Claude 后它从项目里消失；加回来会话恢复；调度管家（Codex）不受影响。
+        page.locator("[data-project-configure]").first.click()
+        expect(page.locator(".project-roster")).to_be_visible()
+        page.locator('[data-roster][value="claude-win"]').uncheck()
+        page.locator("[data-roster-save]").click()
+        expect(page.locator('[data-project-module="claude-win"]')).to_have_count(0, timeout=15000)
+        expect(page.locator(".project-roster")).to_be_visible(timeout=15000)
+        check("removed member leaves the project", page.locator('[data-settings-seat="claude-win"]').count() == 0)
+        shot("roster-removed")
+        page.locator('[data-roster][value="claude-win"]').check()
+        page.locator("[data-roster-save]").click()
+        expect(page.locator('[data-project-module="claude-win"]')).to_have_count(1, timeout=15000)
+        check("member added back gets its session again", True)
+        coordinator_agent = (sd.ipc(page, "get_conversation", id=room["id"]).get("project_coordinator") or {}).get("agent")
+        check("coordinator kept when it was not removed", coordinator_agent == "codex-win", coordinator_agent)
+        page.keyboard.press("Escape")
         check("sidebar lists the seat's own chat", page.locator('[data-project-module="codex-win-2"]').count() == 1)
 
         # 已归档的项目群不再占着目录：可以改名沿用，也可以「解除登记」。

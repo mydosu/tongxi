@@ -1380,7 +1380,7 @@ setInterval(()=>{
 
 async function configureProjectMembers() {
   if (!detail?.project) return;
-  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
+  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},busy:roomProjects().some(workflowBusy)||discussionBusy(currentDiscussion()),toast,avatar:id=>avatar(globalMember(id),'',false),renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
   catch(error){toast(errorText(error),true);}
 }
 
