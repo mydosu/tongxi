@@ -285,7 +285,7 @@ impl Runtime {
                 {
                     return managers.client(attempt);
                 }
-                match attempt.agent_id.as_str() {
+                match project_store::base_agent(&attempt.agent_id) {
                     "codex-win" => codex.shared_project_client(),
                     "hermes-win" => hermes.shared_project_client(),
                     "dsh-win" => dsh.shared_project_client(),
@@ -302,9 +302,9 @@ impl Runtime {
                 if attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY)
                 {
                     managers.ready(attempt, session);
-                } else if attempt.agent_id == "dsh-win" {
+                } else if project_store::base_agent(&attempt.agent_id) == "dsh-win" {
                     dsh.shared_project_loaded(session);
-                } else if attempt.agent_id == "claude-win" {
+                } else if project_store::base_agent(&attempt.agent_id) == "claude-win" {
                     claude.shared_project_loaded(session);
                 }
             })
@@ -318,7 +318,7 @@ impl Runtime {
                 {
                     managers.loaded(attempt, session)
                 } else {
-                    match attempt.agent_id.as_str() {
+                    match project_store::base_agent(&attempt.agent_id) {
                         "dsh-win" => dsh.project_session_is_loaded(session),
                         "claude-win" => claude.project_session_is_loaded(session),
                         _ => false,
@@ -345,7 +345,7 @@ impl Runtime {
         })
     }
     pub(crate) fn snapshot(&self, agent: &str) -> codex::RuntimeSnapshot {
-        match agent {
+        match project_store::base_agent(agent) {
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
             "claude-win" => self.claude.snapshot(),
@@ -1094,7 +1094,7 @@ impl Runtime {
         mut prompt: Value,
         deadline: Instant,
     ) -> Result<Attempt> {
-        if project_store::EXECUTOR_AGENTS.contains(&attempt.agent_id.as_str())
+        if project_store::is_executor(&attempt.agent_id)
             && matches!(
                 attempt.stage.as_str(),
                 "plan" | "implement" | "repair" | "review"

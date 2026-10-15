@@ -16,6 +16,9 @@ pub struct Agent {
     pub location: String,
     pub accent: String,
     pub status: String,
+    /// 伴侣的头像（用户上传的 data URL）；其他成员没有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// 当前数据库 schema 版本；项目工具子进程据此拒绝不匹配的数据库。
@@ -86,7 +89,7 @@ pub(crate) fn agent_name(id: &str) -> &str {
         "hermes-win" => "Hermes",
         "dsh-win" => "DSH",
         "claude-win" => "Claude",
-        "albion-wsl" => "阿尔比恩",
+        "albion-wsl" => "伴侣",
         other => other,
     }
 }
@@ -127,10 +130,10 @@ pub fn agents() -> Vec<Agent> {
         ),
         (
             "albion-wsl",
-            "阿尔比恩",
-            "WSL 本机服务",
-            "通过她自己的本机服务对话，人格、记忆与工具都在该服务中",
-            "WSL",
+            "伴侣",
+            "情感伴侣",
+            "通过它自己的服务对话，人格、记忆与工具都在那边",
+            "伴侣",
             "rose",
         ),
     ]
@@ -143,6 +146,7 @@ pub fn agents() -> Vec<Agent> {
         location: location.into(),
         accent: accent.into(),
         status: "not_connected".into(),
+        avatar: None,
     })
     .collect()
 }
@@ -500,6 +504,10 @@ impl Store {
         if version < 18 {
             allow_agent_in_checks(&tx, "dsh-win", "claude-win")?;
         }
+        // 项目额外席位（codex-win-2 …）：放宽成员白名单。幂等，已放宽的表会被跳过。
+        for seat in crate::project_store::seat_ids() {
+            allow_agent_in_checks(&tx, "dsh-win", &seat)?;
+        }
         if version < 19 {
             // v19：同一句原文可以有返修/复核轮次，去掉“一句原文只能一个任务”的唯一约束，
             // 去重改在 enqueue_routes 里判断。coordination_routes 是叶子表（没有表引用它），重建安全。
@@ -568,6 +576,7 @@ impl Store {
                 .map_err(|e| e.to_string())?;
         }
         crate::chat_questions::migrate(&tx)?;
+        crate::backgrounds::migrate(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         let mut store = Self {
             connection,
@@ -840,7 +849,7 @@ impl Store {
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some(owner) = occupied {
+        if let Some(owner) = occupied.or(self.coordinator_occupies(agent_id, native_session_id, None)?) {
             return Err(format!("这个原生会话已被「{owner}」占用，先从那边换走"));
         }
         let changed = self

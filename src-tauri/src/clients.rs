@@ -190,7 +190,7 @@ pub fn open(agent_id: &str) -> Result<String, String> {
             ])?;
             Ok("已打开 Claude Code（命令行）".into())
         }
-        "albion-wsl" => Err("阿尔比恩没有独立的桌面客户端，这里不做".into()),
+        "albion-wsl" => Err("伴侣没有独立的桌面客户端".into()),
         _ => Err("成员不存在".into()),
     }
 }

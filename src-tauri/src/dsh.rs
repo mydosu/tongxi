@@ -700,6 +700,13 @@ impl Runtime {
                 self.finish(run_id, status, error.map(str::to_owned));
             }
             Err(error) => {
+                // DSH 用自己的配置（官方 DeepSeek，没有 Hermes 路由）时，最常见的原因是还没填 Key。
+                let own = self.inner.lock().unwrap().default_model.as_deref().is_some_and(|model| model.contains("deepseek-official"));
+                let error = if own {
+                    format!("{error}。DSH 正在用它自己的配置：如果还没填 DeepSeek Key，请到「成员与服务 → DSH → 登录 / 初次配置」打开 dsh web 填好后重新连接")
+                } else {
+                    error
+                };
                 self.finish(run_id, "failed", Some(error.clone()));
                 self.stop();
                 return Err(error);

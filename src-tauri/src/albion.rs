@@ -1,8 +1,7 @@
-//! 阿尔比恩（WSL，**Pi 脑**）在 Windows 侧的运行时。
+//! 情感伴侣（成员 id `albion-wsl`）的运行时。接口、名字、Key 都来自用户的伴侣配置（`companion.rs`）。
 //!
-//! 本地服务 = `/root/albion-pi/bin/server.py` 提供的 OpenAI 兼容端点（本机 `:8650`）：
-//! 人格、回忆、工具、说话守卫都在脑里，同席只当**客户端**——连接=取模型，发送=重发房间历史拿流式正文。
-//! 启停归她自己的 `start.sh` / `_启动脑Pi.ps1`：同席**不拉 WSL 进程**（也不再走 ACP）。
+//! 伴侣服务 = 任意 OpenAI 兼容端点：人格、回忆、工具在对方服务里时，同席只当**客户端**——
+//! 连接=取模型，发送=重发房间历史拿流式正文。同席**不拉伴侣的进程**，启停归它自己。
 //!
 //! ponytail: MVP 范围＝连上 + 私聊真流式；群聊/项目把她当成员、线级中断还没接。
 
@@ -30,13 +29,12 @@ struct Inner {
 pub struct Brain {
     app: tauri::AppHandle,
     store: Arc<Mutex<Store>>,
-    endpoint: String,
     inner: Mutex<Inner>,
 }
 
 /// 一个回合还没结束（与 Hermes 侧同一套判定）。
 fn busy(run: &RunSnapshot) -> bool {
-    matches!(run.record.status.as_str(), "running" | "streaming")
+    matches!(run.record.status.as_str(), "starting" | "running" | "cancelling" | "streaming")
 }
 
 impl Brain {
@@ -44,7 +42,6 @@ impl Brain {
         Self {
             app,
             store,
-            endpoint: albion_openai::endpoint(),
             inner: Mutex::new(Inner {
                 revision: 0,
                 connection: "disconnected".into(),
@@ -59,13 +56,18 @@ impl Brain {
         let _ = self.app.emit(&format!("{KEY}-state"), self.snapshot());
     }
 
+    fn name(&self) -> String {
+        self.store.lock().map(|store| store.companion().name).unwrap_or_else(|_| NAME.into())
+    }
+
     pub fn snapshot(&self) -> RuntimeSnapshot {
+        let endpoint = self.store.lock().ok().map(|store| store.companion().endpoint).filter(|value| !value.is_empty());
         let inner = self.inner.lock().unwrap();
         RuntimeSnapshot {
             revision: inner.revision,
             connection: inner.connection.clone(),
-            executable: Some(self.endpoint.clone()),
-            version: Some("pi".into()),
+            executable: endpoint,
+            version: None,
             error: inner.error.clone(),
             active: inner.active.clone(),
             runs: inner.active.clone().into_iter().collect(),
@@ -95,7 +97,8 @@ impl Brain {
             inner.error = None;
         }
         self.emit();
-        let result = albion_openai::models(&self.endpoint);
+        let link = self.store.lock().unwrap().companion().link();
+        let result = link.and_then(|link| albion_openai::models(&link));
         {
             let mut inner = self.inner.lock().unwrap();
             inner.revision += 1;
@@ -114,7 +117,7 @@ impl Brain {
         let snapshot = self.snapshot();
         match snapshot.connection.as_str() {
             "connected" => Ok(snapshot),
-            _ => Err(snapshot.error.unwrap_or_else(|| format!("连不上 {NAME}"))),
+            _ => Err(snapshot.error.unwrap_or_else(|| format!("连不上 {}", self.name()))),
         }
     }
 
@@ -145,10 +148,10 @@ impl Brain {
                 return Ok(existing);
             }
             if inner.connection != "connected" {
-                return Err(format!("请先连接 {NAME}"));
+                return Err(format!("请先连接 {}", self.name()));
             }
             if inner.active.as_ref().is_some_and(busy) {
-                return Err(format!("{NAME} 正在处理上一条消息，请等待或停止"));
+                return Err(format!("{} 正在处理上一条消息，请等待或停止", self.name()));
             }
             // 人这一条也由 begin_agent_run 落库，之后 history() 会把它一起重发。
             let record = self.store.lock().unwrap().begin_agent_run(
@@ -178,8 +181,18 @@ impl Brain {
             Ok(messages) => messages,
             Err(error) => return self.finish(run_id, "failed", Some(error)),
         };
+        let link = match self.store.lock().unwrap().companion().link() {
+            Ok(link) => link,
+            Err(error) => return self.finish(run_id, "failed", Some(error)),
+        };
+        // 没指定模型就用服务目录里的第一个。
+        let model = link
+            .model
+            .clone()
+            .or_else(|| self.inner.lock().unwrap().models.first().cloned())
+            .unwrap_or_else(|| "default".into());
         let runtime = Arc::clone(self);
-        let result = albion_openai::chat(&self.endpoint, &messages, |delta| {
+        let result = albion_openai::chat(&link, &model, &messages, |delta| {
             {
                 let mut inner = runtime.inner.lock().unwrap();
                 if let Some(run) = inner.active.as_mut().filter(|run| run.record.id == run_id) {
@@ -197,7 +210,7 @@ impl Brain {
                         run.text = text;
                     }
                 }
-                self.finish(run_id, "succeeded", None);
+                self.finish(run_id, "completed", None);
             }
             Err(error) => self.finish(run_id, "failed", Some(error)),
         }
@@ -246,7 +259,7 @@ impl Brain {
         round: u32,
     ) -> Result<RunRecord, String> {
         let _ = (discussion, round);
-        Err(format!("{NAME} 这条通路先只做私聊，群聊里还叫不上她"))
+        Err(format!("{} 这条通路先只做私聊，群聊里还叫不上", self.name()))
     }
 
     /// 群聊取消：她本来没跑过群聊回合，按实际状态如实回。
@@ -286,8 +299,8 @@ impl Brain {
             .active
             .as_mut()
             .filter(|run| run.record.conversation_id == conversation_id && busy(run))
-            .ok_or(format!("{NAME} 当前没有在回复"))?;
-        run.record.status = "cancelled".into();
+            .ok_or("伴侣当前没有在回复")?;
+        run.record.status = "interrupted".into();
         let record = run.record.clone();
         let (text, thought) = (run.text.clone(), run.thought.clone());
         drop(inner);

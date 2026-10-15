@@ -48,7 +48,12 @@ pub(crate) fn native_root(directory: &Path, distro: &str, profile: &str) -> Resu
 
 impl Target {
     pub fn windows() -> Self {
-        let python = std::env::var_os("AGENT_HUB_HERMES_PYTHON")
+        Self::Windows(Self::windows_python())
+    }
+    /// Windows Hermes 的 Python：官方安装器装在 `%LOCALAPPDATA%\hermes\hermes-agent\.venv`。
+    /// 每次连接都重新找一遍——同席运行中刚装好的 Hermes 不用重启就能接上。
+    pub fn windows_python() -> Option<PathBuf> {
+        std::env::var_os("AGENT_HUB_HERMES_PYTHON")
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("LOCALAPPDATA").map(|root| {
@@ -61,8 +66,7 @@ impl Target {
                     && path
                         .file_name()
                         .is_some_and(|name| name.eq_ignore_ascii_case("python.exe"))
-            });
-        Self::Windows(python)
+            })
     }
     #[allow(dead_code, reason = "ACP 回退分支，MVP 已换 OpenAI 通路")]
     pub fn albion() -> Self {
@@ -103,7 +107,10 @@ impl Target {
     }
     pub fn executable(&self) -> Option<String> {
         match self {
-            Self::Windows(python) => python.as_ref().map(|path| path.to_string_lossy().into()),
+            Self::Windows(python) => python
+                .clone()
+                .or_else(Self::windows_python)
+                .map(|path| path.to_string_lossy().into()),
             Self::Albion {
                 launcher, python, ..
             } => Some(format!("{} → {python}", launcher.display())),
@@ -134,9 +141,10 @@ impl Target {
         let data = directory.join(format!("{}-native", self.key()));
         match self {
             Self::Windows(python) => {
-                let python = python.as_ref().ok_or(
-                    "未找到 Windows Hermes Python 环境，请检查安装或 AGENT_HUB_HERMES_PYTHON",
+                let python = python.clone().or_else(Self::windows_python).ok_or(
+                    "未找到 Windows Hermes，请在「成员与服务 → 接入成员」里一键安装，或设置 AGENT_HUB_HERMES_PYTHON",
                 )?;
+                let python = &python;
                 let repo = python
                     .parent()
                     .and_then(Path::parent)

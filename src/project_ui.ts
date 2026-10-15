@@ -1,10 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Conversation, Project, ProjectTeamMessage, Workflow } from './types';
+import type { Conversation, Project, ProjectTeamMessage, RoleChoice, Workflow } from './types';
+import { defaultCoordinator, mountSessionPicker, PROJECT_AGENTS, type PickerHost } from './project_sessions';
 import { attachmentHtml, attachmentText } from './attachments';
 import { agentMarkdown } from './agent_markdown';
 
 type Escape = (value: string | number) => string;
-interface DialogHost { escape: Escape; modal: HTMLDialogElement; open: (title: string, subtitle: string, body: string) => void; saved: (id: string) => Promise<void>; }
+interface DialogHost extends PickerHost { modal: HTMLDialogElement; open: (title: string, subtitle: string, body: string) => void; saved: (id: string) => Promise<void>; coordinator: RoleChoice | null; }
 export function projectTeamMessages(room: string, saved: ProjectTeamMessage[], jobs: Workflow[]) {
   return [...new Map([...saved, ...jobs.flatMap(job => job.team_messages || [])].filter(message => message.conversation_id === room).map(message => [message.id, message])).values()].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 }
@@ -17,11 +18,21 @@ export const workflowBusy = (job: Workflow | null | undefined) => !!job && ['que
 export async function bindingDialog(room: Conversation, current: Project | null, host: DialogHost) {
   const projects = await invoke<Project[]>('list_projects');
   const { escape, modal } = host;
-  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<input id="project-root" placeholder="D:\\Projects\\my-app" autocomplete="off"></label></div><p id="registered-project-info" class="model-setting-note"></p><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给阿尔比恩</label><p class="model-setting-note">默认关闭。开启后只共享该项目的协作进展，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
+  const members = room.members.filter(id => PROJECT_AGENTS.includes(id));
+  let coordinator = defaultCoordinator(members, host.coordinator?.agent);
+  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<input id="project-root" placeholder="D:\\Projects\\my-app" autocomplete="off"></label></div><p id="registered-project-info" class="model-setting-note"></p><fieldset id="session-bind-section" class="session-bind-section"><legend>各成员的会话</legend><label class="field">调度管家<select id="coordinator-choice">${members.map(id => `<option value="${escape(id)}" ${id === coordinator ? 'selected' : ''}>${escape(host.name(id))}</option>`).join('')}</select></label><div class="session-bind-list"></div><small class="model-setting-note">可以让成员（含调度）续接它们自己已有的原生会话；保持「新建会话」则由成员新开。点「＋」给同一成员再开一个会话（不同或相同模型），调度会把它当独立成员分工。项目开始后也能在「会话绑定」里切换。</small></fieldset><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给${escape(host.name('albion-wsl'))}</label><p class="model-setting-note">默认关闭。开启后只共享该项目的协作进展，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#project-form')!;
   const choice = form.querySelector<HTMLSelectElement>('#project-choice')!;
   const summary = form.querySelector<HTMLInputElement>('#project-summary')!;
+  const section = form.querySelector<HTMLElement>('#session-bind-section')!;
+  const rows = () => [...members.map(agent => ({ agent, target: 'member' as const, current: null, busy: false })), ...(coordinator ? [{ agent: coordinator, target: 'coordinator' as const, current: null, busy: false }] : [])];
+  const picker = mountSessionPicker(section.querySelector('.session-bind-list')!, rows(), host, true);
+  form.querySelector<HTMLSelectElement>('#coordinator-choice')!.addEventListener('change', event => { coordinator = (event.target as HTMLSelectElement).value; picker.render(rows()); });
+  // 只在新建或换到另一个项目时挑会话；已绑定项目的会话走「会话绑定」切换。
+  const choosing = () => !current || choice.value !== current.id;
+  const openedSeats = new Map<string, string[]>();
   const update = () => {
+    section.hidden = !choosing() || members.length === 0;
     form.querySelector<HTMLElement>('#new-project-fields')!.hidden = !!choice.value;
     const selected = projects.find(project => project.id === choice.value) || (current && current.id === choice.value ? current : null);
     form.querySelector('#registered-project-info')!.textContent = selected ? selected.root : '';
@@ -41,6 +52,28 @@ export async function bindingDialog(room: Conversation, current: Project | null,
       await invoke('bind_project', { conversationId: room.id, projectId: unbind ? null : projectId });
       // 解绑只解除会话绑定，不会关闭该项目已经开启的共享。
       if (!unbind && projectId) await invoke<Project>('set_project_summary', { projectId, enabled: summary.checked });
+      if (!unbind && !section.hidden) {
+        try {
+          const same = host.coordinator?.agent === coordinator;
+          await invoke('set_project_coordinator', { conversationId: room.id, coordinator: { agent: coordinator, model: same ? host.coordinator?.model || null : null, effort: same ? host.coordinator?.effort || null : null } });
+          // 先把新增的席位开出来，拿到席位 id 后和其他行一起绑定会话。
+          // 重试时复用上一次已经开出来的席位，不会重复开。
+          const bindings = [], used = new Map<string, number>();
+          for (const choice of picker.choices(true)) {
+            if (choice.target !== 'seat') { bindings.push(choice); continue; }
+            const pool = openedSeats.get(choice.agentId) || [], index = used.get(choice.agentId) || 0;
+            used.set(choice.agentId, index + 1);
+            const seat = pool[index] ?? await invoke<string>('add_project_seat', { conversationId: room.id, agentId: choice.agentId, label: null });
+            if (index >= pool.length) openedSeats.set(choice.agentId, [...pool, seat]);
+            bindings.push({ ...choice, agentId: seat, target: 'member' as const });
+          }
+          await invoke('bind_project_sessions', { conversationId: room.id, bindings });
+        } catch (error) {
+          // 项目已经绑上：刷新背后的界面，弹窗留着改完再保存（重复绑定同一项目无副作用）。
+          await host.saved(room.id).catch(() => {});
+          throw new Error(`项目已绑定，但会话绑定未完成：${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       modal.close(); await host.saved(room.id);
     } catch (error) { form.querySelector('.form-error')!.textContent = error instanceof Error ? error.message : String(error); }
     finally { form.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = false; }); }

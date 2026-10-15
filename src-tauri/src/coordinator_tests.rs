@@ -2207,3 +2207,53 @@ fn quota_failures_are_recognised_and_retried_with_growing_intervals() {
     let minutes = (0..8).map(coordinator_policy::quota_retry_minutes).collect::<Vec<_>>();
     assert_eq!(minutes, vec![5, 10, 15, 20, 25, 30, 30, 30]);
 }
+
+#[test]
+fn coordinator_can_route_work_to_a_second_seat_of_the_named_member() {
+    let mut f = Fixture::new();
+    let request = "让两个Codex一起实现：一个写代码，另一个补测试。";
+    let workflow = f.coordinated(request, "hermes-win");
+    // 没开过的席位不能接任务。
+    let unopened = route("tests", "implementation", "codex-win-2", &workflow.user_message_id, request);
+    assert!(f.store.enqueue_routes(&workflow.id, &[(unopened.clone(), None, None)]).is_err());
+    assert_eq!(f.store.add_project_seat(&f.room, "codex-win", Some("测试手")).unwrap(), "codex-win-2");
+    // 原话点名「Codex」，派给 Codex 的第二个席位也算点对了人。
+    let ids = f
+        .store
+        .enqueue_routes(
+            &workflow.id,
+            &[
+                (route("code", "implementation", "codex-win", &workflow.user_message_id, request), None, None),
+                (unopened, None, None),
+            ],
+        )
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    let job = f.store.workflow(&workflow.id).unwrap();
+    let agents: Vec<_> = job.tasks.iter().map(|task| task.agent_id.as_str()).collect();
+    assert_eq!(agents, ["codex-win", "codex-win-2"]);
+    // 两个席位各自起 attempt，互不因「同一成员忙」而阻塞。
+    let first = job.tasks[0].clone();
+    let second = job.tasks[1].clone();
+    f.store.begin_coordinated_attempt(&workflow.id, Some(&first), "codex-win", None, None).unwrap();
+    let mut attempt = f.store.begin_coordinated_attempt(&workflow.id, Some(&second), "codex-win-2", None, None).unwrap();
+    // 非 DSH 成员的模型在运行中被改动，仍按身份不符拒绝保存。
+    attempt.model = Some("别的模型".into());
+    assert!(f.store.checkpoint_attempt(&attempt).is_err());
+}
+
+#[test]
+fn dsh_route_notices_may_update_the_running_model() {
+    let mut f = Fixture::new();
+    let request = "DSH回答一个问题。";
+    let workflow = f.coordinated(request, "hermes-win");
+    f.store
+        .enqueue_routes(&workflow.id, &[(route("ask", "reply", "dsh-win", &workflow.user_message_id, request), None, None)])
+        .unwrap();
+    let task = f.store.workflow(&workflow.id).unwrap().tasks[0].clone();
+    let mut attempt = f.store.begin_coordinated_attempt(&workflow.id, Some(&task), "dsh-win", None, None).unwrap();
+    // DSH 运行中通报实际线路：没指定模型的任务也能记下实际模型，而不是整轮判失败。
+    attempt.model = Some("[\"deepseek-official\",\"deepseek-v4-flash\"]".into());
+    attempt.status = "running".into();
+    f.store.checkpoint_attempt(&attempt).unwrap();
+}

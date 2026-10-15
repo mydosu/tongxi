@@ -1,5 +1,5 @@
 //! Shared, lease-checked file tools. Neither transport grants native shell access.
-use crate::project_store::{key, protected_relative, task_path, EXECUTOR_AGENTS};
+use crate::project_store::{base_agent, is_executor, key, protected_relative, task_path};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -207,7 +207,7 @@ impl Broker {
                 |r| r.get(0),
             )
             .unwrap_or(false);
-        let writable = EXECUTOR_AGENTS.contains(&row.7.as_str())
+        let writable = is_executor(&row.7)
             && (whole_project || matches!(row.1.as_str(), "implement" | "repair"));
         let files: Vec<String> = if row.1 == "plan" && row.2.is_none() {
             crate::projects::manifest(&root)?
@@ -290,7 +290,7 @@ impl Broker {
         }
         if tool.starts_with("hub_memory_") {
             let scope = Self::scope(&self.connection, &self.attempt_id)?;
-            return crate::project_memory::call(&scope.project_id, &scope.agent_id, tool, args);
+            return crate::project_memory::call(&scope.project_id, base_agent(&scope.agent_id), tool, args);
         }
         // An IMMEDIATE transaction serializes admission with cancellation in the UI.
         let tx = self
@@ -304,7 +304,7 @@ impl Broker {
                     serde_json::from_value(args).map_err(|_| "成员消息参数无效")?;
                 let recipient = arg.to_agent.trim();
                 let content = arg.content.trim();
-                if !EXECUTOR_AGENTS.contains(&recipient)
+                if !is_executor(recipient)
                     || recipient == scope.agent_id
                     || content.is_empty()
                     || content.chars().count() > 4000
@@ -671,7 +671,7 @@ fn chat_tool(
     }
     match name {
         "hub_memory_search" | "hub_memory_write" | "hub_memory_read" | "hub_memory_list"
-        | "hub_memory_share" => crate::project_memory::call(&project, &agent, name, args),
+        | "hub_memory_share" => crate::project_memory::call(&project, base_agent(&agent), name, args),
         "hub_broadcast" => {
             let arg: BroadcastArg = serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
             chat_broadcast(connection, conversation_id, &arg.content)
@@ -681,7 +681,7 @@ fn chat_tool(
                 serde_json::from_value(args).map_err(|_| "成员消息参数无效")?;
             let recipient = arg.to_agent.trim();
             let content = arg.content.trim();
-            if !EXECUTOR_AGENTS.contains(&recipient)
+            if !is_executor(recipient)
                 || recipient == agent
                 || content.is_empty()
                 || content.chars().count() > 4000
