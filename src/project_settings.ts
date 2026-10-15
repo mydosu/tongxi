@@ -5,7 +5,7 @@ import { isSeat } from './seats';
 
 type Escape=(value:string|number)=>string;
 const effortNames:Record<string,string>={none:'关闭',off:'关闭',low:'低',medium:'中',high:'高',xhigh:'很高',max:'最大',ultra:'Ultra'};
-interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; }
+interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; renamed:(seat:string,label:string)=>void; }
 
 export async function projectSettings(detail:ConversationDetail, host:Host) {
   const {escape}=host;
@@ -27,7 +27,7 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     const provider=selectedProvider(runtime.models,model);
     const efforts=runtime.models.find(option=>option.id===model)?.efforts || [];
     const unavailable=model && !runtime.models.some(option=>option.id===model) ? `<option value="${escape(model)}" selected>${escape(model)} · 待连接核对</option>` : '';
-    return `<fieldset class="project-member-settings-row${isSeat(seat)?' seat-row':''}" data-settings-chat="${escape(chat.conversation.id)}" data-settings-agent="${escape(agent)}" data-settings-seat="${escape(seat)}"><legend>${escape(host.name(seat))}${isSeat(seat)?` <button type="button" class="text-button" data-seat-remove="${escape(seat)}">撤掉席位</button>`:''}</legend>${modelProviders(runtime.models).length>1?`<label>提供商<select data-member-provider>${providerOptionsHtml(runtime.models,provider,escape)}</select></label>`:''}<label>模型<select data-member-model>${modelOptionsHtml(runtime.models,provider,model||null,escape,'连接后选择模型')}${unavailable}</select></label><label>思考强度<select data-member-effort><option value="">模型默认</option>${efforts.map(value=>`<option value="${escape(value)}" ${value===settings.reasoning_effort?'selected':''}>${escape(effortNames[value]||value)}</option>`).join('')}</select></label><small>${runtime.connection==='connected'?'已连接':'请先连接此成员读取模型目录'}</small></fieldset>`;
+    return `<fieldset class="project-member-settings-row${isSeat(seat)?' seat-row':''}" data-settings-chat="${escape(chat.conversation.id)}" data-settings-agent="${escape(agent)}" data-settings-seat="${escape(seat)}"><legend>${isSeat(seat)?`<input class="seat-name" data-seat-rename="${escape(seat)}" value="${escape(host.name(seat))}" maxlength="20" aria-label="席位名" title="点一下改名，回车或点开就保存"><span class="seat-of">${escape(host.name(agent))} 的席位</span><button type="button" class="text-button" data-seat-remove="${escape(seat)}">撤掉席位</button>`:escape(host.name(seat))}</legend>${modelProviders(runtime.models).length>1?`<label>提供商<select data-member-provider>${providerOptionsHtml(runtime.models,provider,escape)}</select></label>`:''}<label>模型<select data-member-model>${modelOptionsHtml(runtime.models,provider,model||null,escape,'连接后选择模型')}${unavailable}</select></label><label>思考强度<select data-member-effort><option value="">模型默认</option>${efforts.map(value=>`<option value="${escape(value)}" ${value===settings.reasoning_effort?'selected':''}>${escape(effortNames[value]||value)}</option>`).join('')}</select></label><small>${runtime.connection==='connected'?'已连接':'请先连接此成员读取模型目录'}</small></fieldset>`;
   }).join('')}<p class="form-error"></p><div class="modal-footer"><button type="button" id="project-settings-cancel" class="secondary">取消</button><button class="primary">保存项目配置</button></div></form>`);
   const form=host.modal.querySelector<HTMLFormElement>('#project-member-settings')!;
   const renderCoordinator=()=>{
@@ -63,6 +63,19 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     catch(error){form.querySelector('.form-error')!.textContent=String(error);form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=false;});}
   };
   form.querySelector('[data-seat-add]')!.addEventListener('click',()=>void seatAction(()=>invoke('add_project_seat',{conversationId:detail.conversation.id,agentId:form.querySelector<HTMLSelectElement>('[data-seat-agent]')!.value,label:form.querySelector<HTMLInputElement>('[data-seat-label]')!.value.trim()||null})));
+  // 席位改名：失焦或回车就保存，不用等「保存项目配置」。
+  form.querySelectorAll<HTMLInputElement>('[data-seat-rename]').forEach(input=>{
+    let last=input.value;
+    const save=async()=>{
+      const label=input.value.trim();
+      if(!label){input.value=last;return;}
+      if(label===last)return;
+      try{const saved=await invoke<string>('rename_project_seat',{conversationId:detail.conversation.id,seatId:input.dataset.seatRename,label});last=input.value=saved;host.renamed(input.dataset.seatRename!,saved);}
+      catch(error){form.querySelector('.form-error')!.textContent=String(error);input.value=last;}
+    };
+    input.addEventListener('blur',()=>void save());
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}if(event.key==='Escape'){event.stopPropagation();input.value=last;input.blur();}});
+  });
   form.querySelectorAll<HTMLButtonElement>('[data-seat-remove]').forEach(button=>button.addEventListener('click',()=>void seatAction(()=>invoke('remove_project_seat',{conversationId:detail.conversation.id,seatId:button.dataset.seatRemove}))));
   form.addEventListener('submit',async event=>{
     event.preventDefault();const button=form.querySelector<HTMLButtonElement>('button.primary')!;button.disabled=true;

@@ -1372,7 +1372,7 @@ setInterval(()=>{
 
 async function configureProjectMembers() {
   if (!detail?.project) return;
-  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();}}); }
+  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},renamed:(seat,label)=>{seatLabels.set(seat,label);renderList();toast(`席位已改名为「${label}」`);}}); }
   catch(error){toast(errorText(error),true);}
 }
 

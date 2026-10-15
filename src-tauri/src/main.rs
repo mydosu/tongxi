@@ -1423,6 +1423,7 @@ fn main() {
             agent_setup::install_agent,
             agent_setup::setup_agent,
             project_sessions::remove_project_seat,
+            project_sessions::rename_project_seat,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,
