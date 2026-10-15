@@ -370,8 +370,10 @@ pub struct ProjectAgentChat {
     /// 成员 id；额外席位是 `codex-win-2` 这类，专属会话里的原生成员是它的底层成员。
     pub agent_id: String,
     pub conversation_id: String,
-    /// 额外席位的名字（用户起的）；主席位为空。
+    /// 用户在这个项目里给这个会话起的名字；没起为空。
     pub label: Option<String>,
+    /// 显示名：起过名就是它，否则按成员名与编号算好（前端直接用，不再自己拼）。
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1300,7 +1302,7 @@ impl Store {
             return Ok(Vec::new());
         };
         let mut statement = self.connection.prepare(
-            "SELECT c.group_conversation_id,c.agent_id,c.conversation_id,s.label FROM project_agent_chats c LEFT JOIN project_seats s ON s.conversation_id=c.group_conversation_id AND s.seat_id=c.agent_id WHERE c.project_id=?1 AND c.group_conversation_id=?2 ORDER BY CASE WHEN c.agent_id LIKE 'codex-win%' THEN 0 WHEN c.agent_id LIKE 'hermes-win%' THEN 1 WHEN c.agent_id LIKE 'dsh-win%' THEN 2 ELSE 3 END,c.agent_id",
+            "SELECT c.group_conversation_id,c.agent_id,c.conversation_id,COALESCE(NULLIF(s.label,''),n.label) FROM project_agent_chats c LEFT JOIN project_seats s ON s.conversation_id=c.group_conversation_id AND s.seat_id=c.agent_id LEFT JOIN project_member_names n ON n.conversation_id=c.group_conversation_id AND n.agent_id=c.agent_id WHERE c.project_id=?1 AND c.group_conversation_id=?2 ORDER BY CASE WHEN c.agent_id LIKE 'codex-win%' THEN 0 WHEN c.agent_id LIKE 'hermes-win%' THEN 1 WHEN c.agent_id LIKE 'dsh-win%' THEN 2 ELSE 3 END,c.agent_id",
         ).map_err(|_| "Agent 会话读取失败")?;
         let rows = statement
             .query_map(params![project.id, group_id], |row| {
@@ -1309,11 +1311,18 @@ impl Store {
                     agent_id: row.get(1)?,
                     conversation_id: row.get(2)?,
                     label: row.get(3)?,
+                    name: String::new(),
                 })
             })
             .map_err(|_| "Agent 会话读取失败")?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| "Agent 会话读取失败".into())
+        let mut chats = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "Agent 会话读取失败")?;
+        drop(statement);
+        for chat in &mut chats {
+            chat.name = self.seat_name(group_id, &chat.agent_id);
+        }
+        Ok(chats)
     }
 
     pub fn project_chat_messages(&self, conversation_id: &str) -> Result<Vec<RoomAgentMessage>> {
@@ -1359,17 +1368,18 @@ impl Store {
             return Ok(Vec::new());
         };
         // 主席位按群成员来；额外席位来自 project_seats，底层成员也必须仍在群里。
-        let mut seats: Vec<(String, String)> = EXECUTOR_AGENTS
+        let mut seats: Vec<String> = EXECUTOR_AGENTS
             .iter()
             .filter(|agent| group.members.iter().any(|member| member == **agent))
-            .map(|agent| (agent.to_string(), crate::store::agent_name(agent).to_owned()))
+            .map(|agent| agent.to_string())
             .collect();
-        for (seat, label) in self.project_seats(group_id)? {
+        for (seat, _) in self.project_seats(group_id)? {
             if group.members.iter().any(|member| member == base_agent(&seat)) {
-                seats.push((seat, label));
+                seats.push(seat);
             }
         }
-        for (seat, label) in seats {
+        for seat in seats {
+            let label = self.seat_name(group_id, &seat);
             let agent = base_agent(&seat).to_owned();
             let exists: bool = self.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE project_id=?1 AND group_conversation_id=?2 AND agent_id=?3)",

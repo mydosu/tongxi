@@ -10,7 +10,7 @@ export interface BindingChoice { agentId: string; target: 'member' | 'coordinato
 interface Row { agent: string; target: 'member' | 'coordinator' | 'seat'; current: string | null; busy: boolean; key?: string; }
 export interface PickerHost { escape: Escape; name: (id: string) => string; avatar: (id: string) => string; connect: (id: string) => Promise<void>; }
 
-const roleText = (row: Row) => row.target === 'coordinator' ? '调度管家' : row.target === 'seat' ? '再开的席位' : '项目成员';
+const roleText = (row: Row) => row.target === 'coordinator' ? '调度管家' : row.target === 'seat' ? '同一成员的另一个会话' : '项目成员';
 const short = (id: string) => id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
 const when = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '时间未知';
 
@@ -31,8 +31,8 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
     return lists.get(base)!;
   };
   const tail = (row: Row) => allowSeats && row.target === 'member'
-    ? '<button type="button" class="seat-plus" data-seat-plus title="同一成员再开一个会话（席位）" aria-label="再开一个会话">＋</button>'
-    : row.target === 'seat' ? '<button type="button" class="seat-plus" data-seat-drop title="去掉这个席位" aria-label="去掉这个席位">×</button>' : '';
+    ? '<button type="button" class="seat-plus" data-seat-plus title="同一成员再开一个平行的会话" aria-label="再开一个会话">＋</button>'
+    : row.target === 'seat' ? '<button type="button" class="seat-plus" data-seat-drop title="去掉这个会话" aria-label="去掉这个会话">×</button>' : '';
   const rowHtml = (row: Row) => `<div class="session-bind-row${row.busy ? ' busy' : ''}" data-bind-key="${escape(row.key!)}" data-bind-agent="${escape(row.agent)}" data-bind-target="${row.target}">${host.avatar(row.agent)}<div class="session-bind-who"><strong>${escape(host.name(row.agent))}</strong><small>${roleText(row)}${row.busy ? ' · 正在执行，结束后可切换' : ''}</small></div><div class="session-bind-choice"><select data-bind-session aria-label="${escape(host.name(row.agent))}${roleText(row)}的会话" ${row.busy ? 'disabled' : ''}><option value="">＋ 新建会话（不绑定）</option>${row.current ? `<option value="${escape(row.current)}" selected>当前绑定 · ${escape(short(row.current))}</option>` : ''}</select><small class="session-bind-note">正在读取已有会话…</small></div>${tail(row)}</div>`;
   const fill = async (element: HTMLElement) => {
     const row = rows.find(item => item.key === element.dataset.bindKey)!;

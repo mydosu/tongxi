@@ -24,7 +24,15 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
          CREATE TABLE IF NOT EXISTS project_seats (
            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
            seat_id TEXT NOT NULL,label TEXT NOT NULL,created_at INTEGER NOT NULL,
-           PRIMARY KEY(conversation_id,seat_id));",
+           PRIMARY KEY(conversation_id,seat_id));
+         CREATE TABLE IF NOT EXISTS project_member_names (
+           conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           agent_id TEXT NOT NULL,label TEXT NOT NULL,PRIMARY KEY(conversation_id,agent_id));
+         -- 额外席位没改过名时存空串，显示时按「成员名 N号」现算；早先写死的默认名转成空串。
+         UPDATE project_seats SET label='' WHERE label = (CASE
+           WHEN seat_id LIKE 'codex-win-%' THEN 'Codex' WHEN seat_id LIKE 'hermes-win-%' THEN 'Hermes'
+           WHEN seat_id LIKE 'dsh-win-%' THEN 'DSH' WHEN seat_id LIKE 'claude-win-%' THEN 'Claude' END)
+           || ' ' || substr(seat_id, -1) || '号';",
     )
     .map_err(|_| "调度会话绑定结构迁移失败".into())
 }
@@ -251,9 +259,10 @@ impl Store {
             .find(|slot| !taken.iter().any(|(seat, _)| *seat == format!("{agent}-{slot}")))
             .ok_or(format!("{}最多再开 {} 个席位", crate::store::agent_name(agent), SEAT_SLOTS.len()))?;
         let seat = format!("{agent}-{slot}");
+        // 不起名就存空串：显示时按「成员名 N号」现算，成员改名后跟着变。
         let label = clean(label)
             .map(|label| label.chars().filter(|c| !c.is_control()).take(20).collect::<String>())
-            .unwrap_or_else(|| format!("{} {slot}号", crate::store::agent_name(agent)));
+            .unwrap_or_default();
         self.connection
             .execute(
                 "INSERT INTO project_seats(conversation_id,seat_id,label,created_at) VALUES(?1,?2,?3,?4)",
@@ -265,29 +274,113 @@ impl Store {
     }
 
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
-    /// 给额外席位改名：调度、侧栏和席位专属会话的标题都用新名字。
+    /// 成员名（全局）：用户在「成员与服务」里起的名字；伴侣用它自己配置里的名字；都没有就是默认名。
+    pub fn member_name(&self, agent: &str) -> String {
+        if agent == "albion-wsl" {
+            return self.companion().name;
+        }
+        self.connection
+            .query_row("SELECT value FROM metadata WHERE key=?1", [format!("agent_name:{agent}")], |row| row.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| crate::store::agent_name(agent).to_owned())
+    }
+
+    /// 改成员名（全局）；空名字＝恢复默认。伴侣的名字写回它自己的配置。
+    pub fn rename_member(&mut self, agent: &str, name: &str) -> Result<String> {
+        if !crate::store::agents().iter().any(|item| item.id == agent) {
+            return Err("成员不存在".into());
+        }
+        let name: String = name.trim().chars().filter(|c| !c.is_control()).take(20).collect();
+        if agent == "albion-wsl" {
+            let mut config = self.companion();
+            config.name = if name.is_empty() { "伴侣".into() } else { name };
+            let text = serde_json::to_string(&config).map_err(|_| "伴侣配置保存失败")?;
+            self.connection
+                .execute("INSERT INTO metadata(key,value) VALUES('companion',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [text])
+                .map_err(|_| "伴侣配置保存失败")?;
+        } else if name.is_empty() || name == crate::store::agent_name(agent) {
+            self.connection.execute("DELETE FROM metadata WHERE key=?1", [format!("agent_name:{agent}")]).map_err(|_| "成员改名失败")?;
+        } else {
+            self.connection
+                .execute(
+                    "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![format!("agent_name:{agent}"), name],
+                )
+                .map_err(|_| "成员改名失败")?;
+        }
+        Ok(self.member_name(agent))
+    }
+
+    /// 席位在这个项目里的名字：项目里起过名就用它；否则只有一个会话时用成员名，
+    /// 同一成员开了多个会话时一律编号「成员名 1号 / 2号 …」——几个会话平行，不分主次。
+    pub fn seat_name(&self, room: &str, seat: &str) -> String {
+        let base = base_agent(seat);
+        let custom: Option<String> = if base == seat {
+            self.connection
+                .query_row("SELECT label FROM project_member_names WHERE conversation_id=?1 AND agent_id=?2", params![room, seat], |row| row.get(0))
+                .optional()
+                .ok()
+                .flatten()
+        } else {
+            self.connection
+                .query_row("SELECT label FROM project_seats WHERE conversation_id=?1 AND seat_id=?2", params![room, seat], |row| row.get(0))
+                .optional()
+                .ok()
+                .flatten()
+        };
+        if let Some(label) = custom.filter(|label: &String| !label.is_empty()) {
+            return label;
+        }
+        let several = self
+            .project_seats(room)
+            .map(|seats| seats.iter().any(|(id, _)| base_agent(id) == base))
+            .unwrap_or(false);
+        match (base == seat, several) {
+            (true, false) => self.member_name(seat),
+            (true, true) => format!("{} 1号", self.member_name(seat)),
+            _ => format!("{} {}号", self.member_name(base), seat.rsplit('-').next().unwrap_or("")),
+        }
+    }
+
+    /// 给这位成员在项目里的某个会话起名（每个会话都行）；空名字＝恢复默认。
+    /// 只在这个项目里生效，成员的全局名字不变。
     pub fn rename_project_seat(&mut self, room: &str, seat: &str, label: &str) -> Result<String> {
         let label: String = label.trim().chars().filter(|c| !c.is_control()).take(20).collect();
-        if label.is_empty() {
-            return Err("席位名不能为空".into());
+        let base = base_agent(seat);
+        if base == seat {
+            let members = self.conversation(room)?.members;
+            if !EXECUTOR_AGENTS.contains(&seat) || !members.iter().any(|member| member == seat) || self.conversation_project(room)?.is_none() {
+                return Err("这位成员不在当前项目群".into());
+            }
+            if label.is_empty() {
+                self.connection.execute("DELETE FROM project_member_names WHERE conversation_id=?1 AND agent_id=?2", params![room, seat]).map_err(|_| "席位改名失败")?;
+            } else {
+                self.connection
+                    .execute(
+                        "INSERT INTO project_member_names(conversation_id,agent_id,label) VALUES(?1,?2,?3) ON CONFLICT(conversation_id,agent_id) DO UPDATE SET label=excluded.label",
+                        params![room, seat, label],
+                    )
+                    .map_err(|_| "席位改名失败")?;
+            }
+        } else {
+            let changed = self
+                .connection
+                .execute("UPDATE project_seats SET label=?1 WHERE conversation_id=?2 AND seat_id=?3", params![label, room, seat])
+                .map_err(|_| "席位改名失败")?;
+            if changed == 0 {
+                return Err("这个席位不在当前项目群".into());
+            }
         }
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE project_seats SET label=?1 WHERE conversation_id=?2 AND seat_id=?3",
-                params![label, room, seat],
-            )
-            .map_err(|_| "席位改名失败")?;
-        if changed == 0 {
-            return Err("只能给额外开的席位改名".into());
-        }
+        let name = self.seat_name(room, seat);
         if let (Some(project), Some(chat)) = (
             self.conversation_project(room)?,
             self.project_agent_chats(room)?.into_iter().find(|chat| chat.agent_id == seat),
         ) {
-            self.rename(&chat.conversation_id, &format!("{} · {label}", project.name))?;
+            self.rename(&chat.conversation_id, &format!("{} · {name}", project.name))?;
         }
-        Ok(label)
+        Ok(name)
     }
 
     pub fn remove_project_seat(&mut self, room: &str, seat: &str) -> Result<()> {
@@ -441,6 +534,12 @@ pub fn remove_project_seat(
     let mut store = runtime.store.lock().unwrap();
     store.remove_project_seat(&conversation_id, &seat_id)?;
     store.detail(&conversation_id)
+}
+
+/// 改成员名（全局）。
+#[tauri::command]
+pub fn rename_agent(state: tauri::State<'_, crate::AppState>, agent_id: String, name: String) -> Result<String> {
+    state.store.lock().map_err(|_| "本地数据暂不可用")?.rename_member(&agent_id, &name)
 }
 
 #[tauri::command]
@@ -685,8 +784,20 @@ mod tests {
         let chat = store.project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == seat).unwrap();
         assert_eq!(chat.label.as_deref(), Some("审稿"));
         assert_eq!(store.conversation(&chat.conversation_id).unwrap().title, "绑定项目 · 审稿", "专属会话标题跟着改");
-        assert!(store.rename_project_seat(&room, &seat, " ").is_err());
-        assert!(store.rename_project_seat(&room, "codex-win", "主力").is_err(), "主席位保持成员本名");
+        // 清空＝恢复默认「成员名 N号」，成员改名后默认名跟着变。
+        assert_eq!(store.rename_project_seat(&room, &seat, " ").unwrap(), "Codex 2号");
+        store.rename_member("codex-win", "小码").unwrap();
+        assert_eq!(store.seat_name(&room, &seat), "小码 2号");
+        assert_eq!(store.seat_name(&room, "codex-win"), "小码 1号", "开了多个会话时平行编号，不分主次");
+        assert_eq!(store.seat_name(&room, "hermes-win"), "Hermes", "只有一个会话就用成员名");
+        // 第一个会话也能起项目内的名字，只在本项目生效，成员的全局名字不变。
+        assert_eq!(store.rename_project_seat(&room, "codex-win", "主力").unwrap(), "主力");
+        assert_eq!(store.member_name("codex-win"), "小码");
+        let chats = store.project_agent_chats(&room).unwrap();
+        assert_eq!(chats.iter().find(|chat| chat.agent_id == "codex-win").unwrap().label.as_deref(), Some("主力"));
+        assert!(store.rename_project_seat(&room, "dsh-win", "外人").is_err(), "不在群里的成员不能起名");
+        store.rename_member("codex-win", "").unwrap();
+        assert_eq!(store.member_name("codex-win"), "Codex", "清空成员名恢复默认");
         let _ = std::fs::remove_dir_all(base);
     }
 }

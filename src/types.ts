@@ -31,7 +31,7 @@ export interface ConversationDetail {
   chat_questions?: ChatQuestion[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
-export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; }
+export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; /** 后端算好的显示名：起过名就是它，否则成员名（多个会话时带编号）。 */ name?: string; }
 export interface ProjectRoomAgentMessage { id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
 export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {

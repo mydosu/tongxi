@@ -729,10 +729,19 @@ fn with_store<T>(
 /// 成员名单；伴侣的名字、介绍和头像按用户自己的配置来。
 #[tauri::command]
 fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
-    let companion = state.store.lock().ok().map(|store| store.companion());
+    let (companion, names) = match state.store.lock() {
+        Ok(store) => (
+            Some(store.companion()),
+            store::agents().into_iter().map(|agent| (agent.id.clone(), store.member_name(&agent.id))).collect::<Vec<_>>(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
     store::agents()
         .into_iter()
         .map(|mut agent| {
+            if let Some(name) = names.iter().find(|(id, _)| *id == agent.id).map(|(_, name)| name.clone()) {
+                agent.name = name;
+            }
             if let (true, Some(config)) = (agent.id == "albion-wsl", &companion) {
                 agent.name = config.name.clone();
                 agent.subtitle = config.subtitle.clone();
@@ -1424,6 +1433,7 @@ fn main() {
             agent_setup::setup_agent,
             project_sessions::remove_project_seat,
             project_sessions::rename_project_seat,
+            project_sessions::rename_agent,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,

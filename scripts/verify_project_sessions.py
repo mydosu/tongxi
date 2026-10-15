@@ -136,6 +136,17 @@ def main() -> int:
         page.wait_for_timeout(300)
         chats = sd.ipc(page, "get_conversation", id=room["id"])["project_agent_chats"]
         check("renamed seat label is stored", any(c["agent_id"] == "codex-win-2" and c.get("label") == "审稿" for c in chats), chats)
+        names = {c["agent_id"]: c.get("name") for c in chats}
+        check("sessions of one member are numbered in parallel; a single one keeps the member name", names.get("codex-win") == "Codex 1号" and names.get("hermes-win") == "Hermes", names)
+        # 第一个会话也能起项目内的名字，成员本身的名字不变。
+        page.locator("[data-project-configure]").first.click()
+        first = page.locator('[data-seat-rename="codex-win"]')
+        first.fill("主力")
+        first.press("Enter")
+        expect(page.locator('[data-project-module="codex-win"]')).to_contain_text("主力", timeout=10000)
+        check("first session renamed within the project only", any(a["id"] == "codex-win" and a["name"] == "Codex" for a in sd.ipc(page, "list_agents")))
+        shot("member-settings-parallel")
+        page.keyboard.press("Escape")
         check("sidebar lists the seat's own chat", page.locator('[data-project-module="codex-win-2"]').count() == 1)
 
         # 已归档的项目群不再占着目录：可以改名沿用，也可以「解除登记」。
