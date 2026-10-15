@@ -1214,7 +1214,8 @@ function updateProjectControls() {
   const busy = workflowBusy(job);
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
   const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'].includes(agent));
-  const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 2;
+  // 一位成员也能做项目：同一成员多开的会话就是多位成员。
+  const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 1;
   if (bind) { bind.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
   const sessions = main.querySelector<HTMLButtonElement>('[data-project-sessions]');
   if (sessions) { sessions.hidden = !detail.project; sessions.disabled = detail.conversation.archived; }
@@ -1227,7 +1228,7 @@ function updateProjectControls() {
     connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '项目成员已连接' : '连接项目成员';
   }
   const title = main.querySelector('#project-title');
-  if (title) title.textContent = detail.project ? `${detail.project.name} · 项目群聊` : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要两位 Windows 成员';
+  if (title) title.textContent = detail.project ? `${detail.project.name} · 项目群聊` : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要一位 Windows 成员';
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
   if (share) {
     const project = detail.project;
@@ -1777,7 +1778,7 @@ function showModelSettings(initialAgent?: string) {
 }
 
 function showCreate(initialKind: 'direct' | 'group' = 'group') {
-  openModal('新建会话', '选择对话成员，为这个话题留一个独立空间。', `<form id="create-form"><div class="kind-switch"><button type="button" data-kind="direct" class="${initialKind === 'direct' ? 'selected' : ''}">${icon('chat')}私聊</button><button type="button" data-kind="group" class="${initialKind === 'group' ? 'selected' : ''}">${icon('group')}群聊</button></div><label class="field">会话名称<input name="title" required maxlength="80" placeholder="例如：框架开发 / 今天的想法" autocomplete="off"></label><span class="field-label">${initialKind === 'group' ? '选择二至五位成员' : '选择一位成员'}</span><div class="member-options">${memberOptions(initialKind === 'group' ? ['hermes-win', 'codex-win', 'dsh-win'] : ['codex-win'], initialKind === 'group' ? 'checkbox' : 'radio')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>现有会话与私人记忆保持独立</span><button class="primary" type="submit">创建会话${icon('arrow')}</button></div></form>`);
+  openModal('新建会话', '选择对话成员，为这个话题留一个独立空间。', `<form id="create-form"><div class="kind-switch"><button type="button" data-kind="direct" class="${initialKind === 'direct' ? 'selected' : ''}">${icon('chat')}私聊</button><button type="button" data-kind="group" class="${initialKind === 'group' ? 'selected' : ''}">${icon('group')}群聊</button></div><label class="field">会话名称<input name="title" required maxlength="80" placeholder="例如：框架开发 / 今天的想法" autocomplete="off"></label><span class="field-label">${initialKind === 'group' ? '选择一至五位成员（同一成员在项目里多开的会话也算成员）' : '选择一位成员'}</span><div class="member-options">${memberOptions(initialKind === 'group' ? ['hermes-win', 'codex-win', 'dsh-win'] : ['codex-win'], initialKind === 'group' ? 'checkbox' : 'radio')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>现有会话与私人记忆保持独立</span><button class="primary" type="submit">创建会话${icon('arrow')}</button></div></form>`);
   modal.querySelectorAll<HTMLButtonElement>('[data-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); showCreate(button.dataset.kind as 'direct' | 'group'); }));
   const form = modal.querySelector<HTMLFormElement>('#create-form')!;
   form.addEventListener('submit', async event => {
@@ -1797,7 +1798,7 @@ function showCreate(initialKind: 'direct' | 'group' = 'group') {
 function showMembers() {
   if (!detail) return;
   const conversation = detail.conversation;
-  openModal('管理群聊成员', '保留的成员沿用当前会话映射，新成员使用独立映射。', `<form id="members-form"><div class="member-options">${memberOptions(conversation.members, 'checkbox')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>至少保留两位成员</span><button class="primary">保存成员${icon('check')}</button></div></form>`);
+  openModal('管理群聊成员', '保留的成员沿用当前会话映射，新成员使用独立映射。', `<form id="members-form"><div class="member-options">${memberOptions(conversation.members, 'checkbox')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>至少保留一位成员</span><button class="primary">保存成员${icon('check')}</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#members-form')!;
   form.addEventListener('submit', async event => {
     event.preventDefault(); const button = form.querySelector<HTMLButtonElement>('button')!; button.disabled = true;
