@@ -1319,6 +1319,9 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| "Agent 会话读取失败")?;
         drop(statement);
+        // 只列出仍在群里的成员的会话；移出的成员（及其多开的会话）数据保留，加回来就恢复。
+        let members = self.conversation(group_id)?.members;
+        chats.retain(|chat| members.iter().any(|member| member == base_agent(&chat.agent_id)));
         for chat in &mut chats {
             chat.name = self.seat_name(group_id, &chat.agent_id);
         }

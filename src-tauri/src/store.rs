@@ -977,13 +977,20 @@ impl Store {
             return Err("私聊成员固定，请另建会话".into());
         }
         valid_members("group", members)?;
+        // 只有被移出的成员牵涉到时才重置：调度管家被移出就回到默认，角色里有人被移出就清掉角色。
+        let coordinator_gone = self.project_coordinator(id)?.is_some_and(|choice| !members.contains(&choice.agent));
+        let roles_gone = self.conversation_project_roles(id).ok().flatten().is_some_and(|roles| {
+            [&roles.plan.agent, &roles.implement.agent, &roles.review.agent].iter().any(|agent| !members.contains(agent))
+        });
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        if conversation.members != members {
+        if coordinator_gone {
             tx.execute(
                 "DELETE FROM project_coordinator_settings WHERE conversation_id=?1",
                 [id],
             )
             .map_err(|_| "管家配置重置失败")?;
+        }
+        if roles_gone {
             tx.execute(
                 "UPDATE conversation_projects SET roles=NULL WHERE conversation_id=?1",
                 [id],

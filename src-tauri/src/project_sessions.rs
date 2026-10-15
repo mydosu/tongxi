@@ -800,4 +800,25 @@ mod tests {
         assert_eq!(store.member_name("codex-win"), "Codex", "清空成员名恢复默认");
         let _ = std::fs::remove_dir_all(base);
     }
+
+    #[test]
+    fn project_members_can_change_before_work_starts() {
+        let (mut store, room, base) = room();
+        store.set_project_coordinator(&room, &crate::project_store::RoleChoice { agent: "codex-win".into(), model: None, effort: None }).unwrap();
+        store.add_project_seat(&room, "hermes-win", None).unwrap();
+        // 加入 Claude：自动有了自己的会话；调度管家 Codex 还在，配置保留。
+        store.replace_members(&room, &["codex-win".into(), "hermes-win".into(), "claude-win".into()]).unwrap();
+        let ids = |store: &mut crate::store::Store| store.ensure_project_agent_chats(&room).unwrap().into_iter().map(|chat| chat.agent_id).collect::<Vec<_>>();
+        assert!(ids(&mut store).contains(&"claude-win".to_string()));
+        assert_eq!(store.project_coordinator(&room).unwrap().unwrap().agent, "codex-win");
+        // 移出 Hermes：它和它多开的会话从项目里消失；加回来就恢复。
+        store.replace_members(&room, &["codex-win".into(), "claude-win".into()]).unwrap();
+        assert!(ids(&mut store).iter().all(|id| !id.starts_with("hermes-win")));
+        store.replace_members(&room, &["codex-win".into(), "claude-win".into(), "hermes-win".into()]).unwrap();
+        assert!(ids(&mut store).contains(&"hermes-win-2".to_string()));
+        // 移出调度管家：配置回到默认。
+        store.replace_members(&room, &["claude-win".into(), "hermes-win".into()]).unwrap();
+        assert!(store.project_coordinator(&room).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
