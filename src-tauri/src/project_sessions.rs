@@ -608,4 +608,37 @@ mod tests {
         assert!(store.remove_project_seat(&room, "codex-win").is_err(), "主席位不能撤");
         let _ = std::fs::remove_dir_all(base);
     }
+
+    #[test]
+    fn an_archived_project_group_no_longer_holds_its_directory() {
+        let (mut store, room, base) = room();
+        let root = base.join("project");
+        let original = store.conversation_project(&room).unwrap().unwrap();
+        let error = store.register_project("新名字", root.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("项目群"), "还在用的群要点名：{error}");
+        store.archive(&room, true).unwrap();
+        let renamed = store.register_project("新名字", root.to_str().unwrap()).unwrap();
+        assert_eq!((renamed.id.as_str(), renamed.name.as_str()), (original.id.as_str(), "新名字"), "沿用原登记，只改名");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn releasing_a_project_frees_its_directory_but_keeps_history() {
+        let (mut store, room, base) = room();
+        let root = base.join("project");
+        let project = store.conversation_project(&room).unwrap().unwrap();
+        assert!(store.release_project(&project.id).unwrap_err().contains("项目群"), "还在用的群不能解除");
+        let message = store.save_message(&room, &Uuid::new_v4().to_string(), "做点事").unwrap();
+        store.start_workflow(&room, &message.id, "做点事").unwrap();
+        store.connection.execute("UPDATE workflows SET status='completed'", []).unwrap();
+        store.connection.execute("DELETE FROM project_leases", []).unwrap();
+        store.archive(&room, true).unwrap();
+        store.release_project(&project.id).unwrap();
+        assert!(store.projects().unwrap().is_empty(), "从已登记列表里拿掉");
+        assert!(store.conversation_project(&room).unwrap().is_none(), "归档群的绑定解开");
+        assert_eq!(store.workflows(&room).unwrap().len(), 1, "协作历史保留");
+        let fresh = store.register_project("另一个", root.to_str().unwrap()).unwrap();
+        assert_ne!(fresh.id, project.id, "目录空出来，能登记成新项目");
+        let _ = std::fs::remove_dir_all(base);
+    }
 }

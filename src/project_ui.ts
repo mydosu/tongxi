@@ -14,13 +14,15 @@ export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Esca
   const portrait = message.sender_agent ? avatar(message.sender_agent) : `<span class="system-avatar">${message.kind === 'user' ? '你' : '·'}</span>`;
   return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.created_at)}</time></div>${message.kind === 'user' ? `<div class="bubble">${escape(attachmentText(message.content))}</div>` : `<div class="bubble markdown">${agentMarkdown(attachmentText(message.content), escape)}</div>`}${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
 }
+/// 后端存的是 Windows 规范化路径（以 `\\?\` 开头），给人看时去掉这个前缀。
+const plainPath = (path: string) => path.startsWith('\\\\?\\') ? path.slice(4) : path;
 export const workflowBusy = (job: Workflow | null | undefined) => !!job && ['queued', 'planning', 'running', 'verifying', 'reviewing', 'cancelling'].includes(job.status);
 export async function bindingDialog(room: Conversation, current: Project | null, host: DialogHost) {
-  const projects = await invoke<Project[]>('list_projects');
+  let projects = await invoke<Project[]>('list_projects');
   const { escape, modal } = host;
   const members = room.members.filter(id => PROJECT_AGENTS.includes(id));
   let coordinator = defaultCoordinator(members, host.coordinator?.agent);
-  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<input id="project-root" placeholder="D:\\Projects\\my-app" autocomplete="off"></label></div><p id="registered-project-info" class="model-setting-note"></p><fieldset id="session-bind-section" class="session-bind-section"><legend>各成员的会话</legend><label class="field">调度管家<select id="coordinator-choice">${members.map(id => `<option value="${escape(id)}" ${id === coordinator ? 'selected' : ''}>${escape(host.name(id))}</option>`).join('')}</select></label><div class="session-bind-list"></div><small class="model-setting-note">可以让成员（含调度）续接它们自己已有的原生会话；保持「新建会话」则由成员新开。点「＋」给同一成员再开一个会话（不同或相同模型），调度会把它当独立成员分工。项目开始后也能在「会话绑定」里切换。</small></fieldset><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给${escape(host.name('albion-wsl'))}</label><p class="model-setting-note">默认关闭。开启后只共享该项目的协作进展，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
+  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<input id="project-root" placeholder="D:\\Projects\\my-app" autocomplete="off"></label></div><div class="registered-project"><p id="registered-project-info" class="model-setting-note"></p><button type="button" class="text-button" id="release-project" hidden title="把这个项目从目录上解开、从列表里拿掉；归档群的聊天和协作历史保留">解除登记</button></div><fieldset id="session-bind-section" class="session-bind-section"><legend>各成员的会话</legend><label class="field">调度管家<select id="coordinator-choice">${members.map(id => `<option value="${escape(id)}" ${id === coordinator ? 'selected' : ''}>${escape(host.name(id))}</option>`).join('')}</select></label><div class="session-bind-list"></div><small class="model-setting-note">可以让成员（含调度）续接它们自己已有的原生会话；保持「新建会话」则由成员新开。点「＋」给同一成员再开一个会话（不同或相同模型），调度会把它当独立成员分工。项目开始后也能在「会话绑定」里切换。</small></fieldset><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给${escape(host.name('albion-wsl'))}</label><p class="model-setting-note">默认关闭。开启后只共享该项目的协作进展，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#project-form')!;
   const choice = form.querySelector<HTMLSelectElement>('#project-choice')!;
   const summary = form.querySelector<HTMLInputElement>('#project-summary')!;
@@ -35,11 +37,31 @@ export async function bindingDialog(room: Conversation, current: Project | null,
     section.hidden = !choosing() || members.length === 0;
     form.querySelector<HTMLElement>('#new-project-fields')!.hidden = !!choice.value;
     const selected = projects.find(project => project.id === choice.value) || (current && current.id === choice.value ? current : null);
-    form.querySelector('#registered-project-info')!.textContent = selected ? selected.root : '';
+    form.querySelector('#registered-project-info')!.textContent = selected ? plainPath(selected.root) : '';
+    const release = form.querySelector<HTMLButtonElement>('#release-project')!;
+    release.hidden = !choice.value || choice.value === current?.id;
+    release.dataset.armed = ''; release.textContent = '解除登记';
     // 未选择已登记项目时视为新项目：共享默认关闭。
     summary.checked = !!selected?.summary_enabled;
   };
   choice.addEventListener('change', update); update();
+  // 解除登记：点两下确认。解开后把目录填进「登记新项目」，可以马上换个名字重新绑定。
+  form.querySelector<HTMLButtonElement>('#release-project')!.addEventListener('click', async event => {
+    const button = event.currentTarget as HTMLButtonElement;
+    if (!button.dataset.armed) { button.dataset.armed = '1'; button.textContent = '再点一次确认解除'; return; }
+    const released = projects.find(project => project.id === choice.value);
+    button.disabled = true;
+    try {
+      projects = await invoke<Project[]>('release_project', { projectId: choice.value });
+      choice.innerHTML = `<option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}`;
+      choice.value = '';
+      if (released) form.querySelector<HTMLInputElement>('#project-root')!.value = plainPath(released.root);
+      form.querySelector('.form-error')!.textContent = '';
+      update();
+      form.querySelector<HTMLInputElement>('#project-name')!.focus();
+    } catch (error) { form.querySelector('.form-error')!.textContent = error instanceof Error ? error.message : String(error); }
+    finally { button.disabled = false; }
+  });
   const submit = async (unbind = false) => {
     form.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true; });
     try {

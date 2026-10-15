@@ -804,7 +804,7 @@ impl Store {
     pub fn projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self
             .connection
-            .prepare("SELECT id FROM projects ORDER BY created_at,id")
+            .prepare("SELECT id FROM projects WHERE root_key NOT LIKE 'released:%' ORDER BY created_at,id")
             .map_err(|e| e.to_string())?;
         let ids = stmt
             .query_map([], |r| r.get::<_, String>(0))
@@ -832,6 +832,38 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or("项目不存在".into())
     }
+    /// 解除登记：把项目从目录上解开、从「已登记项目」里拿掉。还有没归档的群在用、或协作正在运行时拒绝。
+    /// 归档群对它的绑定一并解开（聊天和协作历史保留）；有协作历史的项目留着记录，只让出目录。
+    pub fn release_project(&mut self, id: &str) -> Result<()> {
+        let project = self.project(id)?;
+        let active: Option<String> = self.connection.query_row(
+            "SELECT c.title FROM conversation_projects cp JOIN conversations c ON c.id=cp.conversation_id WHERE cp.project_id=?1 AND c.archived=0 ORDER BY c.updated_at DESC LIMIT 1",
+            [id], |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some(title) = active {
+            return Err(format!("「{}」还被「{title}」使用，先在那个群里解除绑定或把它归档", project.name));
+        }
+        let running: bool = self
+            .connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM project_leases WHERE project_id=?1)", [id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if running {
+            return Err("这个项目还有协作在运行，停止后再解除登记".into());
+        }
+        let tx = self.connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM conversation_projects WHERE project_id=?1", [id]).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM project_sessions WHERE project_id=?1", [id]).map_err(|e| e.to_string())?;
+        let history: bool = tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM workflows WHERE project_id=?1)", [id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if history {
+            tx.execute("UPDATE projects SET root_key='released:'||id WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+        } else {
+            tx.execute("DELETE FROM projects WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn register_project(&mut self, name: &str, root: &str) -> Result<Project> {
         let name = name.trim();
         let root = Path::new(root);
@@ -875,7 +907,16 @@ impl Store {
         if let Some(id) = existing {
             let project = self.project(&id)?;
             if project.name != name {
-                return Err("此目录已登记，不能以不同名称重复绑定".into());
+                // 只有已归档的群用过这个目录时，不再占着它：沿用原登记（历史与项目记忆接得上），改成新名字。
+                let active: Option<String> = self.connection.query_row(
+                    "SELECT c.title FROM conversation_projects cp JOIN conversations c ON c.id=cp.conversation_id WHERE cp.project_id=?1 AND c.archived=0 ORDER BY c.updated_at DESC LIMIT 1",
+                    [&id], |r| r.get(0),
+                ).optional().map_err(|e| e.to_string())?;
+                if let Some(title) = active {
+                    return Err(format!("这个目录正被「{title}」使用（项目名「{}」）；可以在「已登记项目」里直接选它，或先归档那个群", project.name));
+                }
+                self.connection.execute("UPDATE projects SET name=?1 WHERE id=?2", params![name, id]).map_err(|e| e.to_string())?;
+                return self.project(&id);
             }
             return Ok(project);
         }
