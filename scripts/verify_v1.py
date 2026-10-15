@@ -116,7 +116,7 @@ def main() -> int:
         page.keyboard.press("Escape")
         # 原生头像：Codex、Claude 打包图标，Hermes、DSH 从本机安装读取；可以换，也能恢复。
         faces = {agent["id"]: (agent.get("avatar") or "")[:22] for agent in sd.ipc(page, "list_agents")}
-        check("members start with their native icons", faces["codex-win"].startswith("data:image/svg") and faces["claude-win"].startswith("data:image/png") and all(faces[i].startswith("data:image/") for i in installed), faces)
+        check("members start with their native icons", faces["codex-win"].startswith("data:image/svg") and faces["claude-win"].startswith("data:image/svg") and all(faces[i].startswith("data:image/") for i in installed), faces)
         page.locator('[data-avatar-edit="codex-win"]').set_input_files(str(next(Path(r"D:\Albion picture").glob("*.jpg"))))
         page.wait_for_function("() => true")
         deadline = time.monotonic() + 15

@@ -1,5 +1,5 @@
 //! 成员头像：用户换过就用用户的；否则用成员的原生图标——Hermes、DSH 从本机安装里读，
-//! Claude 用 claude.ai 官方发布的应用图标，Codex 用 LobeHub 图标库（MIT）里的 Codex 应用图标；
+//! Claude 用 Claude Code 的像素小螃蟹 Clawd，Codex 用 Codex 应用图标（都来自 LobeHub 图标库，MIT）；
 //! 都没有就退回字母头像（由界面画）。
 //! 伴侣没有原生图标，头像就是它配置里的那张。
 use crate::store::Store;
@@ -10,7 +10,7 @@ use std::path::Path;
 type Result<T> = std::result::Result<T, String>;
 
 const CODEX: &str = include_str!("native_avatars/codex-color.svg");
-const CLAUDE: &[u8] = include_bytes!("native_avatars/claude-app.png");
+const CLAUDE: &str = include_str!("native_avatars/claudecode-color.svg");
 
 /// 头像值：图片（data URL，≤300KB）或纯色 `color:#rrggbb`（界面用它画「纯色底 + 名字首字」）。
 pub fn valid(avatar: &str) -> bool {
@@ -37,7 +37,7 @@ fn read_svg(path: &Path) -> Option<String> {
     (text.len() < 200_000 && text.contains("<svg")).then(|| svg_url(&without_style(&text)))
 }
 
-/// 没有底色的标志（DSH 的鲸鱼）垫一块白色圆角底，和其他应用图标一样是方形头像。
+/// 没有底色的标志（DSH 的鲸鱼、Claude Code 的小螃蟹）垫一块白色圆角底，和其他应用图标一样是方形头像。
 fn on_tile(inner: &str) -> String {
     svg_url(&format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#ffffff"/><image href="{inner}" x="12" y="12" width="40" height="40"/></svg>"##
@@ -48,7 +48,7 @@ fn on_tile(inner: &str) -> String {
 pub fn native(agent: &str, data: Option<&Path>) -> Option<String> {
     match agent {
         "codex-win" => Some(svg_url(CODEX)),
-        "claude-win" => Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(CLAUDE))),
+        "claude-win" => Some(on_tile(&svg_url(CLAUDE))),
         "hermes-win" => {
             let python = crate::acp_transport::Target::windows_python()?;
             let repo = python.parent()?.parent()?.parent()?;
