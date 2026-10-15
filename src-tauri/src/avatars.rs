@@ -12,6 +12,14 @@ type Result<T> = std::result::Result<T, String>;
 const CODEX: &str = include_str!("native_avatars/codex-color.svg");
 const CLAUDE: &[u8] = include_bytes!("native_avatars/claude-app.png");
 
+/// 头像值：图片（data URL，≤300KB）或纯色 `color:#rrggbb`（界面用它画「纯色底 + 名字首字」）。
+pub fn valid(avatar: &str) -> bool {
+    let solid = avatar
+        .strip_prefix("color:#")
+        .is_some_and(|hex| hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()));
+    solid || (avatar.starts_with("data:image/") && avatar.len() <= 400_000)
+}
+
 fn svg_url(svg: &str) -> String {
     format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg))
 }
@@ -77,8 +85,8 @@ impl Store {
             return Err("成员不存在".into());
         }
         if let Some(avatar) = avatar {
-            if !avatar.starts_with("data:image/") || avatar.len() > 400_000 {
-                return Err("头像需要是图片，且不超过 300KB".into());
+            if !valid(avatar) {
+                return Err("头像需要是图片（不超过 300KB）或纯色".into());
             }
         }
         if agent == "albion-wsl" {
@@ -118,6 +126,8 @@ mod tests {
         assert_eq!(super::without_style("<svg><style>p{}</style><path/></svg>"), "<svg><path/></svg>");
         let mut store = crate::store::Store::initialize(rusqlite::Connection::open_in_memory().unwrap(), std::path::PathBuf::from(":memory:")).unwrap();
         assert!(store.set_custom_avatar("codex-win", Some("not-an-image")).is_err());
+        assert!(store.set_custom_avatar("codex-win", Some("color:#8b80c4")).is_ok(), "纯色头像");
+        assert!(store.set_custom_avatar("codex-win", Some("color:red")).is_err());
         store.set_custom_avatar("codex-win", Some("data:image/webp;base64,AAAA")).unwrap();
         assert_eq!(store.custom_avatar("codex-win").as_deref(), Some("data:image/webp;base64,AAAA"));
         store.set_custom_avatar("codex-win", None).unwrap();

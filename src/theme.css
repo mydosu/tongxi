@@ -408,7 +408,28 @@ html:not([data-hud]) .service-card > button { width: auto; }
 
 /* ---------- 换头像 ---------- */
 .avatar-edit { position: relative; flex: none; display: inline-flex; border-radius: 13px; cursor: pointer; }
-.avatar-edit-hint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: inherit; font-size: 12px; color: #fff;
-  background: rgb(58 54 100 / .45); opacity: 0; transition: opacity .15s; }
-.avatar-edit:hover .avatar-edit-hint, .avatar-edit:focus-within .avatar-edit-hint { opacity: 1; }
+/* 不遮头像：悬停时头像微微提亮放大，右下角浮出一个带相机图标的小白圆钮。 */
+.avatar-edit > .avatar { transition: transform .18s var(--ease), filter .18s; }
+.avatar-edit:hover > .avatar, .avatar-edit:focus-within > .avatar { transform: scale(1.04); filter: brightness(1.04); }
+.avatar-edit-hint { position: absolute; right: -5px; bottom: -5px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%;
+  color: #6c62a8; background: #fff; box-shadow: 0 2px 8px rgb(70 74 130 / .28); opacity: 0; transform: scale(.7); transition: opacity .18s, transform .18s var(--ease); }
+.avatar-edit-hint .icon { width: 13px; height: 13px; stroke-width: 1.9; }
+.avatar-edit:hover .avatar-edit-hint, .avatar-edit:focus-within .avatar-edit-hint { opacity: 1; transform: none; }
 .avatar.albion-portrait.seat { overflow: visible; }
+
+/* ---------- 纯色头像与换头像面板 ---------- */
+.avatar.solid { color: #fff; font-weight: 600; text-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+.avatar.solid.seat { overflow: visible; }
+.avatar-edit-button { position: relative; display: inline-flex; padding: 0; border-radius: 13px; }
+.avatar-edit > .avatar-edit-button > .avatar { transition: transform .18s var(--ease), filter .18s; }
+.avatar-edit-button:hover > .avatar, .avatar-edit.open .avatar-edit-button > .avatar { transform: scale(1.04); filter: brightness(1.04); }
+.avatar-edit-button:hover .avatar-edit-hint, .avatar-edit.open .avatar-edit-hint { opacity: 1; transform: none; }
+.avatar-picker { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 25; width: 214px; padding: 10px; border-radius: 14px;
+  background: rgb(251 251 255 / .97); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 16px 40px rgb(70 74 130 / .22); backdrop-filter: blur(20px); }
+.avatar-edit.open .avatar-picker { display: grid; gap: 4px; animation: modal-in .2s var(--ease); }
+.avatar-swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 2px 2px 8px; border-bottom: 1px solid var(--glass-line); margin-bottom: 4px; }
+.avatar-swatch { aspect-ratio: 1; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .35); }
+.avatar-swatch:hover { transform: scale(1.08); box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgb(165 152 216 / .5); }
+.avatar-picker-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 12px; color: #4f5878; cursor: pointer; text-align: left; }
+.avatar-picker-item:hover { background: rgb(236 232 252 / .8); }
+.avatar-picker-item .icon { width: 15px; height: 15px; }
