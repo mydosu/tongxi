@@ -1,6 +1,8 @@
 export interface Agent {
   id: string; name: string; subtitle: string; role: string;
   location: string; accent: string; status: 'not_connected';
+  /** 伴侣头像（用户上传的 data URL）。 */
+  avatar?: string;
 }
 export interface Conversation {
   id: string; title: string; kind: 'direct' | 'group'; archived: boolean;
@@ -29,11 +31,11 @@ export interface ConversationDetail {
   chat_questions?: ChatQuestion[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
-export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; }
+export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; }
 export interface ProjectRoomAgentMessage { id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
 export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {
-  version: string; milestone: number; database_path: string; hud_shortcut: boolean;
+  version: string; milestone: number; database_path: string; hud_shortcut: boolean; autoconnect?: boolean;
 }
 
 export interface RunRecord {

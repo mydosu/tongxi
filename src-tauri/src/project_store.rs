@@ -49,6 +49,28 @@ pub const EXECUTOR_AGENTS: [&str; 4] = ["codex-win", "hermes-win", "dsh-win", "c
 /// project_tasks.agent_id 的约束只允许 Codex/DSH/Claude（v18 起含 Claude），Hermes 用 assigned_agent 列存放。
 const TASK_ROW_BASE_AGENTS: [&str; 3] = ["codex-win", "dsh-win", "claude-win"];
 pub const REVIEWER_AGENTS: [&str; 4] = EXECUTOR_AGENTS;
+/// 同一成员在项目里的额外席位（`codex-win-2` 这类 id）：各有自己的专属会话与模型，
+/// 调度把它们当独立成员派活，执行时落回底层成员的原生连接。
+pub const SEAT_SLOTS: [u8; 3] = [2, 3, 4];
+pub fn seat_ids() -> Vec<String> {
+    EXECUTOR_AGENTS
+        .iter()
+        .flat_map(|agent| SEAT_SLOTS.iter().map(move |slot| format!("{agent}-{slot}")))
+        .collect()
+}
+/// 席位 → 底层成员；不是席位就原样返回。
+pub fn base_agent(id: &str) -> &str {
+    if let Some((base, slot)) = id.rsplit_once('-') {
+        if EXECUTOR_AGENTS.contains(&base) && SEAT_SLOTS.iter().any(|n| n.to_string() == slot) {
+            return base;
+        }
+    }
+    id
+}
+/// 项目成员（含额外席位）。
+pub fn is_executor(id: &str) -> bool {
+    EXECUTOR_AGENTS.contains(&base_agent(id))
+}
 
 impl Roles {
     /// 缺省组合＝旧行为：Codex 规划、DSH 执行、Hermes 验收。
@@ -345,8 +367,11 @@ pub struct Workflow {
 #[derive(Clone, Debug, Serialize)]
 pub struct ProjectAgentChat {
     pub group_conversation_id: String,
+    /// 成员 id；额外席位是 `codex-win-2` 这类，专属会话里的原生成员是它的底层成员。
     pub agent_id: String,
     pub conversation_id: String,
+    /// 额外席位的名字（用户起的）；主席位为空。
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -521,6 +546,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         add_column(tx, table, column, definition)?;
     }
     crate::coordinator_store::migrate(tx)?;
+    crate::project_sessions::migrate(tx)?;
     Ok(())
 }
 
@@ -1233,7 +1259,7 @@ impl Store {
             return Ok(Vec::new());
         };
         let mut statement = self.connection.prepare(
-            "SELECT group_conversation_id,agent_id,conversation_id FROM project_agent_chats WHERE project_id=?1 AND group_conversation_id=?2 ORDER BY CASE agent_id WHEN 'codex-win' THEN 0 WHEN 'hermes-win' THEN 1 ELSE 2 END",
+            "SELECT c.group_conversation_id,c.agent_id,c.conversation_id,s.label FROM project_agent_chats c LEFT JOIN project_seats s ON s.conversation_id=c.group_conversation_id AND s.seat_id=c.agent_id WHERE c.project_id=?1 AND c.group_conversation_id=?2 ORDER BY CASE WHEN c.agent_id LIKE 'codex-win%' THEN 0 WHEN c.agent_id LIKE 'hermes-win%' THEN 1 WHEN c.agent_id LIKE 'dsh-win%' THEN 2 ELSE 3 END,c.agent_id",
         ).map_err(|_| "Agent 会话读取失败")?;
         let rows = statement
             .query_map(params![project.id, group_id], |row| {
@@ -1241,6 +1267,7 @@ impl Store {
                     group_conversation_id: row.get(0)?,
                     agent_id: row.get(1)?,
                     conversation_id: row.get(2)?,
+                    label: row.get(3)?,
                 })
             })
             .map_err(|_| "Agent 会话读取失败")?;
@@ -1290,19 +1317,28 @@ impl Store {
         let Some(project) = self.conversation_project(group_id)? else {
             return Ok(Vec::new());
         };
-        for agent in EXECUTOR_AGENTS {
-            if !group.members.iter().any(|member| member == agent) {
-                continue;
+        // 主席位按群成员来；额外席位来自 project_seats，底层成员也必须仍在群里。
+        let mut seats: Vec<(String, String)> = EXECUTOR_AGENTS
+            .iter()
+            .filter(|agent| group.members.iter().any(|member| member == **agent))
+            .map(|agent| (agent.to_string(), crate::store::agent_name(agent).to_owned()))
+            .collect();
+        for (seat, label) in self.project_seats(group_id)? {
+            if group.members.iter().any(|member| member == base_agent(&seat)) {
+                seats.push((seat, label));
             }
+        }
+        for (seat, label) in seats {
+            let agent = base_agent(&seat).to_owned();
             let exists: bool = self.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM project_agent_chats WHERE project_id=?1 AND group_conversation_id=?2 AND agent_id=?3)",
-                params![project.id,group_id,agent], |row| row.get(0),
+                params![project.id,group_id,seat], |row| row.get(0),
             ).map_err(|_| "Agent 会话状态不可用")?;
             if exists {
                 continue;
             }
-            let title = format!("{} · {}", project.name, crate::store::agent_name(agent));
-            let chat = self.create(&title, "direct", &[agent.to_owned()])?;
+            let title = format!("{} · {}", project.name, label);
+            let chat = self.create(&title, "direct", &[agent.clone()])?;
             let saved_settings: (Option<String>, Option<String>) = self.connection.query_row(
                 "SELECT s.model,s.reasoning_effort FROM sessions s JOIN conversations c ON c.id=s.conversation_id WHERE s.agent_id=?1 AND c.kind='direct' AND c.id<>?2 ORDER BY c.updated_at DESC LIMIT 1",
                 params![agent, chat.id], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -1317,7 +1353,7 @@ impl Store {
             ).map_err(|_| "Agent 项目目录绑定失败")?;
             tx.execute(
                 "INSERT INTO project_agent_chats(project_id,group_conversation_id,agent_id,conversation_id,created_at) VALUES(?1,?2,?3,?4,?5)",
-                params![project.id,group_id,agent,chat.id,now()],
+                params![project.id,group_id,seat,chat.id,now()],
             ).map_err(|_| "Agent 项目会话绑定失败")?;
             tx.commit().map_err(|_| "Agent 项目会话保存失败")?;
         }
@@ -2133,7 +2169,7 @@ impl Store {
         workflow_id: &str,
         agent_id: &str,
     ) -> Result<Vec<String>> {
-        if !EXECUTOR_AGENTS.contains(&agent_id) {
+        if !is_executor(agent_id) {
             return Err("未知的项目 Agent".into());
         }
         let workflow = self.workflow(workflow_id)?;
@@ -2178,11 +2214,13 @@ impl Store {
             return Err("项目运行状态无效".into());
         }
         let old = self.attempt(&attempt.id)?;
+        // DSH 运行中会通报实际走的线路（含回退），模型随之更新是正常的；其他成员的模型仍须一致。
+        let routed = base_agent(&attempt.agent_id) == "dsh-win";
         if old.workflow_id != attempt.workflow_id
             || old.task_id != attempt.task_id
             || old.agent_id != attempt.agent_id
             || old.stage != attempt.stage
-            || old.model != attempt.model
+            || (!routed && old.model != attempt.model)
             || old.reasoning_effort != attempt.reasoning_effort
         {
             return Err("项目运行身份不匹配".into());

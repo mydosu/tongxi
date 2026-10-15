@@ -46,6 +46,8 @@ def launch():
         port = sock.getsockname()[1]
     env = os.environ.copy()
     env["AGENT_HUB_DATA_DIR"] = str(DATA)
+    # 启动时自动接入会把本机成员都连上，回归测试要从「未连接」开始；需要它的脚本自己打开。
+    env.setdefault("AGENT_HUB_AUTOCONNECT", "0")
     # 会话库默认指向真实库（同席要能列到/接着聊她自己的历史会话）；测试一律用自己数据目录里的
     # 隔离库，绝不在测试里写用户的真实 state.db。
     if ISOLATED_SESSION_DB:

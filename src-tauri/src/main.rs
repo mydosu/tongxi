@@ -4,17 +4,20 @@ mod quota_reset;
 mod cli_open;
 mod cli_transcript;
 mod acp_transport;
+mod agent_setup;
 mod albion;
 mod albion_openai;
 #[cfg(test)]
 mod attachment_tests;
 mod attachments;
+mod backgrounds;
 #[cfg(test)]
 mod chat_question_tests;
 mod chat_questions;
 mod chat_text;
 mod claude;
 mod clients;
+mod companion;
 mod codex;
 mod conversation_cleanup;
 mod coordinator_clients;
@@ -34,6 +37,7 @@ mod project_memory;
 mod project_models;
 mod project_native;
 mod project_questions;
+mod project_sessions;
 mod project_store;
 #[cfg(test)]
 mod project_tests;
@@ -53,8 +57,8 @@ use std::sync::{Arc, Mutex};
 use store::{Agent, Conversation, ConversationDetail, Message, Store};
 use tauri::{Manager, State};
 
-struct AppState {
-    store: Arc<Mutex<Store>>,
+pub(crate) struct AppState {
+    pub(crate) store: Arc<Mutex<Store>>,
     directory: std::path::PathBuf,
 }
 
@@ -578,7 +582,7 @@ fn native_snapshot(app: &tauri::AppHandle, agent: &str) -> Result<codex::Runtime
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().snapshot(),
-        _ => return Err("阿尔比恩运行在 WSL 里，暂不支持在 CLI 中打开".into()),
+        _ => return Err("伴侣通过它自己的服务对话，没有 CLI 可以打开".into()),
     })
 }
 
@@ -722,9 +726,27 @@ fn with_store<T>(
     action(&mut store)
 }
 
+/// 成员名单；伴侣的名字、介绍和头像按用户自己的配置来。
 #[tauri::command]
-fn list_agents() -> Vec<Agent> {
+fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
+    let companion = state.store.lock().ok().map(|store| store.companion());
     store::agents()
+        .into_iter()
+        .map(|mut agent| {
+            if let (true, Some(config)) = (agent.id == "albion-wsl", &companion) {
+                agent.name = config.name.clone();
+                agent.subtitle = config.subtitle.clone();
+                agent.avatar = config.avatar.clone();
+                agent.location = "伴侣".into();
+                agent.role = if config.configured {
+                    "通过它自己的服务对话，人格、记忆与工具都在那边".into()
+                } else {
+                    "还没有接入：在「成员与服务」里配置你的伴侣".into()
+                };
+            }
+            agent
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -1016,6 +1038,8 @@ struct AppInfo {
     database_path: String,
     /// Ctrl+Shift+H 是否真的在系统里注册成功（问插件，不问自己）。
     hud_shortcut: bool,
+    /// 启动时是否自动扫描并接入本机成员；`AGENT_HUB_AUTOCONNECT=0` 关掉（自动化测试用）。
+    autoconnect: bool,
 }
 
 #[tauri::command]
@@ -1027,6 +1051,7 @@ fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<AppInfo
             milestone: 7,
             database_path: store.path.to_string_lossy().into(),
             hud_shortcut: app.global_shortcut().is_registered(hud_shortcut()),
+            autoconnect: std::env::var("AGENT_HUB_AUTOCONNECT").map_or(true, |value| value != "0"),
         })
     })
 }
@@ -1060,7 +1085,10 @@ async fn native_sessions(
     };
     // 标出占用情况与当前绑定，界面据此决定能不能点「接入」。
     with_store(&state, |store| {
-        let owners = store.native_session_owners(&agent_id)?;
+        let mut owners = store.native_session_owners(&agent_id)?;
+        for (id, owner, _) in store.coordinator_session_owners(&agent_id)? {
+            owners.entry(id).or_insert(owner);
+        }
         let bound = conversation_id
             .as_deref()
             .and_then(|id| store.detail(id).ok())
@@ -1380,6 +1408,21 @@ fn main() {
             projects::update_paused_project_roles,
             projects::set_project_roles,
             project_coordinator::set_project_coordinator,
+            project_sessions::project_session_bindings,
+            project_sessions::bind_project_sessions,
+            project_sessions::add_project_seat,
+            agent_setup::scan_agents,
+            companion::companion_config,
+            companion::save_companion,
+            companion::test_companion,
+            backgrounds::list_backgrounds,
+            backgrounds::background_image,
+            backgrounds::add_background,
+            backgrounds::set_background_mode,
+            backgrounds::remove_background,
+            agent_setup::install_agent,
+            agent_setup::setup_agent,
+            project_sessions::remove_project_seat,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,

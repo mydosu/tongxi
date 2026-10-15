@@ -115,7 +115,7 @@ impl Wire {
     fn completed_message(&mut self, id: &str, text: &str, phase: Option<&str>) {
         self.text(id, text, true);
         if matches!(self.attempt.stage.as_str(), "plan" | "repair")
-            && self.attempt.agent_id == "codex-win"
+            && crate::project_store::base_agent(&self.attempt.agent_id) == "codex-win"
         {
             self.last_plan_message = Some(text.into());
             if phase == Some("final_answer") {
@@ -125,7 +125,7 @@ impl Wire {
     }
     fn finish_plan_output(&mut self) {
         if !matches!(self.attempt.stage.as_str(), "plan" | "repair")
-            || self.attempt.agent_id != "codex-win"
+            || crate::project_store::base_agent(&self.attempt.agent_id) != "codex-win"
         {
             return;
         }
@@ -240,7 +240,7 @@ impl Runner {
         if let Ok(attempt) = attempt {
             if let Some(session) = attempt.native_thread_id {
                 std::thread::spawn(move || {
-                    if attempt.agent_id == "codex-win" {
+                    if crate::project_store::base_agent(&attempt.agent_id) == "codex-win" {
                         if let Some(turn) = attempt.native_turn_id {
                             let _ = client
                                 .rpc("turn/interrupt", json!({"threadId":session,"turnId":turn}));
@@ -321,7 +321,7 @@ impl Runner {
         let notifications = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
-        let is_codex = agent == "codex-win";
+        let is_codex = crate::project_store::base_agent(&agent) == "codex-win";
         let manager = wire.lock().unwrap().attempt.activity.as_deref()
             == Some(crate::coordinator_policy::MANAGER_ACTIVITY);
         let subscription = client.listen(Arc::new(move |value| {
@@ -415,7 +415,7 @@ impl Runner {
                 {
                     return;
                 }
-                if value["method"] == "agent_hub/model_route" && state.attempt.agent_id == "dsh-win"
+                if value["method"] == "agent_hub/model_route" && crate::project_store::base_agent(&state.attempt.agent_id) == "dsh-win"
                 {
                     if let Some((model, event)) = crate::dsh::route_notice(params) {
                         let changed = state.attempt.model.as_deref() != Some(&model);
@@ -806,11 +806,14 @@ impl Runner {
                 &attempt.agent_id,
             )?;
             std::fs::create_dir_all(&cwd).map_err(|_| "管家目录创建失败")?;
-            return Ok((
-                workflow.id.clone(),
-                store.manager_session(&workflow.id)?,
-                cwd,
-            ));
+            // 本轮还没有调度会话时，先用群里给这位管家绑定的原生会话；都没有就新建。
+            let session = match store.manager_session(&workflow.id)? {
+                Some(session) => Some(session),
+                None => store
+                    .coordinator_binding(&workflow.conversation_id, &attempt.agent_id)?
+                    .map(|(session, _)| session),
+            };
+            return Ok((workflow.id.clone(), session, cwd));
         }
         let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
         let chat = chats
@@ -821,7 +824,7 @@ impl Runner {
             .detail(&chat.conversation_id)?
             .sessions
             .into_iter()
-            .find(|session| session.agent_id == attempt.agent_id)
+            .find(|session| session.agent_id == crate::project_store::base_agent(&attempt.agent_id))
             .ok_or("项目成员原生会话不存在")?;
         Ok((
             chat.conversation_id.clone(),
@@ -844,7 +847,7 @@ impl Runner {
                 root,
             );
         }
-        self.store.lock().unwrap().connection.execute("UPDATE sessions SET native_session_id=?1,native_cwd=?2 WHERE conversation_id=?3 AND agent_id=?4",rusqlite::params![session,root.to_string_lossy(),chat,attempt.agent_id]).map_err(|_|"项目会话绑定失败")?;
+        self.store.lock().unwrap().connection.execute("UPDATE sessions SET native_session_id=?1,native_cwd=?2 WHERE conversation_id=?3 AND agent_id=?4",rusqlite::params![session,root.to_string_lossy(),chat,crate::project_store::base_agent(&attempt.agent_id)]).map_err(|_|"项目会话绑定失败")?;
         Ok(())
     }
 
@@ -858,7 +861,8 @@ impl Runner {
     ) -> Result<()> {
         let attempt = wire.lock().unwrap().attempt.clone();
         // DSH 与 Claude 的桥都以 session/resume 续接，并用 config option 切换模型与强度。
-        let dsh = matches!(attempt.agent_id.as_str(), "dsh-win" | "claude-win");
+        let base = crate::project_store::base_agent(&attempt.agent_id);
+        let dsh = matches!(base, "dsh-win" | "claude-win");
         let manager =
             attempt.activity.as_deref() == Some(crate::coordinator_policy::MANAGER_ACTIVITY);
         let db = self.store.lock().unwrap().path.clone();
@@ -871,7 +875,7 @@ impl Runner {
         };
         // Claude 每轮新起进程、会话按 ID 续接，可以直接在本轮工作目录（任务工作树）里运行，
         // 文件自然落在工作树而不是项目根目录；DSH/Hermes 的会话绑定目录，仍用项目根目录。
-        let session_cwd = if attempt.agent_id == "claude-win" && !manager {
+        let session_cwd = if base == "claude-win" && !manager {
             root.to_path_buf()
         } else {
             project_root.clone()
@@ -879,7 +883,7 @@ impl Runner {
         let response = if let Some(session) = &previous {
             if (dsh || manager)
                 && (self.session_loaded)(&attempt, session)
-                && attempt.agent_id != "claude-win"
+                && base != "claude-win"
             {
                 Value::Null
             } else {
@@ -920,7 +924,7 @@ impl Runner {
                     "session/set_config_option",
                     json!({"sessionId":session,"configId":"reasoning_effort","value":effort}),
                 )?;
-            } else if attempt.agent_id == "claude-win" {
+            } else if base == "claude-win" {
                 // 未指定强度＝回到 CLI 默认，不沿用同一会话上一轮的显式强度。
                 client.rpc(
                     "session/set_config_option",

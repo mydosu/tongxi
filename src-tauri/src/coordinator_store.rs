@@ -261,12 +261,18 @@ impl Store {
         }
         let sources = self.coordination_sources(id)?;
         let members = self.conversation(&job.conversation_id)?.members;
+        // 额外席位不是群成员，但底层成员在群里、席位确实开过，就能接任务。
+        let seats = self.project_seats(&job.conversation_id)?;
         let mut keys: HashMap<String, (String, u32)> = HashMap::new();
         let mut prepared: Vec<PreparedRoute<'_>> = Vec::new();
         let mut next_position = job.tasks.len() as u32;
         for (route, model, effort) in routes {
             crate::coordinator_policy::check_assignment(route, &sources)?;
-            if !members.contains(&route.agent_id) {
+            let base = crate::project_store::base_agent(&route.agent_id);
+            let seat = route.agent_id != base
+                && members.iter().any(|member| member == base)
+                && seats.iter().any(|(seat, _)| *seat == route.agent_id);
+            if !members.contains(&route.agent_id) && !seat {
                 return Err("任务成员不在项目群里".into());
             }
             if keys.contains_key(&route.key) {
@@ -425,7 +431,7 @@ impl Store {
                 label,
                 route.quote.chars().take(70).collect::<String>()
             );
-            let stored_agent = if route.agent_id == "hermes-win" {
+            let stored_agent = if crate::project_store::base_agent(&route.agent_id) == "hermes-win" {
                 "dsh-win"
             } else {
                 route.agent_id.as_str()
@@ -553,7 +559,9 @@ impl Store {
         if !crate::project_store::live(&job.status) || job.status == "cancelling" {
             return Err("协作已停止".into());
         }
-        self.guard_service_maintenance(agent)?;
+        // 维护与私聊运行按底层成员算；项目任务按席位算，同一成员的不同席位可以并行。
+        let base = crate::project_store::base_agent(agent);
+        self.guard_service_maintenance(base)?;
         let activity = if let Some(task) = task {
             if task.workflow_id != id
                 || task.agent_id != agent
@@ -566,7 +574,7 @@ impl Store {
             {
                 return Err("任务成员或依赖尚未就绪".into());
             }
-            let busy:bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling')) OR EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?1 AND COALESCE(activity,'')!='coordinate' AND status IN ('starting','running','cancelling'))",[agent],|r|r.get(0)).map_err(|_|"成员状态不可用")?;
+            let busy:bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling')) OR EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?2 AND COALESCE(activity,'')!='coordinate' AND status IN ('starting','running','cancelling'))",params![base,agent],|r|r.get(0)).map_err(|_|"成员状态不可用")?;
             if busy {
                 return Err("成员仍有项目任务或私聊运行".into());
             }

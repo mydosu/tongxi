@@ -26,12 +26,21 @@ process.on('uncaughtException', error => { noteFailure(error); process.exit(1); 
 try {
   const { boot, loadLayeredEnv } = await load('@deepseek-ai/dsh-app-boot');
   const { DSH_LAUNCH_ENVIRONMENT_KEY } = await load('@deepseek-ai/dsh-launch-environment');
-  const hermesRepo = process.env.AGENT_HUB_DSH_HERMES_REPO || join(process.env.LOCALAPPDATA, 'hermes/hermes-agent');
-  const python = process.env.AGENT_HUB_HERMES_PYTHON || join(hermesRepo, '.venv/Scripts/python.exe');
-  const { stdout } = await promisify(execFile)(python, ['-u', '-c', process.env.AGENT_HUB_DSH_AUTH_BRIDGE,
-    hermesRepo, '--runtime'], { windowsHide: true, timeout: 45000, maxBuffer: 262144 });
-  const routes = JSON.parse(stdout);
-  if (routes.length !== 2) throw new Error('Expected the two authorized routes');
+  // 两种模型来源：Hermes 里配好的两条 DeepSeek 路由（原有用法），或 DSH 自己的配置
+  // （官方 deepseek-official + 用户在 `dsh web` 里存的 Key）。读不到 Hermes 路由就用后者，
+  // 这样只装了 DSH 的人也能接入；AGENT_HUB_DSH_OWN_CONFIG=1 强制用 DSH 自己的配置。
+  let routes = [];
+  if (process.env.AGENT_HUB_DSH_OWN_CONFIG !== '1') {
+    try {
+      const hermesRepo = process.env.AGENT_HUB_DSH_HERMES_REPO || join(process.env.LOCALAPPDATA, 'hermes/hermes-agent');
+      const python = process.env.AGENT_HUB_HERMES_PYTHON || join(hermesRepo, '.venv/Scripts/python.exe');
+      const { stdout } = await promisify(execFile)(python, ['-u', '-c', process.env.AGENT_HUB_DSH_AUTH_BRIDGE,
+        hermesRepo, '--runtime'], { windowsHide: true, timeout: 45000, maxBuffer: 262144 });
+      routes = JSON.parse(stdout);
+    } catch { routes = []; }
+    if (routes.length !== 2) routes = [];
+  }
+  const viaHermes = routes.length === 2;
   const providers = {};
   routes.forEach((route, index) => {
     const key = `AGENT_HUB_DSH_COMMAND_CODE_${index+1}`;
@@ -116,14 +125,21 @@ try {
   entries.find(item => item.id === 'web').config = { searchProvider: 'deepseek-official', fetchProvider: 'http' };
   entries.find(item => item.id === 'web-search-deepseek').config = { apiKeyEnv: 'DEEPSEEK_API_KEY' };
   entries.find(item => item.id === 'tool-web').config = { fetch: true, searchTimeoutMs: 60000 };
-  entries.push({ id: 'acp', name: requireNative.resolve('@deepseek-ai/dsh-acp'), inject: ['agentLoop'], config: {
-    provider: routes[0].id, model: routes[0].model
-  }});
+  if (!viaHermes) {
+    // DSH 自己的模型线路：本地凭据库（`dsh web` 里填的 Key，或 DEEPSEEK_API_KEY）+ 官方 DeepSeek 服务商。
+    entries.splice(entries.findIndex(item => item.id === 'llm-pi-ai') + 1, 0,
+      { id: 'credentials', name: requireNative.resolve('@deepseek-ai/dsh-credentials-local') },
+      { id: 'llm-deepseek', name: requireNative.resolve('@deepseek-ai/dsh-llm-deepseek') },
+      { id: 'deepseek-llm-api-extensions', name: requireNative.resolve('@deepseek-ai/dsh-deepseek-llm-api-extensions') });
+  }
+  entries.push({ id: 'acp', name: requireNative.resolve('@deepseek-ai/dsh-acp'), inject: ['agentLoop'], config: viaHermes
+    ? { provider: routes[0].id, model: routes[0].model }
+    : { provider: 'deepseek-official', model: process.env.AGENT_HUB_DSH_MODEL || 'deepseek-v4-flash' } });
   if (coordinatorMode) {
     // Permission presets depend on a shell executor. The tool-free coordinator
     // deliberately has none; keeping that plugin pending makes boot's activation
     // audit dispose ACP after initialize, before session/new can complete.
-    const allowed = new Set(['llm','session','agent','jobs-local','tools','system-prompt','session-persistence-jsonl','session-projection','llm-pi-ai','agent-loop','sandbox','sandbox-policy','subprocess','approval','token-meter','compaction-pruner','compaction','acp']);
+    const allowed = new Set(['llm','session','agent','jobs-local','tools','system-prompt','session-persistence-jsonl','session-projection','llm-pi-ai','credentials','llm-deepseek','deepseek-llm-api-extensions','agent-loop','sandbox','sandbox-policy','subprocess','approval','token-meter','compaction-pruner','compaction','acp']);
     for (let index=entries.length-1;index>=0;index--) if (!allowed.has(entries[index].id)) entries.splice(index,1);
     entries.find(item => item.id === 'system-prompt').config = {persona:'你是同席项目的隐藏调度管家。只返回引用用户原文和成员结果的路由JSON，不编写方案、代码或额外成员指令；没有任何项目、shell、文件、MCP、技能或委派工具。'};
     entries.find(item => item.id === 'sandbox-policy').config = {mode:'read-only',workspaceRoot:process.cwd()};
@@ -145,7 +161,7 @@ try {
   ctx = await boot('agent-hub-dsh', config, [{ id: 'llm-pi-ai', config: { providers } }], host => {
     host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment);
   }, pathToFileURL(join(installation, 'package.json')).href);
-  if (process.env.AGENT_HUB_DSH_FALLBACK_BRIDGE) {
+  if (viaHermes && process.env.AGENT_HUB_DSH_FALLBACK_BRIDGE) {
     const { installDailyFallback } = await import('data:text/javascript;base64,' + Buffer.from(process.env.AGENT_HUB_DSH_FALLBACK_BRIDGE).toString('base64'));
     installDailyFallback(ctx, routes, params => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'agent_hub/model_route', params: { ...params, eventId: randomUUID() } }) + '\n'));
   }

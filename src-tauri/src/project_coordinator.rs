@@ -140,7 +140,7 @@ impl Runtime {
             .detail(&chat.conversation_id)?
             .sessions
             .into_iter()
-            .find(|session| session.agent_id == agent)
+            .find(|session| session.agent_id == crate::project_store::base_agent(agent))
             .ok_or("项目模型配置不存在")?;
         Ok(RoleChoice {
             agent: agent.into(),
@@ -397,7 +397,26 @@ impl Runtime {
                 .unwrap()
                 .conversation(&workflow.conversation_id)?
                 .members;
-            let catalogs=members.iter().filter(|agent|crate::project_store::EXECUTOR_AGENTS.contains(&agent.as_str())).map(|agent|{let runtime=self.snapshot(agent);json!({"agent_id":agent,"connection":runtime.connection,"models":runtime.models,"project_settings":self.member_settings(&workflow.conversation_id,agent).ok()})}).collect::<Vec<_>>();
+            // 额外席位（同一成员的另一条会话）也作为独立成员交给管家：base_agent 说明它落在哪位成员上。
+            let seats = self.store.lock().unwrap().project_agent_chats(&workflow.conversation_id)?;
+            let catalogs = members
+                .iter()
+                .filter(|agent| crate::project_store::EXECUTOR_AGENTS.contains(&agent.as_str()))
+                .map(|agent| (agent.clone(), None))
+                .chain(
+                    seats
+                        .into_iter()
+                        .filter(|chat| {
+                            let base = crate::project_store::base_agent(&chat.agent_id);
+                            chat.agent_id != base && members.iter().any(|member| member == base)
+                        })
+                        .map(|chat| (chat.agent_id, chat.label)),
+                )
+                .map(|(agent, label)| {
+                    let runtime = self.snapshot(&agent);
+                    json!({"agent_id":agent,"base_agent":crate::project_store::base_agent(&agent),"seat_label":label,"connection":runtime.connection,"models":runtime.models,"project_settings":self.member_settings(&workflow.conversation_id,&agent).ok()})
+                })
+                .collect::<Vec<_>>();
             self.store
                 .lock()
                 .unwrap()

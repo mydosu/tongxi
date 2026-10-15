@@ -140,7 +140,7 @@ fn clause<'a>(text: &'a str, quote: &str) -> &'a str {
     &text[left..right]
 }
 pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String> {
-    if !crate::project_store::EXECUTOR_AGENTS.contains(&route.agent_id.as_str())
+    if !crate::project_store::is_executor(&route.agent_id)
         || !matches!(
             route.purpose.as_str(),
             "solution" | "implementation" | "verification" | "closeout" | "reply"
@@ -177,7 +177,9 @@ pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String>
         return Err("子代理只用于验证".into());
     }
     // 子代理验证由改动者派出，是否允许由 enqueue_routes 按条件判定，这里不按点名拦。
-    if !route.subagent && !named.is_empty() && !named.contains(&route.agent_id.as_str()) {
+    // 点名按底层成员算：「让 Codex …」可以派给 Codex 的任一席位。
+    let base = crate::project_store::base_agent(&route.agent_id);
+    if !route.subagent && !named.is_empty() && !named.contains(&base) {
         return Err("这段用户原话已点名另一成员，管家不能换派".into());
     }
     // A task may refer to a predecessor, but must not also include standalone
@@ -194,7 +196,7 @@ pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String>
         .filter(|(label, _)| sentence.contains(label))
         .map(|(_, id)| id)
         .collect::<Vec<_>>();
-        if !route.subagent && !actors.is_empty() && !actors.contains(&route.agent_id.as_str()) {
+        if !route.subagent && !actors.is_empty() && !actors.contains(&base) {
             return Err("任务引用夹带了其他成员的独立分工，请只引用当前成员对应的原文；前置结果通过context_ids传递".into());
         }
     }

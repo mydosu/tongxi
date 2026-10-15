@@ -1,15 +1,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ConversationDetail, Roles, RoleChoice, RuntimeSnapshot } from './types';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
+import { isSeat } from './seats';
 
 type Escape=(value:string|number)=>string;
 const effortNames:Record<string,string>={none:'关闭',off:'关闭',low:'低',medium:'中',high:'高',xhigh:'很高',max:'最大',ultra:'Ultra'};
-interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; }
+interface Host { escape:Escape; modal:HTMLDialogElement; open:(title:string,note:string,body:string)=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; }
 
 export async function projectSettings(detail:ConversationDetail, host:Host) {
   const {escape}=host;
   const chats=await Promise.all(detail.project_agent_chats.map(chat=>invoke<ConversationDetail>('get_conversation',{id:chat.conversation_id})));
-  const ids=chats.map(chat=>chat.conversation.members[0]);
+  // 每个席位一行：seat 是席位 id（主席位就是成员 id），模型设置写在该席位自己的专属会话上。
+  const seatOf=(chat:ConversationDetail)=>detail.project_agent_chats.find(item=>item.conversation_id===chat.conversation.id)?.agent_id||chat.conversation.members[0];
+  const ids=chats.map(chat=>chat.conversation.members[0]).filter((id,index,all)=>all.indexOf(id)===index);
   const available=(saved:string|undefined,preference:string[])=>saved&&ids.includes(saved)?saved:preference.find(id=>ids.includes(id))||ids[0];
   const current=detail.project_roles;
   const initial={
@@ -18,13 +21,13 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     review:available(current?.review.agent,['hermes-win','codex-win','claude-win','dsh-win']),
   };
   const coordinator:RoleChoice={agent:available(detail.project_coordinator?.agent,['hermes-win','codex-win','dsh-win','claude-win']),model:detail.project_coordinator?.model||null,effort:detail.project_coordinator?.effort||null};
-  host.open('项目成员配置','管家按原话协调任务，方案与实际工作交给项目成员。',`<form id="project-member-settings"><fieldset class="project-coordinator-settings"><legend>调度管家</legend><label>协调需求与分工<select data-project-coordinator aria-label="调度管家">${ids.map(id=>`<option value="${escape(id)}" ${coordinator.agent===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><div data-coordinator-model-controls></div><small>管家使用隐藏的独立会话，只调度，不给成员追加业务指示。配置影响接下来启动的协作。</small></fieldset><fieldset class="project-planner-settings"><legend>默认方案者</legend><label>未点名时由谁出方案<select data-project-planner aria-label="默认方案者">${ids.map(id=>`<option value="${escape(id)}" ${initial.plan===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><small>你在消息里指定的成员、模型和任务范围优先。</small></fieldset>${chats.map(chat=>{
-    const agent=chat.conversation.members[0],runtime=host.snapshot(agent),settings=chat.sessions[0];
+  host.open('项目成员配置','管家按原话协调任务，方案与实际工作交给项目成员。',`<form id="project-member-settings"><fieldset class="project-coordinator-settings"><legend>调度管家</legend><label>协调需求与分工<select data-project-coordinator aria-label="调度管家">${ids.map(id=>`<option value="${escape(id)}" ${coordinator.agent===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><div data-coordinator-model-controls></div><small>管家使用隐藏的独立会话，只调度，不给成员追加业务指示。配置影响接下来启动的协作。</small></fieldset><fieldset class="project-planner-settings"><legend>默认方案者</legend><label>未点名时由谁出方案<select data-project-planner aria-label="默认方案者">${ids.map(id=>`<option value="${escape(id)}" ${initial.plan===id?'selected':''}>${escape(host.name(id))}</option>`).join('')}</select></label><small>你在消息里指定的成员、模型和任务范围优先。</small></fieldset><fieldset class="project-seat-settings"><legend>多开席位</legend><div class="seat-add-row"><select data-seat-agent aria-label="成员">${ids.map(id=>`<option value="${escape(id)}">${escape(host.name(id))}</option>`).join('')}</select><input data-seat-label maxlength="20" placeholder="席位名（可选，如：快手、审稿）"><button type="button" class="secondary" data-seat-add>再开一个席位</button></div><small>同一成员可以再开最多 3 个席位，每个席位是一条独立的原生会话，可以选不同或相同的模型；调度会把它们当作不同成员分工协作。</small></fieldset>${chats.map(chat=>{
+    const agent=chat.conversation.members[0],seat=seatOf(chat),runtime=host.snapshot(agent),settings=chat.sessions[0];
     const model=settings.model || runtime.default_model || '';
     const provider=selectedProvider(runtime.models,model);
     const efforts=runtime.models.find(option=>option.id===model)?.efforts || [];
     const unavailable=model && !runtime.models.some(option=>option.id===model) ? `<option value="${escape(model)}" selected>${escape(model)} · 待连接核对</option>` : '';
-    return `<fieldset class="project-member-settings-row" data-settings-chat="${escape(chat.conversation.id)}" data-settings-agent="${escape(agent)}"><legend>${escape(host.name(agent))}</legend>${modelProviders(runtime.models).length>1?`<label>提供商<select data-member-provider>${providerOptionsHtml(runtime.models,provider,escape)}</select></label>`:''}<label>模型<select data-member-model>${modelOptionsHtml(runtime.models,provider,model||null,escape,'连接后选择模型')}${unavailable}</select></label><label>思考强度<select data-member-effort><option value="">模型默认</option>${efforts.map(value=>`<option value="${escape(value)}" ${value===settings.reasoning_effort?'selected':''}>${escape(effortNames[value]||value)}</option>`).join('')}</select></label><small>${runtime.connection==='connected'?'已连接':'请先连接此成员读取模型目录'}</small></fieldset>`;
+    return `<fieldset class="project-member-settings-row${isSeat(seat)?' seat-row':''}" data-settings-chat="${escape(chat.conversation.id)}" data-settings-agent="${escape(agent)}" data-settings-seat="${escape(seat)}"><legend>${escape(host.name(seat))}${isSeat(seat)?` <button type="button" class="text-button" data-seat-remove="${escape(seat)}">撤掉席位</button>`:''}</legend>${modelProviders(runtime.models).length>1?`<label>提供商<select data-member-provider>${providerOptionsHtml(runtime.models,provider,escape)}</select></label>`:''}<label>模型<select data-member-model>${modelOptionsHtml(runtime.models,provider,model||null,escape,'连接后选择模型')}${unavailable}</select></label><label>思考强度<select data-member-effort><option value="">模型默认</option>${efforts.map(value=>`<option value="${escape(value)}" ${value===settings.reasoning_effort?'selected':''}>${escape(effortNames[value]||value)}</option>`).join('')}</select></label><small>${runtime.connection==='connected'?'已连接':'请先连接此成员读取模型目录'}</small></fieldset>`;
   }).join('')}<p class="form-error"></p><div class="modal-footer"><button type="button" id="project-settings-cancel" class="secondary">取消</button><button class="primary">保存项目配置</button></div></form>`);
   const form=host.modal.querySelector<HTMLFormElement>('#project-member-settings')!;
   const renderCoordinator=()=>{
@@ -53,15 +56,23 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
     model.addEventListener('change',refreshEfforts);
   }
   form.querySelector('#project-settings-cancel')!.addEventListener('click',()=>host.modal.close());
+  // 增删席位立即生效（不等「保存」），之后重开这个弹窗显示最新的席位。
+  const seatAction=async(work:()=>Promise<unknown>)=>{
+    form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=true;});
+    try{await work();host.modal.close();await host.reopen();}
+    catch(error){form.querySelector('.form-error')!.textContent=String(error);form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=false;});}
+  };
+  form.querySelector('[data-seat-add]')!.addEventListener('click',()=>void seatAction(()=>invoke('add_project_seat',{conversationId:detail.conversation.id,agentId:form.querySelector<HTMLSelectElement>('[data-seat-agent]')!.value,label:form.querySelector<HTMLInputElement>('[data-seat-label]')!.value.trim()||null})));
+  form.querySelectorAll<HTMLButtonElement>('[data-seat-remove]').forEach(button=>button.addEventListener('click',()=>void seatAction(()=>invoke('remove_project_seat',{conversationId:detail.conversation.id,seatId:button.dataset.seatRemove}))));
   form.addEventListener('submit',async event=>{
     event.preventDefault();const button=form.querySelector<HTMLButtonElement>('button.primary')!;button.disabled=true;
     try {
-      const choices=[...form.querySelectorAll<HTMLElement>('[data-settings-agent]')].map(row=>({id:row.dataset.settingsChat!,agentId:row.dataset.settingsAgent!,model:row.querySelector<HTMLSelectElement>('[data-member-model]')!.value,reasoningEffort:row.querySelector<HTMLSelectElement>('[data-member-effort]')!.value||null}));
+      const choices=[...form.querySelectorAll<HTMLElement>('[data-settings-agent]')].map(row=>({id:row.dataset.settingsChat!,agentId:row.dataset.settingsAgent!,seat:row.dataset.settingsSeat!,model:row.querySelector<HTMLSelectElement>('[data-member-model]')!.value,reasoningEffort:row.querySelector<HTMLSelectElement>('[data-member-effort]')!.value||null}));
       if(choices.some(choice=>!choice.model||host.snapshot(choice.agentId).connection!=='connected'))throw new Error('请先连接所有项目成员，并为每位成员选择模型');
-      for(const choice of choices)await invoke('set_session_settings',choice);
+      for(const {seat:_seat,...choice} of choices)await invoke('set_session_settings',choice);
       const roles:Roles={plan:{agent:form.querySelector<HTMLSelectElement>('[data-project-planner]')!.value,model:null,effort:null},implement:{agent:initial.implement,model:null,effort:null},review:{agent:initial.review,model:null,effort:null}};
       for(const role of [roles.plan,roles.implement,roles.review]) {
-        const selected=choices.find(choice=>choice.agentId===role.agent);
+        const selected=choices.find(choice=>choice.seat===role.agent);
         role.model=selected?.model||null;role.effort=selected?.reasoningEffort||null;
       }
       await invoke('set_project_roles',{conversationId:detail.conversation.id,roles});
