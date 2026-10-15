@@ -306,9 +306,10 @@ fn valid_members(kind: &str, members: &[String]) -> Result<()> {
         return Err("不支持的会话类型".into());
     }
     if (kind == "direct" && members.len() != 1)
-        || (kind == "group" && !(2..=5).contains(&members.len()))
+        || (kind == "group" && !(1..=5).contains(&members.len()))
     {
-        return Err("私聊需选择一位成员，群聊需选择二至五位成员".into());
+        // 群聊可以只有一位成员：同一成员在项目里多开的会话也算成员（像多 agent 协作那样）。
+        return Err("私聊需选择一位成员，群聊需选择一至五位成员".into());
     }
     let roster = agents();
     for (index, member) in members.iter().enumerate() {
@@ -2388,7 +2389,9 @@ mod tests {
     fn member_validation_rejects_unknown_duplicate_and_wrong_counts() {
         let mut store = memory();
         assert!(store.create("bad", "direct", &[]).is_err());
-        assert!(store.create("bad", "group", &["codex-win".into()]).is_err());
+        assert!(store.create("bad", "group", &[]).is_err());
+        // 一位成员的群聊可以：同一成员在项目里多开的会话也算成员。
+        assert!(store.create("solo", "group", &["claude-win".into()]).is_ok());
         assert!(store
             .create("bad", "group", &["codex-win".into(), "codex-win".into()])
             .is_err());

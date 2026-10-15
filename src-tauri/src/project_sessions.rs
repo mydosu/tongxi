@@ -821,4 +821,20 @@ mod tests {
         assert!(store.project_coordinator(&room).unwrap().is_none());
         let _ = std::fs::remove_dir_all(base);
     }
+
+    #[test]
+    fn a_single_member_project_collaborates_through_its_own_sessions() {
+        let base = std::env::temp_dir().join(format!("tongxi-solo-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("只有 Claude", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("单人项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        store.add_project_seat(&room, "claude-win", Some("审稿")).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let names: Vec<_> = chats.iter().map(|chat| chat.name.as_str()).collect();
+        assert_eq!(names, ["Claude 1号", "审稿"], "两个会话就是两位成员");
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
