@@ -56,7 +56,7 @@ export async function runSetup(id: string, host: Host) {
 }
 
 /// 头像：缩到 256×256 的 webp。
-async function shrink(file: File) {
+export async function shrink(file: File) {
   const picture = await loadImage(file);
   {
     const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;

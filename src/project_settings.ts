@@ -60,7 +60,8 @@ export async function projectSettings(detail:ConversationDetail, host:Host) {
   // 增删席位立即生效（不等「保存」），之后重开这个弹窗显示最新的席位。
   const seatAction=async(work:()=>Promise<unknown>)=>{
     form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=true;});
-    try{await work();host.modal.close();await host.reopen();}
+    // 不关弹窗：后台刷新后原地换上新内容（openModal 在弹窗开着时只换内容、保留滚动位置）。
+    try{await work();await host.reopen();}
     catch(error){form.querySelector('.form-error')!.textContent=String(error);form.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{button.disabled=false;});}
   };
   // 增减项目成员：立即生效（协作运行中锁住）；移出的若是调度管家，会回到默认管家。
