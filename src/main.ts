@@ -16,7 +16,7 @@ import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
 import { baseAgent, isSeat, seatSlot } from './seats';
-import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine } from './agent_setup';
+import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
@@ -45,7 +45,7 @@ const icon = (name: string, className = '') => `<svg class="icon ${className}" v
 const escape = (value: string | number) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 // 伴侣上传了头像就用头像（data URL 只含 base64 字符，可以直接放进 style）。
 const portrait = (agent: Agent) => agent.avatar && /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+$/.test(agent.avatar) ? agent.avatar : '';
-const avatar = (agent: Agent, size = '', numbered = true) => portrait(agent) ? `<span class="avatar albion-portrait ${size}" style="background-image:url('${portrait(agent)}')" aria-hidden="true"></span>` : numbered && seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
+const avatar = (agent: Agent, size = '', numbered = true) => portrait(agent) ? `<span class="avatar albion-portrait ${size}${numbered && seatNumber(agent.id) ? ' seat' : ''}" style="background-image:url('${portrait(agent)}')" aria-hidden="true">${numbered && seatNumber(agent.id) ? `<i class="seat-badge">${seatNumber(agent.id)}</i>` : ''}</span>` : numbered && seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
 /// 同一成员在当前项目里开了多个会话时的编号（1、2、3…）；只有一个会话就不编号。
 const seatNumber = (id: string) => isSeat(id) ? seatSlot(id) : detail?.project_agent_chats?.some(chat => isSeat(chat.agent_id) && baseAgent(chat.agent_id) === id) ? '1' : '';
 const brand = `<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><defs><linearGradient id="brand-silver" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7c8590"/><stop offset="1" stop-color="#4a5158"/></linearGradient></defs><rect width="40" height="40" rx="12" fill="url(#brand-silver)"/><path d="M13 13h14v14H13z" stroke="#f0f3f6" stroke-width="1.2" fill="none"/><circle cx="13" cy="13" r="3" fill="#e7ca87"/><circle cx="27" cy="13" r="3" fill="#e2efe5"/><circle cx="27" cy="27" r="3" fill="#97bce0"/><circle cx="13" cy="27" r="3" fill="#e5b8b5"/></svg>`;
@@ -1599,8 +1599,10 @@ async function showNativeSessions(agentId: string) {
 }
 
 function openModal(title: string, subtitle: string, body: string) {
+  const reopening = modal.open, scroll = modal.scrollTop;
   modal.innerHTML = `<div class="modal-heading"><div><h2>${escape(title)}</h2><p>${escape(subtitle)}</p></div><button id="modal-close" class="icon-button" aria-label="关闭对话框">${icon('close')}</button></div>${body}`;
   modal.querySelector('#modal-close')!.addEventListener('click', () => modal.close());
+  if (reopening) { modal.scrollTop = scroll; return; }
   modal.showModal();
 }
 
@@ -2093,7 +2095,7 @@ function renderServices() {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置伴侣、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatar(agent, 'large')}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head"><label class="avatar-edit" title="点一下换头像"><input type="file" accept="image/*" hidden data-avatar-edit="${escape(agent.id)}">${avatar(agent, 'large', false)}<span class="avatar-edit-hint" aria-hidden="true">换</span></label><div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button type="button" role="menuitem" data-avatar-reset="${escape(agent.id)}">恢复默认头像</button>${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   const cards = [...main.querySelectorAll<HTMLElement>('.service-card')];
@@ -2108,6 +2110,7 @@ function renderServices() {
   wireSetup();
   wireServiceMenus();
   wireAgentRename();
+  wireAvatarEdit();
   main.querySelectorAll<HTMLElement>('.service-card').forEach(paintInstall);
   if (!scanned().length) void scanAgents().then(paintSetup).catch(error => toast(errorText(error), true));
   // Read-only inventory merge; on failure keep the runtime-based cards instead of blanking the screen.
@@ -2187,6 +2190,20 @@ function wireServiceMenus() {
   const key = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
   document.addEventListener('pointerdown', outside, true);
   document.addEventListener('keydown', key, true);
+}
+
+/// 换头像：点卡片上的头像选图片（裁成 256 的方形）；「更多 → 恢复默认头像」回到原生图标。
+function wireAvatarEdit() {
+  main.querySelectorAll<HTMLInputElement>('[data-avatar-edit]').forEach(input => input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try { await invoke('set_agent_avatar', { agentId: input.dataset.avatarEdit, avatar: await shrink(file) }); toast('头像已更换'); await reloadAgents(); }
+    catch (error) { toast(errorText(error), true); }
+  });
+  main.querySelectorAll<HTMLButtonElement>('[data-avatar-reset]').forEach(button => button.onclick = async () => {
+    try { await invoke('set_agent_avatar', { agentId: button.dataset.avatarReset, avatar: null }); toast('已恢复默认头像'); await reloadAgents(); }
+    catch (error) { toast(errorText(error), true); }
+  });
 }
 
 /// 改成员名（全局）：卡片标题就地变输入框，回车或点开保存，Esc 放弃，清空恢复默认名。

@@ -153,11 +153,13 @@ def main() -> int:
         # 项目开始前增减成员：移出 Claude 后它从项目里消失；加回来会话恢复；调度管家（Codex）不受影响。
         page.locator("[data-project-configure]").first.click()
         expect(page.locator(".project-roster")).to_be_visible()
+        page.evaluate("() => { window.__modalClosed = false; document.querySelector('#modal').addEventListener('close', () => { window.__modalClosed = true; }, { once: true }); }")
         page.locator('[data-roster][value="claude-win"]').uncheck()
         page.locator("[data-roster-save]").click()
         expect(page.locator('[data-project-module="claude-win"]')).to_have_count(0, timeout=15000)
         expect(page.locator(".project-roster")).to_be_visible(timeout=15000)
         check("removed member leaves the project", page.locator('[data-settings-seat="claude-win"]').count() == 0)
+        check("dialog refreshes in place without closing (no flash)", page.evaluate("() => window.__modalClosed === false && document.querySelector('#modal').open"))
         shot("roster-removed")
         page.locator('[data-roster][value="claude-win"]').check()
         page.locator("[data-roster-save]").click()

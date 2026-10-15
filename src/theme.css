@@ -207,7 +207,7 @@ html:not([data-hud]) .main.view-enter > :nth-child(2) { animation-delay: .05s; }
 }
 
 /* ---------- 阿尔比恩 ---------- */
-.avatar.albion-portrait { background-position: center 30%; background-size: cover; background-repeat: no-repeat; color: transparent;
+.avatar.albion-portrait { background-position: center; background-size: cover; background-repeat: no-repeat; color: transparent;
   box-shadow: 0 0 0 1.5px rgb(255 255 255 / .95), 0 3px 10px rgb(126 116 190 / .28); }
 /* 欢迎页头像：圆形 + 柔光圈。不用正片叠底——面板带磨砂时它只和面板底色混，会留一圈白。 */
 .albion-hero { width: 148px; height: 148px; margin: 0 auto 18px; border-radius: 50%; background-position: center 35%; background-size: cover; background-repeat: no-repeat;
@@ -405,3 +405,10 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .roster-option input { accent-color: var(--accent-2); margin: 0; }
 .roster-option .avatar { width: 22px; height: 22px; font-size: 11px; border-radius: 7px; }
 .roster-options [data-roster-save] { margin-left: auto; padding: 6px 12px; }
+
+/* ---------- 换头像 ---------- */
+.avatar-edit { position: relative; flex: none; display: inline-flex; border-radius: 13px; cursor: pointer; }
+.avatar-edit-hint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: inherit; font-size: 12px; color: #fff;
+  background: rgb(58 54 100 / .45); opacity: 0; transition: opacity .15s; }
+.avatar-edit:hover .avatar-edit-hint, .avatar-edit:focus-within .avatar-edit-hint { opacity: 1; }
+.avatar.albion-portrait.seat { overflow: visible; }

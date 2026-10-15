@@ -10,6 +10,7 @@ mod albion_openai;
 #[cfg(test)]
 mod attachment_tests;
 mod attachments;
+mod avatars;
 mod backgrounds;
 #[cfg(test)]
 mod chat_question_tests;
@@ -729,12 +730,13 @@ fn with_store<T>(
 /// 成员名单；伴侣的名字、介绍和头像按用户自己的配置来。
 #[tauri::command]
 fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
-    let (companion, names) = match state.store.lock() {
+    let (companion, names, faces) = match state.store.lock() {
         Ok(store) => (
             Some(store.companion()),
             store::agents().into_iter().map(|agent| (agent.id.clone(), store.member_name(&agent.id))).collect::<Vec<_>>(),
+            store::agents().into_iter().map(|agent| (agent.id.clone(), store.custom_avatar(&agent.id))).collect::<Vec<_>>(),
         ),
-        Err(_) => (None, Vec::new()),
+        Err(_) => (None, Vec::new(), Vec::new()),
     };
     store::agents()
         .into_iter()
@@ -742,6 +744,12 @@ fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
             if let Some(name) = names.iter().find(|(id, _)| *id == agent.id).map(|(_, name)| name.clone()) {
                 agent.name = name;
             }
+            // 头像：用户换过的 > 成员的原生图标 > 无（界面画字母头像）。
+            agent.avatar = faces
+                .iter()
+                .find(|(id, _)| *id == agent.id)
+                .and_then(|(_, face)| face.clone())
+                .or_else(|| avatars::native(&agent.id, Some(&state.directory)));
             if let (true, Some(config)) = (agent.id == "albion-wsl", &companion) {
                 agent.name = config.name.clone();
                 agent.subtitle = config.subtitle.clone();
@@ -1434,6 +1442,7 @@ fn main() {
             project_sessions::remove_project_seat,
             project_sessions::rename_project_seat,
             project_sessions::rename_agent,
+            avatars::set_agent_avatar,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,

@@ -114,6 +114,22 @@ def main() -> int:
         check("more menu holds setup, docs and isolated updates", menu.is_visible() and "登录 / 初次配置" in menu.inner_text() and "准备更新" in menu.inner_text(), menu.inner_text())
         shot("service-menu")
         page.keyboard.press("Escape")
+        # 原生头像：Codex、Claude 打包图标，Hermes、DSH 从本机安装读取；可以换，也能恢复。
+        faces = {agent["id"]: (agent.get("avatar") or "")[:22] for agent in sd.ipc(page, "list_agents")}
+        check("members start with their native icons", faces["codex-win"].startswith("data:image/svg") and faces["claude-win"].startswith("data:image/png") and all(faces[i].startswith("data:image/") for i in installed), faces)
+        page.locator('[data-avatar-edit="codex-win"]').set_input_files(str(next(Path(r"D:\Albion picture").glob("*.jpg"))))
+        page.wait_for_function("() => true")
+        deadline = time.monotonic() + 15
+        face = ""
+        while time.monotonic() < deadline and not face.startswith("data:image/webp"):
+            face = next(a.get("avatar") or "" for a in sd.ipc(page, "list_agents") if a["id"] == "codex-win"); time.sleep(0.5)
+        check("member avatar can be changed", face.startswith("data:image/webp"), face[:30])
+        page.locator('.service-card[data-service-id="codex-win"] [data-service-more]').click()
+        page.locator('[data-avatar-reset="codex-win"]').click()
+        page.wait_for_timeout(1200)
+        face = next(a.get("avatar") or "" for a in sd.ipc(page, "list_agents") if a["id"] == "codex-win")
+        check("reset restores the native icon", face.startswith("data:image/svg"), face[:30])
+        shot("native-avatars")
         # 改成员名（全局）：私聊等所有地方都跟着变；清空恢复默认。
         page.locator('.service-card[data-service-id="codex-win"]').hover()
         page.locator('[data-rename-agent="codex-win"]').click()
