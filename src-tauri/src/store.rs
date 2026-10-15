@@ -208,6 +208,8 @@ pub struct ConversationDetail {
     pub project: Option<crate::project_store::Project>,
     pub project_roles: Option<crate::project_store::Roles>,
     pub project_coordinator: Option<crate::project_store::RoleChoice>,
+    /// 调度倾向：save / balanced / quality。
+    pub project_preference: String,
     pub workflows: Vec<crate::project_store::Workflow>,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
@@ -523,7 +525,8 @@ impl Store {
                 tx.execute_batch(
                     "CREATE TABLE coordination_routes_v19 (
                        task_id TEXT PRIMARY KEY REFERENCES project_tasks(id) ON DELETE CASCADE,workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                       purpose TEXT NOT NULL,source_id TEXT NOT NULL,quote TEXT NOT NULL,context_ids TEXT NOT NULL,subagent INTEGER NOT NULL DEFAULT 0);
+                       purpose TEXT NOT NULL,source_id TEXT NOT NULL,quote TEXT NOT NULL,context_ids TEXT NOT NULL,subagent INTEGER NOT NULL DEFAULT 0,
+                       instructions TEXT,reason TEXT,allow_subagents INTEGER NOT NULL DEFAULT 0);
                      INSERT INTO coordination_routes_v19(rowid,task_id,workflow_id,purpose,source_id,quote,context_ids)
                        SELECT rowid,task_id,workflow_id,purpose,source_id,quote,context_ids FROM coordination_routes
                        WHERE task_id IN (SELECT id FROM project_tasks) AND workflow_id IN (SELECT id FROM workflows);
@@ -788,6 +791,7 @@ impl Store {
             project: self.conversation_project(id)?,
             project_roles: self.conversation_project_roles(id)?,
             project_coordinator: self.project_coordinator(id)?,
+            project_preference: self.project_preference(id),
             workflows: self.workflows(id)?,
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,

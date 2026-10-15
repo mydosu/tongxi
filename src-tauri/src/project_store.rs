@@ -437,6 +437,76 @@ pub struct Attempt {
     pub tool_events: Vec<crate::store::RunToolEvent>,
     pub output: String,
     pub error: Option<String>,
+    /// 本次任务用掉的 token；成员不报（Hermes）就是 None。
+    pub usage: Option<Usage>,
+}
+
+/// 一次任务的 token 用量。input 含缓存命中，output 含推理。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    pub input: u64,
+    pub cached: u64,
+    pub output: u64,
+    pub reasoning: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// 只知道上下文占用（DSH 只报这个），不是精确消耗。
+    #[serde(default)]
+    pub context_only: bool,
+    /// 任务结束时这条会话的上下文大小（最后一次模型调用的输入+输出）。调度据此判断换模型会不会踩到分段计价。
+    #[serde(default)]
+    pub context: u64,
+}
+
+impl Usage {
+    pub fn total(&self) -> u64 {
+        self.input + self.output
+    }
+    /// 两份累计值相减：Codex 报的是整个线程的累计，本任务只算差值。
+    pub fn since(&self, base: &Usage) -> Usage {
+        Usage {
+            input: self.input.saturating_sub(base.input),
+            cached: self.cached.saturating_sub(base.cached),
+            output: self.output.saturating_sub(base.output),
+            reasoning: self.reasoning.saturating_sub(base.reasoning),
+            cost_usd: None,
+            context_only: false,
+            context: self.context,
+        }
+    }
+    /// Codex `thread/tokenUsage/updated` 里的一份 TokenUsageBreakdown。
+    pub fn from_codex(value: &serde_json::Value) -> Option<Usage> {
+        let n = |key: &str| value[key].as_u64().unwrap_or(0);
+        value["totalTokens"].as_u64()?;
+        Some(Usage {
+            input: n("inputTokens"),
+            cached: n("cachedInputTokens"),
+            output: n("outputTokens"),
+            reasoning: n("reasoningOutputTokens"),
+            cost_usd: None,
+            context_only: false,
+            context: 0,
+        })
+    }
+    /// ACP `session/prompt` 响应里的 usage（Claude 桥接按这个格式回报）。
+    pub fn from_acp(result: &serde_json::Value) -> Option<Usage> {
+        let usage = &result["usage"];
+        let n = |key: &str| usage[key].as_u64().unwrap_or(0);
+        let input = n("inputTokens");
+        let output = n("outputTokens");
+        if input + output == 0 {
+            return None;
+        }
+        Some(Usage {
+            input,
+            cached: n("cachedReadTokens"),
+            output,
+            reasoning: n("thoughtTokens"),
+            cost_usd: result["_meta"]["costUsd"].as_f64().filter(|cost| *cost >= 0.0),
+            context_only: false,
+            context: result["_meta"]["contextTokens"].as_u64().unwrap_or(0),
+        })
+    }
 }
 
 pub fn live(status: &str) -> bool {
@@ -537,6 +607,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_attempts", "thought", "TEXT NOT NULL DEFAULT ''"),
         ("project_team_messages", "recipient_agent", "TEXT"),
         ("project_attempts", "activity", "TEXT"),
+        ("project_attempts", "usage", "TEXT"),
         ("project_questions", "attempt_id", "TEXT"),
         (
             "project_questions",
@@ -2013,7 +2084,7 @@ impl Store {
     }
 
     pub fn attempts(&self, workflow: &str) -> Result<Vec<Attempt>> {
-        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error,created_at,activity FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut stmt=self.connection.prepare("SELECT id,workflow_id,task_id,agent_id,stage,status,native_thread_id,native_turn_id,model,reasoning_effort,thought,output,error,created_at,activity,usage FROM project_attempts WHERE workflow_id=?1 ORDER BY rowid").map_err(|e|e.to_string())?;
         let result = stmt
             .query_map([workflow], |r| {
                 Ok(Attempt {
@@ -2033,6 +2104,9 @@ impl Store {
                     tool_events: Vec::new(),
                     output: r.get(11)?,
                     error: r.get(12)?,
+                    usage: r
+                        .get::<_, Option<String>>(15)?
+                        .and_then(|text| serde_json::from_str(&text).ok()),
                 })
             })
             .map_err(|e| e.to_string())?
@@ -2283,7 +2357,7 @@ impl Store {
             return Err("项目运行已经结束".into());
         }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
-        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,thought=?6,output=?7,error=?8 WHERE id=?9",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.thought,attempt.output,attempt.error,attempt.id]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,thought=?6,output=?7,error=?8,usage=?10 WHERE id=?9",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.thought,attempt.output,attempt.error,attempt.id,attempt.usage.as_ref().and_then(|usage|serde_json::to_string(usage).ok())]).map_err(|e|e.to_string())?;
         if attempt.native_turn_id.is_some() {
             tx.execute("UPDATE messages SET status='delivered' WHERE id=(SELECT user_message_id FROM workflows WHERE id=?1) AND status='pending'", [&attempt.workflow_id]).map_err(|e|e.to_string())?;
         }

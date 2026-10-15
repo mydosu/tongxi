@@ -1132,6 +1132,7 @@ mod tests {
             tool_events: Vec::new(),
             output: String::new(),
             error: None,
+            usage: None,
         }
     }
 
