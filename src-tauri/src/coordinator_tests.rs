@@ -108,6 +108,10 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         effort: None,
         model_source: None,
         subagent: false,
+        instructions: None,
+        reason: None,
+        fresh_session: false,
+        allow_subagents: false,
     }
 }
 
@@ -135,15 +139,23 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
 }
 
 #[test]
-fn coordinator_decision_and_routes_reject_freeform_instruction_fields() {
+fn coordinator_writes_task_briefs_and_ledger_but_no_unknown_fields() {
     let valid = r#"{"action":"delegate","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
     assert_eq!(coordinator_policy::parse(valid).unwrap().action, "delegate");
 
+    // 未知的顶层字段仍然拒绝。
     let top_level = r#"{"action":"delegate","instructions":"追加需求","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
     assert!(coordinator_policy::parse(top_level).is_err());
 
-    let route_level = r#"{"action":"delegate","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现","instructions":"多加一项工作"}]}"#;
-    assert!(coordinator_policy::parse(route_level).is_err());
+    // 调度 2.0：任务说明、理由、临时会话、子 agent 许可和计划账本都是正式字段。
+    let briefed = r#"{"action":"delegate","ledger":"目标：修好 calc。步骤1 实现（进行中）","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现","instructions":"目标：……；产出：……；边界：只改 calc.py","reason":"机械修改，用便宜档","fresh_session":true,"allow_subagents":true}]}"#;
+    let parsed = coordinator_policy::parse(briefed).unwrap();
+    assert_eq!(parsed.ledger.as_deref(), Some("目标：修好 calc。步骤1 实现（进行中）"));
+    assert_eq!(parsed.routes[0].instructions.as_deref(), Some("目标：……；产出：……；边界：只改 calc.py"));
+    assert!(parsed.routes[0].fresh_session && parsed.routes[0].allow_subagents);
+
+    let long_brief = format!(r#"{{"action":"delegate","routes":[{{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现","instructions":"{}"}}]}}"#, "很".repeat(4001));
+    assert!(coordinator_policy::parse(&long_brief).is_err(), "任务说明不能无限长");
 
     let with_withdrawal = r#"{"action":"delegate","withdraw":[{"task_id":"task-1","source_id":"user-correction","quote":"取消旧任务"}],"routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
     let parsed = coordinator_policy::parse(with_withdrawal).unwrap();
@@ -243,6 +255,7 @@ fn explicit_user_model_and_effort_override_project_defaults_but_unmentioned_valu
 
     let invented = {
         let mut value = route("invented", "verification", "codex-win", "u1", text);
+        // 目录里没有的模型，谁选都不行。
         value.model = Some("unlisted-model".into());
         value.model_source = Some(Reference {
             source_id: "u1".into(),
@@ -1727,6 +1740,8 @@ fn solution_member_prompt_scope_forbids_implementation_and_other_execution() {
         "先给方案，再按方案实现并验证。",
         "先给方案，再按方案实现并验证。",
         vec![],
+        None,
+        false,
     );
     assert_eq!(prompt["purpose"], "solution");
     assert_eq!(
@@ -2256,4 +2271,125 @@ fn dsh_route_notices_may_update_the_running_model() {
     attempt.model = Some("[\"deepseek-official\",\"deepseek-v4-flash\"]".into());
     attempt.status = "running".into();
     f.store.checkpoint_attempt(&attempt).unwrap();
+}
+
+fn two_models() -> Vec<ModelOption> {
+    let mut catalog = models();
+    catalog.push(ModelOption {
+        id: "haiku".into(),
+        name: "Haiku 5.5".into(),
+        provider_id: None,
+        provider_name: None,
+        efforts: vec!["low".into(), "high".into()],
+        default_effort: Some("low".into()),
+    });
+    catalog
+}
+
+#[test]
+fn coordinator_may_pick_model_and_effort_when_user_named_none() {
+    let text = "Claude检查一下边界条件。";
+    let sources = user_source("u-free", text);
+    let mut chosen = route("check", "verification", "claude-win", "u-free", text);
+    chosen.model = Some("haiku".into());
+    chosen.effort = Some("high".into());
+    assert_eq!(
+        coordinator_policy::overrides(&chosen, &sources, &two_models(), &fallback("claude-win", Some("gpt-6.1"), Some("medium"))).unwrap(),
+        (Some("haiku".into()), Some("high".into())),
+        "用户没点名时，调度可以按任务选目录里的组合"
+    );
+    chosen.effort = Some("xhigh".into());
+    assert!(
+        coordinator_policy::overrides(&chosen, &sources, &two_models(), &fallback("claude-win", None, None)).is_err(),
+        "选的强度该模型不支持就不行"
+    );
+}
+
+#[test]
+fn user_named_model_and_effort_still_win_over_coordinator_choice() {
+    let text = "Codex使用GPT-6.1-Luna、low强度完成验证。";
+    let sources = user_source("u-named", text);
+    let mut other = route("verify", "verification", "codex-win", "u-named", text);
+    other.model = Some("haiku".into());
+    assert!(
+        coordinator_policy::overrides(&other, &sources, &two_models(), &fallback("codex-win", None, None)).is_err(),
+        "用户点名了模型，调度不能换"
+    );
+    let mut stronger = route("verify", "verification", "codex-win", "u-named", text);
+    stronger.effort = Some("high".into());
+    assert!(
+        coordinator_policy::overrides(&stronger, &sources, &two_models(), &fallback("codex-win", None, None)).is_err(),
+        "用户点名了强度，调度不能改"
+    );
+    // 用户只点了强度：模型可由调度选。
+    let effort_only = "Claude用low思考强度回复进度。";
+    let sources = user_source("u-effort", effort_only);
+    let mut pick = route("reply", "reply", "claude-win", "u-effort", effort_only);
+    pick.model = Some("haiku".into());
+    assert_eq!(
+        coordinator_policy::overrides(&pick, &sources, &two_models(), &fallback("claude-win", Some("gpt-6.1"), None)).unwrap(),
+        (Some("haiku".into()), Some("low".into()))
+    );
+}
+
+#[test]
+fn coordinator_reads_delivery_summary_instead_of_full_output() {
+    let output = format!("{}\n交付摘要：改了 calc.py，测试通过。\n验证结论：通过", "过程".repeat(5000));
+    assert_eq!(coordinator_policy::delivery_summary(&output), "交付摘要：改了 calc.py，测试通过。\n验证结论：通过");
+    let long = "长".repeat(9000);
+    let clipped = coordinator_policy::delivery_summary(&long);
+    assert!(clipped.chars().count() < 2600 && clipped.contains("中间省略"));
+    assert_eq!(coordinator_policy::delivery_summary("短回复"), "短回复");
+}
+
+#[test]
+fn member_prompt_carries_brief_and_subagent_permission() {
+    let prompt = coordinator_policy::member_prompt("claude-win", "verification", "验证一下", "验证一下", vec![], Some("目标：只验证 calc.py"), true);
+    assert_eq!(prompt["coordinator_brief"], "目标：只验证 calc.py");
+    assert!(prompt["subagents"].as_str().unwrap().contains("子 agent"));
+    assert!(prompt["instruction"].as_str().unwrap().contains("交付摘要："));
+    let plain = coordinator_policy::member_prompt("claude-win", "reply", "说明", "说明", vec![], Some("  "), false);
+    assert!(plain.get("coordinator_brief").is_none() && plain.get("subagents").is_none());
+}
+
+#[test]
+fn temporary_seats_are_released_after_the_workflow_ends() {
+    let mut f = Fixture::new();
+    let workflow = f.coordinated("Codex给出方案。", "codex-win");
+    let seat = f.store.add_temporary_seat(&workflow.id, "codex-win", "临时·验证").unwrap();
+    assert_eq!(f.store.temporary_seats(&workflow.id).unwrap(), vec![seat.clone()]);
+    assert_eq!(f.store.release_temporary_seats(&f.room.clone()).unwrap(), 0, "协作还在进行，临时会话保留");
+    f.store.connection.execute("UPDATE workflows SET status='completed' WHERE id=?1", [&workflow.id]).unwrap();
+    assert_eq!(f.store.release_temporary_seats(&f.room.clone()).unwrap(), 1);
+    assert!(f.store.temporary_seats(&workflow.id).unwrap().is_empty());
+    assert!(!f.store.project_seats(&f.room).unwrap().iter().any(|(id, _)| *id == seat));
+}
+
+#[test]
+fn project_preference_defaults_to_balanced_and_bounds_temporary_sessions() {
+    let mut f = Fixture::new();
+    let room = f.room.clone();
+    assert_eq!(f.store.project_preference(&room), "balanced");
+    f.store.set_project_preference(&room, "save").unwrap();
+    assert_eq!(f.store.project_preference(&room), "save");
+    assert!(f.store.set_project_preference(&room, "turbo").is_err());
+    assert_eq!(crate::coordinator_store::temporary_limit("save"), 1);
+    assert_eq!(crate::coordinator_store::temporary_limit("quality"), 3);
+}
+
+#[test]
+fn usage_counts_only_this_task_from_codex_thread_totals_and_reads_acp_results() {
+    use crate::project_store::Usage;
+    let breakdown = |input: u64, output: u64| serde_json::json!({"inputTokens":input,"cachedInputTokens":input/2,"outputTokens":output,"reasoningOutputTokens":output/2,"totalTokens":input+output});
+    // 线程里之前已经用了 1000+100；本任务第一次调用 300+30，之后累计到 1500+200。
+    let first_total = Usage::from_codex(&breakdown(1300, 130)).unwrap();
+    let first_last = Usage::from_codex(&breakdown(300, 30)).unwrap();
+    let base = first_total.since(&first_last);
+    let latest = Usage::from_codex(&breakdown(1500, 200)).unwrap().since(&base);
+    assert_eq!((latest.input, latest.output, latest.total()), (500, 100, 600));
+    let acp = serde_json::json!({"stopReason":"end_turn","usage":{"inputTokens":24413,"outputTokens":4,"cachedReadTokens":10},"_meta":{"contextTokens":24417,"costUsd":0.0048}});
+    let usage = Usage::from_acp(&acp).unwrap();
+    assert_eq!((usage.total(), usage.cached, usage.context), (24417, 10, 24417));
+    assert_eq!(usage.cost_usd, Some(0.0048));
+    assert!(Usage::from_acp(&serde_json::json!({"stopReason":"end_turn"})).is_none());
 }

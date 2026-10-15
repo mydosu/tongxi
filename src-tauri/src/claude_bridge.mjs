@@ -69,13 +69,20 @@ function readCatalog() {
       if (!Array.isArray(models) || !models.length) reject(new Error('Claude 未返回模型目录'));
       else resolve(models.map(model => ({
         value: String(model.value),
-        name: model.displayName || String(model.value),
+        // 「Default (recommended)」本身不带型号，从描述里补上（如「Opus 5.5」），调度才知道它是哪个模型。
+        name: withVersion(model.displayName || String(model.value), model.description),
         efforts: model.supportsEffort && Array.isArray(model.supportedEffortLevels) ? model.supportedEffortLevels.map(String) : [],
       })));
     });
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.stdin.write(JSON.stringify({ type: 'control_request', request_id: 'catalog', request: { subtype: 'initialize' } }) + '\n');
   });
+}
+
+function withVersion(name, description) {
+  if (/\d/.test(name)) return name;
+  const version = String(description || '').split('·')[0].trim();
+  return /^[A-Za-z]+ \d+(\.\d+)?$/.test(version) ? `${name} · ${version}` : name;
 }
 
 function configOptions(session) {
@@ -211,6 +218,18 @@ function resultText(content) {
   return content == null ? '' : JSON.stringify(content);
 }
 
+// 回合用量按 ACP PromptResponse.usage 回报：inputTokens 含缓存读写，费用放 _meta。
+function usageOf(result, context) {
+  const u = result.usage || {};
+  const read = u.cache_read_input_tokens || 0;
+  const write = u.cache_creation_input_tokens || 0;
+  const input = (u.input_tokens || 0) + read + write;
+  const output = u.output_tokens || 0;
+  if (!input && !output) return {};
+  return { usage: { inputTokens: input, outputTokens: output, cachedReadTokens: read, cachedWriteTokens: write, totalTokens: input + output },
+    _meta: { contextTokens: context, ...(Number.isFinite(result.total_cost_usd) ? { costUsd: result.total_cost_usd } : {}) } };
+}
+
 function failureMessage(result) {
   const text = String(result.result || '').toLowerCase();
   if (/usage limit|rate limit|429|limit reached|overloaded/.test(text) || result.api_error_status === 429) {
@@ -250,6 +269,8 @@ function prompt(id, params) {
   // 最近一次 rate_limit_event：被限流时带上重置时间（Unix 秒），同席据此等到重置再继续。
   let resetsAt = null;
   const blocks = new Map();
+  // 最后一次模型调用的输入+输出＝会话当前的上下文大小。
+  let context = 0;
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
@@ -279,6 +300,8 @@ function prompt(id, params) {
         }
       }
     } else if (message.type === 'assistant') {
+      const used = message.message?.usage;
+      if (used) context = (used.input_tokens || 0) + (used.cache_read_input_tokens || 0) + (used.cache_creation_input_tokens || 0) + (used.output_tokens || 0);
       for (const block of message.message?.content || []) {
         if (block.type !== 'tool_use') continue;
         update(params.sessionId, { sessionUpdate: 'tool_call', toolCallId: block.id, title: toolTitle(block.name, block.input),
@@ -309,7 +332,7 @@ function prompt(id, params) {
     } else if (result && !result.is_error) {
       const reason = result.stop_reason === 'max_tokens' ? 'max_tokens'
         : result.stop_reason === 'refusal' ? 'refusal' : 'end_turn';
-      send({ id, result: { stopReason: reason } });
+      send({ id, result: { stopReason: reason, ...usageOf(result, context) } });
     } else if (result) {
       noteFailure(`prompt failed: ${result.subtype} ${String(result.result || '').slice(0, 300)}`);
       const limited = /429|额度/.test(failureMessage(result));

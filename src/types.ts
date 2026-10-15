@@ -23,6 +23,8 @@ export interface ConversationDetail {
   project: Project | null;
   project_roles: Roles | null;
   project_coordinator?: RoleChoice | null;
+  /** 调度倾向：save 省额度 / balanced 平衡 / quality 质量优先。 */
+  project_preference?: string;
   workflows: Workflow[];
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
@@ -73,9 +75,11 @@ export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoic
 export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
 export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
 export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
-export interface ProjectAttempt { id: string; created_at?: number; activity?: string | null; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; tool_events?: RunToolEvent[]; output: string; error: string | null; }
+export interface ProjectAttempt { id: string; created_at?: number; activity?: string | null; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; tool_events?: RunToolEvent[]; output: string; error: string | null; usage?: TokenUsage | null; }
+/** 一次任务的 token 用量：input 含缓存命中，output 含推理；context_only 表示只知道上下文占用（近似值）。 */
+export interface TokenUsage { input: number; cached: number; output: number; reasoning: number; cost_usd?: number; context_only?: boolean; context?: number; }
 export interface WorkflowAgentMessage { id: string; workflow_id: string; attempt_id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
-export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; coordination?: {coordinator:RoleChoice;status:string;routes:{task_id:string;purpose:string;source_id:string;quote:string;context_ids:string[]}[]}; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; agent_messages?: WorkflowAgentMessage[]; team_messages?: ProjectTeamMessage[]; }
+export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; coordination?: {coordinator:RoleChoice;status:string;ledger?:string|null;routes:{task_id:string;purpose:string;source_id:string;quote:string;context_ids:string[];instructions?:string|null;reason?:string|null;allow_subagents?:boolean}[]}; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; agent_messages?: WorkflowAgentMessage[]; team_messages?: ProjectTeamMessage[]; }
 
 export interface ServiceInfo {
   id: string; name: string; connection: 'disconnected' | 'connecting' | 'connected';

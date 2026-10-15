@@ -31,6 +31,7 @@ mod dsh;
 mod group_store;
 mod hermes;
 mod models;
+mod pricing;
 mod process_scope;
 mod project_coordinator;
 mod project_directives;
@@ -1425,6 +1426,7 @@ fn main() {
             projects::update_paused_project_roles,
             projects::set_project_roles,
             project_coordinator::set_project_coordinator,
+            project_coordinator::set_project_preference,
             project_sessions::project_session_bindings,
             project_sessions::bind_project_sessions,
             project_sessions::add_project_seat,

@@ -30,12 +30,35 @@ pub struct TaskRoute {
     pub context_ids: Vec<String>,
     /// 子代理验证：由修改者本人派自带的子代理验证。
     pub subagent: bool,
+    /// 调度写给成员的任务说明。
+    #[serde(default)]
+    pub instructions: Option<String>,
+    /// 调度为什么这样派（成员、模型、强度）。
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// 允许成员在本任务里用自带的子 agent。
+    #[serde(default)]
+    pub allow_subagents: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Coordination {
     pub coordinator: RoleChoice,
     pub status: String,
     pub routes: Vec<TaskRoute>,
+    /// 调度的计划账本，每回合更新。
+    pub ledger: Option<String>,
+}
+
+/// 调度倾向：省额度 / 平衡 / 质量优先。
+pub const PREFERENCES: [&str; 3] = ["save", "balanced", "quality"];
+
+/// 每种倾向下，一次协作最多同时开几个临时会话。
+pub fn temporary_limit(preference: &str) -> usize {
+    match preference {
+        "save" => 1,
+        "quality" => 3,
+        _ => 2,
+    }
 }
 pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch("CREATE TABLE IF NOT EXISTS project_coordinator_settings (
@@ -49,7 +72,11 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
       CREATE TABLE IF NOT EXISTS coordinator_sessions (
       workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE,agent_id TEXT NOT NULL,native_session_id TEXT,cwd TEXT NOT NULL);")
       .map_err(|_|"调度会话结构迁移失败")?;
-    crate::project_store::add_column(tx, "coordination_routes", "subagent", "INTEGER NOT NULL DEFAULT 0")
+    crate::project_store::add_column(tx, "coordination_routes", "subagent", "INTEGER NOT NULL DEFAULT 0")?;
+    crate::project_store::add_column(tx, "coordination_routes", "instructions", "TEXT")?;
+    crate::project_store::add_column(tx, "coordination_routes", "reason", "TEXT")?;
+    crate::project_store::add_column(tx, "coordination_routes", "allow_subagents", "INTEGER NOT NULL DEFAULT 0")?;
+    crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
 const MAX_REWORK_ROUNDS: i64 = 2;
@@ -145,16 +172,16 @@ impl Store {
         Ok(())
     }
     pub fn coordination(&self, id: &str) -> Result<Option<Coordination>> {
-        let row: Option<(String, String)> = self
+        let row: Option<(String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT coordinator,status FROM coordination_runs WHERE workflow_id=?1",
+                "SELECT coordinator,status,ledger FROM coordination_runs WHERE workflow_id=?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|_| "调度状态读取失败")?;
-        let Some((encoded, status)) = row else {
+        let Some((encoded, status, ledger)) = row else {
             return Ok(None);
         };
         let coordinator = serde_json::from_str(&encoded).map_err(|_| "本轮管家配置无效")?;
@@ -162,10 +189,66 @@ impl Store {
             coordinator,
             status,
             routes: self.coordination_routes(id)?,
+            ledger,
         }))
     }
+    pub fn set_coordination_ledger(&self, id: &str, ledger: &str) -> Result<()> {
+        self.connection
+            .execute(
+                "UPDATE coordination_runs SET ledger=?1 WHERE workflow_id=?2",
+                params![ledger.chars().take(3000).collect::<String>(), id],
+            )
+            .map_err(|_| "计划账本保存失败")?;
+        Ok(())
+    }
+    /// 项目的调度倾向，没设过就是 balanced。
+    pub fn project_preference(&self, room: &str) -> String {
+        self.connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key=?1",
+                [format!("project_preference:{room}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .filter(|value| PREFERENCES.contains(&value.as_str()))
+            .unwrap_or_else(|| "balanced".into())
+    }
+    pub fn set_project_preference(&mut self, room: &str, preference: &str) -> Result<()> {
+        if !PREFERENCES.contains(&preference) {
+            return Err("调度倾向无效".into());
+        }
+        if self.conversation_project(room)?.is_none() {
+            return Err("请先绑定项目".into());
+        }
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("project_preference:{room}"), preference],
+            )
+            .map_err(|_| "调度倾向保存失败")?;
+        Ok(())
+    }
+    /// 这个会话最近一次任务结束时的上下文大小（token）；没记录就是 None。
+    pub fn seat_context(&self, room: &str, seat: &str) -> Option<u64> {
+        let usage: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT a.usage FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.conversation_id=?1 AND a.agent_id=?2 AND a.usage IS NOT NULL AND COALESCE(a.activity,'')<>?3 ORDER BY a.rowid DESC LIMIT 1",
+                params![room, seat, MANAGER_ACTIVITY],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        usage
+            .and_then(|text| serde_json::from_str::<crate::project_store::Usage>(&text).ok())
+            .map(|usage| usage.context)
+            .filter(|context| *context > 0)
+    }
     pub fn coordination_routes(&self, id: &str) -> Result<Vec<TaskRoute>> {
-        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
+        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
         let rows = query
             .query_map([id], |r| {
                 Ok(TaskRoute {
@@ -175,6 +258,9 @@ impl Store {
                     quote: r.get(3)?,
                     context_ids: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
                     subagent: r.get(5)?,
+                    instructions: r.get(6)?,
+                    reason: r.get(7)?,
+                    allow_subagents: r.get(8)?,
                 })
             })
             .map_err(|_| "任务路由读取失败")?
@@ -438,10 +524,10 @@ impl Store {
             };
             if *is_new {
                 tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,assigned_agent,instructions,files,depends_on,status,model,effort) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,'queued',?9,?10)",params![task_id,id,position,title,stored_agent,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort]).map_err(|_|"任务保存失败")?;
-                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent]).map_err(|_|"任务原文引用保存失败")?;
+                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents]).map_err(|_|"任务原文引用保存失败")?;
             } else {
                 tx.execute("UPDATE project_tasks SET title=?1,assigned_agent=?2,instructions=?3,depends_on=?4,status='queued',model=?5,effort=?6,error=NULL,position=?9 WHERE id=?7 AND workflow_id=?8",params![title,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort,task_id,id,position]).map_err(|_|"任务恢复失败")?;
-                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id]).map_err(|_|"任务引用恢复失败")?;
+                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents]).map_err(|_|"任务引用恢复失败")?;
             }
         }
         tx.execute(

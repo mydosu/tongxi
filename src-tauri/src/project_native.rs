@@ -40,6 +40,8 @@ struct Wire {
     disconnected: bool,
     invalid: bool,
     last_save: Instant,
+    /// Codex 报的是线程累计用量；记下本任务开始前的累计，用量取差值。
+    usage_base: Option<crate::project_store::Usage>,
 }
 
 /// Only protocol enum variants and a bounded HTTP status may reach the UI.
@@ -173,6 +175,15 @@ impl Wire {
                     || params["turn"]["id"].as_str() == Some(turn)
             })
     }
+}
+
+fn usage_json_last(params: &Value) -> Value {
+    params["tokenUsage"]["last"].clone()
+}
+
+/// Codex 最后一次模型调用的 token 数＝当前会话上下文的大小。
+fn usage_context(last: &Value) -> u64 {
+    last["totalTokens"].as_u64().unwrap_or(0)
 }
 
 fn persist(store: &Arc<Mutex<Store>>, notify: &Notify, wire: &mut Wire, force: bool) {
@@ -314,6 +325,7 @@ impl Runner {
             disconnected: false,
             invalid: false,
             last_save: Instant::now(),
+            usage_base: None,
         }));
         let agent = wire.lock().unwrap().attempt.agent_id.clone();
         let client = (self.clients)(&wire.lock().unwrap().attempt)?;
@@ -407,6 +419,20 @@ impl Runner {
                         }
                         return;
                     }
+                    "thread/tokenUsage/updated" => {
+                        let usage = &params["tokenUsage"];
+                        let Some(total) = crate::project_store::Usage::from_codex(&usage["total"]) else {
+                            return;
+                        };
+                        if state.usage_base.is_none() {
+                            // 第一条通知的 last 已经是本任务的第一次模型调用，起点要把它扣掉。
+                            let last = crate::project_store::Usage::from_codex(&usage["last"]).unwrap_or_default();
+                            state.usage_base = Some(total.since(&last));
+                        }
+                        let mut usage = total.since(state.usage_base.as_ref().unwrap());
+                        usage.context = usage_context(&usage_json_last(params));
+                        state.attempt.usage = Some(usage);
+                    }
                     _ => return,
                 }
             } else {
@@ -431,7 +457,21 @@ impl Runner {
                     return;
                 }
                 let update = &params["update"];
-                if let Some(event) = crate::codex::acp_tool_event(update) {
+                if update["sessionUpdate"] == "usage_update" {
+                    // DSH 只报上下文占用：记成近似值；已有回合结束时的精确用量就不覆盖。
+                    let used = update["used"].as_u64().unwrap_or(0);
+                    if used > 0 && state.attempt.usage.as_ref().is_none_or(|usage| usage.context_only) {
+                        state.attempt.usage = Some(crate::project_store::Usage {
+                            input: used,
+                            context: used,
+                            cost_usd: update["cost"]["amount"].as_f64().filter(|_| update["cost"]["currency"] == "USD"),
+                            context_only: true,
+                            ..Default::default()
+                        });
+                    } else {
+                        return;
+                    }
+                } else if let Some(event) = crate::codex::acp_tool_event(update) {
                     crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
                     force = true;
                 } else {
@@ -977,6 +1017,11 @@ impl Runner {
             }
             Err(error) => return Err(error),
         };
+        if let Some(usage) = crate::project_store::Usage::from_acp(&result) {
+            let mut state = wire.lock().unwrap();
+            state.attempt.usage = Some(usage);
+            persist(&self.store, &self.notify, &mut state, true);
+        }
         if result["stopReason"] != "end_turn" {
             return Err("项目成员未正常完成任务，已保留已有内容".into());
         }
@@ -1009,6 +1054,7 @@ mod tests {
                 tool_events: Vec::new(),
                 output: String::new(),
                 error: None,
+                usage: None,
             },
             pieces: vec![],
             completed: None,
@@ -1018,6 +1064,7 @@ mod tests {
             disconnected: false,
             invalid: false,
             last_save: Instant::now(),
+            usage_base: None,
         }
     }
 

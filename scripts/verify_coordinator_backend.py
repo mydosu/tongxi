@@ -43,11 +43,11 @@ def check(label: str, condition: bool) -> None:
 
 check("route and decision DTOs reject unknown fields", policy.count("#[serde(deny_unknown_fields)]") >= 4)
 route_struct = re.search(r"pub struct Route\s*\{(.*?)\n\}", policy, re.S)
-check("route has no freeform instructions field", route_struct is not None and not re.search(r"\binstructions\s*:", route_struct.group(1)))
+check("coordinator task briefs are bounded and yield to the user's words", route_struct is not None and re.search(r"\binstructions\s*:", route_struct.group(1)) is not None and "任务说明过长" in policy and "以用户原话为准" in policy)
 check("quotes must occur verbatim in a source", "source.text.contains(&reference.quote)" in policy)
 policy_compact = compact(policy)
 check("assignments and model grants require user sources", policy_compact.count("source(sources,&reference,true)") >= 2)
-check("unlisted task models are rejected", "管家不能新增用户未指定的模型" in policy)
+check("user-named models win and unlisted models are rejected", "用户原话点名了模型，以用户为准" in policy and "这个模型不在该成员的模型目录里" in policy)
 check("coordinator routes persist with source and quote", all(name in store for name in ("coordination_routes", "source_id", "quote", "context_ids")))
 check("duplicate routes have a database uniqueness key", "UNIQUE(workflow_id,purpose,source_id,quote)" in store)
 check("same agent workers are checked independently of coordinator runs", "COALESCE(activity,'')!='coordinate'" in store)

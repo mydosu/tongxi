@@ -34,7 +34,9 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            WHEN seat_id LIKE 'dsh-win-%' THEN 'DSH' WHEN seat_id LIKE 'claude-win-%' THEN 'Claude' END)
            || ' ' || substr(seat_id, -1) || '号';",
     )
-    .map_err(|_| "调度会话绑定结构迁移失败".into())
+    .map_err(|_| "调度会话绑定结构迁移失败")?;
+    // 调度为某次协作临时开的会话：记下属于哪次协作，协作结束后撤掉。
+    crate::project_store::add_column(tx, "project_seats", "temporary_for", "TEXT")
 }
 
 /// 界面上一行绑定：成员的项目会话，或调度管家的会话。
@@ -271,6 +273,61 @@ impl Store {
             .map_err(|_| "项目席位保存失败")?;
         self.ensure_project_agent_chats(room)?;
         Ok(seat)
+    }
+
+    /// 调度为某次协作新开的临时会话：占一个空席位（从零上下文开始），协作结束后撤掉。
+    pub fn add_temporary_seat(&mut self, workflow: &str, agent: &str, label: &str) -> Result<String> {
+        let room = self.workflow(workflow)?.conversation_id;
+        let seat = self.add_project_seat(&room, agent, Some(label))?;
+        self.connection
+            .execute(
+                "UPDATE project_seats SET temporary_for=?1 WHERE conversation_id=?2 AND seat_id=?3",
+                params![workflow, room, seat],
+            )
+            .map_err(|_| "临时会话保存失败")?;
+        Ok(seat)
+    }
+
+    /// 这次协作开着的临时会话。
+    pub fn temporary_seats(&self, workflow: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT seat_id FROM project_seats WHERE temporary_for=?1 ORDER BY seat_id")
+            .map_err(|_| "临时会话读取失败")?;
+        let rows = statement
+            .query_map([workflow], |row| row.get(0))
+            .map_err(|_| "临时会话读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "临时会话读取失败".into())
+    }
+
+    /// 撤掉已不在进行中的协作留下的临时会话。没跑完的任务改回该成员本身，日后继续协作仍有人接。
+    pub fn release_temporary_seats(&mut self, room: &str) -> Result<usize> {
+        let seats: Vec<(String, String)> = {
+            let mut statement = self
+                .connection
+                .prepare(&format!("SELECT s.seat_id,s.temporary_for FROM project_seats s LEFT JOIN workflows w ON w.id=s.temporary_for WHERE s.conversation_id=?1 AND s.temporary_for IS NOT NULL AND COALESCE(w.status,'') NOT IN {ACTIVE_WORKFLOW}"))
+                .map_err(|_| "临时会话读取失败")?;
+            let rows = statement
+                .query_map([room], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|_| "临时会话读取失败")?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| "临时会话读取失败")?
+        };
+        let mut released = 0;
+        for (seat, workflow) in seats {
+            let base = base_agent(&seat).to_owned();
+            self.connection
+                .execute(
+                    "UPDATE project_tasks SET agent_id=CASE WHEN agent_id=?1 THEN ?2 ELSE agent_id END,assigned_agent=CASE WHEN assigned_agent=?1 THEN ?2 ELSE assigned_agent END WHERE workflow_id=?3 AND status<>'completed'",
+                    params![seat, base, workflow],
+                )
+                .map_err(|_| "临时会话任务改派失败")?;
+            if self.remove_project_seat(room, &seat).is_ok() {
+                released += 1;
+            }
+        }
+        Ok(released)
     }
 
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
