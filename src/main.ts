@@ -45,7 +45,7 @@ const icon = (name: string, className = '') => `<svg class="icon ${className}" v
 const escape = (value: string | number) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 // 伴侣上传了头像就用头像（data URL 只含 base64 字符，可以直接放进 style）。
 const portrait = (agent: Agent) => agent.avatar && /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+$/.test(agent.avatar) ? agent.avatar : '';
-const avatar = (agent: Agent, size = '') => portrait(agent) ? `<span class="avatar albion-portrait ${size}" style="background-image:url('${portrait(agent)}')" aria-hidden="true"></span>` : seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
+const avatar = (agent: Agent, size = '', numbered = true) => portrait(agent) ? `<span class="avatar albion-portrait ${size}" style="background-image:url('${portrait(agent)}')" aria-hidden="true"></span>` : numbered && seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
 /// 同一成员在当前项目里开了多个会话时的编号（1、2、3…）；只有一个会话就不编号。
 const seatNumber = (id: string) => isSeat(id) ? seatSlot(id) : detail?.project_agent_chats?.some(chat => isSeat(chat.agent_id) && baseAgent(chat.agent_id) === id) ? '1' : '';
 const brand = `<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><defs><linearGradient id="brand-silver" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7c8590"/><stop offset="1" stop-color="#4a5158"/></linearGradient></defs><rect width="40" height="40" rx="12" fill="url(#brand-silver)"/><path d="M13 13h14v14H13z" stroke="#f0f3f6" stroke-width="1.2" fill="none"/><circle cx="13" cy="13" r="3" fill="#e7ca87"/><circle cx="27" cy="13" r="3" fill="#e2efe5"/><circle cx="27" cy="27" r="3" fill="#97bce0"/><circle cx="13" cy="27" r="3" fill="#e5b8b5"/></svg>`;
@@ -1248,7 +1248,7 @@ async function showProjectBinding() {
   catch (error) { toast(errorText(error), true); }
 }
 
-const pickerHost = { escape, name: (id: string) => member(id).name, avatar: (id: string) => avatar(member(id)), connect: (id: string) => connectAgent(id) };
+const pickerHost = { escape, name: (id: string) => member(id).name, avatar: (id: string) => avatar(member(id)), connect: (id: string) => connectAgent(id), globalName: (id: string) => globalMember(id).name, plainAvatar: (id: string) => avatar(globalMember(id), '', false) };
 async function showProjectSessions() {
   if (!detail?.project) return;
   try { await projectSessionsDialog(detail, { ...pickerHost, modal, open: openModal, saved: async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); toast('会话绑定已更新，下一轮任务生效'); } }); }

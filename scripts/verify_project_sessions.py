@@ -145,6 +145,8 @@ def main() -> int:
         first.press("Enter")
         expect(page.locator('[data-project-module="codex-win"]')).to_contain_text("主力", timeout=10000)
         check("first session renamed within the project only", any(a["id"] == "codex-win" and a["name"] == "Codex" for a in sd.ipc(page, "list_agents")))
+        coordinator_label = page.locator('[data-project-coordinator] option[value="codex-win"]').text_content()
+        check("coordinator is labelled by the member, not one of its sessions", coordinator_label == "Codex", coordinator_label)
         shot("member-settings-parallel")
         page.keyboard.press("Escape")
         check("sidebar lists the seat's own chat", page.locator('[data-project-module="codex-win-2"]').count() == 1)
