@@ -104,6 +104,17 @@ const projectJobs = new Map<string, Workflow>();
 const removedProjectJobs = new Set<string>();
 const projectAgentChatDetails = new Map<string, ConversationDetail>();
 const projectRoomsByGroup = new Map<string, ConversationDetail['project_agent_chats']>();
+const refreshingRooms = new Set<string>();
+async function refreshProjectRooms(groupId: string) {
+  if (refreshingRooms.has(groupId)) return;
+  refreshingRooms.add(groupId);
+  try {
+    const fresh = await invoke<ConversationDetail>('get_conversation', { id: groupId });
+    projectRoomsByGroup.set(groupId, fresh.project_agent_chats || []);
+    if (detail?.conversation.id === groupId) detail.project_agent_chats = fresh.project_agent_chats;
+    renderList();
+  } finally { refreshingRooms.delete(groupId); }
+}
 let activeProjectModule = 'team';
 let expandedProjectGroup = '';
 let projectRevision = 0;
@@ -208,6 +219,17 @@ let pendingQuestions:PendingChatQuestion[]=[];
 const noticedQuestions=new Set<string>();
 main.addEventListener('focusout', () => { setTimeout(() => renderLiveSettings(), 0); });
 const modal = document.querySelector<HTMLDialogElement>('#modal')!;
+// 点弹窗外面的遮罩就关掉；在框里按下、拖到外面松开（比如选字）不算。
+{
+  const outside = (event: MouseEvent) => {
+    if (event.target !== modal) return false;
+    const box = modal.getBoundingClientRect();
+    return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+  };
+  let pressedOutside = false;
+  modal.addEventListener('pointerdown', event => { pressedOutside = outside(event); });
+  modal.addEventListener('click', event => { if (pressedOutside && outside(event)) modal.close(); pressedOutside = false; });
+}
 installMessageMenu(main, () => selectedId, async target => {
   try {
     const removed = await invoke<{ workflow_id: string | null }>('remove_conversation_item', { conversationId: target.conversationId, kind: target.kind, id: target.id });
@@ -379,12 +401,12 @@ function renderList() {
     const expanded = conversation.id === expandedProjectGroup && rooms.length > 0;
     const active = screen === 'chat' && conversation.id === selectedId;
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
-      ${agent ? avatar(agent) : `<span class="avatar group-avatar">${icon('group')}</span>`}
+      ${agent ? avatar(agent) : groupFace(conversation.id)}
       <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(attachmentText(visibleQuestionReply(conversation.preview,true)) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -639,7 +661,7 @@ function renderMessage(message: Message, includeDetails = true) {
   const toolsHtml = toolActivity(toolEvents.filter(event => !placed.has(event.event_id)), escape);
   const shown=attachmentText(own?message.content:visibleQuestionReply(message.content,message.status==='streaming'));
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
-  const portrait = own ? '<span class="system-avatar">你</span>' : avatar(member(message.sender_id));
+  const portrait = own ? ownFace() : avatar(member(message.sender_id));
   // 正文每一段各占一个气泡（像 CLI 那样一条一条地出），思考穿插其间。
   const lastPart = flow?.[flow.length - 1];
   const toolHtml = (id: string) => { const event = toolEvents.find(item => item.event_id === id); return event ? toolLine(event, escape) : ''; };
@@ -752,12 +774,14 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
   // 本会话自己的回复进行中时不锁输入框，Enter 即插话；其他会话或项目任务占用成员时才锁。
   const steering = liveReply(agentId, chat.conversation.id);
   const cli = handedOff(agentId, chat.conversation.id);
-  const blocked = cli || (!steering && busyIn(runtimes[agentId], chat.conversation.id)) || runtimes[agentId]?.connection !== 'connected';
+  // 这个席位正在专属会话里做项目任务：输入框照常可用，发的话作为插话交给这项任务。
+  const tasked = seatTasked(agentId);
+  const blocked = cli || (!steering && !tasked && busyIn(runtimes[agentId], chat.conversation.id)) || runtimes[agentId]?.connection !== 'connected';
   const cliButton = host.querySelector<HTMLButtonElement>('[data-open-cli]');
   if (cliButton) cliButton.textContent = cli ? '收回到同席' : '在 CLI 中打开';
   const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
   const send = host.querySelector<HTMLButtonElement>('[data-project-agent-chat-send]');
-  if (input) input.disabled = blocked;
+  if (input) { input.dataset.placeholder ??= input.placeholder; input.disabled = blocked; input.placeholder = tasked ? '正在这条会话里做项目任务，发的话会作为插话交给它' : input.dataset.placeholder; }
   if (send) send.disabled = blocked;
 }
 
@@ -810,8 +834,9 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
   const text = composeMessage(chatId,input?.value||'');
   if (!text || !detail) return;
   if (runtimes[agentId]?.connection !== 'connected') { toast(`请先连接${member(agentId).name}`, true); return; }
-  if (input && liveReply(agentId, chatId)) {
-    const outcome = await steerReply(agentId, chatId, input);
+  const tasked = seatTasked(agentId);
+  if (input && (tasked || liveReply(agentId, chatId))) {
+    const outcome = await steerReply(agentId, chatId, input, tasked);
     if (outcome === 'resend') return sendProjectAgentChat(host, agentId, chatId);
     if (outcome) {
       const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
@@ -931,24 +956,35 @@ const liveReply = (agentId: string, conversationId: string) => {
 
 /// 回复进行中插话。原生支持的成员不打断、把引导追加进当前回复，返回存好的消息；
 /// 其他成员先停止当前回复，等确认停止后返回 'resend'，由调用方按普通消息发送。
-async function steerReply(agentId: string, conversationId: string, input: HTMLTextAreaElement): Promise<Message | 'resend' | null> {
+/// 等成员说完再自动发出的会话（没有原生插话的成员）。
+const waitingSends = new Set<string>();
+/// 这个席位正在自己的专属会话里做项目任务（不含调度）。
+const seatTasked = (agentId: string) => roomProjects().some(job => job.attempts.some(attempt => attempt.agent_id === agentId && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)));
+
+async function steerReply(agentId: string, conversationId: string, input: HTMLTextAreaElement, projectTask = false): Promise<Message | 'resend' | null> {
   if (attachmentsBusy(conversationId)) { toast('附件正在保存，请稍后发送', true); return null; }
   const content = composeMessage(conversationId, input.value);
   if (!content) { input.focus(); return null; }
-  if (NATIVE_STEER.has(agentId)) {
+  const native = NATIVE_STEER.has(baseAgent(agentId));
+  // 项目任务里所有成员都能插话：Codex、Claude 立即送达，Hermes、DSH 等它这一步说完在同一会话里接着交给它。
+  if (native || projectTask) {
     try {
       const message = await invoke<Message>('steer_agent_message', { agentId: baseAgent(agentId), conversationId, messageId: crypto.randomUUID(), content });
       submittedAttachments(conversationId, content);
       if (input.value.trim() === attachmentText(content)) { input.value = ''; resizeComposer(input); }
       if (readDraft(conversationId).trim() === attachmentText(content)) localStorage.removeItem(draftKey(conversationId));
-      toast(`已插话，${member(agentId).name} 会在下一步采纳`);
+      toast(native ? `已插话，${member(agentId).name} 会在下一步采纳` : `已记下，${member(agentId).name} 这一步说完就交给它`);
       return message;
     } catch (error) { toast(errorText(error), true); return null; }
   }
-  try { adoptRuntime(await invoke<RuntimeSnapshot>(`cancel_${harnessKey(agentId)}_run`, { conversationId }), agentId); updateRuntimeControls(); }
-  catch (error) { toast(errorText(error), true); return null; }
-  for (let waited = 0; waited < 30_000 && busyIn(runtimes[agentId], conversationId); waited += 250) await new Promise(resolve => setTimeout(resolve, 250));
-  if (busyIn(runtimes[agentId], conversationId)) { toast(`${member(agentId).name} 还没确认停止，稍后再发`, true); return null; }
+  // 没有原生插话的成员（Hermes、DSH、伴侣）：不打断它，这次回复说完就自动把这条发出去（要打断用「停止」）。
+  if (waitingSends.has(conversationId)) { toast('上一条还在等它说完，说完会一起发出'); return null; }
+  waitingSends.add(conversationId);
+  toast(`${member(agentId).name} 不支持中途插话，这次回复说完就自动发出`);
+  try {
+    for (let waited = 0; waited < 1_800_000 && busyIn(runtimes[agentId], conversationId); waited += 500) await new Promise(resolve => setTimeout(resolve, 500));
+  } finally { waitingSends.delete(conversationId); }
+  if (busyIn(runtimes[agentId], conversationId)) { toast(`${member(agentId).name} 还在回复，稍后再发`, true); return null; }
   return 'resend';
 }
 
@@ -1193,7 +1229,7 @@ function syncProjectTeamTimeline() {
     const question=detail.project_questions?.find(question=>question.id===message.id);
     const paint=message.content+':'+(question?.status||'');
     if (old?.dataset.content === paint) continue;
-    let html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)));
+    let html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
     if(question?.status==='pending')html=html.replace('</div></article>',`<button type="button" class="project-question-answer secondary" data-answer-project-question="${escape(question.id)}">回答 ${escape(member(question.agent_id).name)}</button></div></article>`);
     host.querySelector('.welcome')?.remove();
     if (old) old.outerHTML = html; else host.insertAdjacentHTML('beforeend', html);
@@ -1262,6 +1298,21 @@ async function showProjectSessions() {
 async function cancelProject(id: string) {
   try { adoptProject(await invoke<Workflow>('cancel_project', { id })); updateRuntimeControls(); }
   catch (error) { toast(errorText(error), true); }
+}
+
+/// 修复后重新部署时带 `--resume-workflow` 启动：成员接入后自动继续那次协作；成员还没连上就隔几秒再试。
+async function resumeAfterLaunch(id: string) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      adoptProject(await invoke<Workflow>('continue_project', { workflowId: id, autoExecute: true }));
+      updateRuntimeControls();
+      toast('已自动继续上次中断的协作');
+      return;
+    } catch (error) {
+      if (attempt === 5 || !/连接|接入|offline|未连接/.test(errorText(error))) { toast(`自动继续协作失败：${errorText(error)}`, true); return; }
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  }
 }
 
 async function continueProject(id: string) {
@@ -1438,7 +1489,7 @@ function renderConversationChat() {
   // 回复中途的插话跟着那条回复显示，不再按自己的时间单独排。
   const steered = new Set([...detail.messages.map(message => message.thought), ...Object.values(runtimes).flatMap(snapshot => runsOf(snapshot).map(run => run.thought))].flatMap(steerIds));
   const name = directAgent?.name || ''; 
-  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : `<span class="avatar group-avatar">${icon('group')}</span>`}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
+  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
       <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">项目成员配置</button><button data-project-sessions class="secondary" hidden>会话绑定</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.filter(message => !steered.has(message.id)).map(message => renderMessage(message, !isGroup)).join('')}` : `<div class="welcome">${directAgent && portrait(directAgent) ? `<div class="albion-hero small" style="background-image:url('${portrait(directAgent)}')" aria-hidden="true"></div>` : `<div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div>`}<span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
@@ -1447,6 +1498,7 @@ function renderConversationChat() {
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
     </section><aside class="members-panel"><div class="panel-title"><span>会话成员</span>${conversation.kind === 'group' ? `<button class="text-button" id="edit-members">管理</button>` : ''}</div><div class="member-list">${roster.map(agent => `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small><span class="status-dot muted"></span>待接入 · ${escape(agent.location)}</small></div></div>`).join('')}</div><p class="members-note">每位成员使用独立的会话映射，加入群聊不会合并已有私聊。</p></aside></div>`;
   renderDiscussionControls();
+  wireAvatarEdit();
   main.querySelector('[data-project-configure]')?.addEventListener('click', () => void configureProjectMembers());
   main.querySelector('[data-project-sessions]')?.addEventListener('click', () => void showProjectSessions());
   main.querySelector('#bind-project')?.addEventListener('click', () => void showProjectBinding());
@@ -2095,11 +2147,11 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
 function renderServices() {
   disposeProjectTranscript();
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的伴侣</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 伴侣在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="service-grid">${agents.map(agent => {
+  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的伴侣</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 伴侣在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置伴侣、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head"><div class="avatar-edit"><button type="button" class="avatar-edit-button" data-avatar-menu="${escape(agent.id)}" title="换头像" aria-haspopup="dialog">${avatar(agent, 'large', false)}<span class="avatar-edit-hint" aria-hidden="true">${icon('camera')}</span></button><div class="avatar-picker" role="dialog" aria-label="换头像"><div class="avatar-swatches">${AVATAR_COLORS.map(color => `<button type="button" class="avatar-swatch" data-avatar-color="${color}" style="background:${color}" title="纯色头像" aria-label="纯色 ${color}"></button>`).join('')}</div><label class="avatar-picker-item">${icon('camera')}上传图片<input type="file" accept="image/*" hidden data-avatar-edit="${escape(agent.id)}"></label><button type="button" class="avatar-picker-item" data-avatar-reset="${escape(agent.id)}">恢复默认头像</button></div></div><div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   const cards = [...main.querySelectorAll<HTMLElement>('.service-card')];
@@ -2199,38 +2251,55 @@ function wireServiceMenus() {
 /// 纯色头像可选的颜色（和界面配色协调，白字都看得清）。
 const AVATAR_COLORS = ['#8b80c4', '#6f9fd8', '#4fa8b8', '#5fae86', '#d8a04f', '#e0806f', '#d47ba6', '#9a8478', '#5d6788', '#3a4157'];
 
-/// 换头像：点头像弹出小面板——纯色、上传图片（裁成 256 的方形）、恢复默认（原生图标）。
+/// 换头像：点头像弹出小面板——纯色、上传图片（裁成 256 的方形）、恢复默认。成员、你、群聊（含项目）共用。
+function avatarPicker(target: string, face: string, title = '换头像') {
+  return `<div class="avatar-edit" data-avatar-target="${escape(target)}"><button type="button" class="avatar-edit-button" data-avatar-menu title="${escape(title)}" aria-haspopup="dialog">${face}<span class="avatar-edit-hint" aria-hidden="true">${icon('camera')}</span></button><div class="avatar-picker" role="dialog" aria-label="${escape(title)}"><div class="avatar-swatches">${AVATAR_COLORS.map(color => `<button type="button" class="avatar-swatch" data-avatar-color="${color}" style="background:${color}" title="纯色头像" aria-label="纯色 ${color}"></button>`).join('')}</div><label class="avatar-picker-item">${icon('camera')}上传图片<input type="file" accept="image/*" hidden data-avatar-edit></label><button type="button" class="avatar-picker-item" data-avatar-reset>恢复默认头像</button></div></div>`;
+}
+async function saveAvatar(target: string, value: string | null) {
+  if (target.startsWith('agent:')) { await invoke('set_agent_avatar', { agentId: target.slice('agent:'.length), avatar: value }); await reloadAgents(); return; }
+  await invoke('set_own_avatar', { conversationId: target.startsWith('conversation:') ? target.slice('conversation:'.length) : null, avatar: value });
+  await loadOwnAvatars();
+  renderList();
+  if (screen === 'services') renderServices(); else if (selectedId) await selectConversation(selectedId);
+}
+const closeAvatarPickers = () => document.querySelectorAll<HTMLElement>('.avatar-edit.open').forEach(item => item.classList.remove('open'));
+document.addEventListener('pointerdown', event => { if (!(event.target as HTMLElement).closest?.('.avatar-edit')) closeAvatarPickers(); }, true);
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeAvatarPickers(); }, true);
 function wireAvatarEdit() {
-  const close = () => main.querySelectorAll<HTMLElement>('.avatar-edit.open').forEach(item => item.classList.remove('open'));
-  main.querySelectorAll<HTMLButtonElement>('[data-avatar-menu]').forEach(button => button.onclick = event => {
-    event.stopPropagation();
-    const box = button.closest<HTMLElement>('.avatar-edit')!;
-    const opening = !box.classList.contains('open');
-    close();
-    if (opening) box.classList.add('open');
+  main.querySelectorAll<HTMLElement>('.avatar-edit[data-avatar-target]').forEach(box => {
+    const target = box.dataset.avatarTarget!;
+    const save = async (value: () => Promise<string | null> | string | null, done: string) => {
+      try { const avatar = await value(); closeAvatarPickers(); await saveAvatar(target, avatar); toast(done); }
+      catch (error) { toast(errorText(error), true); }
+    };
+    box.querySelector<HTMLButtonElement>('[data-avatar-menu]')!.onclick = event => {
+      event.stopPropagation();
+      const opening = !box.classList.contains('open');
+      closeAvatarPickers();
+      if (opening) box.classList.add('open');
+    };
+    box.querySelectorAll<HTMLButtonElement>('[data-avatar-color]').forEach(swatch => swatch.onclick = () => save(() => `color:${swatch.dataset.avatarColor}`, '已换成纯色头像'));
+    const upload = box.querySelector<HTMLInputElement>('[data-avatar-edit]')!;
+    upload.onchange = () => { const file = upload.files?.[0]; if (file) void save(() => shrink(file), '头像已更换'); };
+    box.querySelector<HTMLButtonElement>('[data-avatar-reset]')!.onclick = () => save(() => null, '已恢复默认头像');
   });
-  main.querySelectorAll<HTMLButtonElement>('[data-avatar-color]').forEach(swatch => swatch.onclick = async () => {
-    const id = swatch.closest<HTMLElement>('.service-card')!.dataset.serviceId!;
-    try { await invoke('set_agent_avatar', { agentId: id, avatar: `color:${swatch.dataset.avatarColor}` }); toast('已换成纯色头像'); await reloadAgents(); }
-    catch (error) { toast(errorText(error), true); }
-  });
-  const outside = (event: Event) => {
-    if (screen !== 'services') { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', key, true); return; }
-    if (!(event.target as HTMLElement).closest?.('.avatar-edit')) close();
-  };
-  const key = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
-  document.addEventListener('pointerdown', outside, true);
-  document.addEventListener('keydown', key, true);
-  main.querySelectorAll<HTMLInputElement>('[data-avatar-edit]').forEach(input => input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    try { await invoke('set_agent_avatar', { agentId: input.dataset.avatarEdit, avatar: await shrink(file) }); toast('头像已更换'); await reloadAgents(); }
-    catch (error) { toast(errorText(error), true); }
-  });
-  main.querySelectorAll<HTMLButtonElement>('[data-avatar-reset]').forEach(button => button.onclick = async () => {
-    try { await invoke('set_agent_avatar', { agentId: button.dataset.avatarReset, avatar: null }); toast('已恢复默认头像'); await reloadAgents(); }
-    catch (error) { toast(errorText(error), true); }
-  });
+}
+
+/// 你和群聊（含项目）的自定义头像；没换过就画默认的「你」和群聊图标。
+let ownAvatars: { user: string | null; conversations: Record<string, string> } = { user: null, conversations: {} };
+async function loadOwnAvatars() {
+  try { ownAvatars = await invoke<typeof ownAvatars>('own_avatars'); } catch { /* 用默认头像 */ }
+}
+function customFace(value: string | null | undefined, inner: string, size = '', kind = '') {
+  if (value && /^color:#[0-9a-f]{6}$/i.test(value)) return `<span class="avatar solid ${kind} ${size}" style="background:${value.slice(6)}" aria-hidden="true">${inner}</span>`;
+  if (value && /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+$/.test(value)) return `<span class="avatar albion-portrait ${kind} ${size}" style="background-image:url('${value}')" aria-hidden="true"></span>`;
+  return '';
+}
+function ownFace(size = '') {
+  return customFace(ownAvatars.user, '你', size) || (size ? `<span class="avatar own-avatar ${size}" aria-hidden="true">你</span>` : '<span class="system-avatar">你</span>');
+}
+function groupFace(id: string, size = '') {
+  return customFace(ownAvatars.conversations[id], icon('group'), size, 'group-avatar') || `<span class="avatar group-avatar ${size}">${icon('group')}</span>`;
 }
 
 /// 改成员名（全局）：卡片标题就地变输入框，回车或点开保存，Esc 放弃，清空恢复默认名。
@@ -2337,6 +2406,9 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         if (event.payload.revision < projectRevision) return;
         projectRevision = event.payload.revision;
         adoptProject(event.payload.workflow, true); updateRuntimeControls();
+        // 调度新开了会话：马上出现在项目的会话列表里，和用户建的一样。
+        const rooms = projectRoomsByGroup.get(event.payload.workflow.conversation_id);
+        if (rooms && event.payload.workflow.tasks.some(task => isSeat(task.agent_id) && !rooms.some(chat => chat.agent_id === task.agent_id))) void refreshProjectRooms(event.payload.workflow.conversation_id).catch(error => toast(errorText(error), true));
         if (!workflowBusy(event.payload.workflow)) void refreshList().catch(error => toast(errorText(error), true));
       });
       eventSubscribed = true;
@@ -2344,7 +2416,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
     for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'albion-wsl']) adoptRuntime(await invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`), agentId);
     latestDiscussion = await invoke<Discussion | null>('discussion_status');
     for (const job of await invoke<Workflow[]>('project_status')) adoptProject(job);
-    [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info')]);
+    [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
     document.querySelector('#app-version')!.textContent = info.version;
     updateMemberCount();
     adoptCliHandoffs(await invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'));
@@ -2358,6 +2430,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       let onboarded = false;
       try { onboarded = localStorage.getItem('hub.onboarded') === '1'; localStorage.setItem('hub.onboarded', '1'); } catch { /* 没有存储就每次都不打扰 */ onboarded = true; }
       if (!onboarded && scanned().length && !scanned().some(env => env.installed)) { renderServices(); toast('还没在本机找到任何 agent：在「接入成员」里一键安装'); }
+      if (info?.resume_workflow) void resumeAfterLaunch(info.resume_workflow);
     });
   } catch (error) {
     main.innerHTML = `<div class="no-selection"><h1>本地工作空间未能打开。</h1><p>${escape(errorText(error))}</p><button id="retry-boot" class="primary">重试</button></div>`;

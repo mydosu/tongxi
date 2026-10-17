@@ -51,7 +51,11 @@ fn compact_sources(sources: &[coordinator_policy::Source]) -> Vec<Value> {
         .map(|source| {
             let text = match source.kind.as_str() {
                 "result" => coordinator_policy::delivery_summary(&source.text),
-                "context" => clip(&source.text, 600),
+                // 上一次协作的成员交付也在旁支消息里：开头多是过程，遗留问题写在末尾的交付摘要里，只截开头会丢。
+                "context" => match source.text.rfind(coordinator_policy::DELIVERY_MARK) {
+                    Some(at) => clip(&source.text[at..], 900),
+                    None => clip(&source.text, 600),
+                },
                 _ => source.text.clone(),
             };
             json!({"id":source.id,"kind":source.kind,"text":text})
@@ -85,9 +89,27 @@ fn compact_routes(routes: &[crate::coordinator_store::TaskRoute]) -> Vec<Value> 
     routes
         .iter()
         .map(|route| {
-            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"reason":route.reason})
+            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent})
         })
         .collect()
+}
+
+/// 告诉调度哪项任务撞上了限额、多久后重置，让它选改派还是等。
+fn quota_offer(task: &crate::project_store::Task) -> String {
+    let error = task.error.as_deref().unwrap_or_default();
+    let (offset, now) = crate::quota_reset::local_offset();
+    let when = match crate::quota_reset::reset_at(error, now, offset) {
+        Some(at) => format!(
+            "预计 {} 重置（约 {:.1} 小时后）",
+            crate::quota_reset::local_label(at, offset),
+            (at - now) as f64 / 3600.0
+        ),
+        None => "没读到重置时间".into(),
+    };
+    format!(
+        "任务「{}」（task_id {}）的成员 {} 撞上限额，{when}。离重置还早、别的成员能做好时，用同一 task_id 改派给额度充足的成员（agent_id 换人，在原工作树上接着做，instructions 写清前情和已做到哪）；否则返回 wait，同席等重置后自动重试。",
+        task.title, task.id, task.agent_id
+    )
 }
 
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
@@ -286,7 +308,6 @@ impl Runtime {
             coordinator.effort.as_deref(),
             snapshot.default_model.as_deref(),
         )?;
-        let _ = self.store.lock().unwrap().release_temporary_seats(room);
         let roles = self.default_roles_for_room(room)?;
         let (workflow, created) =
             self.create_with_connections(room, message, content, &roles, false)?;
@@ -415,6 +436,8 @@ impl Runtime {
         // 额度等待最多连续这么多次（每次等到重置时间，读不到时按 5、10……30 分钟递增），之后交给管家按失败处理。
         const MAX_QUOTA_WAITS: u32 = 12;
         let mut quota_waits = 0;
+        // 撞上限额的任务先交给调度看一次（改派给额度充足的成员，或者 wait 等重置），之后才原地等。
+        let mut offered = std::collections::HashSet::new();
         loop {
             self.ensure_active(id, deadline)?;
             if self.store.lock().unwrap().acquire_project(id)? {
@@ -437,7 +460,15 @@ impl Runtime {
                 }
                 continue;
             }
+            let mut offer = None;
             if quota_waits < MAX_QUOTA_WAITS {
+                if let Some(task) = self.quota_blocked(id)? {
+                    if offered.insert(task.id.clone()) {
+                        offer = Some(quota_offer(&task));
+                    }
+                }
+            }
+            if offer.is_none() && quota_waits < MAX_QUOTA_WAITS {
                 if let Some(task) = self.quota_blocked(id)? {
                     deadline = self.wait_for_quota(
                         id,
@@ -448,6 +479,8 @@ impl Runtime {
                         deadline,
                     )?;
                     quota_waits += 1;
+                    // 重试再撞上限额是新的一次，再让调度看。
+                    offered.remove(&task.id);
                     self.store.lock().unwrap().connection.execute(
                         "UPDATE project_tasks SET status='queued',error=NULL WHERE id=?1 AND status='failed'",
                         [&task.id],
@@ -473,7 +506,10 @@ impl Runtime {
             // 额外席位（同一成员的另一条会话）也作为独立成员交给管家：base_agent 说明它落在哪位成员上。
             let seats = self.store.lock().unwrap().project_agent_chats(&workflow.conversation_id)?;
             let temporary = self.store.lock().unwrap().temporary_seats(id)?;
+            let opened = self.store.lock().unwrap().coordinator_seats(&workflow.conversation_id)?;
             let preference = self.store.lock().unwrap().project_preference(&workflow.conversation_id);
+            // 同一位成员的几个会话共用一份模型目录：按 base_agent 只给一次，省得每回合重复几千字。
+            let mut models_by_member = serde_json::Map::new();
             let catalogs = members
                 .iter()
                 .filter(|agent| crate::project_store::EXECUTOR_AGENTS.contains(&agent.as_str()))
@@ -497,18 +533,28 @@ impl Runtime {
                             store.seat_context(&workflow.conversation_id, &agent),
                         )
                     };
-                    let models = runtime
-                        .models
-                        .iter()
-                        .map(|model| {
-                            let mut value = json!({"id":model.id,"name":model.name,"efforts":model.efforts});
-                            if let Some(price) = crate::pricing::price(model) {
-                                value["price"] = price;
-                            }
-                            value
-                        })
-                        .collect::<Vec<_>>();
-                    json!({"agent_id":agent,"base_agent":crate::project_store::base_agent(&agent),"display_name":display,"connection":runtime.connection,"models":models,"project_settings":self.member_settings(&workflow.conversation_id,&agent).ok(),"context_tokens":context,"temporary":temporary.contains(&agent)})
+                    let base = crate::project_store::base_agent(&agent);
+                    if !models_by_member.contains_key(base) {
+                        let models = runtime
+                            .models
+                            .iter()
+                            .map(|model| {
+                                let mut value = json!({"id":model.id,"efforts":model.efforts});
+                                if model.name != model.id {
+                                    value["name"] = json!(model.name);
+                                }
+                                if let Some(mut price) = crate::pricing::price(model) {
+                                    if let Some(price) = price.as_object_mut() {
+                                        price.remove("name");
+                                    }
+                                    value["price"] = price;
+                                }
+                                value
+                            })
+                            .collect::<Vec<_>>();
+                        models_by_member.insert(base.to_owned(), json!(models));
+                    }
+                    json!({"agent_id":agent,"base_agent":base,"display_name":display,"connection":runtime.connection,"project_settings":self.member_settings(&workflow.conversation_id,&agent).ok(),"context_tokens":context,"opened_by_coordinator":opened.contains(&agent)})
                 })
                 .collect::<Vec<_>>();
             self.store
@@ -528,10 +574,30 @@ impl Runtime {
                 id,
                 &manager.coordinator.agent,
             )?;
-            let input = json!({"instruction":coordinator_policy::MANAGER_INSTRUCTION,"ledger":manager.ledger,"preference":preference,"limits":{"temporary_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"open":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
-            let result = self
-                .native
-                .run(attempt, &root, &input.to_string(), deadline)?;
+            // 说明放在最前、状态在后：几回合挨得近时，说明这段能命中提示缓存。
+            let previous_ledger = match manager.ledger {
+                None => self.store.lock().unwrap().previous_ledger(id),
+                Some(_) => None,
+            };
+            let quota = crate::quota::overview(&self.codex);
+            if offer.is_some() {
+                feedback = offer.take();
+            }
+            let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
+            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
+            // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给状态；其他线路说明放最前面。
+            let input = if matches!(
+                crate::project_store::base_agent(&manager.coordinator.agent),
+                "claude-win" | "codex-win"
+            ) {
+                format!("本回合状态（JSON）：\n{state}")
+            } else {
+                format!(
+                    "{}\n\n本回合状态（JSON）：\n{state}",
+                    coordinator_policy::MANAGER_INSTRUCTION
+                )
+            };
+            let result = self.native.run(attempt, &root, &input, deadline)?;
             if result.status != "completed" {
                 let error = result.error.unwrap_or_else(|| "管家回合未完成".into());
                 if quota_waits < MAX_QUOTA_WAITS && coordinator_policy::quota_exhausted(&error) {
@@ -580,22 +646,45 @@ impl Runtime {
         if let Some(ledger) = decision.ledger.as_deref().filter(|ledger| !ledger.trim().is_empty()) {
             self.store.lock().unwrap().set_coordination_ledger(id, ledger)?;
         }
+        let replacements = decision
+            .routes
+            .iter()
+            .map(|route| (route.source_id.clone(), route.quote.clone()))
+            .collect::<Vec<_>>();
         self.store
             .lock()
             .unwrap()
-            .withdraw_coordination_tasks(id, &decision.withdraw)?;
+            .withdraw_coordination_tasks(id, &decision.withdraw, &replacements)?;
+        // 调度自己拍板的取舍发到群里：不等回答，用户不同意直接在群里说。回合被退回重做时不发，免得重复。
+        let decided = (!decision.decisions.is_empty()).then(|| {
+            let lines = decision
+                .decisions
+                .iter()
+                .map(|item| match item.reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty()) {
+                    Some(reason) => format!("\n· {}：{}（{}）", item.question.trim(), item.choice.trim(), reason),
+                    None => format!("\n· {}：{}", item.question.trim(), item.choice.trim()),
+                })
+                .collect::<String>();
+            format!("调度先按下面的选择推进，不同意直接在群里说，会按你说的改。{lines}")
+        });
+        if decision.action != "delegate" {
+            if let Some(text) = &decided {
+                self.store.lock().unwrap().add_system_team_message(id, text)?;
+            }
+        }
         match decision.action.as_str() {
             "delegate" => {
                 let workflow = self.store.lock().unwrap().workflow(id)?;
                 let sources = self.store.lock().unwrap().coordination_sources(id)?;
                 let mut routes = decision.routes;
+                let aliases = self.store.lock().unwrap().member_aliases(&workflow.conversation_id);
                 for route in &routes {
-                    coordinator_policy::check_assignment(route, &sources)?;
+                    coordinator_policy::check_assignment_with(route, &sources, &aliases)?;
                 }
                 let opened = self.open_temporary_seats(id, &mut routes)?;
-                let applied = self.enqueue_decision(id, &workflow, &sources, routes);
+                let applied = self.enqueue_decision(id, &workflow, &sources, routes, decided.as_deref());
                 if applied.is_err() {
-                    // 这一回合没派成：刚开的临时会话一起撤掉，不留空壳。
+                    // 这一回合没派成：刚开的会话一起撤掉，不留空壳。
                     let mut store = self.store.lock().unwrap();
                     for seat in &opened {
                         let _ = store.remove_project_seat(&workflow.conversation_id, seat);
@@ -657,11 +746,38 @@ impl Runtime {
                 Ok(false)
             }
             "finish" => {
+                // 分板块收尾：没开始的任务留到下次，剩下的板块发到群里让用户挑。
+                let deferred = if decision.next_sections.is_empty() {
+                    0
+                } else {
+                    self.store.lock().unwrap().defer_unstarted_tasks(id)?
+                };
                 let summary = self
                     .store
                     .lock()
                     .unwrap()
                     .finished_coordination_summary(id, decision.result.as_ref())?;
+                if !decision.next_sections.is_empty() {
+                    let lines = decision
+                        .next_sections
+                        .iter()
+                        .enumerate()
+                        .map(|(index, section)| {
+                            let title = coordinator_policy::section_title(&section.title);
+                            match section.summary.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+                                Some(text) => format!("\n{}. {}：{}", index + 1, title, text),
+                                None => format!("\n{}. {}", index + 1, title),
+                            }
+                        })
+                        .collect::<String>();
+                    let kept = if deferred > 0 { format!("（{deferred} 项没开始的任务一起留到下次）") } else { String::new() };
+                    self.store.lock().unwrap().add_system_team_message(
+                        id,
+                        &format!("这次先到这里{kept}。剩下的板块：{lines}\n想做哪个、哪天做，在群里说一声（比如「今天做第 2 块」），会接着这次的账本开始。"),
+                    )?;
+                }
+                // 干过活的成员下次从零上下文开始：隔天续接只会整段重读过期的缓存。
+                let _ = self.store.lock().unwrap().reset_worked_sessions(id);
                 self.store
                     .lock()
                     .unwrap()
@@ -670,13 +786,14 @@ impl Runtime {
                     .lock()
                     .unwrap()
                     .finish_workflow(id, "completed", &summary, None)?;
-                // 协作完成：这次临时开的会话撤掉（会话归档保留历史）。
-                let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
-                let _ = self.store.lock().unwrap().release_temporary_seats(&room);
                 (self.notify)(id);
                 Ok(true)
             }
             "wait" => {
+                // 等撞上限额的成员：循环里按重置时间原地等，不暂停协作。
+                if self.quota_blocked(id)?.is_some() {
+                    return Ok(false);
+                }
                 let paused = self.store.lock().unwrap().pause_coordination_wait(id)?;
                 (self.notify)(id);
                 Ok(paused)
@@ -684,7 +801,7 @@ impl Runtime {
             _ => Err("管家动作无效".into()),
         }
     }
-    /// 调度要新开临时会话的任务：在倾向允许的数量内给它占一个空席位，任务改派到这个新会话。
+    /// 调度要新开会话的任务：在倾向允许的数量内给它开一个新会话（只能开在项目成员上），任务改派过去。
     fn open_temporary_seats(
         &self,
         id: &str,
@@ -703,13 +820,23 @@ impl Runtime {
         };
         if open + wanted > limit {
             return Err(format!(
-                "按当前倾向，一次协作最多开 {limit} 个临时会话（已开 {open} 个）；请复用已有会话或已开的临时会话"
+                "按当前倾向，一次协作最多新开 {limit} 个会话（已开 {open} 个）；请复用已有会话"
             ));
+        }
+        let members = self.store.lock().unwrap().conversation(&room)?.members;
+        for route in routes.iter().filter(|route| fresh(route)) {
+            let base = crate::project_store::base_agent(&route.agent_id);
+            if !members.iter().any(|member| member == base) {
+                return Err(format!(
+                    "新会话只能开在本项目的成员上（available_agents），{} 不是本项目成员",
+                    route.agent_id
+                ));
+            }
         }
         let mut opened = Vec::new();
         for route in routes.iter_mut().filter(|route| fresh(route)) {
             let base = crate::project_store::base_agent(&route.agent_id).to_owned();
-            let label = format!("临时·{}", crate::coordinator_store::purpose_label(&route.purpose));
+            let label = crate::coordinator_store::purpose_label(&route.purpose).to_owned();
             let created = self.store.lock().unwrap().add_temporary_seat(id, &base, &label);
             match created {
                 Ok(seat) => {
@@ -721,7 +848,7 @@ impl Runtime {
                     for seat in &opened {
                         let _ = store.remove_project_seat(&room, seat);
                     }
-                    return Err(format!("新开临时会话失败：{error}；请复用已有会话"));
+                    return Err(format!("新开会话失败：{error}"));
                 }
             }
         }
@@ -734,6 +861,7 @@ impl Runtime {
         workflow: &Workflow,
         sources: &[coordinator_policy::Source],
         routes: Vec<coordinator_policy::Route>,
+        decided: Option<&str>,
     ) -> Result<bool> {
         let mut resolved = Vec::new();
         for route in routes {
@@ -775,7 +903,13 @@ impl Runtime {
                         "\n· {}{}{}：{}",
                         store.seat_name(&workflow.conversation_id, &route.agent_id),
                         if setup.is_empty() { String::new() } else { format!("（{setup}）") },
-                        if route.fresh_session { "〔新开临时会话〕" } else { "" },
+                        if route.fresh_session {
+                            "〔新开会话〕"
+                        } else if route.clear_context {
+                            "〔清空上下文〕"
+                        } else {
+                            ""
+                        },
                         route
                             .reason
                             .as_deref()
@@ -784,6 +918,9 @@ impl Runtime {
                 })
                 .collect::<String>()
         };
+        if let Some(text) = decided {
+            self.store.lock().unwrap().add_system_team_message(id, text)?;
+        }
         self.store
             .lock()
             .unwrap()
@@ -1029,6 +1166,18 @@ impl Runtime {
             route.allow_subagents,
         );
         prompt["user_updates"] = json!(self.store.lock().unwrap().project_user_updates(id)?);
+        let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
+        if !grants.is_empty() {
+            prompt["project_grants"] = json!(grants);
+        }
+        if branch.is_some() {
+            // 工作树在任务结束后会删掉：被 .gitignore 忽略的产物不会合并，要留的写到项目根目录。
+            prompt["workspace"] = json!(format!(
+                "本任务在临时工作树 {} 里做；结束时只合并纳入 Git 的改动，被 .gitignore 忽略的文件不合并，随后工作树会删掉。日志、报告这类不入库、又要留给后面任务或用户看的产物，写到项目根目录 {} 下的同一相对路径，不要只写在工作树里。",
+                cwd.display(),
+                root.display()
+            ));
+        }
         if route.subagent {
             let (cheap, _) = coordinator_policy::subagent_model(
                 &snapshot.models,
@@ -1103,7 +1252,7 @@ pub fn set_project_coordinator(
     store.detail(&conversation_id)
 }
 
-/// 调度倾向：save（省额度）/ balanced（平衡）/ quality（质量优先）。影响调度怎么挑模型、能开几个临时会话。
+/// 调度倾向：save（省额度）/ balanced（平衡）/ quality（质量优先）。影响调度怎么挑模型、一次协作能新开几个会话。
 #[tauri::command]
 pub fn set_project_preference(
     runtime: tauri::State<'_, Arc<Runtime>>,
@@ -1113,4 +1262,31 @@ pub fn set_project_preference(
     let mut store = runtime.store.lock().unwrap();
     store.set_project_preference(&conversation_id, &preference)?;
     store.detail(&conversation_id)
+}
+
+/// 项目长期授权：用户写一段话（如「允许提交并推送 main，不 force push」），调度和成员每次协作都当作用户原话授权。
+#[tauri::command]
+pub fn set_project_grants(
+    runtime: tauri::State<'_, Arc<Runtime>>,
+    conversation_id: String,
+    grants: String,
+) -> Result<crate::store::ConversationDetail> {
+    let mut store = runtime.store.lock().unwrap();
+    store.set_project_grants(&conversation_id, &grants)?;
+    store.detail(&conversation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::coordinator_policy::Source;
+
+    #[test]
+    fn earlier_member_reports_keep_their_delivery_summary() {
+        let source = |text: String| Source { id: "m".into(), kind: "context".into(), text };
+        let report = format!("{}\n\n交付摘要：已部署。遗留：OpenViking 要另行排查。", "过程".repeat(800));
+        let text = super::compact_sources(&[source(report)])[0]["text"].as_str().unwrap().to_owned();
+        assert!(text.starts_with("交付摘要：") && text.contains("OpenViking"));
+        let chat = super::compact_sources(&[source("闲聊".repeat(400))])[0]["text"].as_str().unwrap().to_owned();
+        assert_eq!(chat.chars().count(), 602);
+    }
 }

@@ -210,6 +210,8 @@ pub struct ConversationDetail {
     pub project_coordinator: Option<crate::project_store::RoleChoice>,
     /// 调度倾向：save / balanced / quality。
     pub project_preference: String,
+    /// 项目长期授权：用户写的一段话，每次协作都算用户原话授权。
+    pub project_grants: String,
     pub workflows: Vec<crate::project_store::Workflow>,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
@@ -792,6 +794,7 @@ impl Store {
             project_roles: self.conversation_project_roles(id)?,
             project_coordinator: self.project_coordinator(id)?,
             project_preference: self.project_preference(id),
+            project_grants: self.project_grants(id),
             workflows: self.workflows(id)?,
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
@@ -1074,6 +1077,7 @@ impl Store {
         self.validate_private_target(conversation_id, agent_id)?;
         // 交给 CLI 期间连消息也不存，免得拦下的话混进聊天记录。
         self.guard_cli_handoff(conversation_id, agent_id)?;
+        self.guard_project_task(conversation_id)?;
         self.save_message(conversation_id, message_id, content)?;
         if let Some(existing) = self.run_for_message(message_id)? {
             return Ok(existing);

@@ -9,9 +9,9 @@ interface DialogHost extends PickerHost { modal: HTMLDialogElement; open: (title
 export function projectTeamMessages(room: string, saved: ProjectTeamMessage[], jobs: Workflow[]) {
   return [...new Map([...saved, ...jobs.flatMap(job => job.team_messages || [])].filter(message => message.conversation_id === room).map(message => [message.id, message])).values()].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 }
-export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Escape, name: (id: string) => string, avatar: (id: string) => string) {
+export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Escape, name: (id: string) => string, avatar: (id: string) => string, own = '<span class="system-avatar">你</span>') {
   const author = message.kind === 'user' ? '你' : message.sender_agent ? name(message.sender_agent) : '同席';
-  const portrait = message.sender_agent ? avatar(message.sender_agent) : `<span class="system-avatar">${message.kind === 'user' ? '你' : '·'}</span>`;
+  const portrait = message.sender_agent ? avatar(message.sender_agent) : message.kind === 'user' ? own : '<span class="system-avatar">·</span>';
   return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.created_at)}</time></div>${message.kind === 'user' ? `<div class="bubble">${escape(attachmentText(message.content))}</div>` : `<div class="bubble markdown">${agentMarkdown(attachmentText(message.content), escape)}</div>`}${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
 }
 /// 后端存的是 Windows 规范化路径（以 `\\?\` 开头），给人看时去掉这个前缀。

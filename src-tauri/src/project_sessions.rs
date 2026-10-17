@@ -121,6 +121,42 @@ impl Store {
             .map(|(_, owner, _)| owner))
     }
 
+    /// 这条专属会话里正在跑的项目任务（不含调度）：用户在这里发的话作为插话交给它。
+    pub(crate) fn project_task_in_chat(&self, chat: &str) -> Result<Option<crate::project_store::Attempt>> {
+        let id: Option<String> = self.connection.query_row(
+            &format!("SELECT a.id FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id JOIN project_agent_chats c ON c.group_conversation_id=w.conversation_id AND c.agent_id=a.agent_id WHERE c.conversation_id=?1 AND a.status IN {LIVE} AND COALESCE(a.activity,'')<>?2 ORDER BY a.created_at DESC LIMIT 1"),
+            params![chat, MANAGER_ACTIVITY], |row| row.get(0),
+        ).optional().map_err(|_| "项目运行状态读取失败")?;
+        id.map(|id| self.attempt(&id)).transpose()
+    }
+
+    /// 项目成员的专属会话正被项目任务占用时不另起私聊回复：任务和私聊会同时往同一条原生会话发消息，后发的那条必然失败。
+    pub(crate) fn guard_project_task(&self, chat: &str) -> Result<()> {
+        let seat: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
+                [chat],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|_| "项目会话读取失败")?;
+        let Some((room, seat)) = seat else {
+            return Ok(());
+        };
+        let busy: bool = self.connection.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM project_attempts a JOIN workflows w ON w.id=a.workflow_id WHERE w.conversation_id=?1 AND a.agent_id=?2 AND a.status IN {LIVE} AND COALESCE(a.activity,'')<>?3)"),
+            params![room, seat, MANAGER_ACTIVITY], |row| row.get(0),
+        ).map_err(|_| "项目运行状态读取失败")?;
+        if busy {
+            return Err(format!(
+                "{}正在这条会话里做项目任务，发的话会作为插话交给它；这次插话没送到，请再发一次",
+                self.seat_name(&room, &seat)
+            ));
+        }
+        Ok(())
+    }
+
     /// 席位正在干活：项目 attempt 记在席位 id 上，专属会话里的私聊运行记在底层成员上。
     fn member_busy(&self, room: &str, chat: &str, agent: &str) -> Result<bool> {
         let attempt: bool = self.connection.query_row(
@@ -275,59 +311,85 @@ impl Store {
         Ok(seat)
     }
 
-    /// 调度为某次协作新开的临时会话：占一个空席位（从零上下文开始），协作结束后撤掉。
+    /// 调度为某次协作新开的会话：只能开在本项目的成员上，从零上下文开始；
+    /// 开出来就和用户建的会话一样留在项目里。该成员的会话开满时，回收最早一个调度开的空闲会话（归档保留历史），
+    /// 用户自己建的会话从不动。
     pub fn add_temporary_seat(&mut self, workflow: &str, agent: &str, label: &str) -> Result<String> {
         let room = self.workflow(workflow)?.conversation_id;
+        let members = self.conversation(&room)?.members;
+        if !is_executor(agent) || !members.iter().any(|member| member == agent) {
+            return Err(format!("只能给本项目的成员开会话，{}不在这个项目里", crate::store::agent_name(agent)));
+        }
+        let taken = self.project_seats(&room)?;
+        let full = SEAT_SLOTS.iter().all(|slot| taken.iter().any(|(seat, _)| *seat == format!("{agent}-{slot}")));
+        if full && !self.recycle_coordinator_seat(&room, agent)? {
+            return Err(format!(
+                "{}的会话已开满（{} 个），而且都是用户建的或正在用；请复用已有会话",
+                crate::store::agent_name(agent),
+                SEAT_SLOTS.len()
+            ));
+        }
         let seat = self.add_project_seat(&room, agent, Some(label))?;
         self.connection
             .execute(
                 "UPDATE project_seats SET temporary_for=?1 WHERE conversation_id=?2 AND seat_id=?3",
                 params![workflow, room, seat],
             )
-            .map_err(|_| "临时会话保存失败")?;
+            .map_err(|_| "新会话保存失败")?;
         Ok(seat)
     }
 
-    /// 这次协作开着的临时会话。
+    /// 这次协作里调度新开的会话（用来限制一次协作最多开几个）。
     pub fn temporary_seats(&self, workflow: &str) -> Result<Vec<String>> {
         let mut statement = self
             .connection
             .prepare("SELECT seat_id FROM project_seats WHERE temporary_for=?1 ORDER BY seat_id")
-            .map_err(|_| "临时会话读取失败")?;
+            .map_err(|_| "新会话读取失败")?;
         let rows = statement
             .query_map([workflow], |row| row.get(0))
-            .map_err(|_| "临时会话读取失败")?;
+            .map_err(|_| "新会话读取失败")?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| "临时会话读取失败".into())
+            .map_err(|_| "新会话读取失败".into())
     }
 
-    /// 撤掉已不在进行中的协作留下的临时会话。没跑完的任务改回该成员本身，日后继续协作仍有人接。
-    pub fn release_temporary_seats(&mut self, room: &str) -> Result<usize> {
-        let seats: Vec<(String, String)> = {
+    /// 调度开过的会话（不分哪次协作）：项目里给它标「调度开的」。
+    pub fn coordinator_seats(&self, room: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT seat_id FROM project_seats WHERE conversation_id=?1 AND temporary_for IS NOT NULL ORDER BY seat_id")
+            .map_err(|_| "会话读取失败")?;
+        let rows = statement
+            .query_map([room], |row| row.get(0))
+            .map_err(|_| "会话读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "会话读取失败".into())
+    }
+
+    /// 回收该成员最早一个调度开的、已经空闲的会话。已结束协作里没跑完的任务改回成员本身，日后继续协作仍有人接。
+    fn recycle_coordinator_seat(&mut self, room: &str, agent: &str) -> Result<bool> {
+        let seats: Vec<String> = {
             let mut statement = self
                 .connection
-                .prepare(&format!("SELECT s.seat_id,s.temporary_for FROM project_seats s LEFT JOIN workflows w ON w.id=s.temporary_for WHERE s.conversation_id=?1 AND s.temporary_for IS NOT NULL AND COALESCE(w.status,'') NOT IN {ACTIVE_WORKFLOW}"))
-                .map_err(|_| "临时会话读取失败")?;
+                .prepare(&format!("SELECT s.seat_id FROM project_seats s LEFT JOIN workflows w ON w.id=s.temporary_for WHERE s.conversation_id=?1 AND s.temporary_for IS NOT NULL AND COALESCE(w.status,'') NOT IN {ACTIVE_WORKFLOW} ORDER BY s.created_at,s.seat_id"))
+                .map_err(|_| "会话读取失败")?;
             let rows = statement
-                .query_map([room], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|_| "临时会话读取失败")?;
+                .query_map([room], |row| row.get(0))
+                .map_err(|_| "会话读取失败")?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|_| "临时会话读取失败")?
+                .map_err(|_| "会话读取失败")?
         };
-        let mut released = 0;
-        for (seat, workflow) in seats {
-            let base = base_agent(&seat).to_owned();
+        for seat in seats.into_iter().filter(|seat| base_agent(seat) == agent) {
             self.connection
                 .execute(
-                    "UPDATE project_tasks SET agent_id=CASE WHEN agent_id=?1 THEN ?2 ELSE agent_id END,assigned_agent=CASE WHEN assigned_agent=?1 THEN ?2 ELSE assigned_agent END WHERE workflow_id=?3 AND status<>'completed'",
-                    params![seat, base, workflow],
+                    &format!("UPDATE project_tasks SET agent_id=CASE WHEN agent_id=?1 THEN ?2 ELSE agent_id END,assigned_agent=CASE WHEN assigned_agent=?1 THEN ?2 ELSE assigned_agent END WHERE status<>'completed' AND workflow_id IN (SELECT id FROM workflows WHERE conversation_id=?3 AND status NOT IN {ACTIVE_WORKFLOW})"),
+                    params![seat, agent, room],
                 )
-                .map_err(|_| "临时会话任务改派失败")?;
+                .map_err(|_| "会话任务改派失败")?;
             if self.remove_project_seat(room, &seat).is_ok() {
-                released += 1;
+                return Ok(true);
             }
         }
-        Ok(released)
+        Ok(false)
     }
 
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
@@ -372,6 +434,27 @@ impl Store {
 
     /// 席位在这个项目里的名字：项目里起过名就用它；否则只有一个会话时用成员名，
     /// 同一成员开了多个会话时一律编号「成员名 1号 / 2号 …」——几个会话平行，不分主次。
+    /// 用户给成员起的名字（项目里的成员名、用户自己建的会话名）→ 底层成员；调度开的会话名（「验证」「回复」）不算。
+    pub fn member_aliases(&self, room: &str) -> Vec<(String, String)> {
+        let mut query = match self.connection.prepare(
+            "SELECT label,agent_id FROM project_member_names WHERE conversation_id=?1 UNION ALL SELECT label,seat_id FROM project_seats WHERE conversation_id=?1 AND temporary_for IS NULL",
+        ) {
+            Ok(query) => query,
+            Err(_) => return Vec::new(),
+        };
+        query
+            .query_map([room], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)))
+            .map(|rows| {
+                rows.flatten()
+                    .filter_map(|(label, agent)| {
+                        let label = label?.trim().to_owned();
+                        (label.chars().count() >= 2).then(|| (label, base_agent(&agent).to_owned()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn seat_name(&self, room: &str, seat: &str) -> String {
         let base = base_agent(seat);
         let custom: Option<String> = if base == seat {

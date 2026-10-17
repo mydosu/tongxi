@@ -9,9 +9,17 @@ export interface FlowPart { kind: 'thought' | 'text' | 'steer' | 'tool'; text: s
 
 const MARK = /\x1e(\d+)\x1f|\x1d(\d+)\x1f|\x1c(\d+):([^\x1f]*)\x1f|\x1b(\d+):([^\x1f]*)\x1f/g;
 
+/**
+ * 思考框是纯文本：Codex 的思考摘要是一串加粗小标题（`**Checking X**`），前后紧挨着拼在一起，
+ * 这里每个标题另起一行并去掉加粗记号，不然满屏都是 `****`。
+ */
+export function tidyThought(text: string) {
+  return text.replace(/\*\*\*\*/g, '**\n**').replace(/\*\*([^*\n]+?)\*\*/g, '$1');
+}
+
 /** 不穿插显示时（例如带提问卡片的回复），去掉标记、按段落连起来。 */
 export function plainThought(thought: string) {
-  return thought.replace(MARK, (_, at) => at === undefined ? '' : '\n\n').trim();
+  return tidyThought(thought.replace(MARK, (_, at) => at === undefined ? '' : '\n\n')).trim();
 }
 
 /** 回复里插过话的消息 id：这些消息跟着回复显示，不再按自己的时间单独排。 */
@@ -31,7 +39,7 @@ export function thoughtFlow(thought: string, body: string): FlowPart[] | null {
     if (said) parts.push({ kind: 'text', text: said });
     cursor = end;
   };
-  const think = (text: string) => { if (text.trim()) parts.push({ kind: 'thought', text: text.trim() }); };
+  const think = (text: string) => { if (text.trim()) parts.push({ kind: 'thought', text: tidyThought(text).trim() }); };
   for (const match of thought.matchAll(MARK)) {
     think(thought.slice(start, match.index));
     start = match.index! + match[0].length;

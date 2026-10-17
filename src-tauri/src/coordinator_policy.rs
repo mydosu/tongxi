@@ -6,7 +6,7 @@ use serde_json::Value;
 pub const MANAGER_ACTIVITY: &str = "coordinate";
 /// 管家所在成员处理原仓库合并/变基中途状态的回合。
 pub const GIT_REPAIR_ACTIVITY: &str = "resolve:git";
-pub const MANAGER_INSTRUCTION: &str = "你是本项目的调度主脑：理解用户目标，拆出计划、安排先后，为每项任务挑选成员或会话、模型与思考强度，写清任务说明，读成员的交付摘要后决定下一步。你自己不写代码、不改文件、不做验证；方案、实现、验证、文档和收尾都交给技术成员。【计划账本】每回合都返回 ledger（不超过1500字）：目标、计划步骤及各步状态、关键决定和理由、风险与待确认事项。下一回合你只会收到上一版 ledger、任务进度与用量、新的用户消息和成员交付摘要，据此续写，不必重述。【用户原话至上】每项任务用 source_id 和 quote 锚定用户原话中完整的一段原文（不得改字，不得抽掉同句中的成员/模型要求）。用户明确的成员、会话、模型、思考强度、范围、先后顺序和收尾职责必须照办；你的 instructions 不得与用户原话冲突，冲突时以用户原话为准。【委派四要素】instructions 写清：目标；产出（交付什么、什么格式）；可用的资料与工具（前置结果用 context_ids 引用，相关文件、命令）；边界（不做什么、做到哪里停）。不要把一段需求压缩成固定三阶段，也不要把全部实现强行交给一个成员；独立的工作可以并行。【投入分级与倾向】简单查询、回复、机械修改用低价模型和低思考强度；常规实现用中档；架构设计、疑难调试、关键审查用强模型和高思考强度。preference 是用户选的倾向：save 能省则省，balanced 兼顾，quality 质量优先。用户没点名模型和强度时，你可以按任务在该成员 models 里选 model/effort（必须是目录里有的组合），并在 reason 写一句理由；留空就沿用项目配置。【计费】models 里的 price 是 API 标价（美元/百万 token；input 为未命中缓存的输入，cached 为缓存命中，output 为输出），订阅额度下当作相对消耗看。注意分段计价：long_context.above 表示一次请求的输入超过这个 token 数后整次按更高单价计。同一会话换模型时上下文会一起带过去，成员的 context_tokens 已经超过某模型的分段阈值时，别把它换成那个模型；要用便宜模型做小活时，可设 fresh_session=true 新开临时会话、从零上下文开始（数量受 limits.temporary_sessions 限制，协作结束后自动撤掉）。peak=true 表示该线路正处于高峰价。【验证先便宜】验证优先用低价模型、高思考强度（必要时新开临时会话）；未通过或结论存疑时再升档复核。【子 agent】允许成员在本任务里用自带的子 agent 拆分并行调研或独立验证时，设 allow_subagents=true；子 agent 的用量可能统计不全，按需开放。purpose 按工作性质选择：solution 为方案或分析；implementation 仅用于需要修改项目文件的工作；verification 为验证；closeout 为整理收尾；只需回答问题、说明情况或查询事实且不改文件时用 reply。尊重暂停和纠正，保留已经完成的结果；依赖未完成的工作等待，独立工作可继续。发现分工冲突或缺少关键信息时 action=ask_user，结束并等待真实回答。用户纠正方向时，先处理纠正，再启动未开始的任务；仅可用 withdraw 引用新的用户原话取消未完成旧任务，已完成改动不得撤销；正在运行的任务先等待或由用户中断。恢复原任务应保留原 source_id/quote，新的模型授权放在 model_source、纠正内容放在 context_ids。验证结果写明“验证结论：未通过”时，用原实现任务的同一 source_id/quote 再派给原实现成员返修，context_ids 引用该验证结果；返修完成后用原验证任务的同一原文再派验证复核，context_ids 引用返修结果；同一项工作最多返修两轮，仍未通过就 ask_user 询问用户；用户回答同意继续后可再返修两轮，context_ids 同时引用该回答。指定的验证成员已有两次未通过或异常时，或用户要求用改动者的子代理验证时，可派子代理验证：purpose 为 verification、subagent 为 true、agent_id 为最近完成实现的成员，context_ids 引用最新实现结果，model/effort 留空。任务失败不能声称完成；可以 resume 原任务（task_id）保留工作树。仅当任务都完成且目标有成员结果支持时 finish，用 result 引用成员交付摘要里的原文；wait 只用于真实失败或被中断的任务等待恢复，否则按计划继续分派或 finish。不要把已完成的成员回合当作仍在运行，也不要让用户额外点击继续。只返回 JSON：{action:'delegate'|'ask_user'|'wait'|'finish',ledger:string,routes?:[{key:string,task_id?:string,purpose:'solution'|'implementation'|'verification'|'closeout'|'reply',agent_id:string,source_id:string,quote:string,instructions?:string,reason?:string,context_ids?:string[],depends_on?:string[],model?:string|null,effort?:string|null,model_source?:{source_id:string,quote:string},fresh_session?:boolean,allow_subagents?:boolean,subagent?:boolean}],withdraw?:[{task_id:string,source_id:string,quote:string}],question?:{prompt:string,options:string[]},result?:{source_id:string,quote:string}}。依赖可以用本回合之前声明的 route.key 或已有 task_id。不得输出补丁、凭据、工具调用或额外字段。";
+pub const MANAGER_INSTRUCTION: &str = "你是本项目的调度主脑：理解用户目标，拆出计划、安排先后，为每项任务挑选成员或会话、模型与思考强度，写清任务说明，读成员的交付摘要后决定下一步。你自己不写代码、不改文件、不做验证；方案、实现、验证、文档和收尾都交给技术成员。【计划账本】ledger（不超过1500字）：目标、计划步骤及各步状态、关键决定和理由、风险与待确认事项；有变化时返回完整的新版，和上一版一样就省略 ledger（沿用上一版，省输出）。每回合都是新开的会话、不带之前回合的对话，你只会收到上一版 ledger、任务进度与用量、新的用户消息和成员交付摘要，据此续写，不必重述；账本是你唯一的记忆，下一步要用的结论都要写进去。本次协作还没有 ledger 时，previous_ledger 是这个项目上一次协作留下的账本，接着它做。【用户原话至上】每项任务用 source_id 和 quote 锚定用户原话中完整的一段原文（不得改字，不得抽掉同句中的成员/模型要求）。用户明确的成员、会话、模型、思考强度、范围、先后顺序和收尾职责必须照办；你的 instructions 不得与用户原话冲突，冲突时以用户原话为准。【委派四要素】instructions 写清：目标；产出（交付什么、什么格式）；可用的资料与工具（前置结果用 context_ids 引用，相关文件、命令）；边界（不做什么、做到哪里停）。不要把一段需求压缩成固定三阶段，也不要把全部实现强行交给一个成员；独立的工作可以并行。【投入分级：一次做成】先判断能稳妥完成这项任务的最低档，再往上留一档余量：通常先提思考强度，强度已到顶或任务需要更强的知识与推理时换上一级模型（例如判断 Haiku+medium 刚好够用，就用 Haiku+high）。一次做成通常比失败后再升档更省：失败那次的额度白花，返修还要重读上下文、再验证一遍。确定性很高的简单活（查询事实、简短回复、机械修改）不必留余量，简单重复的工作（批量机械修改、整理资料、跑命令收集结果）交给最便宜够用的小模型（如 GPT Luna、Haiku）；架构设计、疑难调试、关键审查直接用强模型和高思考强度。preference 是用户选的倾向：save 只给容易出错或要改文件的任务留余量，balanced 按上面做，quality 再多留一档、优先强模型。用户没点名模型和强度时，你可以按任务在该成员（base_agent）的 models 里选 model/effort（必须是目录里有的组合），并在 reason 写一句理由；留空就沿用项目配置。【计费与能力】模型目录在顶层 models 里按成员的 base_agent 给出（同一成员的几个会话共用一份），里面的 price 来自自动更新的价格表（美元/百万 token；input 为未命中缓存的输入，cached 为缓存命中，output 为输出），订阅额度下当作相对消耗看；context_window 是一次最多能读的输入，reasoning、vision 表示是否支持推理、看图。注意分段计价：long_context.above 表示一次请求的输入超过这个 token 数后整次按更高单价计。同一会话换模型时上下文会一起带过去，成员的 context_tokens 已经超过某模型的分段阈值或接近它的 context_window 时，别把它换成那个模型；需要从零上下文开始时，可设 fresh_session=true 新开会话：只能开在 available_agents 里的成员上（agent_id 填该成员），每次协作的数量受 limits.new_sessions 限制。新开的会话和用户建的会话一样留在项目里，以后可以直接复用（available_agents 里 opened_by_coordinator=true 的就是）。有 off_peak 的线路闲时更便宜，peak=true 表示现在按标价（高峰价）计。【省 token】用户最看重省 token，速度其次，质量不能丢。成员续接会话时整段上下文每次请求都要重读：Claude 的提示缓存只保留 5 分钟，成员上一轮结束超过 5 分钟（任务通常都超过，等额度重置必然超过）再续接，整段上下文按未命中缓存的价格重读，回合内每次工具调用再读一遍，上下文越大越贵。所以：大的需求按板块拆成相对独立、能单独验证的任务；单项任务也别太大：一项任务里上下文越做越长，后面每次工具调用都要重读整段，一串子项（如 A1-A8）拆成几项依次派，每项写清范围；成员的 context_tokens 已经很大（例如超过 10 万），或者起点加上这项任务自己要读进来的量（实现、验证通常还要读几万到十几万）会越过所用模型的分段阈值（long_context.above，如 Haiku 的 10 万），而新任务又用不上旧对话时，设 clear_context=true 让它在原会话位置从零上下文开始（不占 limits.new_sessions），instructions 写全它需要的前情（相关文件、已定结论，前置结果用 context_ids 引用）；同一板块里紧接着的返修和后续步骤可以续接。这是多 agent 协作：available_agents 里每位成员（Codex、Claude、DSH、Hermes 等）走各自的订阅额度或线路，互不占用，各家模型都有真本事（比如 GPT 的方案、实现和审查都很强），按各成员的模型能力、价格和当前额度把工作分摊开，别把大活都压在一个成员上；某家额度紧张或刚撞上限额时，优先派给其他成员。不必一次做完整个项目，用户可以自己挑哪天做哪个板块：分板块推进时只派当前板块的任务，这个板块做完并验证后就 finish（用户原话要求连续做完全部板块时除外），ledger 写清已完成的和后面每个板块怎么做，next_sections 列出剩下的板块（title 一句话、不带序号，summary 写范围），同席按 1、2、3 重新编号发到群里让用户挑，ledger 里剩下的板块也按这份清单的顺序和编号记，用户说「第 N 块」就是这份清单的第 N 项；还没开始的任务会留到下次。成员交付里写的遗留、未解决问题不能丢：属于当前板块、能做的就派任务解决（需要用户授权或只有用户知道的才问）；不属于当前板块的写进 ledger，finish 时列进 next_sections。用户说先停、今天到这里、休息时，不再派新任务，正在运行的做完后就 finish（result 可省略），next_sections 列出剩下的计划和遗留问题。【额度】quota 是各成员订阅额度的已用百分比（five_hour 为 5 小时窗口，weekly 为每周额度，resets_in_hours 为距重置的小时数），没列出的成员没有数据。按剩余额度弹性分配：同样能做好的活优先派给剩余多的成员，某家 5 小时窗口快满时先派给别家或排到重置以后，主力成员的每周额度用到 90% 左右时，做完手头的板块就 finish。成员撞上限额时 routing_feedback 会说明是哪项任务、多久后重置：离重置还早、别家能做好时，用同一 task_id 改派给额度充足的成员接着做，否则 wait 等重置后自动重试。【验证】验证优先用低价模型配高思考强度（必要时新开会话）；结论存疑时再升档复核。验证不限哪一家，只要和实现者不是同一个会话：Claude 额度紧张时可以交给 Codex 的 GPT Luna（配高思考强度，用 fresh_session 或 clear_context 和实现的会话分开），Codex 紧张时交给 Haiku。【子 agent】允许成员在本任务里用自带的子 agent 拆分并行调研或独立验证时，设 allow_subagents=true；子 agent 的用量可能统计不全，按需开放。purpose 按工作性质选择：solution 为方案或分析；implementation 仅用于需要修改项目文件的工作；verification 只用于检验别人的产出；closeout 为整理收尾；跑基线、整理资料这类杂活按性质用 solution 或 closeout；每项任务写 title（20字以内，说清这项具体做什么，如「token 改为从 token.txt 读取」），进度里按它显示；只需回答问题、说明情况或查询事实且不改文件时用 reply。尊重暂停和纠正，保留已经完成的结果；依赖未完成的工作等待，独立工作可继续。【自主推进】用户把活交给你们，就是要你们自己做完，用户只处理项目方向上的问题；用户的新指示会随时出现在群聊里（sources 里新的 user 消息），不必停下来等。执行上的安排（先后顺序、何时提交和推送、由谁提交、怎么部署、用什么工具）你自己定，只记在 ledger 里，不发群、不问用户；会改变项目方向的取舍（做不做某个功能、删不删某块能力、人设和体验上的改动），由你按用户目标挑最稳妥、可回退的一项直接推进，写进 decisions（每项一句问题、你的选择和理由），同席会把它发到群里；要逐项写出，成员方案里列了几项待定就写几项，question 写清是什么事、choice 写清选了哪个做法，不要合并成「全部按推荐」这种用户看不懂的一条，用户不同意会在群里说，你再按纠正处理；不要让成员列「待用户拍板」清单，也不要把「集中问用户」排进计划。只有下面几种情况才 action=ask_user 结束并等待真实回答：项目方向上缺少只有用户知道、又猜不出的信息，或用户原话之间互相冲突；要做用户没授权的不可逆或对外的操作（推送、发布、部署或重启生产、删除用户数据、花钱或动用凭据）且没有别的独立工作可做。即使有这类问题，能先做的独立工作照常分派，问题留到无事可做时再问。project_grants 是用户在项目设置里写的长期授权，每次协作都等同用户原话授权，成员也看得到：在它范围内的推送、部署等操作直接派，不用再问。除此之外，成员只认 quote 里本次协作的用户原话作为推送、部署这类操作的授权（以前协作里给的授权、你在 instructions 里写的「已授权」都不算，项目规则也默认不 push）：两处都没有明确授权就不要派这类任务，成员只会核对完不执行；成员交付写明因未授权没有执行时，不要换人或换说法重派同一件事，把它留到最后 ask_user 一次（用户回答后用回答作 quote 再派）。用户纠正方向时，先处理纠正，再启动未开始的任务；仅可用 withdraw 引用新的用户原话取消未完成旧任务，已完成改动不得撤销；用户后续消息改变了任务条件（比如新给了授权）时，可以 withdraw 旧任务、在同一回合用旧任务的同一 source_id/quote 重新派发修订后的说明；正在运行的任务先等待或由用户中断。恢复原任务应保留原 source_id/quote，新的模型授权放在 model_source、纠正内容放在 context_ids。验证结果写明“验证结论：未通过”时，用原实现任务的同一 source_id/quote 再派给原实现成员返修，context_ids 引用该验证结果；返修完成后用原验证任务的同一原文再派验证复核，context_ids 引用返修结果；同一项工作最多返修两轮，仍未通过就 ask_user 询问用户；用户回答同意继续后可再返修两轮，context_ids 同时引用该回答。指定的验证成员已有两次未通过或异常时，或用户要求用改动者的子代理验证时，可派子代理验证：purpose 为 verification、subagent 为 true、agent_id 为最近完成实现的成员，context_ids 引用最新实现结果，model/effort 留空。任务失败不能声称完成；可以 resume 原任务（task_id）保留工作树。仅当任务都完成且目标（分板块推进时是本次的板块）有成员结果支持时 finish，用 result 引用成员交付摘要里的原文；wait 只用于真实失败或被中断的任务等待恢复，否则按计划继续分派或 finish。不要把已完成的成员回合当作仍在运行，也不要让用户额外点击继续。只返回 JSON：{action:'delegate'|'ask_user'|'wait'|'finish',ledger?:string,routes?:[{key:string,title?:string,task_id?:string,purpose:'solution'|'implementation'|'verification'|'closeout'|'reply',agent_id:string,source_id:string,quote:string,instructions?:string,reason?:string,context_ids?:string[],depends_on?:string[],model?:string|null,effort?:string|null,model_source?:{source_id:string,quote:string},fresh_session?:boolean,clear_context?:boolean,allow_subagents?:boolean,subagent?:boolean}],withdraw?:[{task_id:string,source_id:string,quote:string}],decisions?:[{question:string,choice:string,reason?:string}],question?:{prompt:string,options:string[]},result?:{source_id:string,quote:string},next_sections?:[{title:string,summary?:string}]}。依赖可以用本回合之前声明的 route.key 或已有 task_id。协作 finish 后，这次干过活的成员下次都从零上下文开始（隔天缓存早已过期，续接只会整段重读），所以 ledger 和成员交付摘要要写全下次需要的东西。不得输出补丁、凭据、工具调用或额外字段。";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -43,12 +43,18 @@ pub struct Route {
     /// 一句话理由：为什么派这位成员、选这个模型和强度。
     #[serde(default)]
     pub reason: Option<String>,
-    /// 新开一个临时会话（从零上下文开始），协作结束后自动撤掉。
+    /// 新开一个会话（从零上下文开始），之后和用户建的会话一样留在项目里。
     #[serde(default)]
     pub fresh_session: bool,
+    /// 成员在原来的会话位置从零上下文开始做这项（旧会话留在原生历史里），不占新开会话的名额。
+    #[serde(default)]
+    pub clear_context: bool,
     /// 允许成员在本任务里用自带的子 agent。
     #[serde(default)]
     pub allow_subagents: bool,
+    /// 任务名：进度里显示，写这项具体做什么。
+    #[serde(default)]
+    pub title: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +62,14 @@ pub struct Question {
     pub prompt: String,
     #[serde(default)]
     pub options: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Choice {
+    pub question: String,
+    pub choice: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,6 +86,9 @@ pub struct Decision {
     pub withdraw: Vec<Withdrawal>,
     #[serde(default)]
     pub routes: Vec<Route>,
+    /// 调度自己拍板的取舍：发到群里告知用户，不等回答。
+    #[serde(default)]
+    pub decisions: Vec<Choice>,
     #[serde(default)]
     pub question: Option<Question>,
     #[serde(default)]
@@ -79,12 +96,39 @@ pub struct Decision {
     /// 计划账本：目标、步骤与状态、关键决定、风险。下一回合原样交还调度。
     #[serde(default)]
     pub ledger: Option<String>,
+    /// 分板块推进时 finish 带上剩下的板块，发到群里让用户挑哪天做哪块。
+    #[serde(default)]
+    pub next_sections: Vec<Section>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Section {
+    pub title: String,
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Source {
     pub id: String,
     pub kind: String,
     pub text: String,
+}
+
+/// 板块标题去掉调度沿用的旧序号（「3. 」「3、」「(3)」「第3块：」），群里统一从 1 重新编号。
+pub fn section_title(title: &str) -> &str {
+    let text = title.trim();
+    let rest = text.strip_prefix('第').unwrap_or(text);
+    let rest = rest.strip_prefix(['(', '（']).unwrap_or(rest);
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return text;
+    }
+    let after = &rest[digits..];
+    let after = after.strip_prefix(['块', '项']).unwrap_or(after);
+    match after.strip_prefix(['.', '、', ')', '）', ':', '：']) {
+        Some(tail) if !tail.trim().is_empty() => tail.trim_start_matches(['.', ' ', ':', '：']).trim(),
+        _ => text,
+    }
 }
 
 pub fn parse(raw: &str) -> Result<Decision, String> {
@@ -101,6 +145,33 @@ pub fn parse(raw: &str) -> Result<Decision, String> {
     if value.withdraw.len() > 32 {
         return Err("每回合撤回任务过多".into());
     }
+    if value.decisions.len() > 20
+        || value.decisions.iter().any(|item| {
+            item.question.trim().is_empty()
+                || item.choice.trim().is_empty()
+                || [Some(&item.question), Some(&item.choice), item.reason.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.chars().count() > 300)
+        })
+    {
+        return Err("decisions 每项写一句问题和你的选择（各300字以内），最多20项".into());
+    }
+    if value.action == "ask_user" && !value.decisions.is_empty() {
+        return Err("提问时不要同时拍板；能自己定的先 delegate 推进".into());
+    }
+    if value.next_sections.len() > 20
+        || value.next_sections.iter().any(|section| {
+            section.title.trim().is_empty()
+                || section.title.chars().count() > 40
+                || section.summary.as_ref().is_some_and(|summary| summary.chars().count() > 200)
+        })
+    {
+        return Err("next_sections 最多 20 项，title 不能为空且不超过40字，summary 不超过200字".into());
+    }
+    if !value.next_sections.is_empty() && value.action != "finish" {
+        return Err("next_sections 只在 finish 时使用".into());
+    }
     if value.ledger.as_ref().is_some_and(|ledger| ledger.chars().count() > 3000) {
         return Err("计划账本过长，请压缩到1500字以内".into());
     }
@@ -111,8 +182,11 @@ pub fn parse(raw: &str) -> Result<Decision, String> {
         if route.reason.as_ref().is_some_and(|text| text.chars().count() > 300) {
             return Err("理由只写一句话".into());
         }
+        if route.title.as_ref().is_some_and(|text| text.chars().count() > 40) {
+            return Err("任务名控制在20字左右".into());
+        }
         if route.fresh_session && route.subagent {
-            return Err("子代理验证由改动者本人派出，不能新开临时会话".into());
+            return Err("子代理验证由改动者本人派出，不能新开会话".into());
         }
     }
     if value.action == "delegate" && value.routes.is_empty() {
@@ -168,7 +242,13 @@ fn clause<'a>(text: &'a str, quote: &str) -> &'a str {
         .map_or(text.len(), |at| end + at);
     &text[left..right]
 }
+#[cfg(test)]
 pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String> {
+    check_assignment_with(route, sources, &[])
+}
+
+/// aliases：用户起的成员名（项目里的成员名、用户建的会话名）→ 底层成员，点名时和「Codex」「Claude」一样算。
+pub fn check_assignment_with(route: &Route, sources: &[Source], aliases: &[(String, String)]) -> Result<(), String> {
     if !crate::project_store::is_executor(&route.agent_id)
         || !matches!(
             route.purpose.as_str(),
@@ -201,6 +281,12 @@ pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String>
     .into_iter()
     .filter(|(label, _)| text.contains(label))
     .map(|(_, id)| id)
+    .chain(
+        aliases
+            .iter()
+            .filter(|(name, _)| !name.is_empty() && text.contains(&name.to_lowercase()))
+            .map(|(_, id)| id.as_str()),
+    )
     .collect::<Vec<_>>();
     if route.subagent && route.purpose != "verification" {
         return Err("子代理只用于验证".into());
@@ -224,6 +310,12 @@ pub fn check_assignment(route: &Route, sources: &[Source]) -> Result<(), String>
         .into_iter()
         .filter(|(label, _)| sentence.contains(label))
         .map(|(_, id)| id)
+        .chain(
+            aliases
+                .iter()
+                .filter(|(name, _)| !name.is_empty() && sentence.contains(&name.to_lowercase()))
+                .map(|(_, id)| id.as_str()),
+        )
         .collect::<Vec<_>>();
         if !route.subagent && !actors.is_empty() && !actors.contains(&base) {
             return Err("任务引用夹带了其他成员的独立分工，请只引用当前成员对应的原文；前置结果通过context_ids传递".into());
@@ -553,7 +645,7 @@ pub fn member_prompt(
         _ => "本次回复当前问题，不提前执行引用中的其他工作。",
     };
     let mut prompt = serde_json::json!({
-      "instruction":"按用户原话、当前任务原文和调度的任务说明完成工作。user_request 是目标来源，assigned_excerpt 是本次分工范围，coordinator_brief 是调度写的任务说明（目标、产出、资料、边界），context_sources 是已有方案或成员结果；不要执行其他成员的职责。coordinator_brief 与用户原话冲突时以用户原话为准，并在回复里说明。若路由成员、任务用途或方案内容与用户明确要求冲突，向用户提问，不擅自改范围或换人。需要提交、推送或发布时，以当前用户明确要求为授权，不能把成员建议当作授权。保留已完成改动，报告实际结果与未解决的问题。可用原生工具工作、向成员沟通，问题正常发到团队等待真实回答。由谁做、在哪个会话、用什么模型和思考强度，调度已经按用户要求安排好：你就在当前会话和模型里工作，原话里新开会话、换模型这类安排不用你执行，也不必在回复里解释。方案、实现、验证、收尾任务在回复最后写一段以「交付摘要：」开头、不超过300字的摘要：做了什么、改了哪些文件、验证情况、遗留问题；调度只读这段摘要。任务要求写验证结论时，验证结论那一行放在摘要之后的最后一行。简短回复不需要摘要；用户指定了回复格式（如只回复数字）时完全按用户的格式。",
+      "instruction":"按用户原话、当前任务原文和调度的任务说明完成工作。user_request 是目标来源，assigned_excerpt 是本次分工范围，coordinator_brief 是调度写的任务说明（目标、产出、资料、边界），context_sources 是已有方案或成员结果；不要执行其他成员的职责。coordinator_brief 与用户原话冲突时以用户原话为准，并在回复里说明。若路由成员、任务用途或方案内容与用户明确要求冲突，向用户提问，不擅自改范围或换人。任务里遇到要取舍的地方，在任务边界内选最稳妥、可回退的做法直接做，在摘要里写明你选了什么；不可逆或对外的操作（推送、发布、部署或重启生产、删除数据）没有授权就不做，写在摘要的遗留问题里交给调度，不要列「待用户拍板」清单，也不要停下来等用户。需要提交、推送或发布时，以当前用户明确要求为授权，不能把成员建议当作授权；project_grants 是用户在项目设置里写的长期授权，在它范围内的操作同样算用户明确授权，照做即可。保留已完成改动，报告实际结果与未解决的问题。可用原生工具工作、向成员沟通；省着用上下文：大文件和长输出按需读片段（grep、head、按行号范围），不要整份读入，也不要反复读同一内容。实在无法继续时才把问题发到团队等待真实回答。由谁做、在哪个会话、用什么模型和思考强度，调度已经按用户要求安排好：你就在当前会话和模型里工作，原话里新开会话、换模型这类安排不用你执行，也不必在回复里解释。方案、实现、验证、收尾任务在回复最后写一段以「交付摘要：」开头、不超过300字的摘要：做了什么、改了哪些文件、验证情况、遗留问题；调度只读这段摘要。任务要求写验证结论时，验证结论那一行放在摘要之后的最后一行。简短回复不需要摘要；用户指定了回复格式（如只回复数字）时完全按用户的格式。",
       "assigned_agent":agent,"purpose":purpose,"task_scope":scope,"user_request":user_request,"assigned_excerpt":quote,"context_sources":contexts
     });
     if let Some(brief) = brief.map(str::trim).filter(|brief| !brief.is_empty()) {

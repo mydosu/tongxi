@@ -374,6 +374,8 @@ pub struct ProjectAgentChat {
     pub label: Option<String>,
     /// 显示名：起过名就是它，否则按成员名与编号算好（前端直接用，不再自己拼）。
     pub name: String,
+    /// 调度新开的会话（用户建的为 false）；和用户建的一样留在项目里。
+    pub opened_by_coordinator: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1373,7 +1375,7 @@ impl Store {
             return Ok(Vec::new());
         };
         let mut statement = self.connection.prepare(
-            "SELECT c.group_conversation_id,c.agent_id,c.conversation_id,COALESCE(NULLIF(s.label,''),n.label) FROM project_agent_chats c LEFT JOIN project_seats s ON s.conversation_id=c.group_conversation_id AND s.seat_id=c.agent_id LEFT JOIN project_member_names n ON n.conversation_id=c.group_conversation_id AND n.agent_id=c.agent_id WHERE c.project_id=?1 AND c.group_conversation_id=?2 ORDER BY CASE WHEN c.agent_id LIKE 'codex-win%' THEN 0 WHEN c.agent_id LIKE 'hermes-win%' THEN 1 WHEN c.agent_id LIKE 'dsh-win%' THEN 2 ELSE 3 END,c.agent_id",
+            "SELECT c.group_conversation_id,c.agent_id,c.conversation_id,COALESCE(NULLIF(s.label,''),n.label),s.temporary_for IS NOT NULL FROM project_agent_chats c LEFT JOIN project_seats s ON s.conversation_id=c.group_conversation_id AND s.seat_id=c.agent_id LEFT JOIN project_member_names n ON n.conversation_id=c.group_conversation_id AND n.agent_id=c.agent_id WHERE c.project_id=?1 AND c.group_conversation_id=?2 ORDER BY CASE WHEN c.agent_id LIKE 'codex-win%' THEN 0 WHEN c.agent_id LIKE 'hermes-win%' THEN 1 WHEN c.agent_id LIKE 'dsh-win%' THEN 2 ELSE 3 END,c.agent_id",
         ).map_err(|_| "Agent 会话读取失败")?;
         let rows = statement
             .query_map(params![project.id, group_id], |row| {
@@ -1383,6 +1385,7 @@ impl Store {
                     conversation_id: row.get(2)?,
                     label: row.get(3)?,
                     name: String::new(),
+                    opened_by_coordinator: row.get::<_, Option<bool>>(4)?.unwrap_or(false),
                 })
             })
             .map_err(|_| "Agent 会话读取失败")?;

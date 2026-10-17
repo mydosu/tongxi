@@ -595,8 +595,20 @@ pub fn remove(root: &Path, path: &Path) -> Result<()> {
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
+    // 成员可能在工作树里建了指向项目目录的链接（比如把 node_modules 连到原仓库免得重装）：
+    // 先只拆链接本身，删除时就不会顺着链接动到原仓库，也不会因为链接删不掉而残留整棵树。
+    unlink_links(path);
     let path_text = path.to_string_lossy().to_string();
-    match git(root, &["worktree", "remove", "--force", &path_text]) {
+    let outcome = remove_registered(root, path, &path_text);
+    // 之前被进程占着（成员起的后台 shell 还停在里面）没删掉的空目录，这时多半已经放开了。
+    if let Some(parent) = path.parent() {
+        sweep_empty(root, parent);
+    }
+    outcome
+}
+
+fn remove_registered(root: &Path, path: &Path, path_text: &str) -> Result<()> {
+    match git(root, &["worktree", "remove", "--force", path_text]) {
         Ok(_) => Ok(()),
         Err(error) => {
             // Git can finish removal before reporting a Windows cleanup error,
@@ -614,11 +626,60 @@ pub fn remove(root: &Path, path: &Path) -> Result<()> {
                         entry == target
                     }
                 });
-            if !path.exists() && !registered {
+            if !registered && path.exists() {
+                // Git 已经注销了工作树、只是没删干净目录：链接已拆，剩下的都是工作树自己的文件。
+                let _ = std::fs::remove_dir_all(path);
+            }
+            // 只剩一个空目录（Windows 上还有进程把它当工作目录）不算失败：下次清理时再删。
+            let empty = path.read_dir().is_ok_and(|mut entries| entries.next().is_none());
+            if !registered && (!path.exists() || empty) {
                 Ok(())
             } else {
                 Err(error)
             }
+        }
+    }
+}
+
+/// 删掉工作树目录下 git 已不再登记的空目录；非空的、仍登记的都不碰。
+fn sweep_empty(root: &Path, parent: &Path) {
+    let Ok(listed) = git(root, &["worktree", "list", "--porcelain"]) else {
+        return;
+    };
+    let registered = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|entry| entry.replace('\\', "/").to_lowercase())
+        .collect::<Vec<_>>();
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let text = path.to_string_lossy().replace('\\', "/").to_lowercase();
+        if path.is_dir() && !registered.contains(&text) {
+            let _ = std::fs::remove_dir(&path);
+        }
+    }
+}
+
+/// 拆掉目录里所有符号链接和目录联接（只删链接，不进入、不动链接指向的内容）。
+fn unlink_links(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            // Windows 的目录链接和联接要用 remove_dir 删，文件链接用 remove_file。
+            if std::fs::remove_dir(&path).is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+        } else if meta.is_dir() && entry.file_name() != ".git" {
+            unlink_links(&path);
         }
     }
 }
@@ -942,6 +1003,55 @@ mod tests {
         assert!(resumed.join("feature.txt").is_file());
         assert!(merge(&repo, "hub/task-a").is_ok());
         remove(&repo, &resumed).unwrap();
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn remove_sweeps_leftover_empty_dirs_but_keeps_other_content() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let repo = base.join("repo");
+        let worktree_root = base.join("wt");
+        assert!(init_repo(&exe, &repo));
+        let path = create(&repo, &worktree_root, "task-sweep", "hub/task-sweep").unwrap();
+        let leftover = worktree_root.join("old-empty");
+        let other = worktree_root.join("other-project");
+        std::fs::create_dir_all(&leftover).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("keep.txt"), "keep").unwrap();
+        remove(&repo, &path).unwrap();
+        assert!(!path.exists() && !leftover.exists(), "工作树和残留空目录都删掉");
+        assert!(other.join("keep.txt").exists(), "非空目录不碰");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_unlinks_junctions_without_touching_their_targets() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let repo = base.join("repo");
+        let worktree_root = base.join("wt");
+        assert!(init_repo(&exe, &repo));
+        let deps = base.join("deps");
+        std::fs::create_dir_all(deps.join("pkg")).unwrap();
+        std::fs::write(deps.join("pkg").join("index.js"), "keep
+").unwrap();
+
+        let path = create(&repo, &worktree_root, "task-junction", "hub/task-junction").unwrap();
+        let link = path.join("node_modules");
+        let made = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&deps)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(made.success());
+        remove(&repo, &path).unwrap();
+        assert!(!path.exists(), "工作树删干净");
+        assert_eq!(std::fs::read_to_string(deps.join("pkg").join("index.js")).unwrap(), "keep
+", "链接指向的原仓库内容不动");
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -5,6 +5,11 @@ import { toolActivity, captureToolState, restoreToolState } from './tool_activit
 import { attachmentHtml, attachmentText } from './attachments';
 import { plainThought, thoughtFlow, type FlowPart } from './thought_flow';
 
+/** 用户亲手展开/收起过的思考框（条目 id + 第几段）：节点被重建或刷新时照这个恢复，不会一点开就被重绘关掉。 */
+const userOpened = new Map<string, boolean>();
+const remember = (details: HTMLDetailsElement, key: () => string) =>
+  details.querySelector('summary')!.addEventListener('click', () => userOpened.set(key(), !details.open));
+
 interface TranscriptFormat {
   escape: (value: string | number) => string;
   name: (agent: string) => string;
@@ -87,7 +92,7 @@ export class AgentTranscript {
     node.className = `agent-transcript-entry ${entry.kind === 'user' ? 'agent-user-entry' : entry.kind === 'peer' ? 'agent-peer-entry' : 'agent-output-entry'}`;
     node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-flow" hidden></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
     const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
-    thought.querySelector('summary')!.addEventListener('click', () => requestAnimationFrame(() => { thought.dataset.userOpen = String(thought.open); }));
+    remember(thought, () => `${node.dataset.entryId}:plain`);
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
     body.addEventListener('scroll', () => { body.dataset.follow = String(body.scrollHeight - body.scrollTop - body.clientHeight < 28); }, { passive: true });
     return node;
@@ -110,7 +115,7 @@ export class AgentTranscript {
     if (controls.innerHTML !== control) controls.innerHTML = control;
     // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
     const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text') ?? null : null;
-    this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy);
+    this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy, entry.id);
     const plain = flow ? '' : plainThought(entry.thought);
     const thought = node.querySelector<HTMLDetailsElement>('.agent-turn-thought')!;
     const previousBusy = thought.dataset.active === 'true';
@@ -118,9 +123,11 @@ export class AgentTranscript {
     thought.hidden = !plain;
     if (entry.attemptId) thought.dataset.thoughtAttemptId = entry.attemptId;
     thought.dataset.active = String(busy);
-    if (thought.dataset.userOpen === undefined && (wasHidden || !thought.dataset.initialized || previousBusy !== busy)) thought.open = busy;
+    const chosen = userOpened.get(`${entry.id}:plain`);
+    if (chosen !== undefined) { if (thought.open !== chosen) thought.open = chosen; }
+    else if (wasHidden || !thought.dataset.initialized || previousBusy !== busy) thought.open = busy;
     thought.dataset.initialized = 'true';
-    thought.querySelector('summary')!.textContent = busy ? '思考中' : '已思考';
+    const summary = thought.querySelector('summary')!; const state = busy ? '思考中' : '已思考'; if (summary.textContent !== state) summary.textContent = state;
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
     if (body.textContent !== plain) {
       const follow = body.dataset.follow !== 'false';
@@ -159,7 +166,7 @@ export class AgentTranscript {
   }
 
   /** 按片段逐个打补丁：已存在的段只更新文字，展开状态和滚动位置不被重绘打断。 */
-  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean) {
+  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean, entryId: string) {
     host.hidden = !flow?.length;
     const parts = flow || [];
     while (host.children.length > parts.length) host.lastElementChild!.remove();
@@ -171,7 +178,7 @@ export class AgentTranscript {
           const details = document.createElement('details');
           details.className = 'thought agent-turn-thought';
           details.innerHTML = '<summary></summary><div class="thought-body"></div>';
-          details.querySelector('summary')!.addEventListener('click', () => requestAnimationFrame(() => { details.dataset.userOpen = String(details.open); }));
+          remember(details, () => `${entryId}:${[...host.children].indexOf(details)}`);
           const body = details.querySelector<HTMLElement>('.thought-body')!;
           body.addEventListener('scroll', () => { body.dataset.follow = String(body.scrollHeight - body.scrollTop - body.clientHeight < 28); }, { passive: true });
           node = details;
@@ -185,9 +192,11 @@ export class AgentTranscript {
       if (part.kind === 'thought') {
         const details = node as HTMLDetailsElement;
         const live = busy && index === parts.length - 1;
-        if (details.dataset.userOpen === undefined && details.dataset.active !== String(live)) details.open = live;
+        const chosen = userOpened.get(`${entryId}:${index}`);
+        if (chosen !== undefined) { if (details.open !== chosen) details.open = chosen; }
+        else if (details.dataset.active !== String(live)) details.open = live;
         details.dataset.active = String(live);
-        details.querySelector('summary')!.textContent = live ? '思考中' : '已思考';
+        const summary = details.querySelector('summary')!; const label = live ? '思考中' : '已思考'; if (summary.textContent !== label) summary.textContent = label;
         const body = details.querySelector<HTMLElement>('.thought-body')!;
         if (body.textContent !== part.text) {
           const follow = body.dataset.follow !== 'false';

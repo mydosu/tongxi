@@ -111,6 +111,75 @@ impl Store {
     }
 }
 
+/// 你和群聊（含项目）的自定义头像；没换过就由界面画默认的「你」和群聊图标。
+#[derive(serde::Serialize, Debug, Default, PartialEq)]
+pub struct OwnAvatars {
+    pub user: Option<String>,
+    pub conversations: std::collections::BTreeMap<String, String>,
+}
+
+impl Store {
+    pub fn own_avatars(&self) -> Result<OwnAvatars> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT key,value FROM metadata WHERE key='user_avatar' OR key LIKE 'conversation_avatar:%'")
+            .map_err(|_| "头像读取失败")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|_| "头像读取失败")?;
+        let mut avatars = OwnAvatars::default();
+        for (key, value) in rows.flatten() {
+            match key.strip_prefix("conversation_avatar:") {
+                Some(id) => {
+                    avatars.conversations.insert(id.to_owned(), value);
+                }
+                None => avatars.user = Some(value),
+            }
+        }
+        Ok(avatars)
+    }
+
+    /// 换你的头像（conversation=None）或某个群聊的头像；avatar=None 恢复默认。
+    pub fn set_own_avatar(&mut self, conversation: Option<&str>, avatar: Option<&str>) -> Result<()> {
+        if avatar.is_some_and(|avatar| !valid(avatar)) {
+            return Err("头像需要是图片（不超过 300KB）或纯色".into());
+        }
+        let key = match conversation {
+            Some(id) => {
+                let group: Option<String> = self
+                    .connection
+                    .query_row("SELECT kind FROM conversations WHERE id=?1", [id], |row| row.get(0))
+                    .optional()
+                    .map_err(|_| "会话读取失败")?;
+                if group.as_deref() != Some("group") {
+                    return Err("只能给群聊或项目换头像".into());
+                }
+                format!("conversation_avatar:{id}")
+            }
+            None => "user_avatar".to_owned(),
+        };
+        match avatar {
+            Some(avatar) => self.connection.execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![key, avatar],
+            ),
+            None => self.connection.execute("DELETE FROM metadata WHERE key=?1", [key]),
+        }
+        .map(|_| ())
+        .map_err(|_| "头像保存失败".into())
+    }
+}
+
+#[tauri::command]
+pub fn own_avatars(state: tauri::State<'_, crate::AppState>) -> Result<OwnAvatars> {
+    state.store.lock().map_err(|_| "本地数据暂不可用")?.own_avatars()
+}
+
+#[tauri::command]
+pub fn set_own_avatar(state: tauri::State<'_, crate::AppState>, conversation_id: Option<String>, avatar: Option<String>) -> Result<()> {
+    state.store.lock().map_err(|_| "本地数据暂不可用")?.set_own_avatar(conversation_id.as_deref(), avatar.as_deref())
+}
+
 #[tauri::command]
 pub fn set_agent_avatar(state: tauri::State<'_, crate::AppState>, agent_id: String, avatar: Option<String>) -> Result<()> {
     state.store.lock().map_err(|_| "本地数据暂不可用")?.set_custom_avatar(&agent_id, avatar.as_deref())
@@ -128,6 +197,17 @@ mod tests {
         assert!(store.set_custom_avatar("codex-win", Some("not-an-image")).is_err());
         assert!(store.set_custom_avatar("codex-win", Some("color:#8b80c4")).is_ok(), "纯色头像");
         assert!(store.set_custom_avatar("codex-win", Some("color:red")).is_err());
+        let group = store.create("项目群", "group", &["codex-win".into()]).unwrap();
+        let direct = store.create("私聊", "direct", &["codex-win".into()]).unwrap();
+        store.set_own_avatar(None, Some("color:#5fae86")).unwrap();
+        store.set_own_avatar(Some(&group.id), Some("color:#d8a04f")).unwrap();
+        assert!(store.set_own_avatar(Some(&direct.id), Some("color:#d8a04f")).is_err(), "私聊用成员头像");
+        assert!(store.set_own_avatar(None, Some("javascript:x")).is_err());
+        let own = store.own_avatars().unwrap();
+        assert_eq!(own.user.as_deref(), Some("color:#5fae86"));
+        assert_eq!(own.conversations.get(&group.id).map(String::as_str), Some("color:#d8a04f"));
+        store.set_own_avatar(None, None).unwrap();
+        assert_eq!(store.own_avatars().unwrap().user, None, "恢复默认");
         store.set_custom_avatar("codex-win", Some("data:image/webp;base64,AAAA")).unwrap();
         assert_eq!(store.custom_avatar("codex-win").as_deref(), Some("data:image/webp;base64,AAAA"));
         store.set_custom_avatar("codex-win", None).unwrap();
