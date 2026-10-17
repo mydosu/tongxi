@@ -393,7 +393,7 @@ impl Store {
     }
 
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
-    /// 成员名（全局）：用户在「成员与服务」里起的名字；伴侣用它自己配置里的名字；都没有就是默认名。
+    /// 成员名（全局）：用户在「成员与服务」里起的名字；陪伴用它自己配置里的名字；都没有就是默认名。
     pub fn member_name(&self, agent: &str) -> String {
         if agent == "albion-wsl" {
             return self.companion().name;
@@ -406,7 +406,7 @@ impl Store {
             .unwrap_or_else(|| crate::store::agent_name(agent).to_owned())
     }
 
-    /// 改成员名（全局）；空名字＝恢复默认。伴侣的名字写回它自己的配置。
+    /// 改成员名（全局）；空名字＝恢复默认。陪伴的名字写回它自己的配置。
     pub fn rename_member(&mut self, agent: &str, name: &str) -> Result<String> {
         if !crate::store::agents().iter().any(|item| item.id == agent) {
             return Err("成员不存在".into());
@@ -414,11 +414,11 @@ impl Store {
         let name: String = name.trim().chars().filter(|c| !c.is_control()).take(20).collect();
         if agent == "albion-wsl" {
             let mut config = self.companion();
-            config.name = if name.is_empty() { "伴侣".into() } else { name };
-            let text = serde_json::to_string(&config).map_err(|_| "伴侣配置保存失败")?;
+            config.name = if name.is_empty() { "陪伴".into() } else { name };
+            let text = serde_json::to_string(&config).map_err(|_| "陪伴配置保存失败")?;
             self.connection
                 .execute("INSERT INTO metadata(key,value) VALUES('companion',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [text])
-                .map_err(|_| "伴侣配置保存失败")?;
+                .map_err(|_| "陪伴配置保存失败")?;
         } else if name.is_empty() || name == crate::store::agent_name(agent) {
             self.connection.execute("DELETE FROM metadata WHERE key=?1", [format!("agent_name:{agent}")]).map_err(|_| "成员改名失败")?;
         } else {

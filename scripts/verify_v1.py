@@ -1,7 +1,7 @@
 """同席 v1.0 新功能验收（打包好的 EXE，隔离数据目录）。
 
   · 接入成员：启动时自动扫描并接入本机已装的成员；接入横条与每张卡的安装状态、安装确认弹窗（不真的装）；
-  · 伴侣：本地起一个模拟的 OpenAI 兼容服务，走界面配置名字/头像/地址/Key/人设 → 测试连接 → 保存 →
+  · 陪伴：本地起一个模拟的 OpenAI 兼容服务，走界面配置名字/头像/地址/Key/人设 → 测试连接 → 保存 →
     私聊发消息拿到流式回复；验证 Key 只以 Bearer 发给服务、库里没有明文、人设作为 system 消息发出；
   · 主题：内置公用背景、导入自己的图片（多选）、切换立绘/铺满、删除。
 不安装任何东西、不调用任何真实模型。
@@ -158,12 +158,12 @@ def main() -> int:
         expect(page.locator('.service-card[data-service-id="codex-win"] [data-agent-name]')).to_have_text("Codex", timeout=10000)
         check("clearing a member name restores the default", True)
 
-        # ---- 伴侣：配置 → 测试 → 保存 → 连接 → 私聊 ----
+        # ---- 陪伴：配置 → 测试 → 保存 → 连接 → 私聊 ----
         page.locator("[data-companion-config]").click()
         form = page.locator("#companion-form")
         expect(form).to_be_visible()
         form.locator("[name=name]").fill("小夜")
-        form.locator("[name=subtitle]").fill("测试伴侣")
+        form.locator("[name=subtitle]").fill("测试陪伴")
         form.locator("[name=endpoint]").fill(endpoint)
         form.locator("[name=key_source]").select_option("inline")
         form.locator("[name=secret]").fill(SECRET)

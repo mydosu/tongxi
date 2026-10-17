@@ -16,7 +16,7 @@ pub struct Agent {
     pub location: String,
     pub accent: String,
     pub status: String,
-    /// 伴侣的头像（用户上传的 data URL）；其他成员没有。
+    /// 陪伴的头像（用户上传的 data URL）；其他成员没有。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
 }
@@ -89,7 +89,7 @@ pub(crate) fn agent_name(id: &str) -> &str {
         "hermes-win" => "Hermes",
         "dsh-win" => "DSH",
         "claude-win" => "Claude",
-        "albion-wsl" => "伴侣",
+        "albion-wsl" => "陪伴",
         other => other,
     }
 }
@@ -130,10 +130,10 @@ pub fn agents() -> Vec<Agent> {
         ),
         (
             "albion-wsl",
-            "伴侣",
-            "情感伴侣",
+            "陪伴",
+            "情感陪伴",
             "通过它自己的服务对话，人格、记忆与工具都在那边",
-            "伴侣",
+            "陪伴",
             "rose",
         ),
     ]

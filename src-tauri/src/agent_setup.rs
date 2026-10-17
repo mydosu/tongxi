@@ -282,6 +282,6 @@ mod tests {
             let recipe = super::recipe(id).unwrap();
             assert!(!recipe.install.is_empty() && !recipe.setup.is_empty() && recipe.docs.starts_with("https://"));
         }
-        assert!(super::recipe("albion-wsl").is_err(), "伴侣没有安装包，靠接口配置接入");
+        assert!(super::recipe("albion-wsl").is_err(), "陪伴没有安装包，靠接口配置接入");
     }
 }

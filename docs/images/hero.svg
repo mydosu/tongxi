@@ -69,7 +69,7 @@
       </g>
       <g transform="translate(534 432)" filter="url(#soft)">
         <rect width="82" height="34" rx="17" fill="#fff" fill-opacity=".78" stroke="#fff"/>
-        <circle cx="19" cy="17" r="6" fill="#f0a8b8"/><text x="32" y="22">伴侣</text>
+        <circle cx="19" cy="17" r="6" fill="#f0a8b8"/><text x="32" y="22">陪伴</text>
       </g>
     </g>
     <text x="80" y="512" font-size="16" fill="#8a90b0">Windows 桌面应用 · 数据都在本机 · MIT</text>
@@ -102,8 +102,8 @@
       <text x="700" y="279">DSH</text>
       <circle cx="680" cy="314" r="10" fill="#a598d8"/><text x="675" y="319" font-size="11" fill="#fff">H</text>
       <text x="700" y="319">Hermes</text>
-      <circle cx="680" cy="354" r="10" fill="#f0a8b8"/><text x="676" y="359" font-size="11" fill="#fff">伴</text>
-      <text x="700" y="359">伴侣</text>
+      <circle cx="680" cy="354" r="10" fill="#f0a8b8"/><text x="676" y="359" font-size="11" fill="#fff">陪</text>
+      <text x="700" y="359">陪伴</text>
       <rect x="668" y="487" width="116" height="30" rx="15" fill="#fff" fill-opacity=".7"/>
       <text x="688" y="507" font-size="13" fill="#8a90b0">＋ 新建会话</text>
     </g>

@@ -1,6 +1,6 @@
-//! 伴侣的 OpenAI 兼容通路：`/models` 取模型目录，`/chat/completions` 收流式正文。
+//! 陪伴的 OpenAI 兼容通路：`/models` 取模型目录，`/chat/completions` 收流式正文。
 //!
-//! 地址、Key、模型、人设都来自用户的伴侣配置（见 `companion.rs`），http 与 https 都支持。
+//! 地址、Key、模型、人设都来自用户的陪伴配置（见 `companion.rs`），http 与 https 都支持。
 
 use crate::companion::Link;
 use std::io::{BufRead, BufReader};
@@ -30,9 +30,9 @@ fn failure(link: &Link, error: ureq::Error) -> String {
                 404 => "（地址不对？大多数服务以 /v1 结尾）",
                 _ => "",
             };
-            format!("伴侣服务回了 HTTP {code}{hint}：{}", body.trim().chars().take(300).collect::<String>())
+            format!("陪伴服务回了 HTTP {code}{hint}：{}", body.trim().chars().take(300).collect::<String>())
         }
-        ureq::Error::Transport(transport) => format!("连不上伴侣服务 {}：{transport}", link.base),
+        ureq::Error::Transport(transport) => format!("连不上陪伴服务 {}：{transport}", link.base),
     }
 }
 
@@ -65,7 +65,7 @@ pub fn chat(link: &Link, model: &str, messages: &serde_json::Value, mut on_delta
         .map_err(|error| failure(link, error))?;
     let mut text = String::new();
     for line in BufReader::new(response.into_reader()).lines() {
-        let line = line.map_err(|error| format!("读取伴侣回复中断：{error}"))?;
+        let line = line.map_err(|error| format!("读取陪伴回复中断：{error}"))?;
         // SSE 一行为一条；不是 data: 的行（注释、空行、event:）都跳过。
         let Some(data) = line.trim_end_matches('\r').strip_prefix("data:") else {
             continue;
@@ -76,7 +76,7 @@ pub fn chat(link: &Link, model: &str, messages: &serde_json::Value, mut on_delta
         }
     }
     if text.trim().is_empty() {
-        return Err("伴侣服务没有给出正文".to_string());
+        return Err("陪伴服务没有给出正文".to_string());
     }
     Ok(text)
 }
@@ -143,7 +143,7 @@ mod tests {
             base: format!("http://127.0.0.1:{port}/v1"),
             key: Some("sk-x".into()),
             model: None,
-            persona: Some("你是温柔的伴侣".into()),
+            persona: Some("你是温柔的陪伴".into()),
         };
         assert_eq!(super::models(&link).unwrap(), vec!["companion-1".to_string()]);
         let mut deltas = 0;
@@ -151,6 +151,6 @@ mod tests {
         assert_eq!((text.as_str(), deltas), ("在呢", 2));
         let requests = server.join().unwrap();
         assert!(requests.iter().all(|request| request.contains("Bearer sk-x")));
-        assert!(requests[1].contains("你是温柔的伴侣") && requests[1].contains("\"system\""));
+        assert!(requests[1].contains("你是温柔的陪伴") && requests[1].contains("\"system\""));
     }
 }
