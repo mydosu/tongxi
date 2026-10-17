@@ -111,7 +111,9 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         instructions: None,
         reason: None,
         fresh_session: false,
+        clear_context: false,
         allow_subagents: false,
+        title: None,
     }
 }
 
@@ -160,6 +162,33 @@ fn coordinator_writes_task_briefs_and_ledger_but_no_unknown_fields() {
     let with_withdrawal = r#"{"action":"delegate","withdraw":[{"task_id":"task-1","source_id":"user-correction","quote":"取消旧任务"}],"routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
     let parsed = coordinator_policy::parse(with_withdrawal).unwrap();
     assert_eq!(parsed.withdraw.len(), 1);
+}
+
+#[test]
+fn names_the_user_gave_members_count_as_naming_them() {
+    let sources = user_source("u2", "算了，commit和push还是交由codex来做，克大姐和克小姐进行改动即可");
+    let quote = "算了，commit和push还是交由codex来做，克大姐和克小姐进行改动即可";
+    let refactor = route("a_impl", "implementation", "claude-win", "u2", quote);
+    assert!(coordinator_policy::check_assignment(&refactor, &sources).is_err(), "只认产品名时会误以为只点了 Codex");
+    let aliases = vec![("克大姐".to_owned(), "claude-win".to_owned()), ("克小姐".to_owned(), "claude-win".to_owned())];
+    assert!(coordinator_policy::check_assignment_with(&refactor, &sources, &aliases).is_ok());
+    let push = route("push", "closeout", "codex-win", "u2", quote);
+    assert!(coordinator_policy::check_assignment_with(&push, &sources, &aliases).is_ok());
+    let hermes = route("h", "closeout", "hermes-win", "u2", quote);
+    assert!(coordinator_policy::check_assignment_with(&hermes, &sources, &aliases).is_err());
+}
+
+#[test]
+fn coordinator_decides_tradeoffs_itself_instead_of_blocking_on_the_user() {
+    let decided = r#"{"action":"delegate","decisions":[{"question":"守卫怎么处理","choice":"保留一个最小守卫","reason":"可回退"}],"routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
+    let parsed = coordinator_policy::parse(decided).unwrap();
+    assert_eq!(parsed.decisions[0].choice, "保留一个最小守卫");
+    let blocking = r#"{"action":"ask_user","decisions":[{"question":"守卫怎么处理","choice":"保留"}],"question":{"prompt":"要推送吗","options":["推","不推"]}}"#;
+    assert!(coordinator_policy::parse(blocking).is_err(), "能自己定的先推进，不和提问混在一起");
+    let empty = r#"{"action":"finish","decisions":[{"question":"","choice":"保留"}]}"#;
+    assert!(coordinator_policy::parse(empty).is_err());
+    assert!(coordinator_policy::MANAGER_INSTRUCTION.contains("【自主推进】"));
+    assert!(coordinator_policy::MANAGER_INSTRUCTION.contains("decisions?:[{question:string,choice:string,reason?:string}]"));
 }
 
 #[test]
@@ -515,12 +544,20 @@ fn coordinator_routes_are_idempotent_and_completed_solution_is_never_requeued() 
         &workflow.user_message_id,
         request,
     );
+    // 重复派发已完成的工作直接报错讲清原因，不再悄悄当成派成了（调度会以为活已经排上）。
     let again = f
         .store
-        .enqueue_routes(&workflow.id, &[(duplicate, None, None)])
-        .unwrap();
-    assert_eq!(again, ids);
+        .enqueue_routes(&workflow.id, &[(duplicate.clone(), None, None)])
+        .unwrap_err();
+    assert!(again.contains("不能重复派发"), "{again}");
     assert_eq!(f.store.workflow(&workflow.id).unwrap().tasks.len(), 1);
+    // 写了不同的任务名就是另一项工作，新开一项。
+    let mut another = duplicate;
+    another.title = Some("补一份回滚方案".into());
+    let other = f.store.enqueue_routes(&workflow.id, &[(another, None, None)]).unwrap();
+    assert_ne!(other, ids);
+    assert_eq!(f.store.task(&other[0]).unwrap().title, "方案 · 补一份回滚方案");
+    assert_eq!(f.store.workflow(&workflow.id).unwrap().tasks.len(), 2);
     assert_eq!(f.store.task(&ids[0]).unwrap().status, "completed");
 
     let mut explicit_resume = first;
@@ -740,6 +777,7 @@ fn failed_verification_routes_rework_and_recheck_with_a_round_limit() {
     let mut rework = implement.clone();
     rework.key = "rework-1".into();
     rework.context_ids = vec![check.clone()];
+    rework.title = Some("修好 0 的边界值".into());
     let fixed = f
         .store
         .enqueue_routes(&workflow.id, &[(rework.clone(), None, None)])
@@ -748,7 +786,7 @@ fn failed_verification_routes_rework_and_recheck_with_a_round_limit() {
     assert_ne!(fixed, first);
     let task = f.store.task(&fixed).unwrap();
     assert_eq!(task.status, "queued");
-    assert!(task.title.starts_with("返修"), "{}", task.title);
+    assert_eq!(task.title, "返修 · 修好 0 的边界值", "调度写了任务名就按任务名显示");
     // 不带新结果的重复派发仍然幂等：返回最新那一轮，不再新建。
     let again = f
         .store
@@ -1394,7 +1432,7 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
     };
     assert!(f
         .store
-        .withdraw_coordination_tasks(&workflow.id, &[unauthorized_quote])
+        .withdraw_coordination_tasks(&workflow.id, &[unauthorized_quote], &[])
         .is_err());
 
     let original_source = crate::coordinator_policy::Withdrawal {
@@ -1404,7 +1442,7 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
     };
     assert!(f
         .store
-        .withdraw_coordination_tasks(&workflow.id, &[original_source])
+        .withdraw_coordination_tasks(&workflow.id, &[original_source], &[])
         .is_err());
 
     let wrong_number = crate::coordinator_policy::Withdrawal {
@@ -1414,7 +1452,7 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
     };
     assert!(f
         .store
-        .withdraw_coordination_tasks(&workflow.id, &[wrong_number])
+        .withdraw_coordination_tasks(&workflow.id, &[wrong_number], &[])
         .is_err());
     assert_eq!(f.store.task(&ids[0]).unwrap().status, "queued");
 
@@ -1426,7 +1464,7 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
         };
         assert!(f
             .store
-            .withdraw_coordination_tasks(&workflow.id, &[protected])
+            .withdraw_coordination_tasks(&workflow.id, &[protected], &[])
             .is_err());
         assert_eq!(
             f.store.task(&ids[index]).unwrap().status,
@@ -1443,7 +1481,7 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
         })
         .collect::<Vec<_>>();
     f.store
-        .withdraw_coordination_tasks(&workflow.id, &withdrawals)
+        .withdraw_coordination_tasks(&workflow.id, &withdrawals, &[])
         .unwrap();
     for index in [1usize, 2] {
         assert_eq!(f.store.task(&ids[index]).unwrap().status, "skipped");
@@ -1451,6 +1489,24 @@ fn withdrawal_requires_a_later_user_correction_and_only_skips_unstarted_work() {
     assert_eq!(f.store.task(&ids[0]).unwrap().status, "queued");
     assert_eq!(f.store.task(&ids[3]).unwrap().status, "running");
     assert_eq!(f.store.task(&ids[4]).unwrap().status, "completed");
+
+    // 用户后来给了授权（不是取消）：只有同一回合按同一原文重新派发、修订任务时才能撤回旧任务。
+    let grant = f.store.post_user_team_message(&f.room, "现在可以直接部署，推送交给Codex做").unwrap();
+    let revise = crate::coordinator_policy::Withdrawal {
+        task_id: ids[0].clone(),
+        source_id: grant.id.clone(),
+        quote: "现在可以直接部署，推送交给Codex做".into(),
+    };
+    assert!(f.store.withdraw_coordination_tasks(&workflow.id, &[revise.clone()], &[]).is_err(), "光有授权不能丢掉用户要的活");
+    f.store
+        .withdraw_coordination_tasks(&workflow.id, &[revise], &[(workflow.user_message_id.clone(), "DSH实现一".into())])
+        .unwrap();
+    assert_eq!(f.store.task(&ids[0]).unwrap().status, "skipped");
+    let mut revised = route("task-0-revised", "implementation", "dsh-win", &workflow.user_message_id, "DSH实现一");
+    revised.instructions = Some("按新授权：改完直接部署".into());
+    let reopened = f.store.enqueue_routes(&workflow.id, &[(revised, None, None)]).unwrap();
+    assert_eq!(reopened, vec![ids[0].clone()], "撤回的任务按同一原文再派就重新打开");
+    assert_eq!(f.store.task(&ids[0]).unwrap().status, "queued");
 }
 
 #[test]
@@ -1499,7 +1555,7 @@ fn broad_user_correction_can_withdraw_queued_failed_and_interrupted_tasks() {
         })
         .collect::<Vec<_>>();
     f.store
-        .withdraw_coordination_tasks(&workflow.id, &withdrawals)
+        .withdraw_coordination_tasks(&workflow.id, &withdrawals, &[])
         .unwrap();
     assert!(ids
         .iter()
@@ -1543,11 +1599,11 @@ fn named_member_correction_cannot_withdraw_another_members_task() {
     };
     assert!(f
         .store
-        .withdraw_coordination_tasks(&workflow.id, &[withdrawal(&ids[1])])
+        .withdraw_coordination_tasks(&workflow.id, &[withdrawal(&ids[1])], &[])
         .is_err());
     assert_eq!(f.store.task(&ids[1]).unwrap().status, "queued");
     f.store
-        .withdraw_coordination_tasks(&workflow.id, &[withdrawal(&ids[0])])
+        .withdraw_coordination_tasks(&workflow.id, &[withdrawal(&ids[0])], &[])
         .unwrap();
     assert_eq!(f.store.task(&ids[0]).unwrap().status, "skipped");
 }
@@ -1586,7 +1642,7 @@ fn skipped_dependencies_stay_blocked_until_user_authorizes_revised_scope() {
         quote: "取消核心实现".into(),
     };
     f.store
-        .withdraw_coordination_tasks(&workflow.id, &[withdrawal])
+        .withdraw_coordination_tasks(&workflow.id, &[withdrawal], &[])
         .unwrap();
 
     let followup = f.store.task(&ids[1]).unwrap();
@@ -2353,16 +2409,51 @@ fn member_prompt_carries_brief_and_subagent_permission() {
 }
 
 #[test]
-fn temporary_seats_are_released_after_the_workflow_ends() {
+fn coordinator_sessions_stay_in_the_project_like_user_sessions() {
+    let mut f = Fixture::new();
+    let room = f.room.clone();
+    let workflow = f.coordinated("Codex给出方案。", "codex-win");
+    let seat = f.store.add_temporary_seat(&workflow.id, "codex-win", "验证").unwrap();
+    assert_eq!(f.store.temporary_seats(&workflow.id).unwrap(), vec![seat.clone()]);
+    f.store.connection.execute("UPDATE workflows SET status='completed' WHERE id=?1", [&workflow.id]).unwrap();
+    let chats = f.store.project_agent_chats(&room).unwrap();
+    let chat = chats.iter().find(|chat| chat.agent_id == seat).expect("协作结束后调度开的会话仍在项目里");
+    assert!(chat.opened_by_coordinator);
+    assert_eq!(chat.name, "验证");
+    assert!(chats.iter().filter(|chat| chat.agent_id != seat).all(|chat| !chat.opened_by_coordinator));
+    assert_eq!(f.store.coordinator_seats(&room).unwrap(), vec![seat]);
+}
+
+#[test]
+fn full_member_recycles_only_an_idle_coordinator_session() {
+    let mut f = Fixture::new();
+    let room = f.room.clone();
+    let first = f.coordinated("Codex给出方案。", "codex-win");
+    let opened = f.store.add_temporary_seat(&first.id, "codex-win", "验证").unwrap();
+    let mine = [f.store.add_project_seat(&room, "codex-win", Some("我的A")).unwrap(), f.store.add_project_seat(&room, "codex-win", Some("我的B")).unwrap()];
+    assert!(f.store.add_temporary_seat(&first.id, "codex-win", "回复").is_err(), "协作还在进行，它开的会话不能回收");
+    f.store.connection.execute("UPDATE workflows SET status='completed' WHERE id=?1", [&first.id]).unwrap();
+    let second = f.coordinated("Codex再看一遍。", "codex-win");
+    let reopened = f.store.add_temporary_seat(&second.id, "codex-win", "回复").unwrap();
+    assert_eq!(reopened, opened, "回收最早的调度会话，空出的位置给新会话");
+    let seats = f.store.project_seats(&room).unwrap();
+    assert!(mine.iter().all(|seat| seats.iter().any(|(id, _)| id == seat)), "用户建的会话不动");
+    assert_eq!(f.store.project_agent_chats(&room).unwrap().iter().find(|chat| chat.agent_id == reopened).unwrap().name, "回复");
+    f.store.connection.execute("UPDATE workflows SET status='completed' WHERE id=?1", [&second.id]).unwrap();
+    f.store.remove_project_seat(&room, &reopened).unwrap();
+    f.store.add_project_seat(&room, "codex-win", Some("我的C")).unwrap();
+    let third = f.coordinated("Codex第三次。", "codex-win");
+    let full = f.store.add_temporary_seat(&third.id, "codex-win", "回复").unwrap_err();
+    assert!(full.contains("开满"), "{full}");
+}
+
+#[test]
+fn coordinator_cannot_open_sessions_for_agents_outside_the_project() {
     let mut f = Fixture::new();
     let workflow = f.coordinated("Codex给出方案。", "codex-win");
-    let seat = f.store.add_temporary_seat(&workflow.id, "codex-win", "临时·验证").unwrap();
-    assert_eq!(f.store.temporary_seats(&workflow.id).unwrap(), vec![seat.clone()]);
-    assert_eq!(f.store.release_temporary_seats(&f.room.clone()).unwrap(), 0, "协作还在进行，临时会话保留");
-    f.store.connection.execute("UPDATE workflows SET status='completed' WHERE id=?1", [&workflow.id]).unwrap();
-    assert_eq!(f.store.release_temporary_seats(&f.room.clone()).unwrap(), 1);
-    assert!(f.store.temporary_seats(&workflow.id).unwrap().is_empty());
-    assert!(!f.store.project_seats(&f.room).unwrap().iter().any(|(id, _)| *id == seat));
+    let error = f.store.add_temporary_seat(&workflow.id, "claude-win", "回复").unwrap_err();
+    assert!(error.contains("不在这个项目里"), "{error}");
+    assert!(f.store.project_seats(&f.room.clone()).unwrap().is_empty());
 }
 
 #[test]
@@ -2392,4 +2483,154 @@ fn usage_counts_only_this_task_from_codex_thread_totals_and_reads_acp_results() 
     assert_eq!((usage.total(), usage.cached, usage.context), (24417, 10, 24417));
     assert_eq!(usage.cost_usd, Some(0.0048));
     assert!(Usage::from_acp(&serde_json::json!({"stopReason":"end_turn"})).is_none());
+}
+
+#[test]
+fn clear_context_starts_only_the_first_attempt_fresh_and_ledgers_carry_to_the_next_run() {
+    let mut f = Fixture::new();
+    let workflow = f.coordinated("DSH实现甲；DSH实现乙", "hermes-win");
+    let mut first = route("a", "implementation", "dsh-win", &workflow.user_message_id, "DSH实现甲");
+    first.clear_context = true;
+    let second = route("b", "implementation", "dsh-win", &workflow.user_message_id, "DSH实现乙");
+    let ids = f
+        .store
+        .enqueue_routes(&workflow.id, &[(first, None, None), (second, None, None)])
+        .unwrap();
+    let attempt = f
+        .store
+        .begin_coordinated_attempt(&workflow.id, Some(&f.store.task(&ids[0]).unwrap()), "dsh-win", None, None)
+        .unwrap();
+    assert!(f.store.clears_context(&attempt), "设了 clear_context 的任务第一次从零上下文开始");
+    f.store.connection.execute("UPDATE project_attempts SET status='failed' WHERE id=?1", [&attempt.id]).unwrap();
+    f.store.connection.execute("UPDATE project_tasks SET status='queued' WHERE id=?1", [&ids[0]]).unwrap();
+    let retry = f
+        .store
+        .begin_coordinated_attempt(&workflow.id, Some(&f.store.task(&ids[0]).unwrap()), "dsh-win", None, None)
+        .unwrap();
+    assert!(!f.store.clears_context(&retry), "重试续接第一次新开的会话");
+    f.store.connection.execute("UPDATE project_attempts SET status='failed' WHERE id=?1", [&retry.id]).unwrap();
+    f.store.connection.execute("UPDATE project_tasks SET status='queued' WHERE id=?1", [&ids[0]]).unwrap();
+    let other = f
+        .store
+        .begin_coordinated_attempt(&workflow.id, Some(&f.store.task(&ids[1]).unwrap()), "dsh-win", None, None)
+        .unwrap();
+    assert!(!f.store.clears_context(&other));
+
+    f.store.set_coordination_ledger(&workflow.id, "板块一已完成；下一个：板块二").unwrap();
+    f.store
+        .connection
+        .execute("UPDATE workflows SET status='completed' WHERE id=?1", [&workflow.id])
+        .unwrap();
+    let next = f.coordinated("继续下一个板块", "hermes-win");
+    assert_eq!(f.store.previous_ledger(&next.id).as_deref(), Some("板块一已完成；下一个：板块二"));
+    assert_eq!(f.store.previous_ledger(&workflow.id), None);
+}
+
+#[test]
+fn finishing_a_section_defers_unstarted_tasks_and_resets_worked_members() {
+    assert!(coordinator_policy::parse(r#"{"action":"delegate","next_sections":[{"title":"TTS"}]}"#).is_err(), "只在 finish 时列剩下的板块");
+    let parsed = coordinator_policy::parse(r#"{"action":"finish","next_sections":[{"title":"TTS 板块","summary":"语音合成精简"}]}"#).unwrap();
+    assert_eq!(parsed.next_sections[0].title, "TTS 板块");
+    for (raw, shown) in [("3. 小修遗留", "小修遗留"), ("4、杂活余项", "杂活余项"), ("（5）原方案", "原方案"), ("第6块：token 轮换", "token 轮换"), ("2026 计划", "2026 计划"), ("8", "8"), ("TTS 遗留", "TTS 遗留")] {
+        assert_eq!(coordinator_policy::section_title(raw), shown, "板块标题去掉旧序号");
+    }
+
+    let mut f = Fixture::new();
+    let workflow = f.coordinated("DSH实现甲；Codex实现乙", "hermes-win");
+    let ids = f
+        .store
+        .enqueue_routes(
+            &workflow.id,
+            &[
+                (route("a", "implementation", "dsh-win", &workflow.user_message_id, "DSH实现甲"), None, None),
+                (route("b", "implementation", "codex-win", &workflow.user_message_id, "Codex实现乙"), None, None),
+            ],
+        )
+        .unwrap();
+    let attempt = f
+        .store
+        .begin_coordinated_attempt(&workflow.id, Some(&f.store.task(&ids[0]).unwrap()), "dsh-win", None, None)
+        .unwrap();
+    f.store.connection.execute("UPDATE project_attempts SET status='completed' WHERE id=?1", [&attempt.id]).unwrap();
+    f.store.connection.execute("UPDATE project_tasks SET status='completed' WHERE id=?1", [&ids[0]]).unwrap();
+    let chats = f.store.ensure_project_agent_chats(&f.room).unwrap();
+    for chat in &chats {
+        f.store
+            .connection
+            .execute("UPDATE sessions SET native_session_id='old-'||agent_id WHERE conversation_id=?1", [&chat.conversation_id])
+            .unwrap();
+    }
+
+    assert_eq!(f.store.defer_unstarted_tasks(&workflow.id).unwrap(), 1);
+    assert_eq!(f.store.task(&ids[1]).unwrap().status, "skipped");
+    assert_eq!(f.store.task(&ids[0]).unwrap().status, "completed");
+    assert_eq!(f.store.reset_worked_sessions(&workflow.id).unwrap(), 1, "只清这次干过活的成员");
+    let session = |agent: &str| {
+        let chat = chats.iter().find(|chat| chat.agent_id == agent).unwrap();
+        f.store.connection.query_row("SELECT native_session_id FROM sessions WHERE conversation_id=?1", [&chat.conversation_id], |row| row.get::<_, Option<String>>(0)).unwrap()
+    };
+    assert_eq!(session("dsh-win"), None);
+    assert_eq!(session("codex-win").as_deref(), Some("old-codex-win"));
+}
+
+#[test]
+fn quota_blocked_task_can_be_handed_to_another_member_on_the_same_worktree() {
+    let mut f = Fixture::new();
+    let request = "实现核心";
+    let workflow = f.coordinated(request, "hermes-win");
+    let first = route("impl", "implementation", "codex-win", &workflow.user_message_id, request);
+    let ids = f.store.enqueue_routes(&workflow.id, &[(first.clone(), None, None)]).unwrap();
+    f.store
+        .connection
+        .execute(
+            "UPDATE project_tasks SET status='failed',error='usage limit reached, try again at 3:00 PM',worktree='wt',branch='hub/x' WHERE id=?1",
+            [&ids[0]],
+        )
+        .unwrap();
+    let mut handed = first;
+    handed.task_id = Some(ids[0].clone());
+    handed.agent_id = "dsh-win".into();
+    assert_eq!(f.store.enqueue_routes(&workflow.id, &[(handed, None, None)]).unwrap(), ids);
+    let task = f.store.task(&ids[0]).unwrap();
+    assert_eq!((task.agent_id.as_str(), task.status.as_str()), ("dsh-win", "queued"));
+    assert_eq!(task.worktree.as_deref(), Some("wt"), "接着原工作树做");
+}
+
+#[test]
+fn project_grants_are_saved_per_project_and_shown_in_detail() {
+    let mut f = Fixture::new();
+    let room = f.room.clone();
+    assert_eq!(f.store.project_grants(&room), "");
+    f.store.set_project_grants(&room, "  允许提交并推送 main，不 force push  ").unwrap();
+    assert_eq!(f.store.project_grants(&room), "允许提交并推送 main，不 force push");
+    assert_eq!(f.store.detail(&room).unwrap().project_grants, "允许提交并推送 main，不 force push");
+    assert!(f.store.set_project_grants(&room, &"长".repeat(501)).is_err());
+    f.store.set_project_grants(&room, "").unwrap();
+    assert_eq!(f.store.project_grants(&room), "");
+}
+
+#[test]
+fn private_messages_wait_while_the_seat_runs_a_project_task() {
+    let mut f = Fixture::new();
+    let request = "实现核心";
+    let workflow = f.coordinated(request, "hermes-win");
+    let first = route("impl", "implementation", "dsh-win", &workflow.user_message_id, request);
+    let ids = f.store.enqueue_routes(&workflow.id, &[(first, None, None)]).unwrap();
+    let chat = f
+        .store
+        .ensure_project_agent_chats(&f.room)
+        .unwrap()
+        .into_iter()
+        .find(|chat| chat.agent_id == "dsh-win")
+        .unwrap();
+    let task = f.store.task(&ids[0]).unwrap();
+    f.store
+        .begin_coordinated_attempt(&workflow.id, Some(&task), "dsh-win", None, None)
+        .unwrap();
+    let error = f
+        .store
+        .begin_agent_run(&chat.conversation_id, "private-1", "补充一句", "dsh-win")
+        .unwrap_err();
+    assert!(error.contains("正在这条会话里做项目任务"), "{error}");
+    assert!(f.store.detail(&chat.conversation_id).unwrap().messages.iter().all(|message| message.id != "private-1"), "拦下的话不存进聊天记录");
 }

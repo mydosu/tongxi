@@ -318,6 +318,10 @@ function prompt(id, params) {
     } else if (message.type === 'result') {
       result = message;
       child.stdin.end();
+      // 回合已经结束，但 claude 偶尔迟迟不退出（子 agent 或 MCP 子进程还挂着）；再等 20 秒还不退就结束它，免得协作一直等下去。
+      session.exitTimer = setTimeout(() => {
+        if (child.exitCode === null) execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+      }, 20000);
     }
   });
   child.on('error', error => {
@@ -327,6 +331,7 @@ function prompt(id, params) {
   child.on('exit', code => {
     session.child = null;
     clearTimeout(session.killTimer);
+    clearTimeout(session.exitTimer);
     if (session.cancelled || result?.terminal_reason?.startsWith('aborted')) {
       send({ id, result: { stopReason: 'cancelled' } });
     } else if (result && !result.is_error) {

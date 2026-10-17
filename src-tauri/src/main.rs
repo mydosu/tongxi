@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod quota;
 mod quota_reset;
 mod cli_open;
 mod cli_transcript;
@@ -559,11 +560,24 @@ async fn steer_agent_message(
     state: State<'_, AppState>,
     codex: State<'_, Arc<codex::Runtime>>,
     claude: State<'_, Arc<claude::Runtime>>,
+    projects: State<'_, Arc<projects::Runtime>>,
     agent_id: String,
     conversation_id: String,
     message_id: String,
     content: String,
 ) -> Result<store::Message, String> {
+    // 成员专属会话里正在跑项目任务：话送进这项任务，而不是私聊回复。
+    let task = with_store(&state, |store| store.project_task_in_chat(&conversation_id))?;
+    if let Some(attempt) = task {
+        let native = projects.inner().native.clone();
+        let text = content.clone();
+        tauri::async_runtime::spawn_blocking(move || native.steer(&attempt, &text).map(|_| ()))
+            .await
+            .map_err(|_| "插话异常".to_string())??;
+        return with_store(&state, |store| {
+            store.save_delivered_message(&conversation_id, &message_id, &content)
+        });
+    }
     let (codex, claude) = (codex.inner().clone(), claude.inner().clone());
     let (room, text, steer_id) = (conversation_id.clone(), content.clone(), message_id.clone());
     tauri::async_runtime::spawn_blocking(move || match agent_id.as_str() {
@@ -1058,6 +1072,8 @@ struct AppInfo {
     hud_shortcut: bool,
     /// 启动时是否自动扫描并接入本机成员；`AGENT_HUB_AUTOCONNECT=0` 关掉（自动化测试用）。
     autoconnect: bool,
+    /// 启动参数 `--resume-workflow <id>`：成员接入后自动继续这次协作（修复后重新部署时用）。
+    resume_workflow: Option<String>,
 }
 
 #[tauri::command]
@@ -1070,6 +1086,12 @@ fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<AppInfo
             database_path: store.path.to_string_lossy().into(),
             hud_shortcut: app.global_shortcut().is_registered(hud_shortcut()),
             autoconnect: std::env::var("AGENT_HUB_AUTOCONNECT").map_or(true, |value| value != "0"),
+            resume_workflow: {
+                let args: Vec<String> = std::env::args().collect();
+                args.iter()
+                    .position(|arg| arg == "--resume-workflow")
+                    .and_then(|at| args.get(at + 1).cloned())
+            },
         })
     })
 }
@@ -1244,6 +1266,7 @@ fn main() {
             let codex_runtime =
                 codex::Runtime::new(app.handle().clone(), store.clone(), directory.clone());
             codex_runtime.watch_quota_resume();
+            pricing::init(&directory);
             app.manage(codex_runtime);
             app.manage(hermes::Runtime::new(
                 app.handle().clone(),
@@ -1427,6 +1450,9 @@ fn main() {
             projects::set_project_roles,
             project_coordinator::set_project_coordinator,
             project_coordinator::set_project_preference,
+            project_coordinator::set_project_grants,
+            pricing::pricing_status,
+            pricing::refresh_pricing,
             project_sessions::project_session_bindings,
             project_sessions::bind_project_sessions,
             project_sessions::add_project_seat,
@@ -1445,6 +1471,8 @@ fn main() {
             project_sessions::rename_project_seat,
             project_sessions::rename_agent,
             avatars::set_agent_avatar,
+            avatars::own_avatars,
+            avatars::set_own_avatar,
             projects::cancel_project,
             projects::cancel_project_agent,
             projects::post_project_team_message,

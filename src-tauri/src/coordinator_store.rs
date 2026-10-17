@@ -52,7 +52,7 @@ pub struct Coordination {
 /// 调度倾向：省额度 / 平衡 / 质量优先。
 pub const PREFERENCES: [&str; 3] = ["save", "balanced", "quality"];
 
-/// 每种倾向下，一次协作最多同时开几个临时会话。
+/// 每种倾向下，一次协作最多新开几个会话。
 pub fn temporary_limit(preference: &str) -> usize {
     match preference {
         "save" => 1,
@@ -76,6 +76,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     crate::project_store::add_column(tx, "coordination_routes", "instructions", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_routes", "reason", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_routes", "allow_subagents", "INTEGER NOT NULL DEFAULT 0")?;
+    crate::project_store::add_column(tx, "coordination_routes", "clear_context", "INTEGER NOT NULL DEFAULT 0")?;
     crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
@@ -192,6 +193,71 @@ impl Store {
             ledger,
         }))
     }
+    /// 同一个群上一次协作留下的计划账本：项目分板块推进时，下一次协作接着它做。
+    pub fn previous_ledger(&self, id: &str) -> Option<String> {
+        self.connection
+            .query_row(
+                "SELECT r.ledger FROM coordination_runs r JOIN workflows w ON w.id=r.workflow_id \
+                 WHERE w.conversation_id=(SELECT conversation_id FROM workflows WHERE id=?1) AND r.workflow_id<>?1 \
+                 AND TRIM(COALESCE(r.ledger,''))<>'' ORDER BY w.rowid DESC LIMIT 1",
+                [id],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+    /// 这次尝试要不要从零上下文开始：调度给任务设了 clear_context，且这是任务的第一次尝试
+    /// （之后的重试续接第一次新开的会话，保留已做的进度）。
+    pub fn clears_context(&self, attempt: &crate::project_store::Attempt) -> bool {
+        let Some(task) = attempt.task_id.as_deref() else {
+            return false;
+        };
+        let clear: bool = self
+            .connection
+            .query_row(
+                "SELECT clear_context FROM coordination_routes WHERE task_id=?1 ORDER BY rowid DESC LIMIT 1",
+                [task],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        clear
+            && !self
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM project_attempts WHERE task_id=?1 AND id<>?2)",
+                    params![task, attempt.id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(true)
+    }
+    /// 分板块收尾：还没开始过的排队任务留到下次协作（记为跳过），返回留下的数量。
+    pub fn defer_unstarted_tasks(&self, id: &str) -> Result<usize> {
+        self.connection
+            .execute(
+                "UPDATE project_tasks SET status='skipped',error='留到下一次协作' WHERE workflow_id=?1 AND status='queued' \
+                 AND NOT EXISTS(SELECT 1 FROM project_attempts a WHERE a.task_id=project_tasks.id)",
+                [id],
+            )
+            .map_err(|_| "排队任务留存失败".into())
+    }
+    /// 协作结束后，这次干过活的成员会话位置清空：下次协作从零上下文开始，旧会话留在原生历史里。
+    pub fn reset_worked_sessions(&mut self, id: &str) -> Result<usize> {
+        let workflow = self.workflow(id)?;
+        let mut worked = workflow
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.activity.as_deref() != Some(MANAGER_ACTIVITY))
+            .map(|attempt| attempt.agent_id.clone())
+            .collect::<Vec<_>>();
+        worked.sort();
+        worked.dedup();
+        let mut reset = 0;
+        for agent in worked {
+            if self.bind_member_session(&workflow.conversation_id, &agent, None, None).is_ok() {
+                reset += 1;
+            }
+        }
+        Ok(reset)
+    }
     pub fn set_coordination_ledger(&self, id: &str, ledger: &str) -> Result<()> {
         self.connection
             .execute(
@@ -228,6 +294,35 @@ impl Store {
                 params![format!("project_preference:{room}"), preference],
             )
             .map_err(|_| "调度倾向保存失败")?;
+        Ok(())
+    }
+    /// 用户在项目设置里写的长期授权（比如「允许提交并推送 main」）：每次协作都算用户原话授权，没写就是空。
+    pub fn project_grants(&self, room: &str) -> String {
+        self.connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key=?1",
+                [format!("project_grants:{room}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+    pub fn set_project_grants(&mut self, room: &str, grants: &str) -> Result<()> {
+        let grants = grants.trim();
+        if grants.chars().count() > 500 {
+            return Err("长期授权不超过 500 字".into());
+        }
+        if self.conversation_project(room)?.is_none() {
+            return Err("请先绑定项目".into());
+        }
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("project_grants:{room}"), grants],
+            )
+            .map_err(|_| "长期授权保存失败")?;
         Ok(())
     }
     /// 这个会话最近一次任务结束时的上下文大小（token）；没记录就是 None。
@@ -349,11 +444,12 @@ impl Store {
         let members = self.conversation(&job.conversation_id)?.members;
         // 额外席位不是群成员，但底层成员在群里、席位确实开过，就能接任务。
         let seats = self.project_seats(&job.conversation_id)?;
+        let aliases = self.member_aliases(&job.conversation_id);
         let mut keys: HashMap<String, (String, u32)> = HashMap::new();
         let mut prepared: Vec<PreparedRoute<'_>> = Vec::new();
         let mut next_position = job.tasks.len() as u32;
         for (route, model, effort) in routes {
-            crate::coordinator_policy::check_assignment(route, &sources)?;
+            crate::coordinator_policy::check_assignment_with(route, &sources, &aliases)?;
             let base = crate::project_store::base_agent(&route.agent_id);
             let seat = route.agent_id != base
                 && members.iter().any(|member| member == base)
@@ -394,9 +490,18 @@ impl Store {
                 let known:Option<String>=self.connection.query_row("SELECT task_id FROM coordination_routes WHERE workflow_id=?1 AND purpose=?2 AND source_id=?3 AND quote=?4 AND subagent=?5 ORDER BY rowid DESC LIMIT 1",params![id,route.purpose,route.source_id,route.quote,route.subagent],|r|r.get(0)).optional().map_err(|_|"路由去重失败")?;
                 let latest =
                     known.and_then(|id| job.tasks.iter().find(|task| task.id == id).cloned());
+                // 用户的一句话（如「验证让克小姐来做」）会被很多项工作引用：调度写了和原任务不同的任务名，就是另一项工作。
+                let named = route.title.as_deref().map(str::trim).filter(|title| !title.is_empty());
+                let distinct = |task: &crate::project_store::Task| {
+                    named.is_some_and(|title| !task.title.ends_with(&format!(" · {title}")))
+                };
                 // 同一原文的已完成任务：带上比它更新的成员结果（例如验证发现的问题）时开新一轮返修/复核，
                 // 否则仍视为重复派发，返回原任务。
                 match latest {
+                    Some(task) if distinct(&task) => {
+                        rework = task.status == "completed" && follow_up(&job, &task, route);
+                        None
+                    }
                     Some(task)
                         if task.status == "completed"
                             && (follow_up(&job, &task, route)
@@ -472,9 +577,18 @@ impl Store {
                     deps.push(at);
                 }
             }
+            if route.task_id.is_none() && existing.as_ref().is_some_and(|task| task.status == "completed") {
+                return Err(format!(
+                    "{} 和已完成的任务（{}）是同一项工作，不能重复派发；要做新的一项就写不同的 title，要返修或复核就在 context_ids 引用新结果",
+                    route.key,
+                    existing.as_ref().map(|task| task.title.as_str()).unwrap_or_default()
+                ));
+            }
             keys.insert(route.key.clone(), (task_id.clone(), position));
             let is_new = existing.is_none();
-            let needs_update = is_new || relocate || route.task_id.is_some();
+            // 撤回过的任务按同一原文再派：重新打开，换上新的说明。
+            let reopened = existing.as_ref().is_some_and(|task| task.status == "skipped");
+            let needs_update = is_new || relocate || reopened || route.task_id.is_some();
             prepared.push(PreparedRoute {
                 route,
                 model,
@@ -512,10 +626,11 @@ impl Store {
                 (true, _) => "返修",
                 _ => purpose_label(&route.purpose),
             };
+            let named = route.title.as_deref().map(str::trim).filter(|title| !title.is_empty());
             let title = format!(
                 "{} · {}",
                 label,
-                route.quote.chars().take(70).collect::<String>()
+                named.unwrap_or(&route.quote).chars().take(70).collect::<String>()
             );
             let stored_agent = if crate::project_store::base_agent(&route.agent_id) == "hermes-win" {
                 "dsh-win"
@@ -524,10 +639,10 @@ impl Store {
             };
             if *is_new {
                 tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,assigned_agent,instructions,files,depends_on,status,model,effort) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,'queued',?9,?10)",params![task_id,id,position,title,stored_agent,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort]).map_err(|_|"任务保存失败")?;
-                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents]).map_err(|_|"任务原文引用保存失败")?;
+                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context]).map_err(|_|"任务原文引用保存失败")?;
             } else {
                 tx.execute("UPDATE project_tasks SET title=?1,assigned_agent=?2,instructions=?3,depends_on=?4,status='queued',model=?5,effort=?6,error=NULL,position=?9 WHERE id=?7 AND workflow_id=?8",params![title,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort,task_id,id,position]).map_err(|_|"任务恢复失败")?;
-                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents]).map_err(|_|"任务引用恢复失败")?;
+                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context]).map_err(|_|"任务引用恢复失败")?;
             }
         }
         tx.execute(
@@ -542,6 +657,7 @@ impl Store {
         &mut self,
         id: &str,
         withdrawals: &[crate::coordinator_policy::Withdrawal],
+        replacements: &[(String, String)],
     ) -> Result<()> {
         let job = self.workflow(id)?;
         if self.coordination(id)?.is_none() || !crate::project_store::live(&job.status) {
@@ -569,7 +685,16 @@ impl Store {
                 true,
             )?;
             let text = withdrawal.quote.to_lowercase();
-            if ![
+            // 同一回合按同一原文重新派发：这是按用户后续消息修订任务（比如新给了授权），不是丢掉用户要的活。
+            let revised = self
+                .connection
+                .query_row(
+                    "SELECT source_id,quote FROM coordination_routes WHERE task_id=?1",
+                    [&task.id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .is_ok_and(|original| replacements.contains(&original));
+            if !revised && ![
                 "取消",
                 "不要",
                 "不做",
@@ -597,7 +722,8 @@ impl Store {
             .filter(|(label, _)| text.contains(label))
             .map(|(_, id)| id)
             .collect::<Vec<_>>();
-            if !named.is_empty() && !named.contains(&task.agent_id.as_str()) {
+            // 修订是按同一原文重派同一项工作，不受「取消别人的活」那两条范围限制。
+            if !revised && !named.is_empty() && !named.contains(&task.agent_id.as_str()) {
                 return Err("取消原文点名了另一成员，不能撤回此任务".into());
             }
             let chinese = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
@@ -613,7 +739,7 @@ impl Store {
                 })
                 .map(|candidate| candidate.id.as_str())
                 .collect::<Vec<_>>();
-            if !numbered.is_empty() && !numbered.contains(&task.id.as_str()) {
+            if !revised && !numbered.is_empty() && !numbered.contains(&task.id.as_str()) {
                 return Err("取消原文明示其他任务编号，不能扩大撤回范围".into());
             }
         }
@@ -801,6 +927,7 @@ impl Store {
         self.connection.execute("INSERT OR IGNORE INTO project_team_messages(id,project_id,conversation_id,workflow_id,attempt_id,sender_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,'agent',?7,?8)",params![format!("task-result:{}",attempt.task_id.as_deref().unwrap_or(&attempt.id)),workflow.project_id,workflow.conversation_id,workflow_id,attempt.id,attempt.agent_id,content,now()]).map_err(|_|"成员回复发布失败")?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn manager_session(&self, id: &str) -> Result<Option<String>> {
         self.connection
             .query_row(

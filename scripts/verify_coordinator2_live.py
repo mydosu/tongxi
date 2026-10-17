@@ -2,15 +2,15 @@
 
 隔离数据目录跑打包好的 EXE，只用 Claude（会消耗少量额度），项目群里只有 Claude 一位成员，调度也是 Claude：
   1. 普通派活：答一道算术题。验证成员和调度的 token 用量、会话上下文大小都记下了，计划账本写了，分派消息带理由。
-  2. 临时会话：原话要求新开临时会话。验证任务跑在调度新开的席位上，协作结束后这个临时席位被撤掉。
+  2. 新开会话：原话要求新开会话。验证任务跑在调度新开的会话上，协作结束后它和用户建的会话一样留在项目里、标「调度开的」。
   3. 自选模型：原话只说「用最便宜的模型」，不点名型号。验证调度按价格表自己选了 Haiku。
+另外验证价格表能从 LiteLLM 自动更新（需要联网）。
 不改项目文件：任务都是 reply 类型。
 """
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -56,6 +56,9 @@ def main() -> int:
             time.sleep(1)
             state = sd.ipc(page, "claude_status").get("connection")
         check("Claude connected", state == "connected", state)
+        pricing = call("refresh_pricing")
+        status = pricing.get("value") or {}
+        check("pricing refreshed from LiteLLM", pricing["ok"] and status.get("source") == "litellm" and (status.get("models") or 0) > 50, pricing.get("error") or status)
 
         def project_room(title: str) -> str:
             root = sd.DATA.parent / f"{sd.DATA.name}-{title}"
@@ -113,11 +116,11 @@ def main() -> int:
                 outputs = " ".join(task["output"] for task in job["tasks"])
                 check("fresh: answer correct", "81" in outputs, outputs[:200])
                 check("fresh: member does not try to rearrange sessions itself", "会话" not in outputs, outputs[:200])
-                db = sqlite3.connect(sd.DATA / "hub.db")
-                left = db.execute("SELECT seat_id FROM project_seats WHERE conversation_id=? AND temporary_for IS NOT NULL", (room,)).fetchall()
-                db.close()
-                check("fresh: temporary seat released after the workflow", not left, left)
-                check("fresh: dispatch marks the new session", any("临时会话" in note for note in dispatch_notes(job)), dispatch_notes(job))
+                chats = sd.ipc(page, "get_conversation", id=room)["project_agent_chats"]
+                kept = [chat for chat in chats if chat["agent_id"] in seats and chat["agent_id"] != AGENT]
+                check("fresh: new session stays in the project after the workflow", bool(kept) and all(chat["opened_by_coordinator"] for chat in kept), chats)
+                check("fresh: user's own session is not marked", all(not chat["opened_by_coordinator"] for chat in chats if chat["agent_id"] == AGENT), chats)
+                check("fresh: dispatch marks the new session", any("新开会话" in note for note in dispatch_notes(job)), dispatch_notes(job))
 
         if "cheap" in only:
             room = project_room("coord2-cheap")

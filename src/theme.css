@@ -172,7 +172,7 @@ html:not([data-hud]) .member-option:has(input:checked) { background: rgb(232 228
 html:not([data-hud]) .project-progress-meter { background: rgb(255 255 255 / .6); }
 html:not([data-hud]) .project-progress-meter span { background: linear-gradient(90deg, var(--ice), var(--lilac)); }
 html:not([data-hud]) .project-active-dot { background: var(--accent-2); box-shadow: 0 0 0 3px rgb(165 152 216 / .25); }
-html:not([data-hud]) :is(.project-coordinator-settings, .project-planner-settings) { background: rgb(255 255 255 / .5); border-color: rgb(255 255 255 / .85); }
+html:not([data-hud]) :is(.project-coordinator-settings, .project-planner-settings, .project-grant-settings) { background: rgb(255 255 255 / .5); border-color: rgb(255 255 255 / .85); }
 html:not([data-hud]) .project-agent-room-header, html:not([data-hud]) .project-agent-room-body { background: transparent; }
 html:not([data-hud]) .agent-user-entry { background: rgb(255 255 255 / .55); border-left-color: var(--lilac); }
 html:not([data-hud]) .agent-jump-latest { background: rgb(255 255 255 / .85); }
@@ -187,7 +187,7 @@ html:not([data-hud]) .modal[open]::backdrop { animation: fade-in .22s ease; }
 html:not([data-hud]) .modal-heading p { font-size: 12px; }
 html:not([data-hud]) .kind-switch { background: rgb(255 255 255 / .5); }
 html:not([data-hud]) .field input, html:not([data-hud]) .field select, html:not([data-hud]) .project-member-settings-row select,
-html:not([data-hud]) :is(.project-coordinator-settings, .project-planner-settings) select { background: rgb(255 255 255 / .82); border-color: rgb(205 205 228 / .8); border-radius: 10px; }
+html:not([data-hud]) :is(.project-coordinator-settings, .project-planner-settings) select, html:not([data-hud]) .project-grant-settings textarea { background: rgb(255 255 255 / .82); border-color: rgb(205 205 228 / .8); border-radius: 10px; }
 html:not([data-hud]) .toast { left: calc(50% + 131px); background: rgb(255 255 255 / .84); border-color: rgb(255 255 255 / .92); border-radius: 12px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 12px 34px rgb(80 86 140 / .16); }
 html:not([data-hud]) .toast.error { background: rgb(255 243 240 / .92); }
 html:not([data-hud]) .message-context-menu { background: rgb(255 255 255 / .88); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-color: rgb(255 255 255 / .92); border-radius: 12px; }
@@ -350,6 +350,9 @@ html[data-hud] .chat-tools { display: none; }
 .project-member-settings-row.seat-row .seat-name:hover { border-color: rgb(165 152 216 / .4); }
 .project-member-settings-row.seat-row .seat-name:focus { outline: none; border-color: rgb(165 152 216 / .7); background: #fff; box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
 .project-member-settings-row.seat-row .seat-of { font-size: 11px; font-weight: 400; color: #8a90ad; }
+.seat-origin { margin-left: 6px; padding: 0 5px; border-radius: 6px; font-size: 10px; line-height: 16px; color: #6b5fd3; background: rgba(107, 95, 211, 0.12); flex: none; }
+.pricing-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: #8a90ad; }
+.pricing-status [data-pricing-status] { flex: 1; min-width: 0; }
 
 /* ---------- 成员卡：同一套结构 ---------- */
 html:not([data-hud]) .service-grid { align-items: stretch; }
@@ -433,6 +436,13 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .avatar-picker-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 12px; color: #4f5878; cursor: pointer; text-align: left; }
 .avatar-picker-item:hover { background: rgb(236 232 252 / .8); }
 .avatar-picker-item .icon { width: 15px; height: 15px; }
+.chat-heading .avatar-edit { margin-right: 2px; }
+.chat-heading .avatar-picker { z-index: 40; }
+.avatar.group-avatar.solid .icon { color: #fff; }
+.avatar.own-avatar { background: #8a90ad; color: #fff; }
+.self-avatar-row { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; padding: 14px 18px; border-radius: 18px; background: var(--glass-card, rgb(255 255 255 / .55)); border: 1px solid var(--glass-line, rgb(255 255 255 / .6)); }
+.self-avatar-row > div > strong { display: block; font-size: 14px; color: #3a4157; }
+.self-avatar-row > div > span { font-size: 12px; color: #8a90ad; }
 
 /* ---------- 调度 2.0：用量、任务理由、计划账本 ---------- */
 .project-usage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 12px; padding: 9px 12px; border-radius: 12px; background: rgb(255 255 255 / .42); border: 1px solid var(--glass-line); font-size: 12px; color: #5b6380; }

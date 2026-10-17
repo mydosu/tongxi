@@ -19,6 +19,50 @@ type ClientProvider = Arc<dyn Fn(&Attempt) -> Result<Arc<Client>> + Send + Sync>
 type SessionReady = Arc<dyn Fn(&Attempt, &str) + Send + Sync>;
 type SessionLoaded = Arc<dyn Fn(&Attempt, &str) -> bool + Send + Sync>;
 
+impl Runner {
+    /// 用户在成员专属会话里插话：送进这位成员正在跑的项目任务，不打断它。Codex 用 turn/steer、Claude 用 session/steer
+    /// 立即送达；Hermes、DSH 没有原生插话，记下来等它这一步说完在同一会话里接着发（返回 false 表示排队）。
+    pub fn steer(&self, attempt: &Attempt, text: &str) -> Result<bool> {
+        let client = self
+            .active
+            .lock()
+            .unwrap()
+            .get(&attempt.id)
+            .map(|(_, client)| client.clone())
+            .ok_or("项目任务还没真正开始，请稍后再插话")?;
+        let thread = attempt
+            .native_thread_id
+            .as_deref()
+            .ok_or("项目任务还没真正开始，请稍后再插话")?;
+        let input = json!([{"type":"text","text":format!("用户插话（发在你的专属会话里，针对你正在做的这项任务）：{text}")}]);
+        match crate::project_store::base_agent(&attempt.agent_id) {
+            "codex-win" => {
+                let turn = attempt
+                    .native_turn_id
+                    .as_deref()
+                    .ok_or("项目任务还没真正开始，请稍后再插话")?;
+                client.rpc("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":input}))?;
+            }
+            "claude-win" => {
+                client.rpc("session/steer", json!({"sessionId":thread,"prompt":input}))?;
+            }
+            _ => {
+                self.queued
+                    .lock()
+                    .unwrap()
+                    .entry(attempt.id.clone())
+                    .or_default()
+                    .push(text.to_owned());
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn take_queued(&self, attempt: &str) -> Vec<String> {
+        self.queued.lock().unwrap().remove(attempt).unwrap_or_default()
+    }
+}
+
 pub struct Runner {
     clients: ClientProvider,
     session_ready: SessionReady,
@@ -28,6 +72,8 @@ pub struct Runner {
     /// attempt id → (workflow id, 客户端)。每位成员复用自己的连接，
     /// 取消时按任务过滤；不同成员的独立任务不受影响。
     active: Mutex<HashMap<String, (String, Arc<Client>)>>,
+    /// attempt id → 用户插话。不支持原生插话的 ACP 成员（Hermes、DSH）：等它这一步说完，在同一会话里接着发给它。
+    queued: Mutex<HashMap<String, Vec<String>>>,
     stopping: AtomicBool,
 }
 struct Wire {
@@ -218,6 +264,7 @@ impl Runner {
             store,
             notify,
             active: Mutex::new(HashMap::new()),
+            queued: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
         })
     }
@@ -846,14 +893,9 @@ impl Runner {
                 &attempt.agent_id,
             )?;
             std::fs::create_dir_all(&cwd).map_err(|_| "管家目录创建失败")?;
-            // 本轮还没有调度会话时，先用群里给这位管家绑定的原生会话；都没有就新建。
-            let session = match store.manager_session(&workflow.id)? {
-                Some(session) => Some(session),
-                None => store
-                    .coordinator_binding(&workflow.conversation_id, &attempt.agent_id)?
-                    .map(|(session, _)| session),
-            };
-            return Ok((workflow.id.clone(), session, cwd));
+            // 调度每回合都拿到完整状态（账本、原话、任务、成员结果），续接旧会话只会把每回合的输入
+            // 越叠越长、缓存过期后整段重读，所以每回合新开会话；最近一回合的会话记在本次协作上。
+            return Ok((workflow.id.clone(), None, cwd));
         }
         let chats = store.ensure_project_agent_chats(&workflow.conversation_id)?;
         let chat = chats
@@ -866,9 +908,11 @@ impl Runner {
             .into_iter()
             .find(|session| session.agent_id == crate::project_store::base_agent(&attempt.agent_id))
             .ok_or("项目成员原生会话不存在")?;
+        // 调度让这项从零上下文开始：新开原生会话，之后这个位置就续接新会话。
+        let native = session.native_session_id.filter(|_| !store.clears_context(attempt));
         Ok((
             chat.conversation_id.clone(),
-            session.native_session_id,
+            native,
             PathBuf::from(project.root),
         ))
     }
@@ -989,14 +1033,20 @@ impl Runner {
         if timeout.is_zero() {
             return Err("项目协作超时".into());
         }
-        let sent_wire = wire.clone();
-        let store = self.store.clone();
-        let notify = self.notify.clone();
-        let work_prompt = if manager {
+        let mut work_prompt = if manager {
             prompt.to_owned()
         } else {
             format!("本轮工作目录：{}。所有实现、修改和测试只在此目录；项目原生会话保持同一会话，目录可能随任务切换。\n{}",root.display(),prompt)
         };
+        // 用户插话排着队时，这一步说完后在同一会话里接着发给它，直到没有新的插话。
+        loop {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err("项目协作超时".into());
+        }
+        let sent_wire = wire.clone();
+        let store = self.store.clone();
+        let notify = self.notify.clone();
         let result = match client.rpc_timeout_with_sent(
             "session/prompt",
             json!({"sessionId":session,"prompt":[{"type":"text","text":work_prompt}]}),
@@ -1019,11 +1069,37 @@ impl Runner {
         };
         if let Some(usage) = crate::project_store::Usage::from_acp(&result) {
             let mut state = wire.lock().unwrap();
-            state.attempt.usage = Some(usage);
+            state.attempt.usage = Some(match state.attempt.usage.take() {
+                // 插话后续的那几步用量累加；上下文取最后一步的。
+                Some(before) => crate::project_store::Usage {
+                    input: before.input + usage.input,
+                    cached: before.cached + usage.cached,
+                    output: before.output + usage.output,
+                    reasoning: before.reasoning + usage.reasoning,
+                    cost_usd: match (before.cost_usd, usage.cost_usd) {
+                        (Some(a), Some(b)) => Some(a + b),
+                        (a, b) => a.or(b),
+                    },
+                    ..usage
+                },
+                None => usage,
+            });
             persist(&self.store, &self.notify, &mut state, true);
         }
         if result["stopReason"] != "end_turn" {
             return Err("项目成员未正常完成任务，已保留已有内容".into());
+        }
+        let steers = self.take_queued(&attempt.id);
+        if steers.is_empty() {
+            break;
+        }
+        work_prompt = format!(
+            "用户在你做这项任务时插话（发在你的专属会话里）：
+{}
+按这些话调整后继续把当前任务做完，最后照原要求给出交付摘要。",
+            steers.join("
+")
+        );
         }
         if provider_error_reply(&wire.lock().unwrap().attempt.output).is_some() {
             return Err("项目成员的模型服务返回额度或频率限制，未完成本阶段".into());
