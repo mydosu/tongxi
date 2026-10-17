@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" width="1280" height="520" role="img" aria-label="同席的六个亮点">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f4fc"/>
+      <stop offset="1" stop-color="#eef6f8"/>
+    </linearGradient>
+    <filter id="card" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#565c96" flood-opacity=".10"/>
+    </filter>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b9aee6"/><stop offset="1" stop-color="#9184cf"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a9cbea"/><stop offset="1" stop-color="#7aa6d4"/></linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f5c7b2"/><stop offset="1" stop-color="#e59f86"/></linearGradient>
+    <linearGradient id="g4" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a9e0c8"/><stop offset="1" stop-color="#6fc19f"/></linearGradient>
+    <linearGradient id="g5" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6bfcc"/><stop offset="1" stop-color="#e493a7"/></linearGradient>
+    <linearGradient id="g6" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a7adc8"/><stop offset="1" stop-color="#7a809f"/></linearGradient>
+    <style>
+      text { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', sans-serif; }
+      .t { font-size: 23px; font-weight: 700; fill: #394057; }
+      .d { font-size: 16px; fill: #636a8a; }
+    </style>
+  </defs>
+  <rect width="1280" height="520" rx="28" fill="url(#bg)"/>
+
+  <!-- 1 一张桌子 -->
+  <g transform="translate(50 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g1)"/>
+      <rect x="16" y="16" width="20" height="20" rx="2" fill="none" stroke="#fff" stroke-width="2.4"/>
+      <circle cx="16" cy="16" r="5" fill="#fff"/><circle cx="36" cy="16" r="5" fill="#fff"/>
+      <circle cx="16" cy="36" r="5" fill="#fff"/><circle cx="36" cy="36" r="5" fill="#fff"/>
+    </g>
+    <text class="t" x="96" y="63">一张桌子</text>
+    <text class="d" x="28" y="118">私聊、群聊、项目协作都在一处。</text>
+    <text class="d" x="28" y="144">每位成员可以开多个会话，</text>
+    <text class="d" x="28" y="170">彼此独立、互不影响。</text>
+  </g>
+
+  <!-- 2 原生会话 -->
+  <g transform="translate(450 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin=".5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g2)"/>
+      <rect x="11" y="20" width="18" height="12" rx="6" fill="none" stroke="#fff" stroke-width="2.6"/>
+      <rect x="23" y="20" width="18" height="12" rx="6" fill="none" stroke="#fff" stroke-width="2.6"/>
+    </g>
+    <text class="t" x="96" y="63">接上原生会话</text>
+    <text class="d" x="28" y="118">把成员自己已有的历史会话接进来，</text>
+    <text class="d" x="28" y="144">也能交给它的 CLI 接着聊，</text>
+    <text class="d" x="28" y="170">回到同席时自动补齐。</text>
+  </g>
+
+  <!-- 3 调度主脑 -->
+  <g transform="translate(850 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="1s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g3)"/>
+      <path d="M17 26h8m0 0 9-9m-9 9 9 9" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      <circle cx="15" cy="26" r="4.5" fill="#fff"/><circle cx="36" cy="16" r="4" fill="#fff"/><circle cx="36" cy="36" r="4" fill="#fff"/>
+    </g>
+    <text class="t" x="96" y="63">调度主脑</text>
+    <text class="d" x="28" y="118">拆计划、记账本、写任务说明，</text>
+    <text class="d" x="28" y="144">按价格和上下文给每项任务挑模型，</text>
+    <text class="d" x="28" y="170">力求一次做成。</text>
+  </g>
+
+  <!-- 4 按额度分摊 -->
+  <g transform="translate(50 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="1.5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g4)"/>
+      <rect x="13" y="24" width="6" height="16" rx="3" fill="#fff"><animate attributeName="height" values="16;10;16" dur="2.4s" repeatCount="indefinite"/><animate attributeName="y" values="24;30;24" dur="2.4s" repeatCount="indefinite"/></rect>
+      <rect x="23" y="14" width="6" height="26" rx="3" fill="#fff"><animate attributeName="height" values="26;18;26" dur="2.4s" begin=".4s" repeatCount="indefinite"/><animate attributeName="y" values="14;22;14" dur="2.4s" begin=".4s" repeatCount="indefinite"/></rect>
+      <rect x="33" y="19" width="6" height="21" rx="3" fill="#fff"><animate attributeName="height" values="21;27;21" dur="2.4s" begin=".8s" repeatCount="indefinite"/><animate attributeName="y" values="19;13;19" dur="2.4s" begin=".8s" repeatCount="indefinite"/></rect>
+    </g>
+    <text class="t" x="96" y="63">按额度分摊</text>
+    <text class="d" x="28" y="118">看得到 Claude、Codex 的 5 小时</text>
+    <text class="d" x="28" y="144">和每周额度，把活分到各家头上；</text>
+    <text class="d" x="28" y="170">撞上限额就改派，不干等。</text>
+  </g>
+
+  <!-- 5 随时插话 -->
+  <g transform="translate(450 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="2s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g5)"/>
+      <path d="M14 16h24a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H24l-7 6v-6h-3a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4z" fill="#fff"/>
+      <circle cx="19" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" repeatCount="indefinite"/></circle>
+      <circle cx="26" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" begin=".2s" repeatCount="indefinite"/></circle>
+      <circle cx="33" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" begin=".4s" repeatCount="indefinite"/></circle>
+    </g>
+    <text class="t" x="96" y="63">随时插话</text>
+    <text class="d" x="28" y="118">成员干活时，在它的会话里说一句，</text>
+    <text class="d" x="28" y="144">它就按你的话调整方向，</text>
+    <text class="d" x="28" y="170">不打断、不从头再来。</text>
+  </g>
+
+  <!-- 6 数据在本机 -->
+  <g transform="translate(850 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="2.5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g6)"/>
+      <path d="M26 11 38 16v9c0 8-5 13-12 16-7-3-12-8-12-16v-9z" fill="#fff"/>
+      <path d="m20 26 4.5 4.5L33 22" stroke="#7a809f" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text class="t" x="96" y="63">数据在本机</text>
+    <text class="d" x="28" y="118">会话和设置都存在本机 SQLite，</text>
+    <text class="d" x="28" y="144">Key 用 Windows DPAPI 加密；</text>
+    <text class="d" x="28" y="170">推送、部署要你授权才做。</text>
+  </g>
+</svg>
