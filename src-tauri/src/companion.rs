@@ -1,7 +1,7 @@
-//! 情感伴侣：每个人可以接入自己的伴侣（成员 id 仍是 `albion-wsl`，名字、头像、接口都由用户配置）。
+//! 情感陪伴：每个人可以接入自己的陪伴（成员 id 仍是 `albion-wsl`，名字、头像、接口都由用户配置）。
 //!
 //! 接入方式只有一种、也最通用：**OpenAI 兼容的对话接口**（`/v1/models` + `/v1/chat/completions` 流式）。
-//! 本机自建的伴侣服务（例如阿尔比恩的 Pi 脑 `http://127.0.0.1:8650`）、Ollama、LM Studio，
+//! 本机自建的陪伴服务（例如阿尔比恩的 Pi 脑 `http://127.0.0.1:8650`）、Ollama、LM Studio，
 //! 以及 OpenAI / DeepSeek 这类云端接口都能接。人格、记忆在对方服务里时同席只当客户端；
 //! 没有自建服务时可以填「人设」，作为 system 消息发过去。
 //!
@@ -98,7 +98,7 @@ fn preset() -> CompanionConfig {
     }
     CompanionConfig {
         configured: false,
-        name: "伴侣".into(),
+        name: "陪伴".into(),
         subtitle: "待配置".into(),
         key_source: "none".into(),
         ..CompanionConfig::default()
@@ -120,7 +120,7 @@ impl Store {
         let mut config = self.companion();
         let name: String = input.name.trim().chars().filter(|c| !c.is_control()).take(20).collect();
         if name.is_empty() {
-            return Err("给伴侣起个名字".into());
+            return Err("给陪伴起个名字".into());
         }
         let endpoint = input.endpoint.trim().to_string();
         normalize(&endpoint)?;
@@ -134,7 +134,7 @@ impl Store {
         }
         config.configured = true;
         config.name = name;
-        config.subtitle = clean(input.subtitle).unwrap_or_else(|| "情感伴侣".into());
+        config.subtitle = clean(input.subtitle).unwrap_or_else(|| "情感陪伴".into());
         config.endpoint = endpoint;
         config.key_source = input.key_source;
         config.key_env = clean(input.key_env);
@@ -151,13 +151,13 @@ impl Store {
         if config.key_source != "inline" {
             config.key_secret = None;
         }
-        let text = serde_json::to_string(&config).map_err(|_| "伴侣配置保存失败")?;
+        let text = serde_json::to_string(&config).map_err(|_| "陪伴配置保存失败")?;
         self.connection
             .execute(
                 "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 params![KEY, text],
             )
-            .map_err(|_| "伴侣配置保存失败")?;
+            .map_err(|_| "陪伴配置保存失败")?;
         Ok(config)
     }
 }
@@ -166,7 +166,7 @@ impl Store {
 pub fn normalize(endpoint: &str) -> Result<String> {
     let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.is_empty() {
-        return Err("填写伴侣的接口地址".into());
+        return Err("填写陪伴的接口地址".into());
     }
     let full = if endpoint.contains("://") { endpoint.to_string() } else { format!("http://{endpoint}") };
     let (scheme, rest) = full.split_once("://").ok_or("接口地址无效")?;
@@ -188,7 +188,7 @@ impl CompanionConfig {
     /// 解析出这次请求用的地址与 Key。`AGENT_HUB_ALBION_ENDPOINT` / `_TOKEN` 仍可覆盖（验收脚本用）。
     pub fn link(&self) -> Result<Link> {
         if !self.configured {
-            return Err("还没有配置伴侣：到「成员与服务」里点伴侣卡片上的「配置伴侣」".into());
+            return Err("还没有配置陪伴：到「成员与服务」里点陪伴卡片上的「配置陪伴」".into());
         }
         let endpoint = std::env::var("AGENT_HUB_ALBION_ENDPOINT").unwrap_or_else(|_| self.endpoint.clone());
         let base = normalize(&endpoint)?;

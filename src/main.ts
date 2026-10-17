@@ -44,7 +44,7 @@ const icons: Record<string, string> = {
 };
 const icon = (name: string, className = '') => `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const escape = (value: string | number) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
-// 伴侣上传了头像就用头像（data URL 只含 base64 字符，可以直接放进 style）。
+// 陪伴上传了头像就用头像（data URL 只含 base64 字符，可以直接放进 style）。
 const portrait = (agent: Agent) => agent.avatar && /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+$/.test(agent.avatar) ? agent.avatar : '';
 /// 纯色头像：avatar 存的是 `color:#rrggbb`，字取成员本身名字的首字（改名后跟着变）。
 const solidColor = (agent: Agent) => /^color:#[0-9a-f]{6}$/i.test(agent.avatar || '') ? agent.avatar!.slice(6) : '';
@@ -977,7 +977,7 @@ async function steerReply(agentId: string, conversationId: string, input: HTMLTe
       return message;
     } catch (error) { toast(errorText(error), true); return null; }
   }
-  // 没有原生插话的成员（Hermes、DSH、伴侣）：不打断它，这次回复说完就自动把这条发出去（要打断用「停止」）。
+  // 没有原生插话的成员（Hermes、DSH、陪伴）：不打断它，这次回复说完就自动把这条发出去（要打断用「停止」）。
   if (waitingSends.has(conversationId)) { toast('上一条还在等它说完，说完会一起发出'); return null; }
   waitingSends.add(conversationId);
   toast(`${member(agentId).name} 不支持中途插话，这次回复说完就自动发出`);
@@ -1581,7 +1581,7 @@ async function saveMessage() {
   }
 }
 
-/// 能一键打开的客户端：Hermes 桌面端、codex / claude 命令行、DSH 网页端（伴侣没有客户端）。
+/// 能一键打开的客户端：Hermes 桌面端、codex / claude 命令行、DSH 网页端（陪伴没有客户端）。
 const clientAgents = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win'];
 
 /// 打开成员自己的客户端。
@@ -2147,11 +2147,11 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
 function renderServices() {
   disposeProjectTranscript();
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的伴侣</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 伴侣在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
+  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
-    // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置伴侣、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置伴侣</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   const cards = [...main.querySelectorAll<HTMLElement>('.service-card')];
@@ -2340,7 +2340,7 @@ function wireSetup() {
   main.querySelectorAll<HTMLButtonElement>('[data-companion-config]').forEach(button => button.onclick = () => void companionDialog({ ...host, saved: reloadAgents }).catch(error => toast(errorText(error), true)));
 }
 
-/// 伴侣改了名字、头像后重新取成员名单，侧栏与当前页一起更新。
+/// 陪伴改了名字、头像后重新取成员名单，侧栏与当前页一起更新。
 async function reloadAgents() {
   agents = await invoke<Agent[]>('list_agents');
   await refreshList();

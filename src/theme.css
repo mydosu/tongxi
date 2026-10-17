@@ -300,7 +300,7 @@ html:not([data-hud]) .chat-heading { flex: 1; }
 .install-confirm pre { margin: 6px 0 14px; padding: 10px 12px; border-radius: 10px; background: rgb(40 44 66 / .9); color: #e8e6ff; font: 12px/1.6 'Cascadia Code', Consolas, monospace; white-space: pre-wrap; word-break: break-all; user-select: text; }
 .install-confirm a { color: var(--accent-2); }
 
-/* ---------- 伴侣配置 ---------- */
+/* ---------- 陪伴配置 ---------- */
 .modal:has(#companion-form) { width: 620px; }
 .companion-form { max-height: 70vh; overflow-y: auto; padding-right: 4px; }
 .companion-guide { margin-bottom: 16px; padding: 10px 14px; border-radius: 12px; background: rgb(255 255 255 / .55); border: 1px solid rgb(255 255 255 / .9); font-size: 12px; line-height: 1.8; color: #55607d; }

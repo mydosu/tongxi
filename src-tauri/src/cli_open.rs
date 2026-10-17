@@ -46,7 +46,7 @@ pub(crate) fn resume_command(
             "Write-Host '在打开的 DSH 网页里，从会话历史中选择会话 {session}；关闭本窗口即回到同席。'; {} --profile web",
             program("dsh")
         ),
-        _ => return Err("伴侣通过它自己的服务对话，没有 CLI 可以打开".into()),
+        _ => return Err("陪伴通过它自己的服务对话，没有 CLI 可以打开".into()),
     })
 }
 

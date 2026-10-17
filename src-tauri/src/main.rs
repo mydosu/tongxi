@@ -598,7 +598,7 @@ fn native_snapshot(app: &tauri::AppHandle, agent: &str) -> Result<codex::Runtime
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().snapshot(),
-        _ => return Err("伴侣通过它自己的服务对话，没有 CLI 可以打开".into()),
+        _ => return Err("陪伴通过它自己的服务对话，没有 CLI 可以打开".into()),
     })
 }
 
@@ -742,7 +742,7 @@ fn with_store<T>(
     action(&mut store)
 }
 
-/// 成员名单；伴侣的名字、介绍和头像按用户自己的配置来。
+/// 成员名单；陪伴的名字、介绍和头像按用户自己的配置来。
 #[tauri::command]
 fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
     let (companion, names, faces) = match state.store.lock() {
@@ -769,11 +769,11 @@ fn list_agents(state: State<'_, AppState>) -> Vec<Agent> {
                 agent.name = config.name.clone();
                 agent.subtitle = config.subtitle.clone();
                 agent.avatar = config.avatar.clone();
-                agent.location = "伴侣".into();
+                agent.location = "陪伴".into();
                 agent.role = if config.configured {
                     "通过它自己的服务对话，人格、记忆与工具都在那边".into()
                 } else {
-                    "还没有接入：在「成员与服务」里配置你的伴侣".into()
+                    "还没有接入：在「成员与服务」里配置你的陪伴".into()
                 };
             }
             agent

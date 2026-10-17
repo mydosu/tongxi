@@ -1,7 +1,7 @@
 //! 成员头像：用户换过就用用户的；否则用成员的原生图标——Hermes、DSH 从本机安装里读，
 //! Claude 用 Claude Code 的像素小螃蟹 Clawd，Codex 用 Codex 应用图标（都来自 LobeHub 图标库，MIT）；
 //! 都没有就退回字母头像（由界面画）。
-//! 伴侣没有原生图标，头像就是它配置里的那张。
+//! 陪伴没有原生图标，头像就是它配置里的那张。
 use crate::store::Store;
 use base64::Engine;
 use rusqlite::OptionalExtension;
@@ -67,7 +67,7 @@ pub fn native(agent: &str, data: Option<&Path>) -> Option<String> {
 }
 
 impl Store {
-    /// 用户给成员换的头像（伴侣的在它自己的配置里）。
+    /// 用户给成员换的头像（陪伴的在它自己的配置里）。
     pub fn custom_avatar(&self, agent: &str) -> Option<String> {
         if agent == "albion-wsl" {
             return self.companion().avatar;
@@ -92,10 +92,10 @@ impl Store {
         if agent == "albion-wsl" {
             let mut config = self.companion();
             config.avatar = avatar.map(String::from);
-            let text = serde_json::to_string(&config).map_err(|_| "伴侣配置保存失败")?;
+            let text = serde_json::to_string(&config).map_err(|_| "陪伴配置保存失败")?;
             self.connection
                 .execute("INSERT INTO metadata(key,value) VALUES('companion',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [text])
-                .map_err(|_| "伴侣配置保存失败")?;
+                .map_err(|_| "陪伴配置保存失败")?;
             return Ok(());
         }
         let key = format!("agent_avatar:{agent}");
@@ -191,7 +191,7 @@ mod tests {
     fn bundled_icons_are_svg_and_custom_avatars_override_them() {
         assert!(super::native("codex-win", None).unwrap().starts_with("data:image/svg+xml;base64,"));
         assert!(super::native("claude-win", None).is_some());
-        assert!(super::native("albion-wsl", None).is_none(), "伴侣没有原生图标");
+        assert!(super::native("albion-wsl", None).is_none(), "陪伴没有原生图标");
         assert_eq!(super::without_style("<svg><style>p{}</style><path/></svg>"), "<svg><path/></svg>");
         let mut store = crate::store::Store::initialize(rusqlite::Connection::open_in_memory().unwrap(), std::path::PathBuf::from(":memory:")).unwrap();
         assert!(store.set_custom_avatar("codex-win", Some("not-an-image")).is_err());

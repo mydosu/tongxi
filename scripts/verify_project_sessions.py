@@ -210,7 +210,7 @@ def main() -> int:
         page.wait_for_timeout(1200)
         sd.choose(page, albion["id"])
         page.wait_for_timeout(500)
-        # 伴侣头像来自用户自己的配置（v1.0 起不打包任何角色图片），这里只确认私聊页正常打开。
+        # 陪伴头像来自用户自己的配置（v1.0 起不打包任何角色图片），这里只确认私聊页正常打开。
         check("companion chat opens", page.locator(".chat-heading h1").count() == 1)
         shot("albion")
 

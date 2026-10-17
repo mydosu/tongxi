@@ -1,7 +1,7 @@
 export interface Agent {
   id: string; name: string; subtitle: string; role: string;
   location: string; accent: string; status: 'not_connected';
-  /** 伴侣头像（用户上传的 data URL）。 */
+  /** 陪伴头像（用户上传的 data URL）。 */
   avatar?: string;
 }
 export interface Conversation {

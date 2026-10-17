@@ -1,7 +1,7 @@
-//! 情感伴侣（成员 id `albion-wsl`）的运行时。接口、名字、Key 都来自用户的伴侣配置（`companion.rs`）。
+//! 情感陪伴（成员 id `albion-wsl`）的运行时。接口、名字、Key 都来自用户的陪伴配置（`companion.rs`）。
 //!
-//! 伴侣服务 = 任意 OpenAI 兼容端点：人格、回忆、工具在对方服务里时，同席只当**客户端**——
-//! 连接=取模型，发送=重发房间历史拿流式正文。同席**不拉伴侣的进程**，启停归它自己。
+//! 陪伴服务 = 任意 OpenAI 兼容端点：人格、回忆、工具在对方服务里时，同席只当**客户端**——
+//! 连接=取模型，发送=重发房间历史拿流式正文。同席**不拉陪伴的进程**，启停归它自己。
 //!
 //! ponytail: MVP 范围＝连上 + 私聊真流式；群聊/项目把她当成员、线级中断还没接。
 
@@ -299,7 +299,7 @@ impl Brain {
             .active
             .as_mut()
             .filter(|run| run.record.conversation_id == conversation_id && busy(run))
-            .ok_or("伴侣当前没有在回复")?;
+            .ok_or("陪伴当前没有在回复")?;
         run.record.status = "interrupted".into();
         let record = run.record.clone();
         let (text, thought) = (run.text.clone(), run.thought.clone());
