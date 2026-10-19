@@ -257,6 +257,78 @@
 
 <br />
 
+## 🧱 技术栈
+
+同席是一个 Windows 原生桌面应用：界面用 TypeScript 手写（不依赖前端框架），后端是 Rust，二者跑在 Tauri 2 里。成员都通过各自官方的 CLI 或协议接入，同席不改它们的安装、不替它们保管登录凭据。
+
+<details open>
+<summary><b>整体分层</b></summary>
+
+<br />
+
+| 层 | 用到的技术 | 负责什么 |
+|---|---|---|
+| **桌面壳** | [Tauri 2](https://v2.tauri.app/) · WebView2 | 无边框主窗口、托盘图标、单实例、全局快捷键 `Ctrl+Shift+H` 唤出 HUD 浮窗 |
+| **界面** | TypeScript 5 · [Vite 6](https://vite.dev/) · 原生 DOM + CSS | 私聊/群聊、项目进度页、成员会话视图、主题与背景；CSP 只放行本地资源 |
+| **渲染** | 自写 Markdown 渲染 · [KaTeX](https://katex.org/) | 成员回复里的代码块、表格、数学公式，思考流和工具调用的折叠时间线 |
+| **核心** | Rust 2021 · `serde` / `serde_json` | 会话与消息路由、成员运行时、调度主脑、Git 工作树、额度与价格 |
+| **存储** | SQLite（`rusqlite`，内置编译） | 会话、消息、项目、计划账本、token 用量，全部在一个本地库里 |
+| **系统接口** | `windows-sys` | DPAPI 加密 Key、Job Object 托管子进程（同席退出就一并结束）、剪贴板图片、拖入文件 |
+| **网络** | `ureq`（同步 HTTP，带 TLS） | 陪伴的 OpenAI 兼容接口、价格表更新、额度查询 |
+
+</details>
+
+<details>
+<summary><b>成员怎么接进来</b></summary>
+
+<br />
+
+| 成员 | 接入通路 | 会话存在哪 |
+|---|---|---|
+| **Codex** | 启动本机 `codex app-server`，走 stdio 上的 JSON-RPC | Codex 自己的 `~/.codex` |
+| **Claude Code** | `claude_bridge.mjs` 把 ACP 转成 `claude -p --output-format stream-json`，每轮续接同一条原生会话 | Claude Code 自己的 `~/.claude` |
+| **Hermes** | `hermes_bridge.py` 在进程内扩展已安装的 Hermes ACP，原生工具和 MCP 照常可用 | 同席给它单独的 SessionDB |
+| **DSH** | `dsh_bridge.mjs` 直接加载已安装的 DeepSeek harness，走 ACP；`dsh_fallback.mjs` 在额度/限流/超时时切换备用路由 | DSH 的会话文件 |
+| **陪伴** | 任意 OpenAI 兼容端点：`/v1/models` 取模型、`/v1/chat/completions` 收流式正文 | 对方服务里（同席只当客户端，不拉起它的进程） |
+
+几个共性：
+
+- **原生会话互通**：会话 ID 和工作目录记在同席里，内容留在成员自己的会话库，所以「在 CLI 中打开此会话」能把同一条会话交给 CLI 接着聊，CLI 关掉后同席自动收回。
+- **桥接脚本只用 Node / Python 标准库**，不引入第三方依赖；stdio 上只走协议，日志另走。
+- **成员更新**：DSH、Codex 的新版本先装到隔离目录里校验，确认后才替换，不动全局 npm 配置。
+
+</details>
+
+<details>
+<summary><b>项目协作用到的部件</b></summary>
+
+<br />
+
+| 部件 | 实现 |
+|---|---|
+| **调度主脑** | 一位成员的长驻会话，输出结构化指令（派任务、收尾、`next_sections` 列剩余板块），由 `project_coordinator.rs` 解析执行 |
+| **计划账本** | SQLite 表记录板块、任务说明、验收结论和每轮 token 用量，下次协作接着读 |
+| **工作树** | 每项实现任务一棵 `git worktree`；原仓库有未提交改动时先单独提交（凭据和生成目录除外），全部验收后按顺序合并 |
+| **额度** | Claude 读 Claude Code 登录留下的 OAuth 令牌查官方用量（只读、不刷新令牌）；Codex 走 app-server 的 `account/rateLimits/read`；报错里的重置时间也会识别 |
+| **价格表** | 每天从 [LiteLLM](https://github.com/BerriAI/litellm) 社区价格表拉一次，抽出标价、分段计价、上下文窗口缓存到本地；拉不到用内置的 `pricing.json` |
+| **插话** | 成员干活时把你的话作为 steer 注入当前回合，不中断、不重开 |
+| **项目记忆**（可选） | `project_memory.py` 接本机 OpenViking 客户端：项目共享池 + 每位成员的私有笔记，显式分享 |
+
+</details>
+
+<details>
+<summary><b>构建与发布</b></summary>
+
+<br />
+
+- **构建**：`tauri build --no-bundle` 产出单个 exe；release 配置开了 LTO、`opt-level = "s"`、`strip`、`panic = "abort"`，整个程序约 9 MB。
+- **留档**：`scripts/package-desktop.mjs` 把 exe 复制到 `release/Agent Hub.exe`，同时在 `release/vX.Y.Z/` 存一份，并写一份带 SHA-256 的 manifest。
+- **测试**：Rust 单元测试覆盖调度解析、账本、工作树、附件、额度解析等；桌面验收脚本用 Python Playwright 通过 WebView2 CDP 驱动打包好的 exe（见下方）。
+
+</details>
+
+<br />
+
 ## 🛠 开发与测试
 
 ```powershell
@@ -267,7 +339,7 @@ npm run desktop                                 # 开发模式运行
 npm run desktop:build                           # 构建 release/Agent Hub.exe 并在 release/vX.Y.Z 留档
 ```
 
-构建需要 Rust（MSVC）、Node 和 WebView2，见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)。技术栈是 Tauri 2 + TypeScript + Rust + SQLite。
+构建需要 Rust（MSVC）、Node 和 WebView2，见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)。各部分用到的技术见上面的 [技术栈](#-技术栈)。
 
 <details>
 <summary><b>桌面验收脚本</b></summary>
