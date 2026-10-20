@@ -47,6 +47,7 @@ mod project_store;
 mod project_tests;
 mod project_tools;
 mod project_worktree;
+mod secret_scan;
 mod projects;
 mod rpc;
 mod service_apply;

@@ -358,9 +358,50 @@ pub fn merged(root: &Path, branch: &str) -> bool {
     git(root, &["merge-base", "--is-ancestor", branch, "HEAD"]).is_ok()
 }
 
+pub fn git_dir(root: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim()))
+}
+
+/// 已跟踪文件相对 HEAD 新增的行（行号按新文件计）。没 HEAD 时返回空表，调用方按全文处理。
+pub fn added_lines(
+    root: &Path,
+    files: &[&String],
+) -> Result<std::collections::HashMap<String, Vec<(usize, String)>>> {
+    let mut result = std::collections::HashMap::new();
+    if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+        return Ok(result);
+    }
+    for batch in files.chunks(128) {
+        let mut args = vec!["ls-files", "-z", "--"];
+        args.extend(batch.iter().map(|file| file.as_str()));
+        for file in git(root, &args)?.split(' ').filter(|file| !file.is_empty()) {
+            result.insert(file.to_owned(), Vec::new());
+        }
+        let mut args = vec!["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--"];
+        args.extend(batch.iter().map(|file| file.as_str()));
+        let (mut current, mut line) = (None::<String>, 0usize);
+        for text in git(root, &args)?.lines() {
+            if let Some(path) = text.strip_prefix("+++ ") {
+                current = path.strip_prefix("b/").map(String::from);
+            } else if let Some(hunk) = text.strip_prefix("@@ ") {
+                line = hunk
+                    .split_whitespace()
+                    .find_map(|part| part.strip_prefix('+'))
+                    .and_then(|range| range.split(',').next()?.parse().ok())
+                    .unwrap_or(1);
+            } else if let (Some(added), Some(file)) = (text.strip_prefix('+'), &current) {
+                result.entry(file.clone()).or_default().push((line, added.to_owned()));
+                line += 1;
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// 原仓库当前的未提交改动（路径集合，含未跟踪文件；Python 字节码缓存除外）。
 /// 任务前后各取一次，用来发现成员绕过任务工作树、直接改了项目根目录的情况。
-pub fn root_changes(root: &Path) -> Result<std::collections::BTreeSet<String>> {
+/// 值是文件大小与修改时间的指纹：已经改过的文件再次被改也能看出来（只比路径集合会漏掉）。
+pub fn root_changes(root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
     let status = git(
         root,
         &["status", "--porcelain", "-z", "--untracked-files=all"],
@@ -375,7 +416,43 @@ pub fn root_changes(root: &Path) -> Result<std::collections::BTreeSet<String>> {
                 .map(|(_, path)| path.to_owned())
         })
         .filter(|path| !path.split('/').any(|part| part == "__pycache__"))
+        .map(|path| {
+            let print = std::fs::metadata(root.join(&path)).map_or_else(
+                |_| "missing".to_owned(),
+                |meta| {
+                    let modified = meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |at| at.as_nanos());
+                    format!("{}:{modified}", meta.len())
+                },
+            );
+            (path, print)
+        })
         .collect())
+}
+
+/// 把文件撤出暂存区（工作区内容不动）。
+pub fn unstage(path: &Path, files: &[String]) -> Result<()> {
+    for batch in files.chunks(128) {
+        let mut args = vec!["reset", "-q", "--"];
+        args.extend(batch.iter().map(String::as_str));
+        git(path, &args)?;
+    }
+    Ok(())
+}
+
+/// 两次快照之间新出现或内容有变的路径。
+pub fn changed_since(
+    before: &std::collections::BTreeMap<String, String>,
+    after: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    after
+        .iter()
+        .filter(|(path, print)| before.get(*path) != Some(*print))
+        .map(|(path, _)| path.clone())
+        .collect()
 }
 
 /// 多个任务可能同时开工：开工前提交在同一进程内串行，避免 git index.lock 冲突。
@@ -428,6 +505,16 @@ pub fn checkpoint(root: &Path) -> Result<Option<String>> {
             files.push(file.to_owned());
         }
     }
+    // 未提交的改动里有高置信度的密钥就不自动提交，交给用户处理；低置信度的只在说明里提醒。
+    let findings = crate::secret_scan::scan(root, &files);
+    let (high, low): (Vec<_>, Vec<_>) = findings.into_iter().partition(|finding| finding.high);
+    if !high.is_empty() {
+        return Err(format!(
+            "原仓库未提交的改动里有疑似密钥：{}。为免泄露没有自动提交；请移除或加入 .gitignore，确认安全的文件可把路径写进 .git/info/{} 后再继续协作",
+            crate::secret_scan::describe(&high),
+            crate::secret_scan::ALLOW_FILE
+        ));
+    }
     excluded.sort();
     excluded.dedup();
     if !excluded.is_empty() {
@@ -450,12 +537,15 @@ pub fn checkpoint(root: &Path) -> Result<Option<String>> {
         return Ok(skipped);
     }
     let exe = discover().ok_or("未找到 git 可执行文件，请检查 PATH 或 AGENT_HUB_GIT_EXE")?;
+    let previous = git(root, &["rev-parse", "--short", "HEAD"]).ok();
     for batch in files.chunks(128) {
         let mut args = vec!["add", "-A", "--"];
         args.extend(batch.iter().map(String::as_str));
         run(&exe, root, &args, GIT_TIMEOUT, || false)?;
     }
-    run(
+    // 自动提交跳过仓库的 hooks（可能交互或很慢）；敏感内容由上面的扫描把关。
+    // 提交失败就撤回暂存，工作区内容不动，仓库回到开工前的样子。
+    let committed = run(
         &exe,
         root,
         &[
@@ -471,9 +561,26 @@ pub fn checkpoint(root: &Path) -> Result<Option<String>> {
         ],
         GIT_TIMEOUT,
         || false,
-    )?;
+    );
+    if let Err(error) = committed {
+        if previous.is_some() {
+            for batch in files.chunks(128) {
+                let mut args = vec!["reset", "-q", "--"];
+                args.extend(batch.iter().map(String::as_str));
+                let _ = run(&exe, root, &args, GIT_TIMEOUT, || false);
+            }
+        }
+        return Err(format!("开工前自动提交失败，已撤回暂存、改动原样保留：{error}"));
+    }
     let head = git(root, &["rev-parse", "--short", "HEAD"])?;
-    let mut summary = format!("已提交 {} 个文件（提交 {}）", files.len(), head.trim());
+    let mut summary = format!("已提交 {} 个文件（提交 {}", files.len(), head.trim());
+    if let Some(previous) = previous {
+        summary.push_str(&format!("，要撤回可在项目目录运行 git reset --soft {}", previous.trim()));
+    }
+    summary.push('）');
+    if !low.is_empty() {
+        summary.push_str(&format!("；提醒：{} 看起来像写死的密码或密钥，请确认", crate::secret_scan::describe(&low)));
+    }
     if let Some(skipped) = skipped {
         summary.push('；');
         summary.push_str(&skipped);
@@ -937,7 +1044,7 @@ mod tests {
         std::fs::write(repo.join("tests/pi/__pycache__/x.pyc"), "x").unwrap();
         let changes = root_changes(&repo).unwrap();
         assert_eq!(
-            changes.into_iter().collect::<Vec<_>>(),
+            changes.into_keys().collect::<Vec<_>>(),
             vec!["base.txt".to_string(), "tests/pi/probe.sh".to_string()]
         );
         let _ = std::fs::remove_dir_all(&base);

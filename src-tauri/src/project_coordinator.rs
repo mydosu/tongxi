@@ -1416,12 +1416,26 @@ impl Runtime {
         let before = branch
             .as_ref()
             .and_then(|_| crate::project_worktree::root_changes(root).ok());
+        // 其他已登记项目也记一份：成员误改了别的项目要能发现。
+        let others: Vec<(String, std::path::PathBuf, std::collections::BTreeMap<String, String>)> = self
+            .store
+            .lock()
+            .unwrap()
+            .projects()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|other| other.id != project.id && crate::project_worktree::is_repo(Path::new(&other.root)))
+            .filter_map(|other| {
+                let changes = crate::project_worktree::root_changes(Path::new(&other.root)).ok()?;
+                Some((other.name, std::path::PathBuf::from(other.root), changes))
+            })
+            .collect();
         let result = self
             .native
             .run(attempt, &cwd, &prompt.to_string(), deadline)?;
         if let Some(before) = before {
             if let Ok(after) = crate::project_worktree::root_changes(root) {
-                let stray = after.difference(&before).cloned().collect::<Vec<_>>();
+                let stray = crate::project_worktree::changed_since(&before, &after);
                 if !stray.is_empty() {
                     let shown = stray.iter().take(8).cloned().collect::<Vec<_>>().join("、");
                     let more = if stray.len() > 8 {
@@ -1439,8 +1453,45 @@ impl Runtime {
                 }
             }
         }
+        for (name, other_root, before) in others {
+            let Ok(after) = crate::project_worktree::root_changes(&other_root) else { continue };
+            let stray = crate::project_worktree::changed_since(&before, &after);
+            if !stray.is_empty() {
+                let shown = stray.iter().take(8).cloned().collect::<Vec<_>>().join("、");
+                let _ = self.store.lock().unwrap().add_system_team_message(
+                    id,
+                    &format!(
+                        "注意：本任务期间另一个已登记项目「{name}」的文件有变动（{shown}），可能是 {} 误改，也可能是你在那边的操作；请确认。",
+                        crate::store::agent_name(&task.agent_id)
+                    ),
+                );
+            }
+        }
         if result.status == "completed" {
-            let files = crate::project_worktree::coordinated_files(&cwd)?;
+            let mut files = crate::project_worktree::coordinated_files(&cwd)?;
+            // 提交前查敏感内容：高置信度的文件不提交（也就不会合并），低置信度的提醒。
+            let findings = crate::secret_scan::scan(&cwd, &files);
+            let (high, low): (Vec<_>, Vec<_>) = findings.into_iter().partition(|finding| finding.high);
+            if !high.is_empty() {
+                files.retain(|file| !high.iter().any(|finding| &finding.file == file));
+                let blocked: Vec<String> = high.iter().map(|finding| finding.file.clone()).collect();
+                crate::project_worktree::unstage(&cwd, &blocked)?;
+                let _ = self.store.lock().unwrap().add_system_team_message(
+                    id,
+                    &format!(
+                        "「{}」的改动里有疑似密钥：{}。这些文件没有提交、不会合并，留在任务工作树里；确认安全的可把路径写进 .git/info/{}。",
+                        task.title,
+                        crate::secret_scan::describe(&high),
+                        crate::secret_scan::ALLOW_FILE
+                    ),
+                );
+            }
+            if !low.is_empty() {
+                let _ = self.store.lock().unwrap().add_system_team_message(
+                    id,
+                    &format!("提醒：「{}」的改动里 {} 看起来像写死的密码或密钥，请确认。", task.title, crate::secret_scan::describe(&low)),
+                );
+            }
             crate::project_worktree::commit(
                 &cwd,
                 &format!("tongxi: {} task {}", task.agent_id, task.id),

@@ -2139,3 +2139,37 @@ fn review_accepts_bare_keys_without_changing_strings_or_inventing_approval() {
     .is_err());
     assert!(crate::project_store::parse_review("Everything seems approved: true").is_err());
 }
+
+#[test]
+fn checkpoint_blocks_real_secrets_honors_allowlist_and_leaves_recovery_hint() {
+    let f = Fixture::new();
+    crate::project_worktree::initialize_safe_repository(&f.root).unwrap();
+    std::fs::write(f.root.join("notes.md"), "plain notes\n").unwrap();
+    std::fs::write(f.root.join("config.py"), "TOKEN = 'ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'\n").unwrap();
+    let error = crate::project_worktree::checkpoint(&f.root).unwrap_err();
+    assert!(error.contains("config.py:1（GitHub 令牌）"), "{error}");
+    // 没有任何东西被提交：两个文件都还是未跟踪。
+    let changes = crate::project_worktree::root_changes(&f.root).unwrap();
+    assert!(changes.contains_key("notes.md") && changes.contains_key("config.py"));
+    // 用户确认安全后写进本地例外清单，就能照常提交，说明里带撤回方法。
+    let git_dir = crate::project_worktree::git_dir(&f.root).unwrap();
+    std::fs::write(git_dir.join("info").join(crate::secret_scan::ALLOW_FILE), "# 测试用假令牌\nconfig.py\n").unwrap();
+    let summary = crate::project_worktree::checkpoint(&f.root).unwrap().unwrap();
+    assert!(summary.contains("git reset --soft"), "{summary}");
+    // 已跟踪文件只看新增的行：旧内容里的令牌不会每次都拦。
+    std::fs::write(git_dir.join("info").join(crate::secret_scan::ALLOW_FILE), "").unwrap();
+    std::fs::write(f.root.join("config.py"), "TOKEN = 'ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'\nDEBUG = True\n").unwrap();
+    assert!(crate::project_worktree::checkpoint(&f.root).unwrap().is_some());
+}
+
+#[test]
+fn root_change_fingerprint_sees_a_second_edit_to_an_already_dirty_file() {
+    let f = Fixture::new();
+    crate::project_worktree::initialize_safe_repository(&f.root).unwrap();
+    std::fs::write(f.root.join("draft.txt"), "one\n").unwrap();
+    let before = crate::project_worktree::root_changes(&f.root).unwrap();
+    std::fs::write(f.root.join("draft.txt"), "one\ntwo\n").unwrap();
+    let after = crate::project_worktree::root_changes(&f.root).unwrap();
+    assert_eq!(crate::project_worktree::changed_since(&before, &after), vec!["draft.txt".to_owned()]);
+    assert!(crate::project_worktree::changed_since(&after, &after).is_empty());
+}
