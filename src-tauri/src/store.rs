@@ -116,7 +116,7 @@ pub fn agents() -> Vec<Agent> {
             "dsh-win",
             "DSH",
             "DeepSeek Harness",
-            "本机 DSH，使用它自己的原生工具；模型走 DSH 自己（或 Hermes 中）配置的 DeepSeek 线路",
+            "本机 DSH，使用它自己的原生工具，以及它自己配置的模型与 Key",
             "Windows",
             "blue",
         ),

@@ -141,7 +141,10 @@ try {
     }
   }
   const added = entries.filter(item => !plugins.some(([id]) => id === item.id)).map(item => item.id);
-  if (skipped.length || added.length) noteFailure(`插件组合调整：跳过 [${skipped}]，按官方依赖补上 [${added}]`);
+  // 只是说明，不是错误：另存一份，免得排障时把它当成起不来的原因。
+  if (skipped.length || added.length) try {
+    writeFileSync(join(data, 'bridge-notes.log'), `${new Date().toISOString()} 插件组合调整：跳过 [${skipped}]，按官方依赖补上 [${added}]\n`, { flag: 'a' });
+  } catch {}
   const configure = (id, config) => { const entry = entries.find(item => item.id === id); if (entry) entry.config = config; };
   configure('session-persistence-jsonl', {
     root: join(dshHome, 'sessions'), compression: sharedHome ? 'zstd' : 'none' });

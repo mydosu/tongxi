@@ -88,6 +88,24 @@ def menu_click(card, selector):
     button.click(timeout=900000)
 
 
+def card_shows(page, version, timeout=60):
+    """卡片上「安装」一栏要跟着正在用的那份走（启用 / 回退后重新扫描）。"""
+    try:
+        page.wait_for_function(
+            """version => {
+                const line = document.querySelector('[data-service-id="codex-win"] .setup-line');
+                return !!line && line.textContent.includes(version);
+            }""",
+            arg=version,
+            timeout=timeout * 1000,
+        )
+        return True
+    except Exception:
+        line = page.locator('[data-service-id="codex-win"] .setup-line')
+        print("DEBUG setup-line: " + (line.text_content() if line.count() else "<none>"), flush=True)
+        return False
+
+
 def wait_for(page, label, predicate, timeout=900):
     deadline = timeout
     waited = 0
@@ -170,6 +188,10 @@ def run():
                 entry.get("installed_version") == module.get("candidate_version"),
             )
 
+            check("启用后卡片「安装」一栏显示候选版本", card_shows(page, str(module.get("candidate_version"))))
+            check("启用后「更新」一栏说人话，不露状态码",
+                  "managed" not in (card.locator("[data-service-update]").text_content() or ""))
+
             # 3) 外部那份必须一动不动。
             still_version, still_hash = external_state()
             check("外部安装版本未变（v" + str(still_version) + "）", still_version == before_version)
@@ -206,6 +228,7 @@ def run():
                 "回退后 Codex 回到外部安装（v" + str(back.get("installed_version")) + "）",
                 back.get("installed_version") == before_version,
             )
+            check("回退后卡片「安装」一栏回到外部版本", card_shows(page, str(before_version)))
             final_version, final_hash = external_state()
             check("回退后外部安装仍然没被动过", (final_version, final_hash) == (before_version, before_hash))
             # 顺带看住用户实际在跑的那份：同席全程不该碰它。
