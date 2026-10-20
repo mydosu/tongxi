@@ -453,6 +453,9 @@ pub struct Usage {
     pub cache_write: u64,
     pub output: u64,
     pub reasoning: u64,
+    /// 其中子 agent 的消耗（已含在 input/output 里）；成员报得出来才有。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub subagent: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// cost_usd 的口径：api_estimate = 按 API 价折算的等值估算（订阅下不是实际扣款）；provider = 服务商报的额度消耗。
@@ -464,6 +467,10 @@ pub struct Usage {
     /// 任务结束时这条会话的上下文大小（最后一次模型调用的输入+输出）。调度据此判断换模型会不会踩到分段计价。
     #[serde(default)]
     pub context: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Usage {
@@ -482,6 +489,7 @@ impl Usage {
             cache_write: self.cache_write.saturating_sub(base.cache_write),
             output: self.output.saturating_sub(base.output),
             reasoning: self.reasoning.saturating_sub(base.reasoning),
+            subagent: self.subagent.saturating_sub(base.subagent),
             cost_usd: None,
             cost_kind: None,
             context_only: false,
@@ -516,6 +524,7 @@ impl Usage {
             cache_write: n("cachedWriteTokens"),
             output,
             reasoning: n("thoughtTokens"),
+            subagent: result["_meta"]["subagentTokens"].as_u64().unwrap_or(0),
             cost_usd: result["_meta"]["costUsd"].as_f64().filter(|cost| *cost >= 0.0),
             // Claude 桥接的 costUsd 是 SDK 按 API 价算的，订阅登录时并非实际扣款。
             cost_kind: result["_meta"]["costUsd"].as_f64().map(|_| "api_estimate".into()),
