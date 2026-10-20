@@ -402,6 +402,7 @@ pub fn added_lines(
 /// 任务前后各取一次，用来发现成员绕过任务工作树、直接改了项目根目录的情况。
 /// 值是文件大小与修改时间的指纹：已经改过的文件再次被改也能看出来（只比路径集合会漏掉）。
 pub fn root_changes(root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let _serial = serial();
     let status = git(
         root,
         &["status", "--porcelain", "-z", "--untracked-files=all"],
@@ -455,8 +456,13 @@ pub fn changed_since(
         .collect()
 }
 
-/// 多个任务可能同时开工：开工前提交在同一进程内串行，避免 git index.lock 冲突。
+/// 多个任务同时开工、做完的任务同时在合并：开工前提交、建工作树、合并和查根目录状态
+/// 在同一进程内串行，避免 git index.lock 冲突。
 static CHECKPOINT: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    CHECKPOINT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// 开工前提交原仓库里的未提交改动，返回给团队看的一句说明；仓库本来就干净返回 `None`。
 ///
@@ -467,9 +473,7 @@ pub fn checkpoint(root: &Path) -> Result<Option<String>> {
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
-    let _serial = CHECKPOINT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _serial = serial();
     let git_dir = PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim());
     if let Some(problem) = midway_state(root)? {
         return Err(format!("{problem}，无法自动提交"));
@@ -613,6 +617,7 @@ pub fn create(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Re
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
+    let _serial = serial();
     let status = git(
         root,
         &["status", "--porcelain", "-z", "--untracked-files=all"],
@@ -877,6 +882,7 @@ pub fn merge(root: &Path, branch: &str) -> Result<String> {
     if !is_repo(root) {
         return Err("目标目录不是 git 仓库".into());
     }
+    let _serial = serial();
     // 主仓库里未提交的改动碰到了任务分支改过的文件时，git 会拒绝合并（怕覆盖本地改动）。
     // 常见情形是成员先在主目录试改、再把同样的改动提交进任务分支：这些文件内容和合并结果逐字相同，
     // 就先把它们暂存起来再合并，合并成功后内容本就一致，丢掉暂存；合并失败就原样放回。
