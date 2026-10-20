@@ -1036,6 +1036,7 @@ impl Runner {
         let sent_wire = wire.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
+        let prompt_started = crate::store::now();
         let result = match client.rpc_timeout_with_sent(
             "session/prompt",
             json!({"sessionId":session,"prompt":[{"type":"text","text":work_prompt}]}),
@@ -1056,7 +1057,13 @@ impl Runner {
             }
             Err(error) => return Err(error),
         };
-        if let Some(usage) = crate::project_store::Usage::from_acp(&result) {
+        // DSH 的回包不带用量：从它自己的会话日志里把这一轮的模型调用加起来。
+        let usage = crate::project_store::Usage::from_acp(&result).or_else(|| {
+            (base == "dsh-win")
+                .then(|| crate::dsh::session_usage(&session, prompt_started))
+                .flatten()
+        });
+        if let Some(usage) = usage {
             let mut state = wire.lock().unwrap();
             state.attempt.usage = Some(match state.attempt.usage.take() {
                 // 之前只有上下文占位（DSH usage_update）：精确用量到了就替换，不累加；占位带的服务商费用留着。
