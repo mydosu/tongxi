@@ -212,6 +212,66 @@ fn logical_usage(workflow: &Workflow, routes: &[crate::coordinator_store::TaskRo
         .collect()
 }
 
+/// 资源池：一份订阅或一个计费账户。Claude、Codex 走各自的订阅；DSH、Hermes 按模型所在线路（提供商配置）分池，
+/// 两者各配各的 Key，同名线路也不合并。拿不到的数据不填，不当 0。
+pub(crate) fn pool_of(base: &str, provider: Option<&str>) -> String {
+    match (base, provider) {
+        ("claude-win", _) => "claude-subscription".into(),
+        ("codex-win", _) => "chatgpt-subscription".into(),
+        (base, Some(provider)) => format!("{base}:{provider}"),
+        (base, None) => base.into(),
+    }
+}
+
+/// 各资源池在本次协作里的消耗与额度状态。订阅池只给额度使用率，不折成美元；
+/// 线路池给服务商报的额度消耗（provider）与 API 等值估算，各自分开。
+pub(crate) fn resource_pools(
+    workflow: &Workflow,
+    quota: &Value,
+    providers: &std::collections::HashMap<(String, String), String>,
+) -> Vec<Value> {
+    let mut pools: Vec<(String, Value)> = Vec::new();
+    for attempt in workflow.attempts.iter().filter(|attempt| attempt.status != "starting") {
+        let base = crate::project_store::base_agent(&attempt.agent_id);
+        let provider = attempt
+            .model
+            .as_ref()
+            .and_then(|model| providers.get(&(base.to_owned(), model.clone())));
+        let key = pool_of(base, provider.map(String::as_str));
+        let index = match pools.iter().position(|(pool, _)| *pool == key) {
+            Some(index) => index,
+            None => {
+                let kind = match base {
+                    "claude-win" | "codex-win" => "subscription",
+                    _ if provider.is_some() => "provider",
+                    _ => "unknown",
+                };
+                let quota = quota.get(base).cloned().unwrap_or_else(|| json!("unknown"));
+                pools.push((key.clone(), json!({"pool":key,"kind":kind,"agents":[],"quota":quota,"tokens":0,"unknown_attempts":0})));
+                pools.len() - 1
+            }
+        };
+        let pool = &mut pools[index].1;
+        if !pool["agents"].as_array().unwrap().iter().any(|agent| agent == base) {
+            pool["agents"].as_array_mut().unwrap().push(json!(base));
+        }
+        let usage = attempt.usage.as_ref();
+        match usage.and_then(|usage| usage.spent()) {
+            Some(spent) => pool["tokens"] = json!(pool["tokens"].as_u64().unwrap_or(0) + spent),
+            None => pool["unknown_attempts"] = json!(pool["unknown_attempts"].as_u64().unwrap_or(0) + 1),
+        }
+        if let Some(cost) = usage.and_then(|usage| usage.cost_usd) {
+            let field = match usage.and_then(|usage| usage.cost_kind.as_deref()) {
+                Some("provider") => "provider_cost_usd",
+                _ => "api_estimate_usd",
+            };
+            let sum = pool[field].as_f64().unwrap_or(0.0) + cost;
+            pool[field] = json!((sum * 10000.0).round() / 10000.0);
+        }
+    }
+    pools.into_iter().map(|(_, pool)| pool).collect()
+}
+
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
     let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
@@ -614,6 +674,8 @@ impl Runtime {
             let preference = self.store.lock().unwrap().project_preference(&workflow.conversation_id);
             // 同一位成员的几个会话共用一份模型目录：按 base_agent 只给一次，省得每回合重复几千字。
             let mut models_by_member = serde_json::Map::new();
+            // (base_agent, 模型) → 线路（提供商）：用来把各次执行归到所属的资源池。
+            let mut providers = std::collections::HashMap::new();
             let catalogs = members
                 .iter()
                 .filter(|agent| crate::project_store::EXECUTOR_AGENTS.contains(&agent.as_str()))
@@ -644,6 +706,10 @@ impl Runtime {
                             .iter()
                             .map(|model| {
                                 let mut value = json!({"id":model.id,"efforts":model.efforts});
+                                if let Some(provider) = &model.provider_id {
+                                    providers.insert((base.to_owned(), model.id.clone()), provider.clone());
+                                    value["pool"] = json!(pool_of(base, Some(provider)));
+                                }
                                 if model.name != model.id {
                                     value["name"] = json!(model.name);
                                 }
@@ -688,7 +754,7 @@ impl Runtime {
                 feedback = offer.take();
             }
             let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
-            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
+            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给状态；其他线路说明放最前面。
             let input = if matches!(
                 crate::project_store::base_agent(&manager.coordinator.agent),
@@ -1454,5 +1520,47 @@ mod tests {
         partial.attempts[2].usage = Some(Usage { input: 9000, context_only: true, ..Default::default() });
         let logical = super::logical_usage(&partial, &routes);
         assert!(logical[0]["tokens"].is_null() && logical[0]["by_purpose"]["verification"].is_null());
+    }
+
+    pub(crate) fn sample_attempt(agent: &str, model: &str, status: &str, usage: Option<crate::project_store::Usage>) -> crate::project_store::Attempt {
+        crate::project_store::Attempt {
+            id: format!("{agent}-{model}-{status}"), created_at: 0, workflow_id: "w".into(), task_id: None, agent_id: agent.into(),
+            stage: "implement".into(), activity: None, status: status.into(), native_thread_id: None, native_turn_id: None,
+            model: Some(model.into()), reasoning_effort: None, thought: String::new(), tool_events: vec![], output: String::new(),
+            error: None, usage,
+        }
+    }
+
+    pub(crate) fn sample_workflow(attempts: Vec<crate::project_store::Attempt>) -> crate::project_store::Workflow {
+        crate::project_store::Workflow {
+            id: "w".into(), project_id: "p".into(), conversation_id: "c".into(), user_message_id: "u1".into(), request: String::new(),
+            status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
+            created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
+        }
+    }
+
+    #[test]
+    fn resource_pools_split_subscriptions_and_provider_lines_without_inventing_costs() {
+        use crate::project_store::Usage;
+        let usage = |n: u64, cost: Option<f64>, kind: Option<&str>| Some(Usage { input: n, cost_usd: cost, cost_kind: kind.map(String::from), ..Default::default() });
+        let workflow = sample_workflow(vec![
+            sample_attempt("claude-win", "sonnet", "completed", usage(100, Some(0.5), Some("api_estimate"))),
+            sample_attempt("dsh-win", "flash", "completed", usage(200, Some(0.02), Some("provider"))),
+            sample_attempt("dsh-win-2", "flash", "failed", Some(Usage { input: 50, context_only: true, ..Default::default() })),
+            sample_attempt("hermes-win", "flash", "completed", None),
+        ]);
+        let providers = [(("dsh-win".to_owned(), "flash".to_owned()), "goat".to_owned())].into_iter().collect();
+        let quota = serde_json::json!({"claude-win":{"five_hour":{"used_percent":40}}});
+        let pools = super::resource_pools(&workflow, &quota, &providers);
+        assert_eq!(pools.len(), 3);
+        assert_eq!((pools[0]["pool"].as_str(), pools[0]["kind"].as_str()), (Some("claude-subscription"), Some("subscription")));
+        assert_eq!(pools[0]["quota"]["five_hour"]["used_percent"], 40);
+        assert_eq!(pools[0]["api_estimate_usd"], 0.5);
+        assert!(pools[0].get("provider_cost_usd").is_none());
+        // 额外席位与本体同一条线路，归同一池；只报上下文占用的那次记未知。
+        assert_eq!((pools[1]["pool"].as_str(), pools[1]["tokens"].as_u64(), pools[1]["unknown_attempts"].as_u64()), (Some("dsh-win:goat"), Some(200), Some(1)));
+        assert_eq!(pools[1]["provider_cost_usd"], 0.02);
+        // Hermes 线路未知、也不报用量：池类型与额度都是 unknown，不当零成本。
+        assert_eq!((pools[2]["kind"].as_str(), pools[2]["quota"].as_str(), pools[2]["unknown_attempts"].as_u64()), (Some("unknown"), Some("unknown"), Some(1)));
     }
 }
