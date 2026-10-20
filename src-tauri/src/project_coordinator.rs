@@ -111,6 +111,107 @@ fn quota_offer(task: &crate::project_store::Task) -> String {
     )
 }
 
+/// 把首次执行、改派、返修、验证归到同一个逻辑任务：路由的 context_ids 显式引用了另一项任务的结果，
+/// 并且两者锚定同一段用户原文，或其中一方是验证（验证引用被验的实现、返修引用验证结论）。
+/// 不凭标题相似合并。返回 task_id → 逻辑任务 id（组内位置最靠前的那项任务）。
+pub(crate) fn logical_tasks(
+    workflow: &Workflow,
+    routes: &[crate::coordinator_store::TaskRoute],
+) -> std::collections::HashMap<String, String> {
+    let route = |id: &str| routes.iter().find(|route| route.task_id == id);
+    let mut parent: std::collections::HashMap<String, String> = workflow
+        .tasks
+        .iter()
+        .map(|task| (task.id.clone(), task.id.clone()))
+        .collect();
+    fn root(parent: &std::collections::HashMap<String, String>, id: &str) -> String {
+        let mut id = id.to_owned();
+        while parent[&id] != id {
+            id = parent[&id].clone();
+        }
+        id
+    }
+    let position = |id: &str| {
+        workflow
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .map_or(u32::MAX, |task| task.position)
+    };
+    for task in &workflow.tasks {
+        let Some(this) = route(&task.id) else { continue };
+        for other in &this.context_ids {
+            let Some(that) = route(other).filter(|that| that.task_id != this.task_id) else {
+                continue;
+            };
+            let linked = (this.source_id == that.source_id && this.quote == that.quote)
+                || this.purpose == "verification"
+                || that.purpose == "verification";
+            if !linked || this.purpose == "reply" || that.purpose == "reply" {
+                continue;
+            }
+            let (a, b) = (root(&parent, &this.task_id), root(&parent, &that.task_id));
+            if a != b {
+                let (keep, merge) = if position(&a) <= position(&b) { (a, b) } else { (b, a) };
+                parent.insert(merge, keep);
+            }
+        }
+    }
+    parent
+        .keys()
+        .map(|id| (id.clone(), root(&parent, id)))
+        .collect()
+}
+
+/// 逻辑任务的完整消耗：各环节（按任务的 purpose）分开列，再给合计；有未知用量时合计为 null。
+/// 调度自己的消耗只在 usage_overview 里计一次，不摊进这里。
+fn logical_usage(workflow: &Workflow, routes: &[crate::coordinator_store::TaskRoute]) -> Vec<Value> {
+    let groups = logical_tasks(workflow, routes);
+    let mut roots: Vec<&crate::project_store::Task> = workflow
+        .tasks
+        .iter()
+        .filter(|task| groups.get(&task.id) == Some(&task.id))
+        .collect();
+    roots.sort_by_key(|task| task.position);
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let members: Vec<&String> = groups
+                .iter()
+                .filter(|(_, group)| *group == &root.id)
+                .map(|(task, _)| task)
+                .collect();
+            if members.len() < 2 {
+                return None;
+            }
+            let mut stages = serde_json::Map::new();
+            let (mut total, mut attempts, mut failed) = (Some(0u64), 0, 0);
+            for attempt in workflow.attempts.iter().filter(|attempt| {
+                attempt.status != "starting"
+                    && attempt.task_id.as_ref().is_some_and(|task| members.contains(&task))
+            }) {
+                attempts += 1;
+                failed += usize::from(matches!(attempt.status.as_str(), "failed" | "interrupted"));
+                let spent = attempt.usage.as_ref().and_then(|usage| usage.spent());
+                total = total.zip(spent).map(|(a, b)| a + b);
+                let purpose = attempt
+                    .task_id
+                    .as_deref()
+                    .and_then(|task| routes.iter().find(|route| route.task_id == task))
+                    .map_or("other", |route| route.purpose.as_str());
+                let entry = stages.entry(purpose).or_insert(json!(0));
+                *entry = match (entry.as_u64(), spent) {
+                    (Some(a), Some(b)) => json!(a + b),
+                    _ => Value::Null,
+                };
+            }
+            let mut ids: Vec<&String> = members;
+            ids.sort_by_key(|id| workflow.tasks.iter().find(|task| &&task.id == id).map(|task| task.position));
+            Some(json!({"logical_task":root.id,"title":root.title,"task_ids":ids,"attempts":attempts,"failed_attempts":failed,"tokens":total,"by_purpose":stages}))
+        })
+        .collect()
+}
+
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
     let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
@@ -587,7 +688,7 @@ impl Runtime {
                 feedback = offer.take();
             }
             let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
-            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
+            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给状态；其他线路说明放最前面。
             let input = if matches!(
                 crate::project_store::base_agent(&manager.coordinator.agent),
@@ -1291,5 +1392,67 @@ mod tests {
         assert!(text.starts_with("交付摘要：") && text.contains("OpenViking"));
         let chat = super::compact_sources(&[source("闲聊".repeat(400))])[0]["text"].as_str().unwrap().to_owned();
         assert_eq!(chat.chars().count(), 602);
+    }
+
+    /// 验收场景：DSH 首次实现失败 → Codex 改派接手 → Claude 验证未通过 → Codex 返修 → 复核；调度另计一次。
+    #[test]
+    fn logical_task_collects_failed_attempts_repairs_and_verification() {
+        use crate::project_store::{Attempt, Task, Usage, Workflow};
+        let task = |id: &str, position: u32| Task {
+            id: id.into(), workflow_id: "w".into(), position, title: format!("任务{id}"), agent_id: "codex-win".into(),
+            instructions: String::new(), files: vec![], depends_on: vec![], status: "completed".into(), output: String::new(),
+            error: None, model: None, effort: None, worktree: None, branch: None,
+        };
+        let attempt = |task: Option<&str>, status: &str, usage: Option<Usage>, activity: Option<&str>| Attempt {
+            id: format!("a{}", rand_id()), created_at: 0, workflow_id: "w".into(), task_id: task.map(String::from),
+            agent_id: "codex-win".into(), stage: "implement".into(), activity: activity.map(String::from), status: status.into(),
+            native_thread_id: None, native_turn_id: None, model: None, reasoning_effort: None, thought: String::new(),
+            tool_events: vec![], output: String::new(), error: None, usage,
+        };
+        fn rand_id() -> u64 { use std::sync::atomic::{AtomicU64, Ordering}; static N: AtomicU64 = AtomicU64::new(0); N.fetch_add(1, Ordering::Relaxed) }
+        let used = |n: u64| Some(Usage { input: n, ..Default::default() });
+        let route = |task: &str, purpose: &str, quote: &str, context: &[&str]| -> crate::coordinator_store::TaskRoute {
+            serde_json::from_value(serde_json::json!({"task_id":task,"purpose":purpose,"source_id":"u1","quote":quote,"context_ids":context,"subagent":false})).unwrap()
+        };
+        let workflow = Workflow {
+            id: "w".into(), project_id: "p".into(), conversation_id: "c".into(), user_message_id: "u1".into(), request: String::new(),
+            status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
+            created_at: 0, updated_at: 0,
+            tasks: vec![task("impl", 1), task("verify", 2), task("repair", 3), task("recheck", 4), task("docs", 5)],
+            attempts: vec![
+                attempt(Some("impl"), "failed", used(100), None),
+                attempt(Some("impl"), "completed", used(300), None),
+                attempt(Some("verify"), "completed", used(50), None),
+                attempt(Some("repair"), "completed", used(200), None),
+                attempt(Some("recheck"), "completed", used(40), None),
+                attempt(Some("docs"), "completed", used(70), None),
+                attempt(None, "completed", used(1000), Some(super::coordinator_policy::MANAGER_ACTIVITY)),
+            ],
+            changes: vec![], agent_messages: vec![], team_messages: vec![],
+        };
+        // 文档任务锚定同一原文却没引用别的任务结果，不并进来。
+        let routes = vec![
+            route("impl", "implementation", "做登录", &[]),
+            route("verify", "verification", "验证登录", &["impl"]),
+            route("repair", "implementation", "做登录", &["verify"]),
+            route("recheck", "verification", "验证登录", &["repair"]),
+            route("docs", "implementation", "做登录", &[]),
+        ];
+        let groups = super::logical_tasks(&workflow, &routes);
+        assert!(["impl", "verify", "repair", "recheck"].iter().all(|id| groups[*id] == "impl"));
+        assert_eq!(groups["docs"], "docs");
+        let logical = super::logical_usage(&workflow, &routes);
+        assert_eq!(logical.len(), 1);
+        let item = &logical[0];
+        assert_eq!((item["tokens"].as_u64(), item["attempts"].as_u64(), item["failed_attempts"].as_u64()), (Some(690), Some(5), Some(1)));
+        assert_eq!((item["by_purpose"]["implementation"].as_u64(), item["by_purpose"]["verification"].as_u64()), (Some(600), Some(90)));
+        // 调度只在协作总账里算一次。
+        let overview = super::usage_overview(&workflow);
+        assert_eq!((overview["member_tokens"].as_u64(), overview["coordinator_tokens"].as_u64()), (Some(760), Some(1000)));
+        // 有一次只报上下文占用：逻辑任务合计变为未知，不当 0。
+        let mut partial = workflow.clone();
+        partial.attempts[2].usage = Some(Usage { input: 9000, context_only: true, ..Default::default() });
+        let logical = super::logical_usage(&partial, &routes);
+        assert!(logical[0]["tokens"].is_null() && logical[0]["by_purpose"]["verification"].is_null());
     }
 }
