@@ -2145,7 +2145,9 @@ fn checkpoint_blocks_real_secrets_honors_allowlist_and_leaves_recovery_hint() {
     let f = Fixture::new();
     crate::project_worktree::initialize_safe_repository(&f.root).unwrap();
     std::fs::write(f.root.join("notes.md"), "plain notes\n").unwrap();
-    std::fs::write(f.root.join("config.py"), "TOKEN = 'ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'\n").unwrap();
+    // 假令牌拼出来，源码里不留完整字面量。
+    let token = format!("ghp_{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8");
+    std::fs::write(f.root.join("config.py"), format!("TOKEN = '{token}'\n")).unwrap();
     let error = crate::project_worktree::checkpoint(&f.root).unwrap_err();
     assert!(error.contains("config.py:1（GitHub 令牌）"), "{error}");
     // 没有任何东西被提交：两个文件都还是未跟踪。
@@ -2158,7 +2160,7 @@ fn checkpoint_blocks_real_secrets_honors_allowlist_and_leaves_recovery_hint() {
     assert!(summary.contains("git reset --soft"), "{summary}");
     // 已跟踪文件只看新增的行：旧内容里的令牌不会每次都拦。
     std::fs::write(git_dir.join("info").join(crate::secret_scan::ALLOW_FILE), "").unwrap();
-    std::fs::write(f.root.join("config.py"), "TOKEN = 'ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'\nDEBUG = True\n").unwrap();
+    std::fs::write(f.root.join("config.py"), format!("TOKEN = '{token}'\nDEBUG = True\n")).unwrap();
     assert!(crate::project_worktree::checkpoint(&f.root).unwrap().is_some());
 }
 
