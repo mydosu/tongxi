@@ -2483,6 +2483,15 @@ fn usage_counts_only_this_task_from_codex_thread_totals_and_reads_acp_results() 
     assert_eq!((usage.total(), usage.cached, usage.context), (24417, 10, 24417));
     assert_eq!(usage.cost_usd, Some(0.0048));
     assert!(Usage::from_acp(&serde_json::json!({"stopReason":"end_turn"})).is_none());
+    assert_eq!(usage.cost_kind.as_deref(), Some("api_estimate"));
+    // Claude 缓存写入单列保留，但已含在 input 里，总数不重复。
+    let claude = serde_json::json!({"usage":{"inputTokens":1500,"outputTokens":50,"cachedReadTokens":1000,"cachedWriteTokens":400}});
+    let claude = Usage::from_acp(&claude).unwrap();
+    assert_eq!((claude.cache_write, claude.cached, claude.total()), (400, 1000, 1550));
+    // 只有上下文占用：实际消耗未知，不当成消耗也不当 0。
+    let context = Usage { input: 9000, context: 9000, context_only: true, ..Default::default() };
+    assert_eq!(context.spent(), None);
+    assert_eq!(claude.spent(), Some(1550));
 }
 
 #[test]
