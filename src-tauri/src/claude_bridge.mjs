@@ -274,7 +274,12 @@ function prompt(id, params) {
     const [reference, prompt] = splitReference(params.prompt);
     params.prompt = prompt;
     const system = [coordinatorInstruction, reference].filter(Boolean).join('\n\n');
-    if (system) args.push('--system-prompt', system);
+    // 说明加参考资料有十几万字，超过 Windows 命令行约 3.2 万字符的上限，走文件传。
+    if (system) {
+      const file = join(data, 'coordinator-system.txt');
+      writeFileSync(file, system);
+      args.push('--system-prompt-file', file);
+    }
   } else {
     args.push('--permission-mode', 'bypassPermissions');
     if (windowsHint) args.push('--append-system-prompt', windowsHint);
