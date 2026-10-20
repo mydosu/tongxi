@@ -1434,20 +1434,6 @@ impl Runtime {
         let before = branch
             .as_ref()
             .and_then(|_| crate::project_worktree::root_changes(root).ok());
-        // 其他已登记项目也记一份：成员误改了别的项目要能发现。
-        let others: Vec<(String, std::path::PathBuf, std::collections::BTreeMap<String, String>)> = self
-            .store
-            .lock()
-            .unwrap()
-            .projects()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|other| other.id != project.id && crate::project_worktree::is_repo(Path::new(&other.root)))
-            .filter_map(|other| {
-                let changes = crate::project_worktree::root_changes(Path::new(&other.root)).ok()?;
-                Some((other.name, std::path::PathBuf::from(other.root), changes))
-            })
-            .collect();
         let result = self
             .native
             .run(attempt, &cwd, &prompt.to_string(), deadline)?;
@@ -1469,20 +1455,6 @@ impl Runtime {
                         ),
                     );
                 }
-            }
-        }
-        for (name, other_root, before) in others {
-            let Ok(after) = crate::project_worktree::root_changes(&other_root) else { continue };
-            let stray = crate::project_worktree::changed_since(&before, &after);
-            if !stray.is_empty() {
-                let shown = stray.iter().take(8).cloned().collect::<Vec<_>>().join("、");
-                let _ = self.store.lock().unwrap().add_system_team_message(
-                    id,
-                    &format!(
-                        "注意：本任务期间另一个已登记项目「{name}」的文件有变动（{shown}），可能是 {} 误改，也可能是你在那边的操作；请确认。",
-                        crate::store::agent_name(&task.agent_id)
-                    ),
-                );
             }
         }
         if result.status == "completed" {
