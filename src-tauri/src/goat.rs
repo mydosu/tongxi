@@ -263,7 +263,7 @@ fn cached(key: &str) -> Option<Value> {
         }
     }
     let value = fetch(key);
-    if let Ok(mut cache) = cache().lock() {
+    if let (Ok(mut cache), Some(_)) = (cache().lock(), &value) {
         cache.insert(id, (Instant::now(), value.clone()));
     }
     value
