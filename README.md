@@ -70,11 +70,11 @@
 </details>
 
 <details>
-<summary><b>DSH 的模型来源、手动指定安装位置</b></summary>
+<summary><b>DSH 的模型和 Key、手动指定安装位置</b></summary>
 
 <br />
 
-- **DSH 的两种模型来源**：如果你的 Hermes 里配好了两条 DeepSeek 路由，DSH 会用它们；否则用 DSH 自己的配置（官方 `deepseek-v4-flash` / `deepseek-v4-pro`，Key 在 `dsh web` 里填）。
+- **DSH 的模型和 Key**：全用 DSH 自己的配置，和其他成员互不相干。在 `dsh web` 的 Models 页面里填官方 DeepSeek 的 Key，或者添加任意 OpenAI 兼容的服务商；同席启动 DSH 时直接读这份配置，Key 留在 DSH 自己的凭据库里。什么都没配时默认官方 `deepseek-v4-flash`。
 - **手动指定位置**：装在非常规目录时，用这些环境变量告诉同席：`AGENT_HUB_CODEX_EXE`、`AGENT_HUB_CLAUDE_EXE`、`AGENT_HUB_HERMES_PYTHON`、`AGENT_HUB_DSH_INSTALLATION`、`AGENT_HUB_DSH_NODE`。
 
 </details>
@@ -288,7 +288,7 @@
 | **Codex** | 启动本机 `codex app-server`，走 stdio 上的 JSON-RPC | Codex 自己的 `~/.codex` |
 | **Claude Code** | `claude_bridge.mjs` 把 ACP 转成 `claude -p --output-format stream-json`，每轮续接同一条原生会话 | Claude Code 自己的 `~/.claude` |
 | **Hermes** | `hermes_bridge.py` 在进程内扩展已安装的 Hermes ACP，原生工具和 MCP 照常可用 | 同席给它单独的 SessionDB |
-| **DSH** | `dsh_bridge.mjs` 直接加载已安装的 DeepSeek harness，走 ACP；`dsh_fallback.mjs` 在额度/限流/超时时切换备用路由 | DSH 的会话文件 |
+| **DSH** | `dsh_bridge.mjs` 直接加载已安装的 DeepSeek harness，走 ACP；模型和 Key 读 DSH 自己的配置（`dsh web` 里配的服务商） | DSH 的会话文件 |
 | **陪伴** | 任意 OpenAI 兼容端点：`/v1/models` 取模型、`/v1/chat/completions` 收流式正文 | 对方服务里（同席只当客户端，不拉起它的进程） |
 
 几个共性：
@@ -355,6 +355,8 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 | `scripts/verify_v1.py` | 接入成员、陪伴配置与对话（本地模拟服务）、主题导入 | — |
 | `scripts/verify_project_sessions.py` | 会话绑定、多开会话、成员栏、主题切换 | — |
 | `scripts/verify_seats_live.py` | 同一成员的两个会话真实并行、续接已有原生会话 | 少量 |
+| `scripts/verify_dsh_bridge.mjs` | DSH 桥接回归：私聊、项目、调度、DSH 自己的 Key 四种接法；`--latest` 先装一份 npm 最新版来测，DSH 发新版时先跑它 | — |
+| `scripts/verify_managed_update.py` | Codex 隔离更新：从旧版准备候选 → 启用 → 回退，外部安装全程不动 | — |
 | `scripts/verify_coordinator2_live.py` | 调度 2.0：用量与账本、价格表更新、新开会话、按价格自选模型 | 少量（只用 Claude） |
 
 设置 `AGENT_HUB_AUTOCONNECT=0` 可以关闭启动时的自动接入，回归脚本默认已经设置。
@@ -364,6 +366,14 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 <br />
 
 ## 版本记录
+
+### v1.1.2 · DSH 独立配置、更新更稳
+
+- **DSH 与 Hermes 彻底分开**：DSH 只用它自己的模型和 Key（`dsh web` 的 Models 页面里配的官方 DeepSeek 或任意兼容服务商），不再读 Hermes 的路由。只装其中一个也能用。
+- **DSH 新版能更新了**：DSH 0.2.1 调整了内部包结构，同席现在跟着 DSH 官方的默认组合加载插件，改名、拆包、新增依赖都能自动接上；非核心插件缺了就跳过，不再整个起不来。
+- **更新失败说得清**：更新前的检查失败时会写明缺了哪个包；没装 Hermes 也能通过检查。
+- **修复**：成员卡片做完准备/启用/回退后，「更多」等按钮不再一直发灰。
+- **回归脚本**：新增 `scripts/verify_dsh_bridge.mjs`，DSH 发新版时先拿 `--latest` 测一遍。
 
 ### v1.1.1 · 省 token、按额度分摊、分板块推进
 

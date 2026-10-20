@@ -73,6 +73,21 @@ def inventory(page, agent_id):
     return None
 
 
+def menu_click(card, selector):
+    """准备/启用/回退收在卡片的「更多」菜单里：按钮不可见就先展开菜单。"""
+    button = card.locator(selector)
+    if not button.is_visible():
+        more = card.locator("[data-service-more]")
+        # 上一步还在收尾时整排按钮是灰的，等它放开再点。
+        more.page.wait_for_function("el => !el.disabled", arg=more.element_handle(), timeout=900000)
+        try:
+            more.click(timeout=60000)
+        except Exception:
+            print("DEBUG more: " + more.evaluate("el => el.outerHTML + ' | open=' + el.closest('.service-more').className"), flush=True)
+            raise
+    button.click(timeout=900000)
+
+
 def wait_for(page, label, predicate, timeout=900):
     deadline = timeout
     waited = 0
@@ -119,7 +134,7 @@ def run():
             check("检查更新拿到远程发行版", ("发行 v0.160.1" in text) or ("发现新版本" in text))
 
             # 1) 真准备：下 tarball + npm install 到槽 + 跑候选里的 codex.exe --version。
-            card.locator("[data-service-prepare]").click()
+            menu_click(card, "[data-service-prepare]")
             ready = wait_for(
                 page,
                 "候选准备完成",
@@ -132,7 +147,7 @@ def run():
             )
 
             # 2) 启用候选：指针切到槽，运行时重连到槽里的那份。
-            card.locator("[data-service-apply]").click()
+            menu_click(card, "[data-service-apply]")
             managed = wait_for(
                 page,
                 "候选已启用",
@@ -173,7 +188,7 @@ def run():
                 print("DEBUG status: " + str(status(page, "codex-win")), flush=True)
                 print("DEBUG toast: " + (page.locator("#toast").text_content() or ""), flush=True)
                 raise
-            card.locator("[data-service-rollback]").click()
+            menu_click(card, "[data-service-rollback]")
             # 超时要把现场打出来：否则只能看到一个光秃秃的 AssertionError，查不出原因。
             try:
                 wait_for(
