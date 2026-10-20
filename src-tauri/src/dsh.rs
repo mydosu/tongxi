@@ -17,38 +17,6 @@ use tauri::Emitter;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
-pub(crate) fn route_notice(params: &Value) -> Option<(String, crate::store::RunToolEvent)> {
-    let model = params["modelId"].as_str()?;
-    let pair: Vec<String> = serde_json::from_str(model).ok()?;
-    if pair.len() != 2
-        || !["command-code-daily", "command-code-daily-2"].contains(&pair[0].as_str())
-        || pair[1].is_empty()
-        || pair[1].len() > 256
-    {
-        return None;
-    }
-    let id = params["eventId"].as_str()?;
-    if uuid::Uuid::parse_str(id).is_err() {
-        return None;
-    }
-    Some((
-        model.to_owned(),
-        crate::store::RunToolEvent {
-            event_id: id.into(),
-            kind: "model_route".into(),
-            title: if params["fallback"] == true {
-                "模型回退：Daily Two · DS v4.1"
-            } else {
-                "实际模型线路变化"
-            }
-            .into(),
-            input: None,
-            output: Some("仅切换当前模型调用；已完成的工具操作不重跑。".into()),
-            status: "completed".into(),
-            created_at: crate::store::now(),
-        },
-    ))
-}
 struct Inner {
     connection: String,
     generation: String,
@@ -227,14 +195,6 @@ impl Runtime {
             .arg(installation)
             .arg(directory.join("dsh-native"))
             .current_dir(directory);
-        command.env(
-            "AGENT_HUB_DSH_AUTH_BRIDGE",
-            include_str!("dsh_hermes_auth.py"),
-        );
-        command.env(
-            "AGENT_HUB_DSH_FALLBACK_BRIDGE",
-            include_str!("dsh_fallback.mjs"),
-        );
         command
             .env("AGENT_HUB_COORDINATOR_MODE", "1")
             .env("AGENT_HUB_DSH_HOME", directory.join("dsh-native"))
@@ -375,14 +335,6 @@ impl Runtime {
                 .arg(&installation)
                 .arg(self.directory.join("dsh-native"));
             command.current_dir(&self.directory);
-            command.env(
-                "AGENT_HUB_DSH_AUTH_BRIDGE",
-                include_str!("dsh_hermes_auth.py"),
-            );
-            command.env(
-                "AGENT_HUB_DSH_FALLBACK_BRIDGE",
-                include_str!("dsh_fallback.mjs"),
-            );
             command.env_remove("AGENT_HUB_DSH_PROJECT_MODE");
             // 共用她自己的 DSH 家目录（同一个会话库）：外层设了就照用（测试隔离），
             // 否则指向真实的 ~/.dsh；库不存在时不给变量，桥回退到同席隔离目录。
@@ -700,13 +652,8 @@ impl Runtime {
                 self.finish(run_id, status, error.map(str::to_owned));
             }
             Err(error) => {
-                // DSH 用自己的配置（官方 DeepSeek，没有 Hermes 路由）时，最常见的原因是还没填 Key。
-                let own = self.inner.lock().unwrap().default_model.as_deref().is_some_and(|model| model.contains("deepseek-official"));
-                let error = if own {
-                    format!("{error}。DSH 正在用它自己的配置：如果还没填 DeepSeek Key，请到「成员与服务 → DSH → 登录 / 初次配置」打开 dsh web 填好后重新连接")
-                } else {
-                    error
-                };
+                // DSH 只用它自己的配置，最常见的原因是还没在 DSH 里配好模型和 Key。
+                let error = format!("{error}。DSH 用的是它自己的模型和 Key：还没配的话，到「成员与服务 → DSH → 登录 / 初次配置」打开 dsh web，在 Models 里填好后重新连接");
                 self.finish(run_id, "failed", Some(error.clone()));
                 self.stop();
                 return Err(error);
@@ -715,7 +662,7 @@ impl Runtime {
         Ok(())
     }
     fn notification(&self, generation: &str, value: Value) {
-        if value["method"] != "session/update" && value["method"] != "agent_hub/model_route" {
+        if value["method"] != "session/update" {
             return;
         }
         let params = &value["params"];
@@ -729,28 +676,6 @@ impl Runtime {
         }) else {
             return;
         };
-        if value["method"] == "agent_hub/model_route" {
-            if let Some((model, event)) = route_notice(params) {
-                let changed = run.record.model.as_deref() != Some(&model);
-                let effort = run.record.reasoning_effort.clone();
-                let _ =
-                    self.store
-                        .lock()
-                        .unwrap()
-                        .record_model(&mut run.record, Some(model), effort);
-                if changed || params["fallback"] == true {
-                    crate::codex::upsert_tool_event(&mut run.tool_events, &event);
-                    let _ = self
-                        .store
-                        .lock()
-                        .unwrap()
-                        .append_tool_event(&run.record, &event);
-                }
-                drop(inner);
-                self.emit();
-            }
-            return;
-        }
         let update = &params["update"];
         if let Some(event) = crate::codex::acp_tool_event(update) {
             let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);
@@ -951,14 +876,13 @@ mod tests {
     }
 
     #[test]
-    fn project_bridge_declares_token_field_without_setting_explicit_budget() {
+    fn bridge_uses_only_dsh_own_models_and_keys() {
         let bridge = include_str!("dsh_bridge.mjs");
-        assert!(bridge.contains("contextWindow: 262144"));
-        assert!(bridge.contains("maxTokensField: 'max_tokens'"));
+        // 模型、Key 只来自 DSH 自己的配置，不读 Hermes，也不替服务商设输出上限。
+        assert!(!bridge.to_lowercase().contains("hermes"));
+        assert!(!bridge.contains("apiKey ="));
         assert!(!bridge.contains("maxTokens: 16384"));
         assert!(!bridge.contains("max_tokens: 16384"));
-        // This only checks our bridge configuration; the DSH adapter and provider
-        // can still apply runtime defaults that are not visible in this source.
     }
 
     #[test]

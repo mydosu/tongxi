@@ -368,21 +368,10 @@ fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Result<Strin
 // session/prompt，因此不触发任何真实模型调用，也不宣称认证/工具头已验证。
 // ---------------------------------------------------------------------------
 
-/// ACP 桥脚本与认证桥文件同样内联进二进制，避免外部文件被替换。
+/// ACP 桥脚本同样内联进二进制，避免外部文件被替换。
 const DSH_BRIDGE_SCRIPT: &str = include_str!("dsh_bridge.mjs");
-const DSH_HERMES_AUTH_BRIDGE: &str = include_str!("dsh_hermes_auth.py");
 /// 预演桥进程独占的数据目录环境变量（每次预演都是全新目录，绝不复用 dsh-native 或用户 history）。
 const DSH_DATA_DIR_ENV: &str = "AGENT_HUB_DSH_DATA_DIR";
-/// 两条预演 route 的原始 (provider, model) 二元组。model 选项的真实 value 是两者
-/// 的 JSON 编码完整二元组，因此必须能递归收集到（例如）
-/// ["command-code-daily","deepseek/deepseek-v4.1-flash"] 与
-/// ["command-code-daily-2","deepseek/deepseek-v4.1-flash"] 这两个 value。形如
-/// `["command-code-daily","command-code-daily"]` 的取值不匹配任何 route。
-const PREFLIGHT_ROUTES: [(&str, &str); 2] = [
-    ("command-code-daily", "deepseek/deepseek-v4.1-flash"),
-    ("command-code-daily-2", "deepseek/deepseek-v4.1-flash"),
-];
-/// 预演期望的推理强度取值。
 const PREFLIGHT_REASONING_EFFORT: &str = "off";
 
 /// 递归收集选项（含 group 嵌套数组）里的字符串 value；非字符串 value 一律忽略。
@@ -448,7 +437,6 @@ pub(crate) fn preflight_dsh(data: &Path, installation: &Path) -> Result<(), Stri
         // resolve(undefined) 处启动失败，预演因此永远是「请求未成功」。
         .arg(&workspace)
         .current_dir(installation)
-        .env("AGENT_HUB_DSH_AUTH_BRIDGE", DSH_HERMES_AUTH_BRIDGE)
         .env(DSH_DATA_DIR_ENV, &workspace)
         .env_remove("PROJECT_MODE");
 
@@ -489,18 +477,7 @@ pub(crate) fn preflight_dsh(data: &Path, installation: &Path) -> Result<(), Stri
         let mut values = Vec::new();
         collect_option_values(find_config_option(config_options, "model")?, &mut values);
 
-        // model 选项的真实 value 是 JSON 编码的完整二元组（provider 与 model 两个
-        // 原始字符串合在一起），例如 ["command-code-daily","deepseek/deepseek-v4.1-flash"]。
-        // 因此每个 route 都要先编码出该 value_id，再确认它确实出现在递归收集到的取值里。
-        let mut route_values: Vec<String> = Vec::with_capacity(PREFLIGHT_ROUTES.len());
-        for (provider, model) in PREFLIGHT_ROUTES {
-            let value_id = serde_json::to_string(&[provider, model])
-                .map_err(|_| "预演模型取值编码失败".to_string())?;
-            if !values.iter().any(|value| value == &value_id) {
-                return Err("预演模型取值与预期不符".to_string());
-            }
-            route_values.push(value_id);
-        }
+        let route_values = preflight_model_values(&values)?;
 
         // 逐 route 先选模型、再选推理强度；两次 RPC 都必须成功。
         // 发送模型时同样使用上面校验过的完整 JSON value_id，不做任何拆分或降级。
@@ -528,7 +505,36 @@ pub(crate) fn preflight_dsh(data: &Path, installation: &Path) -> Result<(), Stri
     })();
 
     client.stop();
-    result
+    result.map_err(|error| match bridge_failure(&workspace) {
+        Some(reason) => format!("{error}：{reason}"),
+        None => error,
+    })
+}
+
+/// 预演要逐个选中的模型取值：DSH 自己配的模型里选第一个（model 选项的 value 是 JSON 编码的
+/// (provider, model) 二元组）。只要求至少有一个，不认任何特定服务商。
+fn preflight_model_values(values: &[String]) -> Result<Vec<String>, String> {
+    values
+        .first()
+        .map(|value| vec![value.clone()])
+        .ok_or_else(|| "预演会话没有可选模型".to_string())
+}
+
+/// 桥起不来时落在预演目录里的原因，取第一行里最有用的部分（例如缺了哪个包），不带堆栈。
+fn bridge_failure(workspace: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(workspace.join("bridge-error.log")).ok()?;
+    let line = text
+        .lines()
+        .find(|line| line.contains("Error") || line.contains("缺少"))?;
+    let reason = line.split_once(' ').map_or(line, |(_, rest)| rest).trim();
+    let reason = match reason.find("Cannot find module '") {
+        Some(start) => {
+            let rest = &reason[start + "Cannot find module '".len()..];
+            format!("新版 DSH 缺少 {}", rest.split('\'').next().unwrap_or(rest))
+        }
+        None => reason.chars().take(160).collect(),
+    };
+    Some(reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -837,4 +843,36 @@ pub(crate) fn prepare_member(
     };
     service_plans::save_plan(data, layout, &plan)?;
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value(provider: &str, model: &str) -> String {
+        serde_json::to_string(&[provider, model]).unwrap()
+    }
+
+    #[test]
+    fn preflight_picks_any_configured_model() {
+        let own = vec![
+            value("deepseek-official", "deepseek-v4-flash"),
+            value("my-compat", "test-model"),
+        ];
+        assert_eq!(preflight_model_values(&own).unwrap(), own[..1]);
+        assert!(preflight_model_values(&[]).is_err());
+    }
+
+    #[test]
+    fn bridge_failure_names_missing_package() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("bridge-error.log"),
+            "2026-10-20T04:31:12.141Z Error: Cannot find module '@deepseek-ai/dsh-x'\nRequire stack:\n- C:\\a\n",
+        )
+        .unwrap();
+        assert_eq!(bridge_failure(&dir).unwrap(), "新版 DSH 缺少 @deepseek-ai/dsh-x");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

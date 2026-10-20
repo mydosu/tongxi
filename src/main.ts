@@ -2051,6 +2051,8 @@ function paintServiceCard(card: HTMLElement, agentId: string, info?: ServiceInfo
   const resolved = info ?? serviceInventory.get(agentId);
   const snapshot = runtimes[agentId];
   const connection = resolved?.connection ?? snapshot.connection;
+  // 先放开上次因维护动作锁住的按钮（「更多」、菜单项等下面不单独管的也在内），再按当前状态重新判断。
+  card.querySelectorAll<HTMLButtonElement>('button[data-pending-lock]').forEach(item => { item.disabled = false; delete item.dataset.pendingLock; });
   card.querySelector('.service-status')!.innerHTML = serviceStatusHtml(resolved, snapshot);
   const control = card.querySelector<HTMLButtonElement>('[data-service-connect]')!;
   control.disabled = connection === 'connecting';
@@ -2074,7 +2076,7 @@ function paintServiceCard(card: HTMLElement, agentId: string, info?: ServiceInfo
   if (revert) revert.onclick = () => void rollbackServiceUpdate(agentId, card);
   paintServiceUpdate(card, agentId);
   // 维护动作在途时整张卡的操作都禁用：进度由后端维护，界面不自行推断完成。
-  if (servicePending[agentId]) card.querySelectorAll<HTMLButtonElement>('.service-actions button').forEach(item => { item.disabled = true; });
+  if (servicePending[agentId]) card.querySelectorAll<HTMLButtonElement>('.service-actions button:not(:disabled)').forEach(item => { item.disabled = true; item.dataset.pendingLock = ''; });
   applyCheckResult(card, agentId);
 }
 

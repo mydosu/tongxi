@@ -488,18 +488,6 @@ impl Runner {
                 {
                     return;
                 }
-                if value["method"] == "agent_hub/model_route" && crate::project_store::base_agent(&state.attempt.agent_id) == "dsh-win"
-                {
-                    if let Some((model, event)) = crate::dsh::route_notice(params) {
-                        let changed = state.attempt.model.as_deref() != Some(&model);
-                        state.attempt.model = Some(model);
-                        if changed || params["fallback"] == true {
-                            crate::codex::upsert_tool_event(&mut state.attempt.tool_events, &event);
-                        }
-                        persist(&store, &notify, &mut state, true);
-                    }
-                    return;
-                }
                 if value["method"] != "session/update" {
                     return;
                 }
