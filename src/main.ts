@@ -11,7 +11,7 @@ import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { installMessageMenu } from './message_menu';
-import { projectProgressPage, progressContent } from './project_progress';
+import { projectProgressPage, progressContent, type QuotaEntry } from './project_progress';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
@@ -1449,7 +1449,7 @@ function renderProjectProgress() {
 }
 
 // 历史表现表：一分钟内复用，展开的区块重绘后保持展开。
-let capabilityRows: CapabilityRow[] = [], capabilityAt = 0;
+let capabilityRows: CapabilityRow[] = [], capabilityAt = 0, quotaRows: Record<string, QuotaEntry> = {};
 const openProgressSections = new Set<string>();
 function updateProjectProgress() {
   if (!detail?.project || activeProjectModule !== 'progress') return;
@@ -1458,10 +1458,11 @@ function updateProjectProgress() {
   if (Date.now() - capabilityAt > 60_000) {
     capabilityAt = Date.now();
     void invoke<CapabilityRow[]>('project_capability').then(rows => { capabilityRows = rows; delete content.dataset.paint; updateProjectProgress(); }).catch(() => {});
+    void invoke<Record<string, QuotaEntry>>('project_quota').then(rows => { quotaRows = rows; delete content.dataset.paint; updateProjectProgress(); }).catch(() => {});
   }
-  const jobs=roomProjects(), stamp=JSON.stringify([detail.project_questions,capabilityRows.length,capabilityAt,jobs.map(job=>[job.id,job.status,job.coordination,job.tasks.map(task=>[task.status,task.title,task.agent_id]),job.attempts.map(attempt=>[attempt.agent_id,attempt.status,attempt.stage,attempt.activity,attempt.usage]),job.error])]);
+  const jobs=roomProjects(), stamp=JSON.stringify([detail.project_questions,capabilityRows.length,capabilityAt,Object.keys(quotaRows).length,jobs.map(job=>[job.id,job.status,job.coordination,job.tasks.map(task=>[task.status,task.title,task.agent_id]),job.attempts.map(attempt=>[attempt.agent_id,attempt.status,attempt.stage,attempt.activity,attempt.usage]),job.error])]);
   if (content.dataset.paint===stamp) return;
-  content.innerHTML=progressContent(jobs,detail.project_agent_chats,escape,id=>member(id).name,id=>avatar(member(id)),detail.project_questions||[],capabilityRows);content.dataset.paint=stamp;
+  content.innerHTML=progressContent(jobs,detail.project_agent_chats,escape,id=>member(id).name,id=>avatar(member(id)),detail.project_questions||[],capabilityRows,quotaRows);content.dataset.paint=stamp;
   content.querySelectorAll<HTMLDetailsElement>('details[data-keep]').forEach(section=>{section.open=openProgressSections.has(section.dataset.keep!);section.addEventListener('toggle',()=>{if(section.open)openProgressSections.add(section.dataset.keep!);else openProgressSections.delete(section.dataset.keep!);});});
   content.querySelectorAll<HTMLButtonElement>('[data-progress-agent]').forEach(button=>button.addEventListener('click',()=>void selectProjectModule(selectedId,button.dataset.progressAgent!)));
   content.querySelectorAll<HTMLButtonElement>('[data-stop-project]').forEach(button=>button.addEventListener('click',()=>void cancelProject(button.dataset.stopProject!)));
