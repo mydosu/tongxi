@@ -31,7 +31,8 @@ function probe(installation, extraEnv) {
       cwd: installation, stdio: ['pipe', 'pipe', 'ignore'],
       env: { ...process.env, ...extraEnv, AGENT_HUB_DSH_DATA_DIR: data },
     });
-    const log = () => { try { return readFileSync(join(data, 'bridge-error.log'), 'utf8').trim(); } catch { return ''; } };
+    const log = () => ['bridge-error.log', 'bridge-notes.log']
+      .map(name => { try { return readFileSync(join(data, name), 'utf8').trim(); } catch { return ''; } }).filter(Boolean).join('\n');
     const finish = (ok, detail) => { clearTimeout(timer); child.removeAllListeners('exit'); child.kill(); done({ ok, detail, log: log() }); };
     const timer = setTimeout(() => finish(false, '超时'), 240000);
     child.on('exit', code => finish(false, `桥退出 ${code}`));

@@ -1932,7 +1932,9 @@ function serviceStatusHtml(info: ServiceInfo | undefined, snapshot: RuntimeSnaps
   const connection = info?.connection ?? snapshot.connection;
   const busy = info ? info.busy : snapshot.connection === 'connecting' || busySnapshot(snapshot);
   const label = connection === 'connected' ? '接口已连接' : connection === 'connecting' ? '正在连接' : '未连接';
-  const update = info ? (info.update_state === 'unchecked' ? '未检测' : escape(info.update_state)) : '未检测';
+  // 后端给的是状态码，界面上说人话；没见过的状态码照原样显示，不吞掉。
+  const updateLabels: Record<string, string> = { unchecked: '未检测', managed: '同席管理的版本', external: '本机安装的版本', maintenance: '维护中' };
+  const update = info ? (updateLabels[info.update_state] ?? escape(info.update_state)) : '未检测';
   // 状态块两行对齐：连接（含运行版本）/ 更新；安装那一行由接入扫描画在上面。
   return `<div class="fact-row"><span class="fact-label">连接</span><span class="status-dot ${connection === 'connected' ? '' : 'muted'}"></span><span>${label}${busy ? ' · 运行中' : ''}</span><span class="fact-sub">${serviceVersionText(info, snapshot)}</span></div><div class="fact-row"><span class="fact-label">更新</span><span data-service-update>${update}</span></div>`;
 }
@@ -2116,15 +2118,28 @@ async function applyServiceUpdate(agentId: string, card: HTMLElement) {
   if (servicePending[agentId]) return;
   servicePending[agentId] = 'apply';
   paintServiceCard(card, agentId);
+  let applied = false;
   try {
     adoptRuntime(await invoke<RuntimeSnapshot>('apply_service_update', { serviceId: agentId, planId }), agentId);
     serviceUpdates[agentId] = await invoke<ServiceUpdateStatus>('service_update_status', { serviceId: agentId });
+    applied = true;
     toast(`${member(agentId).name} 已启用候选版本`);
   } catch (error) { toast(errorText(error), true); }
-  finally {
-    servicePending[agentId] = null;
-    repaintServiceCard(agentId);
+  finally { servicePending[agentId] = null; }
+  await refreshAfterSwitch(applied, agentId);
+}
+
+/// 启用 / 回退换了正在用的那份安装：重新扫描本机（「安装」一栏的版本来自扫描）再整页重画；
+/// 失败时只重画这张卡把按钮放开。
+async function refreshAfterSwitch(applied: boolean, agentId: string) {
+  if (applied) {
+    // 上次「检查更新」比的是换之前的版本，结论已经过时，要重新检查。
+    delete serviceChecks[agentId];
+    await scanAgents().catch(() => {});
   }
+  if (screen !== 'services') return;
+  if (applied) renderServices();
+  else repaintServiceCard(agentId);
 }
 
 // 回退只在后端报告可回退时可用；成功后接管真实快照并整体重绘服务页。
@@ -2141,9 +2156,7 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
     toast(`${member(agentId).name} 已回退到上一版本`);
   } catch (error) { toast(errorText(error), true); }
   finally { servicePending[agentId] = null; }
-  if (screen !== 'services') return;
-  if (applied) renderServices();
-  else repaintServiceCard(agentId);
+  await refreshAfterSwitch(applied, agentId);
 }
 
 function renderServices() {
