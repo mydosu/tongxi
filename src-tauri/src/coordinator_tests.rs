@@ -116,6 +116,7 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         title: None,
         category: None,
         complexity: None,
+        hold_merge: false,
     }
 }
 
@@ -2644,4 +2645,34 @@ fn private_messages_wait_while_the_seat_runs_a_project_task() {
         .unwrap_err();
     assert!(error.contains("正在这条会话里做项目任务"), "{error}");
     assert!(f.store.detail(&chat.conversation_id).unwrap().messages.iter().all(|message| message.id != "private-1"), "拦下的话不存进聊天记录");
+}
+
+#[test]
+fn routes_store_category_hold_merge_and_feed_capability_history() {
+    let mut f = Fixture::new();
+    let workflow = f.coordinated("DSH修登录。", "hermes-win");
+    let mut task_route = route("impl", "implementation", "dsh-win", &workflow.user_message_id, "DSH修登录");
+    task_route.category = Some("bugfix".into());
+    task_route.complexity = Some("extreme".into());
+    task_route.hold_merge = true;
+    let task_id = f.store.enqueue_routes(&workflow.id, &[(task_route, None, None)]).unwrap().remove(0);
+    let stored = f.store.coordination_routes(&workflow.id).unwrap().remove(0);
+    assert!(stored.hold_merge && stored.merge_state.is_none());
+    f.store.set_merge_state(&task_id, Some("held")).unwrap();
+    assert_eq!(f.store.coordination_routes(&workflow.id).unwrap()[0].merge_state.as_deref(), Some("held"));
+
+    let task = f.store.task(&task_id).unwrap();
+    let mut attempt = f.store.begin_coordinated_attempt(&workflow.id, Some(&task), "dsh-win", Some("flash".into()), Some("high".into())).unwrap();
+    attempt.status = "completed".into();
+    attempt.usage = Some(crate::project_store::Usage { input: 1200, output: 300, ..Default::default() });
+    f.store.checkpoint_attempt(&attempt).unwrap();
+    let samples = f.store.capability_samples(0).unwrap();
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    // 不在清单里的复杂度不落库；类别照存。
+    assert_eq!((sample.category.as_deref(), sample.complexity.as_deref()), (Some("bugfix"), None));
+    assert_eq!((sample.model.as_deref(), sample.effort.as_deref(), sample.purpose.as_str()), (Some("flash"), Some("high"), "implementation"));
+    assert_eq!(sample.usage.as_ref().and_then(|usage| usage.spent()), Some(1500));
+    let rows = crate::capability::profiles(&samples, crate::store::now(), 10);
+    assert_eq!((rows[0]["agent"].as_str(), rows[0]["category"].as_str()), (Some("dsh-win"), Some("bugfix")));
 }

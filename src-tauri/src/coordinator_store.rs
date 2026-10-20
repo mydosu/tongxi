@@ -39,6 +39,12 @@ pub struct TaskRoute {
     /// 允许成员在本任务里用自带的子 agent。
     #[serde(default)]
     pub allow_subagents: bool,
+    /// 调度要求合并前先通过验证。
+    #[serde(default)]
+    pub hold_merge: bool,
+    /// 合并状态：held 已完成、等验证后合并；merged 已并入主线；None 还没完成或不在工作树里做。
+    #[serde(default)]
+    pub merge_state: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Coordination {
@@ -79,6 +85,8 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     crate::project_store::add_column(tx, "coordination_routes", "clear_context", "INTEGER NOT NULL DEFAULT 0")?;
     crate::project_store::add_column(tx, "coordination_routes", "category", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_routes", "complexity", "TEXT")?;
+    crate::project_store::add_column(tx, "coordination_routes", "hold_merge", "INTEGER NOT NULL DEFAULT 0")?;
+    crate::project_store::add_column(tx, "coordination_routes", "merge_state", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
@@ -373,8 +381,14 @@ impl Store {
             .map_err(|_| "能力画像记录无效".into());
         rows
     }
+    pub fn set_merge_state(&self, task: &str, state: Option<&str>) -> Result<()> {
+        self.connection
+            .execute("UPDATE coordination_routes SET merge_state=?1 WHERE task_id=?2", params![state, task])
+            .map_err(|_| "合并状态保存失败")?;
+        Ok(())
+    }
     pub fn coordination_routes(&self, id: &str) -> Result<Vec<TaskRoute>> {
-        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
+        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,hold_merge,merge_state FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
         let rows = query
             .query_map([id], |r| {
                 Ok(TaskRoute {
@@ -387,6 +401,8 @@ impl Store {
                     instructions: r.get(6)?,
                     reason: r.get(7)?,
                     allow_subagents: r.get(8)?,
+                    hold_merge: r.get(9)?,
+                    merge_state: r.get(10)?,
                 })
             })
             .map_err(|_| "任务路由读取失败")?
@@ -672,10 +688,10 @@ impl Store {
             let complexity = route.complexity.as_deref().filter(|value| crate::capability::COMPLEXITIES.contains(value));
             if *is_new {
                 tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,assigned_agent,instructions,files,depends_on,status,model,effort) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,'queued',?9,?10)",params![task_id,id,position,title,stored_agent,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort]).map_err(|_|"任务保存失败")?;
-                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context,category,complexity) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity]).map_err(|_|"任务原文引用保存失败")?;
+                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context,category,complexity,hold_merge) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge]).map_err(|_|"任务原文引用保存失败")?;
             } else {
                 tx.execute("UPDATE project_tasks SET title=?1,assigned_agent=?2,instructions=?3,depends_on=?4,status='queued',model=?5,effort=?6,error=NULL,position=?9 WHERE id=?7 AND workflow_id=?8",params![title,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort,task_id,id,position]).map_err(|_|"任务恢复失败")?;
-                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10,category=COALESCE(?11,category),complexity=COALESCE(?12,complexity) WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity]).map_err(|_|"任务引用恢复失败")?;
+                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10,category=COALESCE(?11,category),complexity=COALESCE(?12,complexity),hold_merge=?13 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge]).map_err(|_|"任务引用恢复失败")?;
             }
         }
         tx.execute(
