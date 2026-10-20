@@ -9,7 +9,9 @@ const stages: Record<string,string> = { plan:'正在规划',implement:'正在执
 
 /// token 数写成 12.3k / 1.2M。
 export const tokens = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(value >= 1e7 ? 0 : 1)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(value >= 1e4 ? 0 : 1)}k` : String(value);
-const spent = (attempts: ProjectAttempt[]) => attempts.reduce((sum, attempt) => sum + (attempt.usage ? attempt.usage.input + attempt.usage.output : 0), 0);
+const known = (attempt: ProjectAttempt) => attempt.usage && !attempt.usage.context_only ? attempt.usage : null;
+const spent = (attempts: ProjectAttempt[]) => attempts.reduce((sum, attempt) => { const usage = known(attempt); return sum + (usage ? usage.input + usage.output : 0); }, 0);
+const costOf = (attempts: ProjectAttempt[], kind: string) => attempts.reduce((sum, attempt) => sum + ((attempt.usage?.cost_kind || 'api_estimate') === kind ? attempt.usage?.cost_usd || 0 : 0), 0);
 
 /// 本轮用量：成员干活与调度分开；有成员没报用量（如 Hermes）就注明「不全」。
 function usageRow(job: Workflow, escape: Escape) {
@@ -17,10 +19,11 @@ function usageRow(job: Workflow, escape: Escape) {
   if (!finished.length) return '';
   const coordinator = finished.filter(attempt => attempt.activity === 'coordinate');
   const members = finished.filter(attempt => attempt.activity !== 'coordinate');
-  const cost = finished.reduce((sum, attempt) => sum + (attempt.usage?.cost_usd || 0), 0);
-  const missing = finished.some(attempt => !attempt.usage);
-  const approximate = finished.some(attempt => attempt.usage?.context_only);
-  return `<div class="project-usage" title="成员实际消耗的 token（输入含缓存命中，输出含推理）。DSH 只报上下文占用，按近似值计；Hermes 不报用量。"><span>本轮用量</span><strong>${escape(tokens(spent(members)))}</strong><small>成员</small><strong>${escape(tokens(spent(coordinator)))}</strong><small>调度</small>${cost ? `<strong>$${escape(cost.toFixed(2))}</strong><small>Claude 估算</small>` : ''}${missing || approximate ? `<em>${missing ? '部分成员未报用量' : '含近似值'}</em>` : ''}</div>`;
+  const estimate = costOf(finished, 'api_estimate');
+  const provider = costOf(finished, 'provider');
+  const unknown = finished.filter(attempt => !known(attempt)).length;
+  const money = (value: number, label: string) => value ? `<strong>$${escape(value.toFixed(2))}</strong><small>${label}</small>` : '';
+  return `<div class="project-usage" title="确知的实际 token 消耗（输入含缓存读写，输出含推理）。API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。DSH 只报上下文占用、Hermes 不报用量时不计入，记为未知。"><span>本轮用量</span><strong>${escape(tokens(spent(members)))}</strong><small>成员</small><strong>${escape(tokens(spent(coordinator)))}</strong><small>调度</small>${money(estimate, 'API 等值')}${money(provider, '额度消耗')}${unknown ? `<em>${unknown} 次用量未知，未计入</em>` : ''}</div>`;
 }
 
 export function progressContent(jobs: Workflow[], members: ProjectAgentChat[], escape: Escape, name: (agent: string) => string, avatar: (agent: string) => string, questions:ProjectQuestion[] = []) {

@@ -500,6 +500,7 @@ impl Runner {
                             input: used,
                             context: used,
                             cost_usd: update["cost"]["amount"].as_f64().filter(|_| update["cost"]["currency"] == "USD"),
+                            cost_kind: Some("provider".into()),
                             context_only: true,
                             ..Default::default()
                         });
@@ -1058,10 +1059,17 @@ impl Runner {
         if let Some(usage) = crate::project_store::Usage::from_acp(&result) {
             let mut state = wire.lock().unwrap();
             state.attempt.usage = Some(match state.attempt.usage.take() {
+                // 之前只有上下文占位（DSH usage_update）：精确用量到了就替换，不累加；占位带的服务商费用留着。
+                Some(before) if before.context_only => crate::project_store::Usage {
+                    cost_usd: usage.cost_usd.or(before.cost_usd),
+                    cost_kind: usage.cost_kind.clone().or(before.cost_kind),
+                    ..usage
+                },
                 // 插话后续的那几步用量累加；上下文取最后一步的。
                 Some(before) => crate::project_store::Usage {
                     input: before.input + usage.input,
                     cached: before.cached + usage.cached,
+                    cache_write: before.cache_write + usage.cache_write,
                     output: before.output + usage.output,
                     reasoning: before.reasoning + usage.reasoning,
                     cost_usd: match (before.cost_usd, usage.cost_usd) {

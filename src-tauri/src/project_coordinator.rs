@@ -63,14 +63,13 @@ fn compact_sources(sources: &[coordinator_policy::Source]) -> Vec<Value> {
         .collect()
 }
 
-/// 一项任务累计的 token（各次尝试相加）。
-fn task_tokens(workflow: &Workflow, task: &str) -> u64 {
+/// 一项任务累计的 token（各次尝试相加）；有尝试用量未知（没报或只有上下文占用）时为 null，不当成 0。
+fn task_tokens(workflow: &Workflow, task: &str) -> Option<u64> {
     workflow
         .attempts
         .iter()
-        .filter(|attempt| attempt.task_id.as_deref() == Some(task))
-        .filter_map(|attempt| attempt.usage.as_ref())
-        .map(|usage| usage.total())
+        .filter(|attempt| attempt.task_id.as_deref() == Some(task) && attempt.status != "starting")
+        .map(|attempt| attempt.usage.as_ref().and_then(|usage| usage.spent()))
         .sum()
 }
 
@@ -114,18 +113,22 @@ fn quota_offer(task: &crate::project_store::Task) -> String {
 
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
-    let (mut members, mut coordinator) = (0u64, 0u64);
+    let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
     for attempt in &workflow.attempts {
-        let Some(usage) = attempt.usage.as_ref() else {
+        let Some(spent) = attempt.usage.as_ref().and_then(|usage| usage.spent()) else {
+            if attempt.status != "starting" {
+                unknown += 1;
+            }
             continue;
         };
         if attempt.activity.as_deref() == Some(coordinator_policy::MANAGER_ACTIVITY) {
-            coordinator += usage.total();
+            coordinator += spent;
         } else {
-            members += usage.total();
+            members += spent;
         }
     }
-    json!({"member_tokens":members,"coordinator_tokens":coordinator})
+    // unknown_attempts：用量未知的执行次数（Hermes 不报、DSH 只报上下文占用），总数因此偏小。
+    json!({"member_tokens":members,"coordinator_tokens":coordinator,"unknown_attempts":unknown})
 }
 
 impl Runtime {

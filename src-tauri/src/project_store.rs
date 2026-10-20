@@ -443,15 +443,21 @@ pub struct Attempt {
     pub usage: Option<Usage>,
 }
 
-/// 一次任务的 token 用量。input 含缓存命中，output 含推理。
+/// 一次任务的 token 用量。input 含缓存读写（cached 是读、cache_write 是写，都已算在 input 里），output 含推理。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub input: u64,
     pub cached: u64,
+    /// 缓存写入（Claude 的 cache_creation）；已含在 input 里，单列只为看清构成。
+    #[serde(default)]
+    pub cache_write: u64,
     pub output: u64,
     pub reasoning: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// cost_usd 的口径：api_estimate = 按 API 价折算的等值估算（订阅下不是实际扣款）；provider = 服务商报的额度消耗。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_kind: Option<String>,
     /// 只知道上下文占用（DSH 只报这个），不是精确消耗。
     #[serde(default)]
     pub context_only: bool,
@@ -464,14 +470,20 @@ impl Usage {
     pub fn total(&self) -> u64 {
         self.input + self.output
     }
+    /// 确知的实际消耗；只有上下文占用时未知，不能当成消耗也不能当 0。
+    pub fn spent(&self) -> Option<u64> {
+        (!self.context_only).then(|| self.total())
+    }
     /// 两份累计值相减：Codex 报的是整个线程的累计，本任务只算差值。
     pub fn since(&self, base: &Usage) -> Usage {
         Usage {
             input: self.input.saturating_sub(base.input),
             cached: self.cached.saturating_sub(base.cached),
+            cache_write: self.cache_write.saturating_sub(base.cache_write),
             output: self.output.saturating_sub(base.output),
             reasoning: self.reasoning.saturating_sub(base.reasoning),
             cost_usd: None,
+            cost_kind: None,
             context_only: false,
             context: self.context,
         }
@@ -485,9 +497,8 @@ impl Usage {
             cached: n("cachedInputTokens"),
             output: n("outputTokens"),
             reasoning: n("reasoningOutputTokens"),
-            cost_usd: None,
-            context_only: false,
             context: 0,
+            ..Default::default()
         })
     }
     /// ACP `session/prompt` 响应里的 usage（Claude 桥接按这个格式回报）。
@@ -502,9 +513,12 @@ impl Usage {
         Some(Usage {
             input,
             cached: n("cachedReadTokens"),
+            cache_write: n("cachedWriteTokens"),
             output,
             reasoning: n("thoughtTokens"),
             cost_usd: result["_meta"]["costUsd"].as_f64().filter(|cost| *cost >= 0.0),
+            // Claude 桥接的 costUsd 是 SDK 按 API 价算的，订阅登录时并非实际扣款。
+            cost_kind: result["_meta"]["costUsd"].as_f64().map(|_| "api_estimate".into()),
             context_only: false,
             context: result["_meta"]["contextTokens"].as_u64().unwrap_or(0),
         })
