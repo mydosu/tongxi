@@ -1072,7 +1072,6 @@ impl Runner {
                     cache_write: before.cache_write + usage.cache_write,
                     output: before.output + usage.output,
                     reasoning: before.reasoning + usage.reasoning,
-                    subagent: before.subagent + usage.subagent,
                     cost_usd: match (before.cost_usd, usage.cost_usd) {
                         (Some(a), Some(b)) => Some(a + b),
                         (a, b) => a.or(b),
