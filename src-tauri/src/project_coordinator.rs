@@ -753,18 +753,28 @@ impl Runtime {
                 feedback = offer.take();
             }
             let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
-            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"resource_pools":resource_pools(&workflow,&quota,&providers),"capability":capability,"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
-            // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给状态；其他线路说明放最前面。
+            // 状态分两段：几回合内基本不变的大块（模型目录、价格表、历史画像等）放前面，能跨回合命中提示缓存；
+            // 每回合会变的放后面。serde_json 的对象按键名排序，混在一起时变化的键会排到大块前面，整段缓存失效。
+            // 按变化频率手动排序：模型目录和价格表最稳定，历史画像在成员完成任务后会变，放最后。
+            let reference = format!(
+                "{{\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{},\"capability\":{}}}",
+                Value::Object(models_by_member),
+                crate::pricing::about(),
+                json!(crate::project_store::roles_of(&workflow)?),
+                json!((!grants.is_empty()).then_some(&grants)),
+                json!(preference),
+                json!(capability)
+            );
+            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback});
+            let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
+            // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
             let input = if matches!(
                 crate::project_store::base_agent(&manager.coordinator.agent),
                 "claude-win" | "codex-win"
             ) {
-                format!("本回合状态（JSON）：\n{state}")
+                body
             } else {
-                format!(
-                    "{}\n\n本回合状态（JSON）：\n{state}",
-                    coordinator_policy::MANAGER_INSTRUCTION
-                )
+                format!("{}\n\n{body}", coordinator_policy::MANAGER_INSTRUCTION)
             };
             let result = self.native.run(attempt, &root, &input, deadline)?;
             if result.status != "completed" {
