@@ -1302,14 +1302,16 @@ async function cancelProject(id: string) {
 
 /// 修复后重新部署时带 `--resume-workflow` 启动：成员接入后自动继续那次协作；成员还没连上就隔几秒再试。
 async function resumeAfterLaunch(id: string) {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  // 管家和成员（尤其 Claude）启动连接可能要一两分钟：连接类错误最多等 3 分钟。
+  const attempts = 36;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       adoptProject(await invoke<Workflow>('continue_project', { workflowId: id, autoExecute: true }));
       updateRuntimeControls();
       toast('已自动继续上次中断的协作');
       return;
     } catch (error) {
-      if (attempt === 5 || !/连接|接入|offline|未连接/.test(errorText(error))) { toast(`自动继续协作失败：${errorText(error)}`, true); return; }
+      if (attempt === attempts - 1 || !/连接|接入|offline|未连接/.test(errorText(error))) { toast(`自动继续协作失败：${errorText(error)}；可在项目进度页点「继续协作」`, true); return; }
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
