@@ -22,11 +22,40 @@ fn cached(name: &'static str, fetch: impl FnOnce() -> Option<Value>) -> Option<V
         }
     }
     let value = fetch();
-    // 查不到（比如令牌刚好过期、还没被 CLI 刷新）不缓存，下次直接重查。
-    if let (Ok(mut cache), Some(_)) = (cache().lock(), &value) {
-        cache.insert(name, (Instant::now(), value.clone()));
+    // 查不到（令牌刚过期、接口 429 限流）只记 2 分钟，到点再试；查到的记 5 分钟。
+    // 失败时间往前拨，让它比成功的早过期。
+    let at = match &value {
+        Some(_) => Some(Instant::now()),
+        None => Instant::now().checked_sub(FRESH - RETRY),
+    };
+    if let (Ok(mut cache), Some(at)) = (cache().lock(), at) {
+        cache.insert(name, (at, value.clone()));
     }
     value
+}
+
+const RETRY: Duration = Duration::from_secs(120);
+
+/// 和 Claude 额度挂件共用的结果文件：`{"fetched_at": Unix 秒, "data": 接口原始返回}`。
+/// 这个接口查得太勤会 429，谁查到了都写进来，另一边新鲜的就直接用。
+fn shared_usage_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("claude-usage").join("usage.json"))
+}
+
+fn shared_usage(max_age: f64) -> Option<Value> {
+    let cached: Value = serde_json::from_str(&std::fs::read_to_string(shared_usage_path()?).ok()?).ok()?;
+    let age = crate::quota_reset::now_secs() as f64 - cached["fetched_at"].as_f64()?;
+    (age < max_age).then(|| cached["data"].clone())
+}
+
+fn share_usage(data: &Value) {
+    let Some(path) = shared_usage_path() else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let tmp = path.with_extension("json.tmp");
+    let body = json!({"fetched_at": crate::quota_reset::now_secs(), "data": data});
+    if std::fs::write(&tmp, body.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 /// 给调度的额度概况：{成员: {five_hour, weekly}}，每个窗口是已用百分比和距重置的小时数。
@@ -54,6 +83,17 @@ fn window(used: Option<f64>, resets_at: Option<i64>) -> Option<Value> {
 }
 
 fn claude() -> Option<Value> {
+    let data = shared_usage(600.0).or_else(claude_fetch)?;
+    let pick = |key: &str| {
+        window(
+            data[key]["utilization"].as_f64(),
+            data[key]["resets_at"].as_str().and_then(iso_secs),
+        )
+    };
+    Some(json!({"five_hour": pick("five_hour"), "weekly": pick("seven_day")}))
+}
+
+fn claude_fetch() -> Option<Value> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     let path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
     let credentials: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
@@ -74,13 +114,8 @@ fn claude() -> Option<Value> {
         .ok()?
         .into_json()
         .ok()?;
-    let pick = |key: &str| {
-        window(
-            data[key]["utilization"].as_f64(),
-            data[key]["resets_at"].as_str().and_then(iso_secs),
-        )
-    };
-    Some(json!({"five_hour": pick("five_hour"), "weekly": pick("seven_day")}))
+    share_usage(&data);
+    Some(data)
 }
 
 fn codex_limits(codex: &Arc<crate::codex::Runtime>) -> Option<Value> {
@@ -131,4 +166,12 @@ mod tests {
         );
         assert_eq!(super::iso_secs("bad"), None);
     }
+}
+
+/// 手动核对：`cargo test -- --ignored quota_live --nocapture` 打印 Claude 额度查询结果（不含令牌）。
+#[cfg(test)]
+#[test]
+#[ignore]
+fn quota_live() {
+    println!("claude → {:?}", claude());
 }
