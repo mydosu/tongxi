@@ -982,7 +982,7 @@ impl Runtime {
         stage: &str,
         deadline: Instant,
     ) -> Result<Attempt> {
-        loop {
+        {
             self.ensure_active(id, deadline)?;
             let snapshot = self.snapshot(agent);
             if snapshot.connection != "connected" {
