@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, ChatQuestion, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
+import type { Agent, CapabilityRow, ChatQuestion, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBusy } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -1448,13 +1448,21 @@ function renderProjectProgress() {
   updateProjectProgress();
 }
 
+// 历史表现表：一分钟内复用，展开的区块重绘后保持展开。
+let capabilityRows: CapabilityRow[] = [], capabilityAt = 0;
+const openProgressSections = new Set<string>();
 function updateProjectProgress() {
   if (!detail?.project || activeProjectModule !== 'progress') return;
   const content = main.querySelector<HTMLElement>('.project-progress-content');
   if (!content) return;
-  const jobs=roomProjects(), stamp=JSON.stringify([detail.project_questions,jobs.map(job=>[job.id,job.status,job.coordination,job.tasks.map(task=>[task.status,task.title,task.agent_id]),job.attempts.map(attempt=>[attempt.agent_id,attempt.status,attempt.stage,attempt.activity]),job.error])]);
+  if (Date.now() - capabilityAt > 60_000) {
+    capabilityAt = Date.now();
+    void invoke<CapabilityRow[]>('project_capability').then(rows => { capabilityRows = rows; delete content.dataset.paint; updateProjectProgress(); }).catch(() => {});
+  }
+  const jobs=roomProjects(), stamp=JSON.stringify([detail.project_questions,capabilityRows.length,capabilityAt,jobs.map(job=>[job.id,job.status,job.coordination,job.tasks.map(task=>[task.status,task.title,task.agent_id]),job.attempts.map(attempt=>[attempt.agent_id,attempt.status,attempt.stage,attempt.activity,attempt.usage]),job.error])]);
   if (content.dataset.paint===stamp) return;
-  content.innerHTML=progressContent(jobs,detail.project_agent_chats,escape,id=>member(id).name,id=>avatar(member(id)),detail.project_questions||[]);content.dataset.paint=stamp;
+  content.innerHTML=progressContent(jobs,detail.project_agent_chats,escape,id=>member(id).name,id=>avatar(member(id)),detail.project_questions||[],capabilityRows);content.dataset.paint=stamp;
+  content.querySelectorAll<HTMLDetailsElement>('details[data-keep]').forEach(section=>{section.open=openProgressSections.has(section.dataset.keep!);section.addEventListener('toggle',()=>{if(section.open)openProgressSections.add(section.dataset.keep!);else openProgressSections.delete(section.dataset.keep!);});});
   content.querySelectorAll<HTMLButtonElement>('[data-progress-agent]').forEach(button=>button.addEventListener('click',()=>void selectProjectModule(selectedId,button.dataset.progressAgent!)));
   content.querySelectorAll<HTMLButtonElement>('[data-stop-project]').forEach(button=>button.addEventListener('click',()=>void cancelProject(button.dataset.stopProject!)));
   content.querySelectorAll<HTMLButtonElement>('[data-continue-project]').forEach(button=>button.addEventListener('click',()=>void continueProject(button.dataset.continueProject!)));
