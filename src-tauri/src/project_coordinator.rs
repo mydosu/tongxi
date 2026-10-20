@@ -1107,11 +1107,19 @@ impl Runtime {
         (self.notify)(id);
         Ok(false)
     }
-    fn run_coordinated_batch(&self, id: &str, deadline: Instant) -> Result<bool> {
+    /// 现在能开工的任务：依赖已完成并合并、会话空闲（每个会话同时只做一项），最多 room 项。
+    /// busy_tasks / busy_agents 是正在跑的任务和会话。
+    fn runnable_tasks(
+        &self,
+        id: &str,
+        busy_tasks: &HashSet<String>,
+        busy_agents: &HashSet<String>,
+        room: usize,
+    ) -> Result<Vec<Task>> {
         let workflow = self.store.lock().unwrap().workflow(id)?;
         let metadata = self.store.lock().unwrap().coordination_routes(id)?;
         let gate = failed_verification(&workflow.tasks, &metadata);
-        let mut agents = HashSet::new();
+        let mut agents = busy_agents.clone();
         let mut tasks = workflow
             .tasks
             .iter()
@@ -1143,8 +1151,8 @@ impl Runtime {
                         })
                     })
             })
-            .filter(|task| agents.insert(task.agent_id.clone()))
-            .take(2)
+            .filter(|task| !busy_tasks.contains(&task.id) && agents.insert(task.agent_id.clone()))
+            .take(room)
             .cloned()
             .collect::<Vec<_>>();
         // Closing files/commits/push must operate on the merged project, after other queued work.
@@ -1163,18 +1171,86 @@ impl Runtime {
                         .iter()
                         .any(|route| route.task_id == task.id && route.purpose != "closeout")
                 });
-            } else if workflow.tasks.iter().any(|task| {
-                !matches!(task.status.as_str(), "completed" | "skipped")
-                    && !tasks.iter().any(|candidate| candidate.id == task.id)
-            }) || metadata.iter().any(|route| held(&metadata, &route.task_id))
+            } else if !busy_tasks.is_empty()
+                || workflow.tasks.iter().any(|task| {
+                    !matches!(task.status.as_str(), "completed" | "skipped")
+                        && !tasks.iter().any(|candidate| candidate.id == task.id)
+                })
+                || metadata.iter().any(|route| held(&metadata, &route.task_id))
             {
-                // 还有任务在等验证后合并：收尾要在合并后的项目上做，先交回调度。
-                return Ok(false);
+                // 还有任务在跑或在等验证后合并：收尾要在合并后的项目上做，先不开。
+                return Ok(Vec::new());
             } else {
                 tasks.truncate(1);
             }
         }
-        if tasks.is_empty() {
+        Ok(tasks)
+    }
+
+    /// 一项任务结束后：合并（或按调度要求先保留等验证）、验证通过就合并被验分支、发布交付、标记完成。
+    fn finish_batch_task(
+        &self,
+        id: &str,
+        task: &Task,
+        result: crate::project_store::Attempt,
+        deadline: Instant,
+    ) -> Result<()> {
+        let workflow = self.store.lock().unwrap().workflow(id)?;
+        let metadata = self.store.lock().unwrap().coordination_routes(id)?;
+        if result.status == "completed" {
+            let route = metadata.iter().find(|route| route.task_id == task.id);
+            if route.is_some_and(|route| route.hold_merge && route.purpose != "verification") {
+                // 调度要求合并前验证：分支和工作树留着，等验证通过再并入。
+                self.store.lock().unwrap().set_merge_state(&task.id, Some("held"))?;
+                self.store.lock().unwrap().add_system_team_message(
+                    id,
+                    &format!("「{}」已完成，按调度安排验证通过后再合并，任务分支先保留。", task.title),
+                )?;
+            } else {
+                self.merge_task(id, &workflow.project_id, &task.id, deadline)?;
+            }
+            // 验证在被验任务的分支上做：结论写明通过才合并；未通过或没写结论都先不合并，交调度安排返修或复验。
+            if let Some(route) = route.filter(|route| route.purpose == "verification") {
+                let passed = crate::capability::verdict(&result.output) == Some(true);
+                for held_task in route.context_ids.iter().filter(|context| held(&metadata, context)) {
+                    let title = workflow
+                        .tasks
+                        .iter()
+                        .find(|task| &task.id == held_task)
+                        .map_or(held_task.as_str(), |task| task.title.as_str());
+                    if passed {
+                        self.merge_task(id, &workflow.project_id, held_task, deadline)?;
+                        self.store.lock().unwrap().add_system_team_message(
+                            id,
+                            &format!("「{title}」验证通过，改动已合并。"),
+                        )?;
+                    } else {
+                        self.store.lock().unwrap().add_system_team_message(
+                            id,
+                            &format!("「{title}」验证未通过或没写结论，暂不合并；任务分支保留，可用同一任务返修后再验证。"),
+                        )?;
+                    }
+                }
+            }
+            self.store.lock().unwrap().publish_coordinated_reply(
+                id,
+                &result,
+                &result.output,
+            )?;
+        }
+        self.store
+            .lock()
+            .unwrap()
+            .finish_coordinated_task(&task.id, &result)?;
+        Ok(())
+    }
+
+    /// 滚动执行：互不依赖、会话不同的任务一起跑（最多 MAX_PARALLEL 项）；哪项做完就当场处理它的结果，
+    /// 并立刻补上因此能开工的任务，不等同批里最慢的那项。都跑完、没有能开工的了才交回调度。
+    fn run_coordinated_batch(&self, id: &str, deadline: Instant) -> Result<bool> {
+        const MAX_PARALLEL: usize = 4;
+        let first = self.runnable_tasks(id, &HashSet::new(), &HashSet::new(), MAX_PARALLEL)?;
+        if first.is_empty() {
             return Ok(false);
         }
         self.store
@@ -1182,70 +1258,52 @@ impl Runtime {
             .unwrap()
             .coordination_status(id, "waiting_members")?;
         (self.notify)(id);
-        let results = std::thread::scope(|scope| {
-            tasks
-                .iter()
-                .map(|task| {
-                    let task = task.clone();
-                    scope.spawn(move || self.run_coordinated_task(id, &task, deadline))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|handle| {
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| Err("成员运行线程异常".into()))
-                })
-                .collect::<Vec<_>>()
-        });
-        for (task, result) in tasks.iter().zip(results) {
-            let result = result?;
-            if result.status == "completed" {
-                let route = metadata.iter().find(|route| route.task_id == task.id);
-                if route.is_some_and(|route| route.hold_merge && route.purpose != "verification") {
-                    // 调度要求合并前验证：分支和工作树留着，等验证通过再并入。
-                    self.store.lock().unwrap().set_merge_state(&task.id, Some("held"))?;
-                    self.store.lock().unwrap().add_system_team_message(
-                        id,
-                        &format!("「{}」已完成，按调度安排验证通过后再合并，任务分支先保留。", task.title),
-                    )?;
-                } else {
-                    self.merge_task(id, &workflow.project_id, &task.id, deadline)?;
+        std::thread::scope(|scope| -> Result<()> {
+            let (sender, receiver) = std::sync::mpsc::channel::<(Task, Result<crate::project_store::Attempt>)>();
+            let mut busy: Vec<Task> = Vec::new();
+            let start = |task: Task, busy: &mut Vec<Task>| {
+                busy.push(task.clone());
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.run_coordinated_task(id, &task, deadline)
+                    }))
+                    .unwrap_or_else(|_| Err("成员运行线程异常".into()));
+                    let _ = sender.send((task, result));
+                });
+            };
+            for task in first {
+                start(task, &mut busy);
+            }
+            let mut failure: Option<String> = None;
+            while !busy.is_empty() {
+                let Ok((task, result)) = receiver.recv() else {
+                    break;
+                };
+                busy.retain(|running| running.id != task.id);
+                if failure.is_some() {
+                    continue;
                 }
-                // 验证在被验任务的分支上做：结论写明通过才合并；未通过或没写结论都先不合并，交调度安排返修或复验。
-                if let Some(route) = route.filter(|route| route.purpose == "verification") {
-                    let passed = crate::capability::verdict(&result.output) == Some(true);
-                    for held_task in route.context_ids.iter().filter(|context| held(&metadata, context)) {
-                        let title = workflow
-                            .tasks
-                            .iter()
-                            .find(|task| &task.id == held_task)
-                            .map_or(held_task.as_str(), |task| task.title.as_str());
-                        if passed {
-                            self.merge_task(id, &workflow.project_id, held_task, deadline)?;
-                            self.store.lock().unwrap().add_system_team_message(
-                                id,
-                                &format!("「{title}」验证通过，改动已合并。"),
-                            )?;
-                        } else {
-                            self.store.lock().unwrap().add_system_team_message(
-                                id,
-                                &format!("「{title}」验证未通过或没写结论，暂不合并；任务分支保留，可用同一任务返修后再验证。"),
-                            )?;
+                // 出错就不再开新任务，等在跑的都结束后把错误交回去。
+                let outcome = result
+                    .and_then(|result| self.finish_batch_task(id, &task, result, deadline))
+                    .and_then(|_| self.ensure_active(id, deadline))
+                    .and_then(|_| {
+                        let busy_tasks = busy.iter().map(|task| task.id.clone()).collect();
+                        let busy_agents = busy.iter().map(|task| task.agent_id.clone()).collect();
+                        self.runnable_tasks(id, &busy_tasks, &busy_agents, MAX_PARALLEL - busy.len())
+                    });
+                match outcome {
+                    Ok(more) => {
+                        for task in more {
+                            start(task, &mut busy);
                         }
                     }
+                    Err(error) => failure = Some(error),
                 }
-                self.store.lock().unwrap().publish_coordinated_reply(
-                    id,
-                    &result,
-                    &result.output,
-                )?;
             }
-            self.store
-                .lock()
-                .unwrap()
-                .finish_coordinated_task(&task.id, &result)?;
-        }
+            failure.map_or(Ok(()), Err)
+        })?;
         Ok(true)
     }
     /// 把任务分支并入主线并清理工作树；合并冲突交管家处理，核实确实已并入才继续。
