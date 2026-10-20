@@ -114,6 +114,8 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         clear_context: false,
         allow_subagents: false,
         title: None,
+        category: None,
+        complexity: None,
     }
 }
 

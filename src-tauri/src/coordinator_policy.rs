@@ -55,6 +55,11 @@ pub struct Route {
     /// 任务名：进度里显示，写这项具体做什么。
     #[serde(default)]
     pub title: Option<String>,
+    /// 任务类别（capability::CATEGORIES）与复杂度：归档进能力画像，下次选型时按类别看历史表现。
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub complexity: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
