@@ -377,7 +377,7 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 - **GOAT 额度**：DSH、Hermes 走 Command Code 线路时，用该线路自己配置的 Key 只读查询官方计费接口，拿到 5 小时 / 每周 / 本月额度、剩余额度和本期 token。同一账号的线路自动归在一起，套餐将停止的也会标出。调度按资源池看这些额度来分活。
 - **套餐额度表**：进度页新增「套餐额度」，Claude、Codex 的订阅窗口和各条 GOAT 线路放在一起看。
 - **Hermes 用量**：Hermes 的回合用量现在会回报（按会话累计计数的前后差值），不再是「未知」。
-- **子 agent 用量**：Claude 按模型分列的用量连子 agent 一起计入，「用量明细」里单列「其中子 agent」。
+- **子 agent 用量**：子 agent 的消耗记在派它的成员身上，Claude 按模型分列的用量连子 agent 一起汇总。
 - **修复**：去掉一处只执行一次的循环（clippy 报错）。
 
 ### v2.0.0 · 成本感知调度

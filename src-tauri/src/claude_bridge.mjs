@@ -219,7 +219,8 @@ function resultText(content) {
 }
 
 // 回合用量按 ACP PromptResponse.usage 回报：inputTokens 含缓存读写，费用放 _meta。
-// modelUsage 按模型分列、连子 agent（Task）用的模型一起算，有就用它的合计；没有再退回主线程的 usage。
+// modelUsage 按模型分列、连子 agent（Task）用的模型一起算，有就用它的合计（子 agent 的消耗记在这位成员身上）；
+// 没有再退回主线程的 usage。
 function usageOf(result, context) {
   const u = result.usage || {};
   const models = Object.values(result.modelUsage || {});
@@ -229,11 +230,8 @@ function usageOf(result, context) {
     : [u.cache_read_input_tokens || 0, u.cache_creation_input_tokens || 0, u.input_tokens || 0, u.output_tokens || 0, u.output_tokens_details?.thinking_tokens || 0];
   const input = fresh + read + write;
   if (!input && !output) return {};
-  // 主线程之外的消耗（子 agent）单独记一笔，方便看出子 agent 用了多少。
-  const main = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
-  const subagents = models.length ? Math.max(0, input + output - main) : 0;
   return { usage: { inputTokens: input, outputTokens: output, cachedReadTokens: read, cachedWriteTokens: write, ...(thought ? { thoughtTokens: thought } : {}), totalTokens: input + output },
-    _meta: { contextTokens: context, ...(subagents ? { subagentTokens: subagents } : {}), ...(Number.isFinite(result.total_cost_usd) ? { costUsd: result.total_cost_usd } : {}) } };
+    _meta: { contextTokens: context, ...(Number.isFinite(result.total_cost_usd) ? { costUsd: result.total_cost_usd } : {}) } };
 }
 
 function failureMessage(result) {

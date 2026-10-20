@@ -33,7 +33,7 @@ function usageDetail(job: Workflow, escape: Escape, name: (agent: string) => str
     const money = [[costOf(mine, 'api_estimate'), 'API 等值'], [costOf(mine, 'provider'), '额度消耗']].filter(([value]) => value).map(([value, label]) => `$${(value as number).toFixed(2)} ${label}`).join(' · ');
     return `<tr><td>${escape(name(agent))}</td><td>${escape(tokens(spent(mine)))}</td><td>${escape(money || '—')}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
   }).join('');
-  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${sum(usage => usage.subagent || 0) ? cell('其中子 agent', tokens(sum(usage => usage.subagent || 0))) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${rows ? `<table><thead><tr><th>成员</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
+  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${rows ? `<table><thead><tr><th>成员</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
 }
 
 type QuotaWindow = { used_percent: number; resets_in_hours?: number; used_usd?: number; cap_usd?: number; exceeded?: boolean };
@@ -53,7 +53,7 @@ export function quotaTable(quota: Record<string, QuotaEntry>, escape: Escape, na
     const notes = [shared(entry.account) ? `账号 ${accounts.get(entry.account!)}（与其他线路共用）` : entry.account ? `账号 ${accounts.get(entry.account)}` : '', entry.cancel_at ? `套餐 ${date(entry.cancel_at)} 停止` : entry.period_end ? `${date(entry.period_end)} 续期` : '', entry.period?.spent_usd != null ? `本期已用 $${entry.period.spent_usd}` : ''].filter(Boolean).join(' · ');
     return `<tr><td>${escape(name(agent))}${line ? `<small>${escape(line)}</small>` : ''}</td><td>${cell(entry.five_hour)}</td><td>${cell(entry.weekly)}</td><td>${entry.monthly ? `${entry.monthly.used_percent}%` : '—'}</td><td>${entry.credits_left_usd != null ? `$${entry.credits_left_usd.toFixed(2)}` : '—'}</td><td>${escape(notes || '—')}</td></tr>`;
   }).join('');
-  return `<details class="project-capability" data-keep="quota"><summary>套餐额度</summary><table><thead><tr><th>成员 / 线路</th><th>5 小时</th><th>每周</th><th>本月</th><th>剩余额度</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table><p>百分比是已用比例。GOAT 的美元是套餐额度单位，不是额外现金支出；剩余额度含另购的部分。数据每 5 分钟最多刷新一次。</p></details>`;
+  return `<details class="project-capability" data-keep="quota"><summary>套餐额度</summary><table><thead><tr><th>成员 / 线路</th><th>5 小时</th><th>每周</th><th>本月</th><th>剩余额度</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table><p>百分比是已用比例。GOAT 的金额是套餐额度；剩余额度含另购的部分。数据每 5 分钟最多刷新一次。</p></details>`;
 }
 
 /// 历史表现：各组合在不同任务类别上的平滑成功率、一次通过率、完整任务消耗与返修。
