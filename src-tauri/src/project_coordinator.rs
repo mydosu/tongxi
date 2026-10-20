@@ -560,6 +560,10 @@ impl Runtime {
                 Duration::from_secs((at - now + 60).max(60) as u64),
                 format!("额度预计 {} 重置，届时", crate::quota_reset::local_label(at, offset)),
             ),
+            None if crate::quota_reset::already_reset(error, now) => (
+                Duration::from_secs(60),
+                "额度已经重置，1 分钟后".to_owned(),
+            ),
             None => {
                 let minutes = coordinator_policy::quota_retry_minutes(waits);
                 (
@@ -758,7 +762,8 @@ impl Runtime {
             // 只放一次协作里几乎不变的：模型目录、价格表、默认角色、长期授权、倾向。Claude 管家把这段放进系统提示
             // 命中缓存（见 claude_bridge 的 splitReference）；历史画像在成员完成任务后会变，放到每回合状态里。
             let reference = format!(
-                "{{\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{}}}",
+                "{{\"coordinator\":{},\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{}}}",
+                json!(crate::project_store::base_agent(&manager.coordinator.agent)),
                 Value::Object(models_by_member),
                 crate::pricing::about(),
                 json!(crate::project_store::roles_of(&workflow)?),
