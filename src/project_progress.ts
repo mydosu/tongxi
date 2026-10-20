@@ -40,7 +40,7 @@ function usageDetail(job: Workflow, escape: Escape, name: (agent: string) => str
 export function capabilityTable(rows: CapabilityRow[], escape: Escape, name: (agent: string) => string) {
   if (!rows.length) return '';
   const confidence: Record<string,string> = { low:'样本少', medium:'中', high:'高' };
-  const body = rows.map(row => `<tr><td>${escape(name(row.agent))}<small>${escape([row.model, row.effort].filter(value => value !== 'default').join(' · ') || '默认配置')}</small></td><td>${escape(categories[row.category] || row.category)}</td><td>${row.samples}</td><td>${percentOf(row.success_rate)}</td><td>${percentOf(row.first_pass_rate)}</td><td>${row.avg_task_tokens == null ? '—' : escape(tokens(row.avg_task_tokens))}</td><td>${row.avg_repairs ?? '—'}</td><td>${escape(confidence[row.confidence])}</td></tr>`).join('');
+  const body = rows.map(row => `<tr><td title="${escape(row.model)}">${escape(name(row.agent))}<small>${escape([row.model.split(':').pop() || row.model, row.effort].filter(value => value !== 'default').join(' · ') || '默认配置')}</small></td><td>${escape(categories[row.category] || row.category)}</td><td>${row.samples}</td><td>${percentOf(row.success_rate)}</td><td>${percentOf(row.first_pass_rate)}</td><td>${row.avg_task_tokens == null ? '—' : escape(tokens(row.avg_task_tokens))}</td><td>${row.avg_repairs ?? '—'}</td><td>${escape(confidence[row.confidence])}</td></tr>`).join('');
   return `<details class="project-capability" data-keep="capability"><summary>历史表现（近一年）</summary><table><thead><tr><th>组合</th><th>类别</th><th>样本</th><th>成功率</th><th>一次通过</th><th>完整任务 token</th><th>平均返修</th><th>可信度</th></tr></thead><tbody>${body}</tbody></table><p>成功率是平滑后的估计：样本少时向 70% 收缩，撞限额、被停下或中断不计入；完整任务 token 含由它开头的返修和验证。调度选人时参考这张表。</p></details>`;
 }
 
