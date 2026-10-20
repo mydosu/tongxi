@@ -218,6 +218,18 @@ function resultText(content) {
   return content == null ? '' : JSON.stringify(content);
 }
 
+// 调度回合的输入是「参考资料（…）：\n{…}\n\n本回合状态（JSON）：\n{…}」：拆出参考资料，其余照常作为用户消息。
+const REFERENCE_HEAD = '参考资料（JSON，几回合内基本不变）：\n';
+const STATE_HEAD = '\n\n本回合状态（JSON）：\n';
+function splitReference(prompt) {
+  const blocks = Array.isArray(prompt) ? prompt : [];
+  const first = blocks.find(block => block?.type === 'text');
+  if (!first || !String(first.text).startsWith(REFERENCE_HEAD)) return [null, prompt];
+  const at = first.text.indexOf(STATE_HEAD);
+  if (at < 0) return [null, prompt];
+  return [first.text.slice(0, at), blocks.map(block => block === first ? { ...block, text: first.text.slice(at + 2) } : block)];
+}
+
 // 回合用量按 ACP PromptResponse.usage 回报：inputTokens 含缓存读写，费用放 _meta。
 // modelUsage 按模型分列、连子 agent（Task）用的模型一起算，有就用它的合计（子 agent 的消耗记在这位成员身上）；
 // 没有再退回主线程的 usage。
@@ -257,7 +269,12 @@ function prompt(id, params) {
     // 管家只调度：不给任何内置工具，也不加载用户或插件的 MCP。
     args.push('--tools', '', '--strict-mcp-config', '--permission-mode', 'default', '--permission-prompts', 'none',
       '--setting-sources', 'local');
-    if (coordinatorInstruction) args.push('--system-prompt', coordinatorInstruction);
+    // 「参考资料」（模型目录、价格表等）几回合内不变：拼到系统提示后面。Claude 的提示缓存只在断点处命中，
+    // 系统提示末尾就是一个断点，放这里每回合都能命中；留在消息里的话每回合都要重写一遍缓存。
+    const [reference, prompt] = splitReference(params.prompt);
+    params.prompt = prompt;
+    const system = [coordinatorInstruction, reference].filter(Boolean).join('\n\n');
+    if (system) args.push('--system-prompt', system);
   } else {
     args.push('--permission-mode', 'bypassPermissions');
     if (windowsHint) args.push('--append-system-prompt', windowsHint);
