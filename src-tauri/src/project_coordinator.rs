@@ -1523,6 +1523,18 @@ pub fn set_project_coordinator(
     store.detail(&conversation_id)
 }
 
+/// 历史表现：近一年各「成员+模型+强度+类别」组合的能力与成本画像，进度页的对比表用。
+#[tauri::command]
+pub fn project_capability(runtime: tauri::State<'_, Arc<Runtime>>) -> Result<Vec<Value>> {
+    let now = crate::store::now();
+    let samples = runtime
+        .store
+        .lock()
+        .unwrap()
+        .capability_samples(now - 365 * 24 * 3600 * 1000)?;
+    Ok(crate::capability::profiles(&samples, now, 60))
+}
+
 /// 调度倾向：save（省额度）/ balanced（平衡）/ quality（质量优先）。影响调度怎么挑模型、一次协作能新开几个会话。
 #[tauri::command]
 pub fn set_project_preference(

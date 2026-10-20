@@ -1452,6 +1452,7 @@ fn main() {
             projects::set_project_roles,
             project_coordinator::set_project_coordinator,
             project_coordinator::set_project_preference,
+            project_coordinator::project_capability,
             project_coordinator::set_project_grants,
             pricing::pricing_status,
             pricing::refresh_pricing,
