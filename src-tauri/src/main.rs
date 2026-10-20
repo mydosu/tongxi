@@ -24,6 +24,7 @@ mod codex;
 mod conversation_cleanup;
 mod coordinator_clients;
 mod coordinator_policy;
+mod capability;
 mod coordinator_store;
 #[cfg(test)]
 mod coordinator_tests;

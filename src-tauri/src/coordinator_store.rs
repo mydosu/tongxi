@@ -77,6 +77,8 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     crate::project_store::add_column(tx, "coordination_routes", "reason", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_routes", "allow_subagents", "INTEGER NOT NULL DEFAULT 0")?;
     crate::project_store::add_column(tx, "coordination_routes", "clear_context", "INTEGER NOT NULL DEFAULT 0")?;
+    crate::project_store::add_column(tx, "coordination_routes", "category", "TEXT")?;
+    crate::project_store::add_column(tx, "coordination_routes", "complexity", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
@@ -341,6 +343,35 @@ impl Store {
             .and_then(|text| serde_json::from_str::<crate::project_store::Usage>(&text).ok())
             .map(|usage| usage.context)
             .filter(|context| *context > 0)
+    }
+    /// 能力画像用的历史执行：since 之后所有协作里由调度派出的成员执行（含失败与验证）。
+    pub fn capability_samples(&self, since: i64) -> Result<Vec<crate::capability::Sample>> {
+        let mut query=self.connection.prepare("SELECT a.workflow_id,a.task_id,COALESCE(t.assigned_agent,a.agent_id),a.model,a.reasoning_effort,a.status,a.error,CASE WHEN r.purpose='verification' THEN substr(a.output,-400) ELSE '' END,a.usage,a.created_at,r.purpose,r.category,r.complexity,r.source_id,r.quote,r.context_ids FROM project_attempts a JOIN coordination_routes r ON r.task_id=a.task_id JOIN project_tasks t ON t.id=a.task_id WHERE a.created_at>=?1 AND a.status IN ('completed','failed','interrupted') ORDER BY a.created_at,a.rowid").map_err(|_|"能力画像读取失败")?;
+        let rows = query
+            .query_map([since], |r| {
+                Ok(crate::capability::Sample {
+                    workflow_id: r.get(0)?,
+                    task_id: r.get(1)?,
+                    agent_id: r.get(2)?,
+                    model: r.get(3)?,
+                    effort: r.get(4)?,
+                    status: r.get(5)?,
+                    error: r.get(6)?,
+                    output: r.get(7)?,
+                    usage: r.get::<_, Option<String>>(8)?.and_then(|text| serde_json::from_str(&text).ok()),
+                    created_at: r.get(9)?,
+                    purpose: r.get(10)?,
+                    category: r.get(11)?,
+                    complexity: r.get(12)?,
+                    source_id: r.get(13)?,
+                    quote: r.get(14)?,
+                    context_ids: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+                })
+            })
+            .map_err(|_| "能力画像读取失败")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "能力画像记录无效".into());
+        rows
     }
     pub fn coordination_routes(&self, id: &str) -> Result<Vec<TaskRoute>> {
         let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
@@ -637,12 +668,14 @@ impl Store {
             } else {
                 route.agent_id.as_str()
             };
+            let category = route.category.as_deref().filter(|value| crate::capability::CATEGORIES.contains(value));
+            let complexity = route.complexity.as_deref().filter(|value| crate::capability::COMPLEXITIES.contains(value));
             if *is_new {
                 tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,assigned_agent,instructions,files,depends_on,status,model,effort) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,'queued',?9,?10)",params![task_id,id,position,title,stored_agent,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort]).map_err(|_|"任务保存失败")?;
-                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context]).map_err(|_|"任务原文引用保存失败")?;
+                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context,category,complexity) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity]).map_err(|_|"任务原文引用保存失败")?;
             } else {
                 tx.execute("UPDATE project_tasks SET title=?1,assigned_agent=?2,instructions=?3,depends_on=?4,status='queued',model=?5,effort=?6,error=NULL,position=?9 WHERE id=?7 AND workflow_id=?8",params![title,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort,task_id,id,position]).map_err(|_|"任务恢复失败")?;
-                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10 WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context]).map_err(|_|"任务引用恢复失败")?;
+                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10,category=COALESCE(?11,category),complexity=COALESCE(?12,complexity) WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity]).map_err(|_|"任务引用恢复失败")?;
             }
         }
         tx.execute(

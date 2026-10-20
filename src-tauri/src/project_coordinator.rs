@@ -118,49 +118,25 @@ pub(crate) fn logical_tasks(
     workflow: &Workflow,
     routes: &[crate::coordinator_store::TaskRoute],
 ) -> std::collections::HashMap<String, String> {
-    let route = |id: &str| routes.iter().find(|route| route.task_id == id);
-    let mut parent: std::collections::HashMap<String, String> = workflow
-        .tasks
+    let mut tasks: Vec<&crate::project_store::Task> = workflow.tasks.iter().collect();
+    tasks.sort_by_key(|task| task.position);
+    let linked: Vec<&crate::coordinator_store::TaskRoute> = tasks
         .iter()
-        .map(|task| (task.id.clone(), task.id.clone()))
+        .filter_map(|task| routes.iter().find(|route| route.task_id == task.id))
         .collect();
-    fn root(parent: &std::collections::HashMap<String, String>, id: &str) -> String {
-        let mut id = id.to_owned();
-        while parent[&id] != id {
-            id = parent[&id].clone();
-        }
-        id
+    let mut groups = crate::capability::link_tasks(linked.iter().map(|route| {
+        (
+            route.task_id.as_str(),
+            route.purpose.as_str(),
+            route.source_id.as_str(),
+            route.quote.as_str(),
+            route.context_ids.as_slice(),
+        )
+    }));
+    for task in tasks {
+        groups.entry(task.id.clone()).or_insert_with(|| task.id.clone());
     }
-    let position = |id: &str| {
-        workflow
-            .tasks
-            .iter()
-            .find(|task| task.id == id)
-            .map_or(u32::MAX, |task| task.position)
-    };
-    for task in &workflow.tasks {
-        let Some(this) = route(&task.id) else { continue };
-        for other in &this.context_ids {
-            let Some(that) = route(other).filter(|that| that.task_id != this.task_id) else {
-                continue;
-            };
-            let linked = (this.source_id == that.source_id && this.quote == that.quote)
-                || this.purpose == "verification"
-                || that.purpose == "verification";
-            if !linked || this.purpose == "reply" || that.purpose == "reply" {
-                continue;
-            }
-            let (a, b) = (root(&parent, &this.task_id), root(&parent, &that.task_id));
-            if a != b {
-                let (keep, merge) = if position(&a) <= position(&b) { (a, b) } else { (b, a) };
-                parent.insert(merge, keep);
-            }
-        }
-    }
-    parent
-        .keys()
-        .map(|id| (id.clone(), root(&parent, id)))
-        .collect()
+    groups
 }
 
 /// 逻辑任务的完整消耗：各环节（按任务的 purpose）分开列，再给合计；有未知用量时合计为 null。
@@ -750,11 +726,19 @@ impl Runtime {
                 Some(_) => None,
             };
             let quota = crate::quota::overview(&self.codex);
+            // 近一年的历史执行汇总成能力画像；读不到就不给，不影响调度。
+            let capability = self
+                .store
+                .lock()
+                .unwrap()
+                .capability_samples(crate::store::now() - 365 * 24 * 3600 * 1000)
+                .map(|samples| crate::capability::profiles(&samples, crate::store::now(), 40))
+                .unwrap_or_default();
             if offer.is_some() {
                 feedback = offer.take();
             }
             let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
-            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
+            let state = json!({"project_grants":(!grants.is_empty()).then_some(&grants),"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"preference":preference,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"pricing":crate::pricing::about(),"usage":usage_overview(&workflow),"resource_pools":resource_pools(&workflow,&quota,&providers),"capability":capability,"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"models":models_by_member,"default_roles":crate::project_store::roles_of(&workflow)?,"routing_feedback":feedback});
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给状态；其他线路说明放最前面。
             let input = if matches!(
                 crate::project_store::base_agent(&manager.coordinator.agent),
