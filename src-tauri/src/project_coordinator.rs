@@ -216,11 +216,13 @@ pub(crate) fn resource_pools(
     let mut pools: Vec<(String, Value)> = Vec::new();
     for attempt in workflow.attempts.iter().filter(|attempt| attempt.status != "starting") {
         let base = crate::project_store::base_agent(&attempt.agent_id);
-        let provider = attempt
-            .model
-            .as_ref()
-            .and_then(|model| providers.get(&(base.to_owned(), model.clone())));
-        let key = pool_of(base, provider.map(String::as_str));
+        let provider = attempt.model.as_ref().and_then(|model| {
+            providers
+                .get(&(base.to_owned(), model.clone()))
+                .cloned()
+                .or_else(|| crate::goat::line_of(model))
+        });
+        let key = pool_of(base, provider.as_deref());
         let index = match pools.iter().position(|(pool, _)| *pool == key) {
             Some(index) => index,
             None => {
@@ -229,7 +231,12 @@ pub(crate) fn resource_pools(
                     _ if provider.is_some() => "provider",
                     _ => "unknown",
                 };
-                let quota = quota.get(base).cloned().unwrap_or_else(|| json!("unknown"));
+                // 线路池（如 GOAT）按池查，订阅按成员查。
+                let quota = quota
+                    .get(&key)
+                    .or_else(|| quota.get(base))
+                    .cloned()
+                    .unwrap_or_else(|| json!("unknown"));
                 pools.push((key.clone(), json!({"pool":key,"kind":kind,"agents":[],"quota":quota,"tokens":0,"unknown_attempts":0})));
                 pools.len() - 1
             }
@@ -271,7 +278,7 @@ fn usage_overview(workflow: &Workflow) -> Value {
             members += spent;
         }
     }
-    // unknown_attempts：用量未知的执行次数（Hermes 不报、DSH 只报上下文占用），总数因此偏小。
+    // unknown_attempts：用量未知的执行次数（成员没报、或只报了上下文占用），总数因此偏小。
     json!({"member_tokens":members,"coordinator_tokens":coordinator,"unknown_attempts":unknown})
 }
 
@@ -689,9 +696,10 @@ impl Runtime {
                             .iter()
                             .map(|model| {
                                 let mut value = json!({"id":model.id,"efforts":model.efforts});
-                                if let Some(provider) = &model.provider_id {
-                                    providers.insert((base.to_owned(), model.id.clone()), provider.clone());
-                                    value["pool"] = json!(pool_of(base, Some(provider)));
+                                // 线路名优先取模型 id 里带的（和额度概况的键一致），没有再用目录给的提供商。
+                                if let Some(provider) = crate::goat::line_of(&model.id).or_else(|| model.provider_id.clone()) {
+                                    value["pool"] = json!(pool_of(base, Some(&provider)));
+                                    providers.insert((base.to_owned(), model.id.clone()), provider);
                                 }
                                 if model.name != model.id {
                                     value["name"] = json!(model.name);
@@ -1521,6 +1529,15 @@ pub fn set_project_coordinator(
     let mut store = runtime.store.lock().unwrap();
     store.set_project_coordinator(&conversation_id, &coordinator)?;
     store.detail(&conversation_id)
+}
+
+/// 套餐额度：Claude、Codex 的订阅窗口，以及 DSH、Hermes 走 Command Code（GOAT）线路的额度，进度页用。
+#[tauri::command]
+pub async fn project_quota(runtime: tauri::State<'_, Arc<Runtime>>) -> Result<Value> {
+    let codex = runtime.codex.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::quota::overview(&codex))
+        .await
+        .map_err(|_| "额度查询失败".to_string())
 }
 
 /// 历史表现：近一年各「成员+模型+强度+类别」组合的能力与成本画像，进度页的对比表用。

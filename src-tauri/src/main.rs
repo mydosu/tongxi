@@ -25,6 +25,7 @@ mod conversation_cleanup;
 mod coordinator_clients;
 mod coordinator_policy;
 mod capability;
+mod goat;
 mod coordinator_store;
 #[cfg(test)]
 mod coordinator_tests;
@@ -1453,6 +1454,7 @@ fn main() {
             project_coordinator::set_project_coordinator,
             project_coordinator::set_project_preference,
             project_coordinator::project_capability,
+            project_coordinator::project_quota,
             project_coordinator::set_project_grants,
             pricing::pricing_status,
             pricing::refresh_pricing,

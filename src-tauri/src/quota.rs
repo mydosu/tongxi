@@ -29,6 +29,7 @@ fn cached(name: &'static str, fetch: impl FnOnce() -> Option<Value>) -> Option<V
 }
 
 /// 给调度的额度概况：{成员: {five_hour, weekly}}，每个窗口是已用百分比和距重置的小时数。
+/// 走 Command Code（GOAT）的线路按「成员:线路」另列，多给剩余额度、本月用量和本期消耗。
 pub fn overview(codex: &Arc<crate::codex::Runtime>) -> Value {
     let mut members = serde_json::Map::new();
     if let Some(value) = cached("claude-win", claude) {
@@ -37,6 +38,7 @@ pub fn overview(codex: &Arc<crate::codex::Runtime>) -> Value {
     if let Some(value) = cached("codex-win", || codex_limits(codex)) {
         members.insert("codex-win".into(), value);
     }
+    members.extend(crate::goat::overview());
     Value::Object(members)
 }
 
