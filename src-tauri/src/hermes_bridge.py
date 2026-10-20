@@ -19,7 +19,7 @@ from acp_adapter.entry import _load_env, _setup_logging
 _setup_logging()
 _load_env()
 import acp
-from acp.schema import SetSessionConfigOptionResponse
+from acp.schema import SetSessionConfigOptionResponse, Usage
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
@@ -97,7 +97,37 @@ class ChatSessions(SessionManager):
         return agent
 
 
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def usage_counters(state):
+    agent = getattr(state, "agent", None)
+    return agent, {field: int(getattr(agent, "session_" + field, 0) or 0) for field in USAGE_FIELDS}
+
+
 class ChatACP(HermesACPAgent):
+    async def prompt(self, prompt, session_id, **kwargs):
+        # Hermes 的回包只在运行结果带 token 数时才给 usage；同席要按回合计量，
+        # 就用会话累计计数的前后差值补上（同一个 agent 对象才算，中途换了就不报，宁缺不错）。
+        state = await asyncio.to_thread(self.session_manager.get_session, session_id)
+        before = usage_counters(state) if state is not None else (None, {})
+        response = await super().prompt(prompt, session_id, **kwargs)
+        if getattr(response, "usage", None) is None and state is not None:
+            agent, after = usage_counters(state)
+            if agent is not None and agent is before[0]:
+                delta = {field: max(0, after[field] - before[1][field]) for field in USAGE_FIELDS}
+                if delta["prompt_tokens"] or delta["completion_tokens"]:
+                    fields = dict(
+                        input_tokens=delta["prompt_tokens"], output_tokens=delta["completion_tokens"],
+                        total_tokens=delta["prompt_tokens"] + delta["completion_tokens"],
+                        thought_tokens=delta["reasoning_tokens"] or None, cached_read_tokens=delta["cache_read_tokens"] or None,
+                    )
+                    try:
+                        response.usage = Usage(**fields, cached_write_tokens=delta["cache_write_tokens"] or None)
+                    except Exception:
+                        response.usage = Usage(**fields)
+        return response
+
     def _switch_model(self, state, raw_model, *, keep_endpoint=False):
         result = super()._switch_model(state, raw_model, keep_endpoint=keep_endpoint)
         # Keep the provider-qualified identity resolved by Hermes, not its bare API model name.
