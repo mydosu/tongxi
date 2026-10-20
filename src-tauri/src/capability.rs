@@ -45,7 +45,7 @@ pub fn environmental(status: &str, error: Option<&str>) -> bool {
     }
     let error = error.unwrap_or_default().to_lowercase();
     [
-        "限额", "额度", "rate limit", "429", "usage limit", "已停止", "暂停", "中断", "超时", "超过当前工作流剩余时间",
+        "限额", "限流", "额度", "稍后", "不可用", "-32603", "rate limit", "unavailable", "网络", "network", "429", "usage limit", "已停止", "暂停", "中断", "超时", "超过当前工作流剩余时间",
         "认证", "登录", "连接", "未运行", "未安装", "overloaded", "timeout", "auth",
     ]
     .iter()
@@ -163,15 +163,27 @@ pub fn profiles(samples: &[Sample], now: i64, limit: usize) -> Vec<Value> {
             .collect();
         // 组内消耗合计（未知就整组未知）与返修次数，记在组里第一次执行的组合上。
         let mut group_tokens: HashMap<&str, Option<u64>> = HashMap::new();
-        let mut group_work: HashMap<&str, u32> = HashMap::new();
+        let mut group_repairs: HashMap<&str, u32> = HashMap::new();
         let mut group_failed: HashMap<&str, bool> = HashMap::new();
+        let mut rework_seen = std::collections::HashSet::new();
         for sample in attempts {
             let group = groups[&sample.task_id].as_str();
             let spent = sample.usage.as_ref().and_then(|usage| usage.spent());
             let entry = group_tokens.entry(group).or_insert(Some(0));
             *entry = entry.zip(spent).map(|(a, b)| a + b);
-            if sample.purpose != "verification" {
-                *group_work.entry(group).or_default() += 1;
+            // 返修：引用了验证结论的再实现，或同一任务因非环境原因失败后的重跑。
+            // 并行的几项实现、撞限流或被停下后的重试都不算；同一项返修任务的多次执行只算一次。
+            let after_review = sample.context_ids.iter().any(|context| {
+                attempts.iter().any(|other| &other.task_id == context && other.purpose == "verification")
+            });
+            let rerun = attempts.iter().any(|other| {
+                other.task_id == sample.task_id
+                    && other.created_at < sample.created_at
+                    && other.status == "failed"
+                    && !environmental(&other.status, other.error.as_deref())
+            });
+            if sample.purpose != "verification" && (after_review || rerun) && rework_seen.insert(sample.task_id.as_str()) {
+                *group_repairs.entry(group).or_default() += 1;
             }
             let failed = (sample.status == "failed" && !environmental(&sample.status, sample.error.as_deref()))
                 || (sample.purpose == "verification" && verdict(&sample.output) == Some(false));
@@ -217,7 +229,7 @@ pub fn profiles(samples: &[Sample], now: i64, limit: usize) -> Vec<Value> {
             if first {
                 tally.opened += weight;
                 tally.first_pass += if !group_failed[group] { weight } else { 0.0 };
-                tally.repairs.0 += group_work[group].saturating_sub(1) as f64 * weight;
+                tally.repairs.0 += group_repairs.get(group).copied().unwrap_or(0) as f64 * weight;
                 tally.repairs.1 += weight;
                 if let Some(total) = group_tokens[group] {
                     tally.task_tokens.0 += total as f64 * weight;
@@ -264,7 +276,7 @@ mod tests {
     #[test]
     fn rate_limits_and_user_stops_do_not_count_against_the_model() {
         let mut limited = sample("t1", "dsh-win", "flash", "failed", "implementation", 1);
-        limited.error = Some("DeepSeek 返回额度或频率限制（HTTP 429 rate limit exceeded）".into());
+        limited.error = Some("原生 agent session/prompt 请求失败：模型服务限流，请稍后继续当前任务（协议代码 -32603）".into());
         let stopped = sample("t2", "dsh-win", "flash", "interrupted", "implementation", 2);
         let done = sample("t3", "dsh-win", "flash", "completed", "implementation", 3);
         let rows = profiles(&[limited, stopped, done], 3, 10);
