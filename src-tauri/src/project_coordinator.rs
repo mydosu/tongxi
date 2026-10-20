@@ -84,11 +84,18 @@ fn compact_tasks(workflow: &Workflow) -> Vec<Value> {
         .collect()
 }
 
+/// 这项任务已完成、在等验证通过后合并。
+fn held(routes: &[crate::coordinator_store::TaskRoute], task: &str) -> bool {
+    routes
+        .iter()
+        .any(|route| route.task_id == task && route.merge_state.as_deref() == Some("held"))
+}
+
 fn compact_routes(routes: &[crate::coordinator_store::TaskRoute]) -> Vec<Value> {
     routes
         .iter()
         .map(|route| {
-            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent})
+            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"merge":route.merge_state})
         })
         .collect()
 }
@@ -1102,12 +1109,20 @@ impl Runtime {
                 })
             })
             .filter(|task| {
+                // 前置任务还在等验证、没并入主线时，后续任务拿不到它的文件，先等合并；只有验证它的任务能开工。
+                let verifies = |held: &str| {
+                    metadata.iter().any(|route| {
+                        route.task_id == task.id
+                            && route.purpose == "verification"
+                            && route.context_ids.iter().any(|context| context == held)
+                    })
+                };
                 task.status == "queued"
                     && task.depends_on.iter().all(|at| {
-                        workflow
-                            .tasks
-                            .get(*at as usize)
-                            .is_some_and(|task| task.status == "completed")
+                        workflow.tasks.get(*at as usize).is_some_and(|before| {
+                            before.status == "completed"
+                                && (!held(&metadata, &before.id) || verifies(&before.id))
+                        })
                     })
             })
             .filter(|task| agents.insert(task.agent_id.clone()))
@@ -1133,7 +1148,9 @@ impl Runtime {
             } else if workflow.tasks.iter().any(|task| {
                 !matches!(task.status.as_str(), "completed" | "skipped")
                     && !tasks.iter().any(|candidate| candidate.id == task.id)
-            }) {
+            }) || metadata.iter().any(|route| held(&metadata, &route.task_id))
+            {
+                // 还有任务在等验证后合并：收尾要在合并后的项目上做，先交回调度。
                 return Ok(false);
             } else {
                 tasks.truncate(1);
@@ -1166,34 +1183,38 @@ impl Runtime {
         for (task, result) in tasks.iter().zip(results) {
             let result = result?;
             if result.status == "completed" {
-                let current = self.store.lock().unwrap().task(&task.id)?;
-                if let (Some(path), Some(branch)) = (&current.worktree, &current.branch) {
-                    let project = self.store.lock().unwrap().project(&workflow.project_id)?;
-                    let root = Path::new(&project.root);
-                    if let Err(error) = crate::project_worktree::merge(root, branch) {
-                        // 合并冲突：管家汇报并处理，核实分支确实已并入后再继续。
-                        let Some(problem) = crate::project_worktree::midway_state(root)? else {
-                            return Err(format!("任务改动合并失败：{error}"));
-                        };
-                        self.resolve_git_state(
-                            id,
-                            root,
-                            &format!("合并任务分支 {branch} 时出现冲突；{problem}"),
-                            deadline,
-                        )?;
-                        if !crate::project_worktree::merged(root, branch) {
-                            return Err(format!(
-                                "冲突处理后任务分支 {branch} 仍未并入，已保留现场，请检查后继续协作"
-                            ));
+                let route = metadata.iter().find(|route| route.task_id == task.id);
+                if route.is_some_and(|route| route.hold_merge && route.purpose != "verification") {
+                    // 调度要求合并前验证：分支和工作树留着，等验证通过再并入。
+                    self.store.lock().unwrap().set_merge_state(&task.id, Some("held"))?;
+                    self.store.lock().unwrap().add_system_team_message(
+                        id,
+                        &format!("「{}」已完成，按调度安排验证通过后再合并，任务分支先保留。", task.title),
+                    )?;
+                } else {
+                    self.merge_task(id, &workflow.project_id, &task.id, deadline)?;
+                }
+                // 验证在被验任务的分支上做：结论写明通过才合并；未通过或没写结论都先不合并，交调度安排返修或复验。
+                if let Some(route) = route.filter(|route| route.purpose == "verification") {
+                    let passed = crate::capability::verdict(&result.output) == Some(true);
+                    for held_task in route.context_ids.iter().filter(|context| held(&metadata, context)) {
+                        let title = workflow
+                            .tasks
+                            .iter()
+                            .find(|task| &task.id == held_task)
+                            .map_or(held_task.as_str(), |task| task.title.as_str());
+                        if passed {
+                            self.merge_task(id, &workflow.project_id, held_task, deadline)?;
+                            self.store.lock().unwrap().add_system_team_message(
+                                id,
+                                &format!("「{title}」验证通过，改动已合并。"),
+                            )?;
+                        } else {
+                            self.store.lock().unwrap().add_system_team_message(
+                                id,
+                                &format!("「{title}」验证未通过或没写结论，暂不合并；任务分支保留，可用同一任务返修后再验证。"),
+                            )?;
                         }
-                    }
-                    if crate::project_worktree::remove(Path::new(&project.root), Path::new(path))
-                        .is_err()
-                    {
-                        self.store.lock().unwrap().add_system_team_message(
-                            id,
-                            "任务改动已合并，临时工作树清理未完成；已有结果保留，不影响后续工作。",
-                        )?;
                     }
                 }
                 self.store.lock().unwrap().publish_coordinated_reply(
@@ -1208,6 +1229,39 @@ impl Runtime {
                 .finish_coordinated_task(&task.id, &result)?;
         }
         Ok(true)
+    }
+    /// 把任务分支并入主线并清理工作树；合并冲突交管家处理，核实确实已并入才继续。
+    fn merge_task(&self, id: &str, project: &str, task_id: &str, deadline: Instant) -> Result<()> {
+        let current = self.store.lock().unwrap().task(task_id)?;
+        let (Some(path), Some(branch)) = (&current.worktree, &current.branch) else {
+            return Ok(());
+        };
+        let project = self.store.lock().unwrap().project(project)?;
+        let root = Path::new(&project.root);
+        if let Err(error) = crate::project_worktree::merge(root, branch) {
+            let Some(problem) = crate::project_worktree::midway_state(root)? else {
+                return Err(format!("任务改动合并失败：{error}"));
+            };
+            self.resolve_git_state(
+                id,
+                root,
+                &format!("合并任务分支 {branch} 时出现冲突；{problem}"),
+                deadline,
+            )?;
+            if !crate::project_worktree::merged(root, branch) {
+                return Err(format!(
+                    "冲突处理后任务分支 {branch} 仍未并入，已保留现场，请检查后继续协作"
+                ));
+            }
+        }
+        self.store.lock().unwrap().set_merge_state(task_id, Some("merged"))?;
+        if crate::project_worktree::remove(root, Path::new(path)).is_err() {
+            self.store.lock().unwrap().add_system_team_message(
+                id,
+                "任务改动已合并，临时工作树清理未完成；已有结果保留，不影响后续工作。",
+            )?;
+        }
+        Ok(())
     }
     fn run_coordinated_task(
         &self,
@@ -1237,8 +1291,20 @@ impl Runtime {
             )
         };
         let root = Path::new(&project.root);
+        // 验证一项等待合并的任务：直接在它的工作树里验，不另开分支。
+        let held_tree = (route.purpose == "verification")
+            .then(|| {
+                let routes = self.store.lock().unwrap().coordination_routes(id).ok()?;
+                route.context_ids.iter().rev().find_map(|context| {
+                    let held_task = workflow.tasks.iter().find(|task| &task.id == context && held(&routes, context))?;
+                    Some((held_task.worktree.clone()?, held_task.branch.clone()?))
+                })
+            })
+            .flatten();
         let cwd = if route.purpose == "closeout" {
             root.to_path_buf()
+        } else if let Some((path, branch)) = &held_tree {
+            crate::project_worktree::reuse(root, &worktree_root, Path::new(path), branch)?
         } else if let (Some(path), Some(branch)) = (&task.worktree, &task.branch) {
             if Path::new(path).exists() {
                 crate::project_worktree::reuse(root, &worktree_root, Path::new(path), branch)?
@@ -1254,7 +1320,7 @@ impl Runtime {
                 &format!("hub/{}", task.id),
             )?
         };
-        let branch = (route.purpose != "closeout").then(|| {
+        let branch = (route.purpose != "closeout" && held_tree.is_none()).then(|| {
             task.branch
                 .clone()
                 .unwrap_or_else(|| format!("hub/{}", task.id))

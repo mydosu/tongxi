@@ -537,6 +537,8 @@ impl Store {
                      CREATE INDEX IF NOT EXISTS coordination_route_key ON coordination_routes(workflow_id,purpose,source_id,quote);",
                 )
                 .map_err(|e| e.to_string())?;
+                // 重建的表只有 v19 时的列，后来加的列（清空上下文、类别、合并状态等）重新补上。
+                crate::coordinator_store::migrate(&tx)?;
             }
         }
         // 一个成员可以同时在多个会话里回复：进行中的运行改为“每个成员 × 会话”唯一。
