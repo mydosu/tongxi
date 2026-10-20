@@ -161,9 +161,11 @@ mod tests {
     #[test]
     fn real_tokens_are_high_and_placeholders_are_ignored() {
         assert_eq!(scan_line("-----BEGIN OPENSSH PRIVATE KEY-----"), Some(("私钥", true)));
-        assert_eq!(scan_line("key = \"ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\""), Some(("GitHub 令牌", true)));
-        assert_eq!(scan_line("ANTHROPIC_API_KEY=sk-ant-api03-Zx8Qw2Lk9Pm4Rt7Yb1Nc5Vd3Hg6Jf0Ae"), Some(("Anthropic API Key", true)));
-        assert_eq!(scan_line("AWS=AKIAZ3X9Q2L7M4N8P1R6"), Some(("AWS 访问密钥", true)));
+        // 假令牌拼出来，源码里不留完整字面量（免得被同席自己或 GitHub 的扫描当成真的）。
+        let fake = |prefix: &str, body: &str| format!("{prefix}{body}");
+        assert_eq!(scan_line(&format!("key = \"{}\"", fake("ghp_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"))), Some(("GitHub 令牌", true)));
+        assert_eq!(scan_line(&format!("ANTHROPIC_API_KEY={}", fake("sk-ant-", "api03-Zx8Qw2Lk9Pm4Rt7Yb1Nc5Vd3Hg6Jf0Ae"))), Some(("Anthropic API Key", true)));
+        assert_eq!(scan_line(&format!("AWS={}", fake("AKIA", "Z3X9Q2L7M4N8P1R6"))), Some(("AWS 访问密钥", true)));
         assert_eq!(scan_line("OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), None);
         assert_eq!(scan_line("const key = process.env.OPENAI_API_KEY;"), None);
         assert_eq!(scan_line("task-sk-1234 is a ticket"), None);
