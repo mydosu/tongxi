@@ -22,7 +22,8 @@ fn cached(name: &'static str, fetch: impl FnOnce() -> Option<Value>) -> Option<V
         }
     }
     let value = fetch();
-    if let Ok(mut cache) = cache().lock() {
+    // 查不到（比如令牌刚好过期、还没被 CLI 刷新）不缓存，下次直接重查。
+    if let (Ok(mut cache), Some(_)) = (cache().lock(), &value) {
         cache.insert(name, (Instant::now(), value.clone()));
     }
     value

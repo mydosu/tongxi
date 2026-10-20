@@ -13,11 +13,20 @@ const known = (attempt: ProjectAttempt) => attempt.usage && !attempt.usage.conte
 const spent = (attempts: ProjectAttempt[]) => attempts.reduce((sum, attempt) => { const usage = known(attempt); return sum + (usage ? usage.input + usage.output : 0); }, 0);
 const costOf = (attempts: ProjectAttempt[], kind: string) => attempts.reduce((sum, attempt) => sum + ((attempt.usage?.cost_kind || 'api_estimate') === kind ? attempt.usage?.cost_usd || 0 : 0), 0);
 
+/// 给用户看的统计按 agent 和模型分，不按会话名：Codex 1号、方案、验证都是 Codex。
+const agentLabels: Record<string,string> = { 'codex-win':'Codex', 'claude-win':'Claude', 'dsh-win':'DSH', 'hermes-win':'Hermes', 'albion-wsl':'阿尔比恩' };
+export const agentLabel = (agent: string) => agentLabels[agent.replace(/-\d+$/, '')] || agent;
+/// 模型名去掉线路前缀：DSH 的 ["线路","模型"]、Hermes 的 custom:线路:模型 都只留模型。
+export const modelLabel = (model: string | null | undefined) => {
+  if (!model) return '默认模型';
+  try { const parts = JSON.parse(model); if (Array.isArray(parts) && parts.length === 2) return String(parts[1]); } catch { /* 不是 JSON 就按原样处理 */ }
+  return model.startsWith('custom:') ? model.split(':').slice(2).join(':') || model : model;
+};
 const categories: Record<string,string> = { architecture:'架构设计', feature:'功能实现', bugfix:'修 bug', algorithm:'复杂算法', refactor:'重构', testing:'测试验证', docs:'文档', ops:'环境运维', integration:'多模块集成', uncategorized:'未分类' };
 const percentOf = (value: number | null) => value == null ? '—' : `${Math.round(value * 100)}%`;
 
 /// 用量明细：token 构成、调度占比、各成员消耗与费用口径、统计完整度。
-function usageDetail(job: Workflow, escape: Escape, name: (agent: string) => string) {
+function usageDetail(job: Workflow, escape: Escape) {
   const finished = job.attempts.filter(attempt => attempt.status !== 'starting');
   const usages = finished.map(known).filter((usage): usage is NonNullable<typeof usage> => !!usage);
   if (!usages.length) return '';
@@ -26,21 +35,23 @@ function usageDetail(job: Workflow, escape: Escape, name: (agent: string) => str
   const fresh = Math.max(0, sum(usage => usage.input) - read - write), output = sum(usage => usage.output), reasoning = sum(usage => usage.reasoning);
   const all = spent(finished), manager = spent(finished.filter(attempt => attempt.activity === 'coordinate'));
   const cell = (label: string, value: string) => `<div><small>${label}</small><strong>${escape(value)}</strong></div>`;
-  const agents = [...new Set(finished.filter(attempt => attempt.activity !== 'coordinate').map(attempt => attempt.agent_id))];
-  const rows = agents.map(agent => {
-    const mine = finished.filter(attempt => attempt.agent_id === agent && attempt.activity !== 'coordinate');
+  const key = (attempt: ProjectAttempt) => `${agentLabel(attempt.agent_id)}\u0000${modelLabel(attempt.model)}`;
+  const groups = [...new Set(finished.filter(attempt => attempt.activity !== 'coordinate').map(key))];
+  const rows = groups.map(group => {
+    const [agent, model] = group.split('\u0000');
+    const mine = finished.filter(attempt => attempt.activity !== 'coordinate' && key(attempt) === group);
     const unknown = mine.filter(attempt => !known(attempt)).length;
     const money = [[costOf(mine, 'api_estimate'), 'API 等值'], [costOf(mine, 'provider'), '额度消耗']].filter(([value]) => value).map(([value, label]) => `$${(value as number).toFixed(2)} ${label}`).join(' · ');
-    return `<tr><td>${escape(name(agent))}</td><td>${escape(tokens(spent(mine)))}</td><td>${escape(money || '—')}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
+    return `<tr><td>${escape(model)}<small>${escape(agent)}</small></td><td>${escape(tokens(spent(mine)))}</td><td>${escape(money || '—')}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
   }).join('');
-  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${rows ? `<table><thead><tr><th>成员</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
+  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${rows ? `<table><thead><tr><th>模型</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
 }
 
 type QuotaWindow = { used_percent: number; resets_in_hours?: number; used_usd?: number; cap_usd?: number; exceeded?: boolean };
 export type QuotaEntry = { five_hour?: QuotaWindow; weekly?: QuotaWindow; monthly?: QuotaWindow; credits_left_usd?: number; account?: string; cancel_at?: string; period_end?: string; period?: { spent_usd?: number; tokens_in?: number; tokens_out?: number } };
 
 /// 套餐额度：订阅看 5 小时 / 每周窗口；GOAT 线路另有本月额度、剩余额度，同一账号的线路标出来。
-export function quotaTable(quota: Record<string, QuotaEntry>, escape: Escape, name: (agent: string) => string) {
+export function quotaTable(quota: Record<string, QuotaEntry>, escape: Escape) {
   const entries = Object.entries(quota);
   if (!entries.length) return '';
   const accounts = new Map<string, number>();
@@ -51,16 +62,16 @@ export function quotaTable(quota: Record<string, QuotaEntry>, escape: Escape, na
   const rows = entries.map(([key, entry]) => {
     const [agent, line] = key.split(':');
     const notes = [shared(entry.account) ? `账号 ${accounts.get(entry.account!)}（与其他线路共用）` : entry.account ? `账号 ${accounts.get(entry.account)}` : '', entry.cancel_at ? `套餐 ${date(entry.cancel_at)} 停止` : entry.period_end ? `${date(entry.period_end)} 续期` : '', entry.period?.spent_usd != null ? `本期已用 $${entry.period.spent_usd}` : ''].filter(Boolean).join(' · ');
-    return `<tr><td>${escape(name(agent))}${line ? `<small>${escape(line)}</small>` : ''}</td><td>${cell(entry.five_hour)}</td><td>${cell(entry.weekly)}</td><td>${entry.monthly ? `${entry.monthly.used_percent}%` : '—'}</td><td>${entry.credits_left_usd != null ? `$${entry.credits_left_usd.toFixed(2)}` : '—'}</td><td>${escape(notes || '—')}</td></tr>`;
+    return `<tr><td>${escape(agentLabel(agent))}${line ? `<small>${escape(line)}</small>` : ''}</td><td>${cell(entry.five_hour)}</td><td>${cell(entry.weekly)}</td><td>${entry.monthly ? `${entry.monthly.used_percent}%` : '—'}</td><td>${entry.credits_left_usd != null ? `$${entry.credits_left_usd.toFixed(2)}` : '—'}</td><td>${escape(notes || '—')}</td></tr>`;
   }).join('');
-  return `<details class="project-capability" data-keep="quota"><summary>套餐额度</summary><table><thead><tr><th>成员 / 线路</th><th>5 小时</th><th>每周</th><th>本月</th><th>剩余额度</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table><p>百分比是已用比例。GOAT 的金额是套餐额度；剩余额度含另购的部分。数据每 5 分钟最多刷新一次。</p></details>`;
+  return `<details class="project-capability" data-keep="quota"><summary>套餐额度</summary><table><thead><tr><th>agent / 线路</th><th>5 小时</th><th>每周</th><th>本月</th><th>剩余额度</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table><p>百分比是已用比例。GOAT 的金额是套餐额度；剩余额度含另购的部分。数据每 5 分钟最多刷新一次。</p></details>`;
 }
 
 /// 历史表现：各组合在不同任务类别上的平滑成功率、一次通过率、完整任务消耗与返修。
-export function capabilityTable(rows: CapabilityRow[], escape: Escape, name: (agent: string) => string) {
+export function capabilityTable(rows: CapabilityRow[], escape: Escape) {
   if (!rows.length) return '';
   const confidence: Record<string,string> = { low:'样本少', medium:'中', high:'高' };
-  const body = rows.map(row => `<tr><td title="${escape(row.model)}">${escape(name(row.agent))}<small>${escape([row.model.split(':').pop() || row.model, row.effort].filter(value => value !== 'default').join(' · ') || '默认配置')}</small></td><td>${escape(categories[row.category] || row.category)}</td><td>${row.samples}</td><td>${percentOf(row.success_rate)}</td><td>${percentOf(row.first_pass_rate)}</td><td>${row.avg_task_tokens == null ? '—' : escape(tokens(row.avg_task_tokens))}</td><td>${row.avg_repairs ?? '—'}</td><td>${escape(confidence[row.confidence])}</td></tr>`).join('');
+  const body = rows.map(row => `<tr><td title="${escape(row.model)}">${escape([row.model === 'default' ? '默认模型' : modelLabel(row.model), row.effort === 'default' ? '' : row.effort].filter(Boolean).join(' · '))}<small>${escape(agentLabel(row.agent))}</small></td><td>${escape(categories[row.category] || row.category)}</td><td>${row.samples}</td><td>${percentOf(row.success_rate)}</td><td>${percentOf(row.first_pass_rate)}</td><td>${row.avg_task_tokens == null ? '—' : escape(tokens(row.avg_task_tokens))}</td><td>${row.avg_repairs ?? '—'}</td><td>${escape(confidence[row.confidence])}</td></tr>`).join('');
   return `<details class="project-capability" data-keep="capability"><summary>历史表现（近一年）</summary><table><thead><tr><th>组合</th><th>类别</th><th>样本</th><th>成功率</th><th>一次通过</th><th>完整任务 token</th><th>平均返修</th><th>可信度</th></tr></thead><tbody>${body}</tbody></table><p>成功率是平滑后的估计：样本少时向 70% 收缩，撞限额、被停下或中断不计入；完整任务 token 含由它开头的返修和验证。调度选人时参考这张表。</p></details>`;
 }
 
@@ -101,7 +112,7 @@ export function progressContent(jobs: Workflow[], members: ProjectAgentChat[], e
     return `<li${route?.instructions?` title="${escape(`调度的任务说明：\n${route.instructions}`)}"`:''}><span class="progress-task-mark ${escape(task.status)}">${task.status==='completed'?'✓':'·'}</span><div><strong>${escape(task.title)}</strong><small>${escape(detail)}</small>${route?.reason?`<small class="progress-task-reason">${escape(route.reason)}</small>`:''}</div></li>`;
   }).join('') || '';
   const ledger=current?.coordination?.ledger?`<details class="project-ledger"><summary>调度的计划账本</summary><p>${escape(current.coordination.ledger)}</p></details>`:'';
-  return `<section class="project-progress-overview"><div class="project-progress-heading"><div><span class="eyebrow">当前协作</span><h2>${escape(current ? statuses[current.status] || current.status : '等待新的项目目标')}</h2></div><strong>${percent}<small>%</small></strong></div><div class="project-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div><p>${total?`${completed} / ${total} 项工作已完成`:'发送需求后，团队会在这里同步进度。'}</p></section>${managerRow}<div class="project-member-status-grid">${roster}</div>${current ? `<section class="project-progress-work" data-workflow-id="${escape(current.id)}"><header><h3>工作安排</h3><span>${escape(statuses[current.status] || current.status)}</span>${workflowBusy(current)?`<button class="text-button" data-stop-project="${escape(current.id)}">暂停协作</button>`:['failed','interrupted'].includes(current.status)?`<button class="text-button" data-continue-project="${escape(current.id)}">继续协作</button>`:''}</header>${tasks?`<ol>${tasks}</ol>`:'<p>团队正在整理本轮目标。</p>'}${ledger}${usageRow(current,escape)}${usageDetail(current,escape,name)}${current.error?`<p class="workflow-error">${escape(current.error)}</p>`:''}</section>`:''}${quotaTable(quota,escape,name)}${capabilityTable(capability,escape,name)}`;
+  return `<section class="project-progress-overview"><div class="project-progress-heading"><div><span class="eyebrow">当前协作</span><h2>${escape(current ? statuses[current.status] || current.status : '等待新的项目目标')}</h2></div><strong>${percent}<small>%</small></strong></div><div class="project-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div><p>${total?`${completed} / ${total} 项工作已完成`:'发送需求后，团队会在这里同步进度。'}</p></section>${managerRow}<div class="project-member-status-grid">${roster}</div>${current ? `<section class="project-progress-work" data-workflow-id="${escape(current.id)}"><header><h3>工作安排</h3><span>${escape(statuses[current.status] || current.status)}</span>${workflowBusy(current)?`<button class="text-button" data-stop-project="${escape(current.id)}">暂停协作</button>`:['failed','interrupted'].includes(current.status)?`<button class="text-button" data-continue-project="${escape(current.id)}">继续协作</button>`:''}</header>${tasks?`<ol>${tasks}</ol>`:'<p>团队正在整理本轮目标。</p>'}${ledger}${usageRow(current,escape)}${usageDetail(current,escape)}${current.error?`<p class="workflow-error">${escape(current.error)}</p>`:''}</section>`:''}${quotaTable(quota,escape)}${capabilityTable(capability,escape)}`;
 }
 
 export function projectProgressPage(project: string, content: string, escape: Escape) {
