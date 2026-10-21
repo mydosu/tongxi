@@ -297,6 +297,9 @@ function prompt(id, params) {
   const blocks = new Map();
   // 最后一次模型调用的输入+输出＝会话当前的上下文大小。
   let context = 0;
+  // 本回合到现在的累计用量（每次模型调用的输入含缓存读写＋输出），回合中途报给同席看软预算；按消息 id 去重。
+  let spent = 0;
+  const counted = new Set();
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
@@ -328,6 +331,12 @@ function prompt(id, params) {
     } else if (message.type === 'assistant') {
       const used = message.message?.usage;
       if (used) context = (used.input_tokens || 0) + (used.cache_read_input_tokens || 0) + (used.cache_creation_input_tokens || 0) + (used.output_tokens || 0);
+      const messageId = message.message?.id;
+      if (used && messageId && !counted.has(messageId)) {
+        counted.add(messageId);
+        spent += context;
+        update(params.sessionId, { sessionUpdate: 'usage_update', used: context, spent });
+      }
       for (const block of message.message?.content || []) {
         if (block.type !== 'tool_use') continue;
         update(params.sessionId, { sessionUpdate: 'tool_call', toolCallId: block.id, title: toolTitle(block.name, block.input),

@@ -117,6 +117,7 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         category: None,
         complexity: None,
         hold_merge: false,
+        budget_tokens: None,
     }
 }
 
@@ -141,6 +142,19 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
         model: model.map(str::to_owned),
         effort: effort.map(str::to_owned),
     }
+}
+
+#[test]
+fn grant_replies_are_continue_wrap_up_or_stop_only() {
+    let grant = coordinator_policy::parse_grant(r#"```json
+{"grant":{"action":"continue","extra_tokens":2000000,"reason":"只剩补测试"}}
+```"#).unwrap();
+    assert_eq!((grant.action.as_str(), grant.extra_tokens), ("continue", Some(2_000_000)));
+    assert!(coordinator_policy::parse_grant(r#"{"grant":{"action":"wrap_up"}}"#).is_ok());
+    assert!(coordinator_policy::parse_grant(r#"{"grant":{"action":"retry"}}"#).is_err());
+    assert!(coordinator_policy::parse_grant(r#"{"action":"delegate","routes":[]}"#).is_err());
+    let routed = coordinator_policy::parse(r#"{"action":"delegate","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现","budget_tokens":3000000}]}"#).unwrap();
+    assert_eq!(routed.routes[0].budget_tokens, Some(3_000_000));
 }
 
 #[test]
