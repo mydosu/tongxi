@@ -18,7 +18,11 @@ body { margin: 0; }
 .project-member-status strong { color: #56667c; font-size: 13px; font-weight: 500; }
 .project-member-status span:not(.avatar) { color: #8f9cad; font-size: 11px; }
 .project-member-status > i { width: 6px; height: 6px; background: #d0d6df; border-radius: 50%; margin-left: auto; }
-.project-member-status.working > i { background: #91a9c4; box-shadow: 0 0 0 3px #edf2f8; }
+.project-member-status.working > i { background: #4fb987; box-shadow: 0 0 0 3px #e3f4ec; animation: member-pulse 1.6s ease-in-out infinite; }
+.project-member-status.waiting > i { background: #e0a43c; box-shadow: 0 0 0 3px #fbf0dc; }
+.project-member-status.failed > i { background: #d9786b; box-shadow: 0 0 0 3px #f9e6e3; }
+@keyframes member-pulse { 50% { box-shadow: 0 0 0 5px #e3f4ec; opacity: .75; } }
+@media (prefers-reduced-motion: reduce) { .project-member-status.working > i { animation: none; } }
 .project-progress-work { border: 1px solid #e2e7ee; border-radius: 12px; padding: 18px 22px; background: #fff; }
 .project-progress-work > header { display: flex; align-items: center; gap: 14px; }
 .project-progress-work h3 { font-size: 14px; margin: 0; color: #516176; }
