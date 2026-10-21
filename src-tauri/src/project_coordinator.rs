@@ -13,6 +13,39 @@ use std::{
 };
 type Result<T> = std::result::Result<T, String>;
 
+/// 软预算的运行状态：最近一回合的参考资料（拨款请求复用它，命中调度系统提示的缓存）、
+/// 被叫停的任务（task id → 错误说明）、拨款请求一次只发一个。
+#[derive(Default)]
+pub(crate) struct BudgetState {
+    reference: std::sync::Mutex<Option<String>>,
+    stopped: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    asking: std::sync::Mutex<()>,
+}
+
+/// 一次执行到现在的累计用量：Codex 实时报精确值，Claude 由桥接按每次模型调用累加（先记在上下文占位里），
+/// DSH 读它自己的会话日志；Hermes 回合中途报不出，返回 None。
+fn live_spent(attempt: &crate::project_store::Attempt) -> Option<u64> {
+    let base = crate::project_store::base_agent(&attempt.agent_id);
+    if base == "dsh-win" {
+        let session = attempt.native_thread_id.as_deref()?;
+        return crate::dsh::session_usage(session, attempt.created_at)?.spent();
+    }
+    let usage = attempt.usage.as_ref()?;
+    if usage.context_only {
+        return (base == "claude-win").then_some(usage.input + usage.output);
+    }
+    usage.spent()
+}
+
+/// 12345678 → 12.3M，给群消息看的。
+fn token_label(value: u64) -> String {
+    match value {
+        v if v >= 1_000_000 => format!("{:.1}M", v as f64 / 1e6),
+        v if v >= 1_000 => format!("{:.0}k", v as f64 / 1e3),
+        v => v.to_string(),
+    }
+}
+
 /// 最新一次完成的验证任务若结论为“未通过”，返回它的任务 ID。
 pub(crate) fn failed_verification(
     tasks: &[Task],
@@ -95,7 +128,7 @@ fn compact_routes(routes: &[crate::coordinator_store::TaskRoute]) -> Vec<Value> 
     routes
         .iter()
         .map(|route| {
-            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"merge":route.merge_state})
+            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"merge":route.merge_state,"budget_tokens":route.budget_tokens})
         })
         .collect()
 }
@@ -846,6 +879,7 @@ impl Runtime {
                 json!(preference)
             );
             let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback});
+            *self.budget.reference.lock().unwrap() = Some(reference.clone());
             let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
             let input = if matches!(
@@ -1354,6 +1388,125 @@ impl Runtime {
         Ok(())
     }
 
+    /// 软预算：任务跑着时每 15 秒看一次用量，超了预算不打断成员（打断后续做要整段按全价重读），
+    /// 而是单独问调度一次拨款：追加、收尾（插话让它做完手头一步、提交、交报告）或叫停。
+    /// 问不到（调度撞限额等）就默认追加一半；同一项最多问 3 次，之后默认收尾。
+    fn watch_budget(&self, id: &str, task: &Task, done: &std::sync::atomic::AtomicBool, deadline: Instant) {
+        let Some(mut budget) = self.store.lock().unwrap().task_budget(&task.id) else { return };
+        let mut asked = 0u32;
+        loop {
+            for _ in 0..15 {
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            let Some(attempt) = self.store.lock().unwrap().running_attempt(&task.id) else { continue };
+            let Some(spent) = live_spent(&attempt) else { continue };
+            if spent <= budget {
+                continue;
+            }
+            let can_wrap_up = matches!(crate::project_store::base_agent(&attempt.agent_id), "codex-win" | "claude-win");
+            let grant = if asked >= 3 {
+                coordinator_policy::Grant {
+                    action: if can_wrap_up { "wrap_up" } else { "continue" }.into(),
+                    extra_tokens: None,
+                    reason: Some("已经拨过三次".into()),
+                }
+            } else {
+                self.ask_grant(id, task, &attempt, (budget, spent, asked), can_wrap_up, deadline)
+                    .unwrap_or_else(|error| coordinator_policy::Grant {
+                        action: "continue".into(),
+                        extra_tokens: None,
+                        reason: Some(format!("没问到调度（{error}），先追加一半")),
+                    })
+            };
+            asked += 1;
+            let reason = grant
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+                .map(|reason| format!("：{reason}"))
+                .unwrap_or_default();
+            let action = if grant.action == "wrap_up" && !can_wrap_up { "continue" } else { grant.action.as_str() };
+            let (budget_label, spent_label) = (token_label(budget), token_label(spent));
+            let note = match action {
+                "wrap_up" => {
+                    let text = format!("同席提醒：这项任务的用量已超过调度给的预算（预算 {budget_label}，已用 {spent_label}）。请把手头这一步做完、跑和改动相关的测试、提交，然后停下交一份进度报告：做了什么、还剩什么。剩下的由调度另行安排。");
+                    let _ = self.native.steer_note(&attempt, &text);
+                    budget = u64::MAX;
+                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度让它收尾交报告{reason}。", task.title)
+                }
+                "stop" => {
+                    self.budget.stopped.lock().unwrap().insert(
+                        task.id.clone(),
+                        format!("超出预算（预算 {budget_label}，已用 {spent_label}），调度叫停{reason}；改动留在工作树里未合并，可用同一任务续做、换人接手或撤下"),
+                    );
+                    self.native.cancel_attempt(&attempt.id);
+                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度叫停{reason}。", task.title)
+                }
+                _ => {
+                    let extra = grant.extra_tokens.filter(|extra| *extra > 0).unwrap_or(budget / 2).max(budget / 5);
+                    budget = spent + extra;
+                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度追加 {}{reason}。", task.title, token_label(extra))
+                }
+            };
+            let _ = self.store.lock().unwrap().add_system_team_message(id, &note);
+            (self.notify)(id);
+            if action == "stop" {
+                return;
+            }
+        }
+    }
+
+    /// 单独问调度一次拨款。复用最近一回合的参考资料，调度的系统提示能命中缓存，一次只花几千 token。
+    /// usage：（当前预算, 已用, 已问过几次）。
+    fn ask_grant(
+        &self,
+        id: &str,
+        task: &Task,
+        attempt: &crate::project_store::Attempt,
+        usage: (u64, u64, u32),
+        can_wrap_up: bool,
+        deadline: Instant,
+    ) -> Result<coordinator_policy::Grant> {
+        let _turn = self.budget.asking.lock().unwrap();
+        let (budget, spent, asked) = usage;
+        let manager = self.store.lock().unwrap().coordination(id)?.ok_or("调度记录缺失")?;
+        let tail = |text: &str, limit: usize| {
+            let chars: Vec<char> = text.chars().collect();
+            chars[chars.len().saturating_sub(limit)..].iter().collect::<String>()
+        };
+        let tools: Vec<&str> = attempt.tool_events.iter().rev().take(12).map(|event| event.title.as_str()).collect();
+        let minutes = (crate::store::now() - attempt.created_at).max(0) / 60_000;
+        let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
+            "budget_tokens":budget,"spent_tokens":spent,"grants_so_far":asked,"running_minutes":minutes,
+            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
+            "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
+        let state = json!({"grant_request":request,"ledger":manager.ledger,"quota":crate::quota::overview(&self.codex)});
+        let reference = self.budget.reference.lock().unwrap().clone().unwrap_or_else(|| "{}".into());
+        let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
+        let input = if matches!(crate::project_store::base_agent(&manager.coordinator.agent), "claude-win" | "codex-win") {
+            body
+        } else {
+            format!("{}\n\n{body}", coordinator_policy::MANAGER_INSTRUCTION)
+        };
+        let record = self.store.lock().unwrap().begin_coordinated_attempt(
+            id,
+            None,
+            &manager.coordinator.agent,
+            manager.coordinator.model.clone(),
+            manager.coordinator.effort.clone(),
+        )?;
+        let root = crate::coordinator_clients::manager_directory(&self.store.lock().unwrap().path, id, &manager.coordinator.agent)?;
+        let result = self.native.run(record, &root, &input, deadline)?;
+        if result.status != "completed" {
+            return Err(result.error.unwrap_or_else(|| "拨款回合未完成".into()));
+        }
+        coordinator_policy::parse_grant(&result.output)
+    }
+
     /// 滚动执行：互不依赖、会话不同的任务一起跑（最多 MAX_PARALLEL 项）；哪项做完就当场处理它的结果，
     /// 并立刻补上因此能开工的任务，不等同批里最慢的那项。都跑完、没有能开工的了才交回调度。
     fn run_coordinated_batch(&self, id: &str, deadline: Instant) -> Result<bool> {
@@ -1373,11 +1526,30 @@ impl Runtime {
             let start = |task: Task, busy: &mut Vec<Task>| {
                 busy.push(task.clone());
                 let sender = sender.clone();
+                let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (watched, watching) = (task.clone(), done.clone());
+                scope.spawn(move || {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.watch_budget(id, &watched, &watching, deadline)
+                    }));
+                });
                 scope.spawn(move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         self.run_coordinated_task(id, &task, deadline)
                     }))
                     .unwrap_or_else(|_| Err("成员运行线程异常".into()));
+                    done.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // 软预算叫停的：不管成员怎么结束的，都记成超出预算的失败，改动留在工作树里不合并。
+                    let stopped = self.budget.stopped.lock().unwrap().remove(&task.id);
+                    let result = match (result, stopped) {
+                        (Ok(mut attempt), Some(error)) => {
+                            attempt.status = "failed".into();
+                            attempt.error = Some(error);
+                            let _ = self.store.lock().unwrap().checkpoint_attempt(&attempt);
+                            Ok(attempt)
+                        }
+                        (result, _) => result,
+                    };
                     let _ = sender.send((task, result));
                 });
             };
@@ -1816,6 +1988,21 @@ mod tests {
             status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
             created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
         }
+    }
+
+    #[test]
+    fn live_spending_comes_from_upstream_usage_not_from_members() {
+        use crate::project_store::Usage;
+        // Codex：实时报的精确累计。
+        let codex = sample_attempt("codex-win-2", "sol", "running", Some(Usage { input: 900, output: 100, ..Default::default() }));
+        assert_eq!(super::live_spent(&codex), Some(1000));
+        // Claude：桥接按每次模型调用累加，先放在上下文占位里。
+        let claude = sample_attempt("claude-win", "opus", "running", Some(Usage { input: 5000, context: 300, context_only: true, ..Default::default() }));
+        assert_eq!(super::live_spent(&claude), Some(5000));
+        // Hermes 只报上下文占用：回合中途不知道累计，不拿它当用量。
+        let hermes = sample_attempt("hermes-win", "flash", "running", Some(Usage { input: 80_000, context_only: true, ..Default::default() }));
+        assert_eq!(super::live_spent(&hermes), None);
+        assert_eq!(super::token_label(2_345_678), "2.3M");
     }
 
     #[test]

@@ -23,6 +23,13 @@ impl Runner {
     /// 用户在成员专属会话里插话：送进这位成员正在跑的项目任务，不打断它。Codex 用 turn/steer、Claude 用 session/steer
     /// 立即送达；Hermes、DSH 没有原生插话，记下来等它这一步说完在同一会话里接着发（返回 false 表示排队）。
     pub fn steer(&self, attempt: &Attempt, text: &str) -> Result<bool> {
+        self.steer_with(attempt, &format!("用户插话（发在你的专属会话里，针对你正在做的这项任务）：{text}"), text)
+    }
+    /// 同席自己插话（如软预算收尾）：原样送达，不加「用户插话」前缀。
+    pub fn steer_note(&self, attempt: &Attempt, text: &str) -> Result<bool> {
+        self.steer_with(attempt, text, text)
+    }
+    fn steer_with(&self, attempt: &Attempt, message: &str, text: &str) -> Result<bool> {
         let client = self
             .active
             .lock()
@@ -34,7 +41,7 @@ impl Runner {
             .native_thread_id
             .as_deref()
             .ok_or("项目任务还没真正开始，请稍后再插话")?;
-        let input = json!([{"type":"text","text":format!("用户插话（发在你的专属会话里，针对你正在做的这项任务）：{text}")}]);
+        let input = json!([{"type":"text","text":message}]);
         match crate::project_store::base_agent(&attempt.agent_id) {
             "codex-win" => {
                 let turn = attempt
@@ -518,10 +525,13 @@ impl Runner {
                     let used = update["used"].as_u64().unwrap_or(0);
                     if used > 0 && state.attempt.usage.as_ref().is_none_or(|usage| usage.context_only) {
                         state.attempt.usage = Some(crate::project_store::Usage {
-                            input: used,
+                            // Claude 桥接另报本回合累计（spent），软预算按它看；DSH 只有上下文占用。
+                            input: update["spent"].as_u64().unwrap_or(used),
                             context: used,
                             cost_usd: update["cost"]["amount"].as_f64().filter(|_| update["cost"]["currency"] == "USD"),
-                            cost_kind: Some("provider".into()),
+                            // 占位会被回合结束的精确用量替换、继承这里的口径：Claude 的是 API 等值，不能标成服务商额度。
+                            cost_kind: (crate::project_store::base_agent(&state.attempt.agent_id) != "claude-win")
+                                .then(|| "provider".into()),
                             context_only: true,
                             ..Default::default()
                         });

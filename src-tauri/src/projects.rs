@@ -123,6 +123,7 @@ pub struct Runtime {
     pub(crate) native: Arc<Runner>,
     pub(crate) notify: Notify,
     pub(crate) coordinators: Arc<crate::coordinator_clients::Pool>,
+    pub(crate) budget: crate::project_coordinator::BudgetState,
     stopping: AtomicBool,
 }
 #[derive(Clone, Serialize)]
@@ -341,6 +342,7 @@ impl Runtime {
                 notify.clone(),
             ),
             notify,
+            budget: Default::default(),
             stopping: AtomicBool::new(false),
         })
     }

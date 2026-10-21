@@ -40,7 +40,7 @@ pub struct Sample {
 
 /// 撞限额、被用户停下或中断、环境/连接问题导致的失败不算能力问题，不计入成功率。
 /// 失败执行按原因归类（用量统计里看额度白花在哪）：interrupted 被停下或中断、quota 撞限额或限流、
-/// provider 线路报错（Key 无效、余额不足、免费档、服务端错误）、other 其余（多是做错或被验证否决）。
+/// provider 线路报错（Key 无效、余额不足、免费档、服务端错误）、budget 超出软预算被调度叫停、other 其余（多是做错或被验证否决）。
 /// 进度页 project_progress.ts 的 failureCause 与这里保持一致。
 pub fn failure_cause(status: &str, error: Option<&str>) -> Option<&'static str> {
     if !matches!(status, "failed" | "interrupted") {
@@ -48,7 +48,9 @@ pub fn failure_cause(status: &str, error: Option<&str>) -> Option<&'static str> 
     }
     let error = error.unwrap_or_default().to_lowercase();
     let has = |words: &[&str]| words.iter().any(|word| error.contains(word));
-    Some(if status == "interrupted" || has(&["中断", "已停止", "超时", "超过当前工作流剩余时间", "timeout"]) {
+    Some(if error.contains("超出预算") {
+        "budget"
+    } else if status == "interrupted" || has(&["中断", "已停止", "超时", "超过当前工作流剩余时间", "timeout"]) {
         "interrupted"
     } else if crate::coordinator_policy::quota_exhausted(&error) {
         "quota"
@@ -66,7 +68,7 @@ pub fn environmental(status: &str, error: Option<&str>) -> bool {
     let error = error.unwrap_or_default().to_lowercase();
     [
         "限额", "限流", "额度", "稍后", "不可用", "-32603", "rate limit", "unavailable", "网络", "network", "429", "usage limit", "已停止", "暂停", "中断", "超时", "超过当前工作流剩余时间",
-        "认证", "登录", "连接", "拒绝请求", "免费档", "未运行", "未安装", "overloaded", "timeout", "auth",
+        "认证", "登录", "连接", "拒绝请求", "免费档", "超出预算", "未运行", "未安装", "overloaded", "timeout", "auth",
     ]
     .iter()
     .any(|word| error.contains(word))
