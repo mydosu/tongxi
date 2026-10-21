@@ -122,12 +122,17 @@ let pendingProject: { conversationId: string; messageId: string; content: string
 let pendingSummary: { projectId: string; enabled: boolean } | null = null;
 const roomProjects = () => [...new Map([...(detail?.workflows || []), ...projectJobs.values()].filter(job => job.conversation_id === selectedId).map(job => [job.id, job])).values()].sort((a, b) => b.created_at - a.created_at);
 const currentWorkflow = () => roomProjects()[0] || null;
-const projectAgentBusy = (id: string) => [...projectJobs.values()].some(job => workflowBusy(job) && job.attempts.some(attempt => attempt.agent_id === id && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)));
+// 任务开工前（建工作树、起会话）和做完后（合并结果）还没有在跑的执行记录，任务在进行就算忙。
+const projectAgentBusy = (id: string) => [...projectJobs.values()].some(job => workflowBusy(job) && (job.attempts.some(attempt => attempt.agent_id === id && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)) || job.tasks.some(task => task.agent_id === id && task.status === 'running')));
+const busyAgents = () => [...new Set([...projectJobs.values()].flatMap(job => [...job.attempts.map(attempt => attempt.agent_id), ...job.tasks.map(task => task.agent_id)]))].filter(projectAgentBusy).sort().join(',');
 function adoptProject(job: Workflow, event = false) {
   if (removedProjectJobs.has(job.id)) return;
   const old = projectJobs.get(job.id);
   if (!event && old && (old.updated_at > job.updated_at || old.attempts.length > job.attempts.length || (!workflowBusy(old) && workflowBusy(job)) || (old.status === 'cancelling' && workflowBusy(job) && job.status !== 'cancelling'))) return;
+  const before = busyAgents();
   projectJobs.set(job.id, job);
+  // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
+  if (busyAgents() !== before && document.querySelector('#conversation-list')) renderList();
   updateProjectControls();
 }
 let discussionRevision = 0;
