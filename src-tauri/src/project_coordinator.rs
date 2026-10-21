@@ -245,6 +245,15 @@ pub(crate) fn resource_pools(
         if !pool["agents"].as_array().unwrap().iter().any(|agent| agent == base) {
             pool["agents"].as_array_mut().unwrap().push(json!(base));
         }
+        // 按时间顺序覆盖：留下的是这条线路最近一次的结果。最近一次报错（余额不足、认证失败、服务报错）就标出来，
+        // 调度别再往这里派；后来成功过就清掉。
+        match (attempt.status.as_str(), attempt.error.as_deref()) {
+            ("failed", Some(error)) => pool["last_error"] = json!(error.chars().take(160).collect::<String>()),
+            ("completed", _) => {
+                pool.as_object_mut().unwrap().remove("last_error");
+            }
+            _ => {}
+        }
         let usage = attempt.usage.as_ref();
         match usage.and_then(|usage| usage.spent()) {
             Some(spent) => pool["tokens"] = json!(pool["tokens"].as_u64().unwrap_or(0) + spent),
@@ -1753,10 +1762,12 @@ mod tests {
     fn resource_pools_split_subscriptions_and_provider_lines_without_inventing_costs() {
         use crate::project_store::Usage;
         let usage = |n: u64, cost: Option<f64>, kind: Option<&str>| Some(Usage { input: n, cost_usd: cost, cost_kind: kind.map(String::from), ..Default::default() });
+        let mut failed = sample_attempt("dsh-win-2", "flash", "failed", Some(Usage { input: 50, context_only: true, ..Default::default() }));
+        failed.error = Some("原生成员执行失败（协议代码 -32603）".into());
         let workflow = sample_workflow(vec![
             sample_attempt("claude-win", "sonnet", "completed", usage(100, Some(0.5), Some("api_estimate"))),
             sample_attempt("dsh-win", "flash", "completed", usage(200, Some(0.02), Some("provider"))),
-            sample_attempt("dsh-win-2", "flash", "failed", Some(Usage { input: 50, context_only: true, ..Default::default() })),
+            failed,
             sample_attempt("hermes-win", "flash", "completed", None),
         ]);
         let providers = [(("dsh-win".to_owned(), "flash".to_owned()), "goat".to_owned())].into_iter().collect();
@@ -1770,6 +1781,9 @@ mod tests {
         // 额外席位与本体同一条线路，归同一池；只报上下文占用的那次记未知。
         assert_eq!((pools[1]["pool"].as_str(), pools[1]["tokens"].as_u64(), pools[1]["unknown_attempts"].as_u64()), (Some("dsh-win:goat"), Some(200), Some(1)));
         assert_eq!(pools[1]["provider_cost_usd"], 0.02);
+        // 这条线路最近一次报错：标出来，调度别再往这里派。
+        assert!(pools[1]["last_error"].as_str().is_some_and(|error| error.contains("-32603")));
+        assert!(pools[0].get("last_error").is_none());
         // Hermes 线路未知、也不报用量：池类型与额度都是 unknown，不当零成本。
         assert_eq!((pools[2]["kind"].as_str(), pools[2]["quota"].as_str(), pools[2]["unknown_attempts"].as_u64()), (Some("unknown"), Some("unknown"), Some(1)));
     }
