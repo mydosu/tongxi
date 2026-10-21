@@ -37,6 +37,28 @@ fn live_spent(attempt: &crate::project_store::Attempt) -> Option<u64> {
     usage.spent()
 }
 
+/// 成员疑似原地打转：同一句话反复说（免费、弱模型常见），或工具调用接连失败。只看 since 之后的新内容
+/// （上次问过调度之后的），返回给调度看的证据。
+fn looping(attempt: &crate::project_store::Attempt, since: (usize, usize)) -> Option<String> {
+    let output = attempt.output.get(since.0..).unwrap_or_default();
+    let lines: Vec<&str> = output.lines().map(str::trim).filter(|line| line.chars().count() >= 12).collect();
+    let recent = &lines[lines.len().saturating_sub(30)..];
+    if let Some((line, count)) = recent
+        .iter()
+        .map(|line| (*line, recent.iter().filter(|other| *other == line).count()))
+        .max_by_key(|(_, count)| *count)
+        .filter(|(_, count)| *count >= 4)
+    {
+        return Some(format!("最近的回复里同一句话出现了 {count} 次：「{}」", line.chars().take(80).collect::<String>()));
+    }
+    let tools = attempt.tool_events.get(since.1..).unwrap_or_default();
+    let last: Vec<_> = tools.iter().rev().take(4).collect();
+    if last.len() == 4 && last.iter().all(|event| event.status == "failed") {
+        return Some(format!("最近 4 次工具调用全部失败（{}）", last[0].title.chars().take(60).collect::<String>()));
+    }
+    None
+}
+
 /// 12345678 → 12.3M，给群消息看的。
 fn token_label(value: u64) -> String {
     match value {
@@ -1402,11 +1424,10 @@ impl Runtime {
             let store = self.store.lock().unwrap();
             (store.task_budget(&task.id), store.task_advisor_calls(&task.id) > 0)
         };
-        if budget.is_none() && !advice {
-            return;
-        }
+        // 没写预算也要盯：成员原地打转时同样问调度（Hermes 回合中途报不出用量，只能靠这个）。
         let mut budget = budget.unwrap_or(u64::MAX);
         let mut asked = 0u32;
+        let mut loop_mark = (0usize, 0usize);
         loop {
             // 每秒看一眼有没有请教，每 15 秒看一次用量。
             for _ in 0..15 {
@@ -1418,14 +1439,14 @@ impl Runtime {
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
-            if budget == u64::MAX {
-                continue;
-            }
             let Some(attempt) = self.store.lock().unwrap().running_attempt(&task.id) else { continue };
-            let Some(spent) = live_spent(&attempt) else { continue };
-            if spent <= budget {
+            let live = live_spent(&attempt);
+            let over = budget != u64::MAX && live.is_some_and(|spent| spent > budget);
+            let stuck = if over { None } else { looping(&attempt, loop_mark) };
+            if !over && stuck.is_none() {
                 continue;
             }
+            let spent = live.unwrap_or(0);
             let can_wrap_up = matches!(crate::project_store::base_agent(&attempt.agent_id), "codex-win" | "claude-win");
             let grant = if asked >= 3 {
                 coordinator_policy::Grant {
@@ -1434,7 +1455,7 @@ impl Runtime {
                     reason: Some("已经拨过三次".into()),
                 }
             } else {
-                self.ask_grant(id, task, &attempt, (budget, spent, asked), can_wrap_up, deadline)
+                self.ask_grant(id, task, &attempt, (budget, spent, asked), stuck.as_deref(), can_wrap_up, deadline)
                     .unwrap_or_else(|error| coordinator_policy::Grant {
                         action: "continue".into(),
                         extra_tokens: None,
@@ -1450,26 +1471,41 @@ impl Runtime {
                 .map(|reason| format!("：{reason}"))
                 .unwrap_or_default();
             let action = if grant.action == "wrap_up" && !can_wrap_up { "continue" } else { grant.action.as_str() };
-            let (budget_label, spent_label) = (token_label(budget), token_label(spent));
+            let (budget_label, spent_label) = (if budget == u64::MAX { "未设".to_owned() } else { token_label(budget) }, token_label(spent));
+            let why = match &stuck {
+                Some(evidence) => format!("疑似原地打转（{evidence}）"),
+                None => format!("用量超出预算（{spent_label} / {budget_label}）"),
+            };
+            loop_mark = (attempt.output.len(), attempt.tool_events.len());
             let note = match action {
                 "wrap_up" => {
-                    let text = format!("同席提醒：这项任务的用量已超过调度给的预算（预算 {budget_label}，已用 {spent_label}）。请把手头这一步做完、跑和改动相关的测试、提交，然后停下交一份进度报告：做了什么、还剩什么。剩下的由调度另行安排。");
+                    let text = match &stuck {
+                        Some(_) => "同席提醒：你最近像是在原地打转（同样的话反复说或工具接连失败）。请停下来，保留已做的改动，交一份进度报告：做了什么、卡在哪、还剩什么。剩下的由调度另行安排。".to_owned(),
+                        None => format!("同席提醒：这项任务的用量已超过调度给的预算（预算 {budget_label}，已用 {spent_label}）。请把手头这一步做完、跑和改动相关的测试、提交，然后停下交一份进度报告：做了什么、还剩什么。剩下的由调度另行安排。"),
+                    };
                     let _ = self.native.steer_note(&attempt, &text);
                     budget = u64::MAX;
-                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度让它收尾交报告{reason}。", task.title)
+                    format!("「{}」{why}，调度让它收尾交报告{reason}。", task.title)
                 }
                 "stop" => {
                     self.budget.stopped.lock().unwrap().insert(
                         task.id.clone(),
-                        format!("超出预算（预算 {budget_label}，已用 {spent_label}），调度叫停{reason}；改动留在工作树里未合并，可用同一任务续做、换人接手或撤下"),
+                        match &stuck {
+                            Some(evidence) => format!("成员原地打转，调度叫停（{evidence}）{reason}；改动留在工作树里未合并，可换更强的模型接手或改说明再派"),
+                            None => format!("超出预算（预算 {budget_label}，已用 {spent_label}），调度叫停{reason}；改动留在工作树里未合并，可用同一任务续做、换人接手或撤下"),
+                        },
                     );
                     self.native.cancel_attempt(&attempt.id);
-                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度叫停{reason}。", task.title)
+                    format!("「{}」{why}，调度叫停{reason}。", task.title)
                 }
                 _ => {
-                    let extra = grant.extra_tokens.filter(|extra| *extra > 0).unwrap_or(budget / 2).max(budget / 5);
-                    budget = spent + extra;
-                    format!("「{}」用量超出预算（{spent_label} / {budget_label}），调度追加 {}{reason}。", task.title, token_label(extra))
+                    if stuck.is_some() {
+                        format!("「{}」{why}，调度让它接着做{reason}。", task.title)
+                    } else {
+                        let extra = grant.extra_tokens.filter(|extra| *extra > 0).unwrap_or(budget / 2).max(budget / 5);
+                        budget = spent + extra;
+                        format!("「{}」{why}，调度追加 {}{reason}。", task.title, token_label(extra))
+                    }
                 }
             };
             let _ = self.store.lock().unwrap().add_system_team_message(id, &note);
@@ -1581,6 +1617,7 @@ impl Runtime {
         task: &Task,
         attempt: &crate::project_store::Attempt,
         usage: (u64, u64, u32),
+        stuck: Option<&str>,
         can_wrap_up: bool,
         deadline: Instant,
     ) -> Result<coordinator_policy::Grant> {
@@ -1592,7 +1629,8 @@ impl Runtime {
         let tools: Vec<&str> = attempt.tool_events.iter().rev().take(12).map(|event| event.title.as_str()).collect();
         let minutes = (crate::store::now() - attempt.created_at).max(0) / 60_000;
         let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
-            "budget_tokens":budget,"spent_tokens":spent,"grants_so_far":asked,"running_minutes":minutes,
+            "trigger":if stuck.is_some() { "looping" } else { "budget" },"loop_evidence":stuck,
+            "budget_tokens":(budget != u64::MAX).then_some(budget),"spent_tokens":(spent > 0).then_some(spent),"grants_so_far":asked,"running_minutes":minutes,
             "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
             "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
         let output = self.ask_coordinator(id, json!({"grant_request":request,"quota":crate::quota::overview(&self.codex)}), deadline)?;
@@ -2092,6 +2130,21 @@ mod tests {
             status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
             created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
         }
+    }
+
+    #[test]
+    fn repeated_lines_or_failing_tools_count_as_looping_only_after_the_mark() {
+        let mut attempt = sample_attempt("hermes-win", "flash:free", "running", None);
+        attempt.output = (0..5).map(|_| "Now I have the full picture. Let me implement the fix.").collect::<Vec<_>>().join("\n\n");
+        assert!(super::looping(&attempt, (0, 0)).is_some_and(|evidence| evidence.contains("5 次")));
+        // 问过调度之后，只看新内容。
+        assert!(super::looping(&attempt, (attempt.output.len(), 0)).is_none());
+        attempt.output = "读文件。\n改了 a.rs，跑测试。".into();
+        assert!(super::looping(&attempt, (0, 0)).is_none());
+        let event = |status: &str| crate::store::RunToolEvent { event_id: "e".into(), kind: "edit".into(), title: "hub_edit: notify.py".into(), input: None, output: None, status: status.into(), created_at: 0 };
+        attempt.tool_events = vec![event("completed"), event("failed"), event("failed"), event("failed"), event("failed")];
+        assert!(super::looping(&attempt, (0, 0)).is_some_and(|evidence| evidence.contains("工具调用全部失败")));
+        assert!(super::looping(&attempt, (0, 3)).is_none());
     }
 
     #[test]
