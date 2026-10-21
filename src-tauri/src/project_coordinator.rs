@@ -239,8 +239,7 @@ pub(crate) fn pool_of(base: &str, provider: Option<&str>) -> String {
     }
 }
 
-/// 各资源池在本次协作里的消耗与额度状态。订阅池只给额度使用率，不折成美元；
-/// 线路池给服务商报的额度消耗（provider）与 API 等值估算，各自分开。
+/// 各资源池在本次协作里的 token 消耗与额度状态（只统计 token，不折成金额）。
 pub(crate) fn resource_pools(
     workflow: &Workflow,
     quota: &Value,
@@ -287,18 +286,9 @@ pub(crate) fn resource_pools(
             }
             _ => {}
         }
-        let usage = attempt.usage.as_ref();
-        match usage.and_then(|usage| usage.spent()) {
+        match attempt.usage.as_ref().and_then(|usage| usage.spent()) {
             Some(spent) => pool["tokens"] = json!(pool["tokens"].as_u64().unwrap_or(0) + spent),
             None => pool["unknown_attempts"] = json!(pool["unknown_attempts"].as_u64().unwrap_or(0) + 1),
-        }
-        if let Some(cost) = usage.and_then(|usage| usage.cost_usd) {
-            let field = match usage.and_then(|usage| usage.cost_kind.as_deref()) {
-                Some("provider") => "provider_cost_usd",
-                _ => "api_estimate_usd",
-            };
-            let sum = pool[field].as_f64().unwrap_or(0.0) + cost;
-            pool[field] = json!((sum * 10000.0).round() / 10000.0);
         }
     }
     pools.into_iter().map(|(_, pool)| pool).collect()
@@ -2062,11 +2052,10 @@ mod tests {
         assert_eq!(pools.len(), 3);
         assert_eq!((pools[0]["pool"].as_str(), pools[0]["kind"].as_str()), (Some("claude-subscription"), Some("subscription")));
         assert_eq!(pools[0]["quota"]["five_hour"]["used_percent"], 40);
-        assert_eq!(pools[0]["api_estimate_usd"], 0.5);
-        assert!(pools[0].get("provider_cost_usd").is_none());
+        // 只统计 token，不折成金额。
+        assert!(pools[0].get("api_estimate_usd").is_none() && pools[1].get("provider_cost_usd").is_none());
         // 额外席位与本体同一条线路，归同一池；只报上下文占用的那次记未知。
         assert_eq!((pools[1]["pool"].as_str(), pools[1]["tokens"].as_u64(), pools[1]["unknown_attempts"].as_u64()), (Some("dsh-win:goat"), Some(200), Some(1)));
-        assert_eq!(pools[1]["provider_cost_usd"], 0.02);
         // 这条线路最近一次报错：标出来，调度别再往这里派。
         assert!(pools[1]["last_error"].as_str().is_some_and(|error| error.contains("-32603")));
         assert!(pools[0].get("last_error").is_none());
