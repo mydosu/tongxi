@@ -11,7 +11,6 @@ const stages: Record<string,string> = { plan:'正在规划',implement:'正在执
 export const tokens = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(value >= 1e7 ? 0 : 1)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(value >= 1e4 ? 0 : 1)}k` : String(value);
 const known = (attempt: ProjectAttempt) => attempt.usage && !attempt.usage.context_only ? attempt.usage : null;
 const spent = (attempts: ProjectAttempt[]) => attempts.reduce((sum, attempt) => { const usage = known(attempt); return sum + (usage ? usage.input + usage.output : 0); }, 0);
-const costOf = (attempts: ProjectAttempt[], kind: string) => attempts.reduce((sum, attempt) => sum + ((attempt.usage?.cost_kind || 'api_estimate') === kind ? attempt.usage?.cost_usd || 0 : 0), 0);
 
 /// 给用户看的统计按 agent 和模型分，不按会话名：Codex 1号、方案、验证都是 Codex。
 const agentLabels: Record<string,string> = { 'codex-win':'Codex', 'claude-win':'Claude', 'dsh-win':'DSH', 'hermes-win':'Hermes', 'albion-wsl':'阿尔比恩' };
@@ -50,7 +49,7 @@ function wasteRow(job: Workflow, escape: Escape) {
   return `<p class="usage-waste">失败执行用掉 <strong>${escape(tokens(total))}</strong>（占 ${all ? Math.round(total / all * 100) : 0}%）：${escape(parts)}${kept ? `；其中 ${escape(tokens(kept))} 的任务后来接着做完了` : ''}</p>`;
 }
 
-/// 用量明细：token 构成、调度占比、各成员消耗与费用口径、统计完整度。
+/// 用量明细：token 构成、调度占比、各模型消耗、统计完整度（只统计 token，不折成金额）。
 function usageDetail(job: Workflow, escape: Escape) {
   const finished = job.attempts.filter(attempt => attempt.status !== 'starting');
   const usages = finished.map(known).filter((usage): usage is NonNullable<typeof usage> => !!usage);
@@ -66,10 +65,9 @@ function usageDetail(job: Workflow, escape: Escape) {
     const [agent, model] = group.split('\u0000');
     const mine = finished.filter(attempt => attempt.activity !== 'coordinate' && key(attempt) === group);
     const unknown = mine.filter(attempt => !known(attempt)).length;
-    const money = [[costOf(mine, 'api_estimate'), 'API 等值'], [costOf(mine, 'provider'), '额度消耗']].filter(([value]) => value).map(([value, label]) => `$${(value as number).toFixed(2)} ${label}`).join(' · ');
-    return `<tr><td>${escape(model)}<small>${escape(agent)}</small></td><td>${escape(tokens(spent(mine)))}</td><td>${escape(money || '—')}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
+    return `<tr><td>${escape(model)}<small>${escape(agent)}</small></td><td>${escape(tokens(spent(mine)))}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
   }).join('');
-  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${wasteRow(job, escape)}${rows ? `<table><thead><tr><th>模型</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
+  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${wasteRow(job, escape)}${rows ? `<table><thead><tr><th>模型</th><th>token</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}</details>`;
 }
 
 type QuotaWindow = { used_percent: number; resets_in_hours?: number; used_usd?: number; cap_usd?: number; exceeded?: boolean };
@@ -106,11 +104,8 @@ function usageRow(job: Workflow, escape: Escape) {
   if (!finished.length) return '';
   const coordinator = finished.filter(attempt => attempt.activity === 'coordinate');
   const members = finished.filter(attempt => attempt.activity !== 'coordinate');
-  const estimate = costOf(finished, 'api_estimate');
-  const provider = costOf(finished, 'provider');
   const unknown = finished.filter(attempt => !known(attempt)).length;
-  const money = (value: number, label: string) => value ? `<strong>$${escape(value.toFixed(2))}</strong><small>${label}</small>` : '';
-  return `<div class="project-usage" title="确知的实际 token 消耗（输入含缓存读写，输出含推理）。API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。成员只报了上下文占用或没报用量时不计入，记为未知。"><span>本轮用量</span><strong>${escape(tokens(spent(members)))}</strong><small>成员</small><strong>${escape(tokens(spent(coordinator)))}</strong><small>调度</small>${money(estimate, 'API 等值')}${money(provider, '额度消耗')}${unknown ? `<em>${unknown} 次用量未知，未计入</em>` : ''}</div>`;
+  return `<div class="project-usage" title="确知的实际 token 消耗（输入含缓存读写，输出含推理）。成员只报了上下文占用或没报用量时不计入，记为未知。"><span>本轮用量</span><strong>${escape(tokens(spent(members)))}</strong><small>成员</small><strong>${escape(tokens(spent(coordinator)))}</strong><small>调度</small>${unknown ? `<em>${unknown} 次用量未知，未计入</em>` : ''}</div>`;
 }
 
 export function progressContent(jobs: Workflow[], members: ProjectAgentChat[], escape: Escape, name: (agent: string) => string, avatar: (agent: string) => string, questions:ProjectQuestion[] = [], capability: CapabilityRow[] = [], quota: Record<string, QuotaEntry> = {}) {
