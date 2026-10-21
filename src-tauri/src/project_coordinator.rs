@@ -720,7 +720,7 @@ impl Runtime {
             id,
             &format!(
                 "调度主动暂停协作：{}。预计 {} 自动继续；等待期间不计入协作时长，在群里发话会提前叫醒，也可随时停止协作。",
-                reason.trim().trim_end_matches('。'),
+                reason.trim().trim_end_matches(['。', '.']),
                 crate::quota_reset::local_label(at, offset)
             ),
         )?;
@@ -1493,7 +1493,7 @@ impl Runtime {
             let reason = grant
                 .reason
                 .as_deref()
-                .map(|reason| reason.trim().trim_end_matches('。'))
+                .map(|reason| reason.trim().trim_end_matches(['。', '.']))
                 .filter(|reason| !reason.is_empty())
                 .map(|reason| format!("：{reason}"))
                 .unwrap_or_default();
