@@ -2468,6 +2468,22 @@ fn member_prompt_carries_brief_and_subagent_permission() {
 }
 
 #[test]
+fn briefed_members_do_not_get_the_raw_request_meant_for_the_coordinator() {
+    let briefed = coordinator_policy::member_prompt("codex-win", "implementation", "做2，3，4", "做2，3，4", vec![], Some("目标：修等待超时"), false);
+    assert!(briefed.get("user_request").is_none());
+    assert_eq!(briefed["assigned_excerpt"], "做2，3，4");
+    let plain = coordinator_policy::member_prompt("codex-win", "implementation", "修登录", "修登录", vec![], None, false);
+    assert_eq!(plain["user_request"], "修登录");
+}
+
+#[test]
+fn coordinator_can_forward_notes_and_report_leftovers() {
+    let decision: coordinator_policy::Decision = serde_json::from_str(r#"{"action":"finish","notes":[{"task_id":"t1","text":"范围改了，只做 S3"}],"leftovers":{"added":3,"cleared":5,"remaining":12}}"#).unwrap();
+    assert_eq!(decision.notes[0].task_id, "t1");
+    assert_eq!(decision.leftovers.map(|tally| (tally.added, tally.cleared, tally.remaining)), Some((3, 5, 12)));
+}
+
+#[test]
 fn coordinator_sessions_stay_in_the_project_like_user_sessions() {
     let mut f = Fixture::new();
     let room = f.room.clone();
