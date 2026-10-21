@@ -266,6 +266,11 @@ impl Broker {
     }
 
     pub fn call(&mut self, tool: &str, args: Value) -> Result<Value> {
+        // 请教要等调度回答，不能放进下面的事务里等。
+        if tool == "hub_ask_advisor" {
+            Self::scope(&self.connection, &self.attempt_id)?;
+            return crate::advisor::ask(&self.connection, &self.attempt_id, args);
+        }
         if tool == "hub_ask_user" {
             Self::scope(&self.connection, &self.attempt_id)?;
             let path: String = self
@@ -538,6 +543,7 @@ pub fn tool_specs() -> Vec<Value> {
     let nullable_hash = json!({"type":["string","null"],"description":"Current SHA256 from hub_read; null only for a new file."});
     let definitions=[
         ("hub_ask_user","Ask the user a clarification question and wait for their reply. The question is shown in the team conversation; the same native turn continues after the answer.",json!({"question":string,"options":{"type":"array","items":string}}),vec!["question"]),
+        ("hub_ask_advisor","Consult the project coordinator (a strong model) about a key decision you are unsure of in your current task: a design trade-off, a hard bug you cannot locate, how to approach a tricky part. Write the question clearly, say what you already tried, and put the relevant code excerpts or errors in context. Blocks until the answer arrives (usually within a minute). The number of calls per task is limited by the coordinator; do not use it for small things.",json!({"question":string,"context":string}),vec!["question"]),
         ("hub_memory_search","Search this project's memory: the shared team pool plus your own private notes (scope: all | shared | private, default all). Use before work to recall decisions and known pitfalls.",json!({"query":string,"scope":{"type":"string","enum":["all","shared","private"]}}),vec!["query"]),
         ("hub_memory_write","Save a concise note. scope=private (default) keeps it to yourself; scope=shared publishes it to every member of this project. Shared notes can only be updated by their author. Do not store private chats, raw reasoning or credentials.",json!({"name":string,"content":string,"scope":{"type":"string","enum":["private","shared"]}}),vec!["name","content"]),
         ("hub_memory_read","Read a note URI from this project's shared pool or your own private notes.",json!({"uri":string}),vec!["uri"]),
@@ -1011,7 +1017,7 @@ mod agent_message_tests {
         assert!(["hub_memory_list", "hub_memory_share"]
             .iter()
             .all(|name| tools.iter().any(|tool| tool["name"] == *name)));
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         assert_eq!(store.team_messages(&room.id).unwrap().len(), 1);
         assert_eq!(
             store

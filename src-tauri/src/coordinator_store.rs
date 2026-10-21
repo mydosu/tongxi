@@ -48,6 +48,9 @@ pub struct TaskRoute {
     /// 软预算（token），调度没写就是 None。
     #[serde(default)]
     pub budget_tokens: Option<u64>,
+    /// 这项任务能向调度请教几次。
+    #[serde(default)]
+    pub advisor_calls: u32,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Coordination {
@@ -91,6 +94,12 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     crate::project_store::add_column(tx, "coordination_routes", "hold_merge", "INTEGER NOT NULL DEFAULT 0")?;
     crate::project_store::add_column(tx, "coordination_routes", "merge_state", "TEXT")?;
     crate::project_store::add_column(tx, "coordination_routes", "budget_tokens", "INTEGER")?;
+    crate::project_store::add_column(tx, "coordination_routes", "advisor_calls", "INTEGER")?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS advisor_requests (
+      id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL,task_id TEXT NOT NULL,attempt_id TEXT NOT NULL,question TEXT NOT NULL,context TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,answer TEXT,created_at INTEGER NOT NULL,answered_at INTEGER);
+      CREATE INDEX IF NOT EXISTS advisor_request_task ON advisor_requests(task_id,status);")
+        .map_err(|_| "请教记录结构迁移失败")?;
     crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
@@ -410,6 +419,32 @@ impl Store {
             .ok()?;
         self.attempt(&id).ok()
     }
+    /// 这项任务能请教几次（没开放就是 0）。
+    pub fn task_advisor_calls(&self, task: &str) -> u32 {
+        self.connection
+            .query_row("SELECT COALESCE(advisor_calls,0) FROM coordination_routes WHERE task_id=?1", [task], |r| r.get(0))
+            .unwrap_or(0)
+    }
+    /// 这项任务最早一条还没回答的请教：（请求 id、问题、附带的上下文）。
+    pub fn pending_advice(&self, task: &str) -> Option<(String, String, String)> {
+        self.connection
+            .query_row(
+                "SELECT id,question,context FROM advisor_requests WHERE task_id=?1 AND status='pending' ORDER BY created_at LIMIT 1",
+                [task],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+    /// 写回请教结果：answered 给成员看回答，failed 让成员按自己的判断继续。
+    pub fn answer_advice(&self, id: &str, status: &str, answer: &str) -> Result<()> {
+        self.connection
+            .execute(
+                "UPDATE advisor_requests SET status=?1,answer=?2,answered_at=?3 WHERE id=?4 AND status='pending'",
+                params![status, answer, crate::store::now(), id],
+            )
+            .map_err(|_| "请教结果保存失败")?;
+        Ok(())
+    }
     /// 调度给这项任务写的软预算（token）；没写就是 None。
     pub fn task_budget(&self, task: &str) -> Option<u64> {
         self.connection
@@ -426,7 +461,7 @@ impl Store {
         Ok(())
     }
     pub fn coordination_routes(&self, id: &str) -> Result<Vec<TaskRoute>> {
-        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,hold_merge,merge_state,budget_tokens FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
+        let mut query=self.connection.prepare("SELECT task_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,hold_merge,merge_state,budget_tokens,COALESCE(advisor_calls,0) FROM coordination_routes WHERE workflow_id=?1 ORDER BY rowid").map_err(|_|"任务路由读取失败")?;
         let rows = query
             .query_map([id], |r| {
                 Ok(TaskRoute {
@@ -442,6 +477,7 @@ impl Store {
                     hold_merge: r.get(9)?,
                     merge_state: r.get(10)?,
                     budget_tokens: r.get::<_, Option<i64>>(11)?.and_then(|n| u64::try_from(n).ok()),
+                    advisor_calls: r.get(12)?,
                 })
             })
             .map_err(|_| "任务路由读取失败")?
@@ -727,10 +763,10 @@ impl Store {
             let complexity = route.complexity.as_deref().filter(|value| crate::capability::COMPLEXITIES.contains(value));
             if *is_new {
                 tx.execute("INSERT INTO project_tasks(id,workflow_id,position,title,agent_id,assigned_agent,instructions,files,depends_on,status,model,effort) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,'queued',?9,?10)",params![task_id,id,position,title,stored_agent,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort]).map_err(|_|"任务保存失败")?;
-                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context,category,complexity,hold_merge,budget_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge,route.budget_tokens.map(|n| n as i64)]).map_err(|_|"任务原文引用保存失败")?;
+                tx.execute("INSERT INTO coordination_routes(task_id,workflow_id,purpose,source_id,quote,context_ids,subagent,instructions,reason,allow_subagents,clear_context,category,complexity,hold_merge,budget_tokens,advisor_calls) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![task_id,id,route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge,route.budget_tokens.map(|n| n as i64),route.advisor_calls]).map_err(|_|"任务原文引用保存失败")?;
             } else {
                 tx.execute("UPDATE project_tasks SET title=?1,assigned_agent=?2,instructions=?3,depends_on=?4,status='queued',model=?5,effort=?6,error=NULL,position=?9 WHERE id=?7 AND workflow_id=?8",params![title,route.agent_id,route.quote,serde_json::to_string(deps).unwrap(),model,effort,task_id,id,position]).map_err(|_|"任务恢复失败")?;
-                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10,category=COALESCE(?11,category),complexity=COALESCE(?12,complexity),hold_merge=?13,budget_tokens=COALESCE(?14,budget_tokens) WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge,route.budget_tokens.map(|n| n as i64)]).map_err(|_|"任务引用恢复失败")?;
+                tx.execute("UPDATE coordination_routes SET purpose=?1,source_id=?2,quote=?3,context_ids=?4,subagent=?5,instructions=COALESCE(?7,instructions),reason=COALESCE(?8,reason),allow_subagents=?9,clear_context=?10,category=COALESCE(?11,category),complexity=COALESCE(?12,complexity),hold_merge=?13,budget_tokens=COALESCE(?14,budget_tokens),advisor_calls=COALESCE(?15,advisor_calls) WHERE task_id=?6",params![route.purpose,route.source_id,route.quote,serde_json::to_string(&route.context_ids).unwrap(),route.subagent,task_id,route.instructions,route.reason,route.allow_subagents,route.clear_context,category,complexity,route.hold_merge,route.budget_tokens.map(|n| n as i64),route.advisor_calls]).map_err(|_|"任务引用恢复失败")?;
             }
         }
         tx.execute(

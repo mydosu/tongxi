@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod quota;
+mod advisor;
 mod quota_reset;
 mod cli_open;
 mod cli_transcript;
