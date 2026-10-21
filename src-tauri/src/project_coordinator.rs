@@ -307,6 +307,11 @@ fn window_tokens(quota: &mut Value, tokens_since: impl Fn(&str, i64) -> Option<u
             let since = now - ((hours - left).max(0.0) * 3_600_000.0) as i64;
             if let Some(tokens) = tokens_since(base, since) {
                 entry["window_tokens"] = json!(tokens);
+                // 按已用比例粗估窗口还能跑多少 token；用得太少时比例不可靠，不给。
+                let used = entry["used_percent"].as_f64().unwrap_or(0.0);
+                if (5.0..100.0).contains(&used) && tokens > 0 {
+                    entry["estimated_tokens_left"] = json!((tokens as f64 * (100.0 - used) / used) as u64);
+                }
             }
         }
     }
@@ -2091,6 +2096,11 @@ mod tests {
             Some(16_500_000)
         });
         assert_eq!(quota["codex-win"]["five_hour"]["window_tokens"], 16_500_000);
+        // 已用满的窗口不给剩余估算。
+        assert!(quota["codex-win"]["five_hour"].get("estimated_tokens_left").is_none());
+        let mut half = serde_json::json!({"claude-win":{"five_hour":{"used_percent":40,"resets_in_hours":2.0}}});
+        super::window_tokens(&mut half, |_, _| Some(4_000_000));
+        assert_eq!(half["claude-win"]["five_hour"]["estimated_tokens_left"], 6_000_000);
         // 没给距重置时间的窗口推不出起点，不填。
         assert!(quota["codex-win"]["weekly"].get("window_tokens").is_none());
         let (base, back) = asked.borrow()[0].clone();
