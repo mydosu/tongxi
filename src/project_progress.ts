@@ -30,12 +30,13 @@ export function failureCause(attempt: ProjectAttempt): string | null {
   if (attempt.status !== 'failed' && attempt.status !== 'interrupted') return null;
   const error = (attempt.error || '').toLowerCase(), has = (words: string[]) => words.some(word => error.includes(word));
   if (error.includes('超出预算')) return 'budget';
+  if (error.includes('请求升档')) return 'escalate';
   if (attempt.status === 'interrupted' || has(['中断', '已停止', '超时', '超过当前工作流剩余时间', 'timeout'])) return 'interrupted';
   if (has(quotaWords)) return 'quota';
   if (has(['拒绝请求', '免费档', '-32603', '401', '认证', '余额', 'unavailable', 'overloaded'])) return 'provider';
   return 'other';
 }
-const causes: Record<string,string> = { quota:'撞限额', provider:'线路报错', budget:'超预算叫停', interrupted:'被中断', other:'其他' };
+const causes: Record<string,string> = { quota:'撞限额', provider:'线路报错', budget:'超预算叫停', escalate:'请求升档', interrupted:'被中断', other:'其他' };
 
 /// 白花的额度：失败执行的消耗按原因分，任务后来做完了的单列（工作树留着、被接手，不全算白花）。
 function wasteRow(job: Workflow, escape: Escape) {
