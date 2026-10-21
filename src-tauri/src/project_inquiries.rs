@@ -172,11 +172,13 @@ impl Store {
         self.connection.query_row(&sql, [id], row).map_err(|_| "回答读取失败".into())
     }
 
-    /// 调度这回合看过了新回答：下回合不再当新的给。
-    pub fn mark_inquiries_seen(&self, room: &str) -> Result<()> {
-        self.connection
-            .execute("UPDATE project_inquiries SET seen=1 WHERE conversation_id=?1 AND status='answered' AND seen=0", [room])
-            .map_err(|_| "问答状态保存失败")?;
+    /// 调度这回合看过了这几条新回答：下回合不再当新的给。只标交给它的那几条，回合进行中才答的留给下回合。
+    pub fn mark_inquiries_seen(&self, ids: &[String]) -> Result<()> {
+        for id in ids {
+            self.connection
+                .execute("UPDATE project_inquiries SET seen=1 WHERE id=?1 AND status='answered'", [id])
+                .map_err(|_| "问答状态保存失败")?;
+        }
         Ok(())
     }
 
@@ -211,7 +213,8 @@ mod tests {
         // 答过的不再问。
         assert!(!store.ask_inquiry(&room, None, "coordinator", &ask("tts-version", "还是问一下")).unwrap());
         assert_eq!(store.answered_inquiries(&room), 1);
-        store.mark_inquiries_seen(&room).unwrap();
+        let id = store.project_inquiries(&room).unwrap()[0].id.clone();
+        store.mark_inquiries_seen(&[id]).unwrap();
         assert!(store.project_inquiries(&room).unwrap()[0].seen);
         // 撤下后再挂出来算新问题。
         store.ask_inquiry(&room, None, "coordinator", &ask("live2d", "Live2D 还要吗？")).unwrap();
