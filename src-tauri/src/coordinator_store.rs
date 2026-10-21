@@ -368,7 +368,7 @@ impl Store {
     }
     /// 能力画像用的历史执行：since 之后所有协作里由调度派出的成员执行（含失败与验证）。
     pub fn capability_samples(&self, since: i64) -> Result<Vec<crate::capability::Sample>> {
-        let mut query=self.connection.prepare("SELECT a.workflow_id,a.task_id,COALESCE(t.assigned_agent,a.agent_id),a.model,a.reasoning_effort,a.status,a.error,CASE WHEN r.purpose='verification' THEN substr(a.output,-400) ELSE '' END,a.usage,a.created_at,r.purpose,r.category,r.complexity,r.source_id,r.quote,r.context_ids FROM project_attempts a JOIN coordination_routes r ON r.task_id=a.task_id JOIN project_tasks t ON t.id=a.task_id WHERE a.created_at>=?1 AND a.status IN ('completed','failed','interrupted') ORDER BY a.created_at,a.rowid").map_err(|_|"能力画像读取失败")?;
+        let mut query=self.connection.prepare("SELECT a.workflow_id,a.task_id,COALESCE(t.assigned_agent,a.agent_id),a.model,a.reasoning_effort,a.status,a.error,CASE WHEN r.purpose='verification' THEN substr(a.output,-400) ELSE '' END,a.usage,a.created_at,r.purpose,r.category,r.complexity,r.source_id,r.quote,r.context_ids,COALESCE(r.clear_context,0) FROM project_attempts a JOIN coordination_routes r ON r.task_id=a.task_id JOIN project_tasks t ON t.id=a.task_id WHERE a.created_at>=?1 AND a.status IN ('completed','failed','interrupted') ORDER BY a.created_at,a.rowid").map_err(|_|"能力画像读取失败")?;
         let rows = query
             .query_map([since], |r| {
                 Ok(crate::capability::Sample {
@@ -388,6 +388,7 @@ impl Store {
                     source_id: r.get(13)?,
                     quote: r.get(14)?,
                     context_ids: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+                    clear_context: r.get(16)?,
                 })
             })
             .map_err(|_| "能力画像读取失败")?

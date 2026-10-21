@@ -36,6 +36,41 @@ pub struct Sample {
     pub source_id: String,
     pub quote: String,
     pub context_ids: Vec<String>,
+    /// 调度让它在原会话位置清空上下文后做（false＝接着原会话做）。
+    pub clear_context: bool,
+}
+
+fn median(values: &mut [u64]) -> Option<u64> {
+    values.sort_unstable();
+    values.get(values.len() / 2).copied()
+}
+
+/// 续接还是清空：同一成员+模型，接着原会话做和清空上下文后做的任务，各自的用量中位数和结束时的上下文。
+/// 有的家会自动压缩上下文（续接时上下文稳定，续接更省），有的不会（越续越长，每次工具调用都重读整段）。
+/// 只看做完、用量确知的方案和实现任务。
+pub fn session_reuse(samples: &[Sample]) -> Vec<Value> {
+    let mut groups: std::collections::BTreeMap<(String, String), [Vec<(u64, u64)>; 2]> = Default::default();
+    for sample in samples.iter().filter(|sample| sample.status == "completed" && matches!(sample.purpose.as_str(), "implementation" | "solution")) {
+        let Some(usage) = sample.usage.as_ref().filter(|usage| !usage.context_only) else { continue };
+        let Some(spent) = usage.spent() else { continue };
+        let key = (crate::project_store::base_agent(&sample.agent_id).to_owned(), sample.model.clone().unwrap_or_else(|| "default".into()));
+        groups.entry(key).or_default()[usize::from(sample.clear_context)].push((spent, usage.context));
+    }
+    groups
+        .into_iter()
+        .filter(|(_, sides)| sides.iter().map(Vec::len).sum::<usize>() >= 2)
+        .map(|((agent, model), sides)| {
+            let side = |items: &[(u64, u64)]| {
+                if items.is_empty() {
+                    return Value::Null;
+                }
+                let mut spent: Vec<u64> = items.iter().map(|item| item.0).collect();
+                let mut context: Vec<u64> = items.iter().map(|item| item.1).filter(|context| *context > 0).collect();
+                json!({"tasks":items.len(),"median_tokens":median(&mut spent),"median_end_context":median(&mut context)})
+            };
+            json!({"agent":agent,"model":model,"continued":side(&sides[0]),"cleared":side(&sides[1])})
+        })
+        .collect()
 }
 
 /// 撞限额、被用户停下或中断、环境/连接问题导致的失败不算能力问题，不计入成功率。
@@ -294,7 +329,29 @@ mod tests {
             effort: Some("high".into()), status: status.into(), error: None, output: String::new(),
             usage: Some(Usage { input: 100, ..Default::default() }), created_at: at, purpose: purpose.into(),
             category: Some("bugfix".into()), complexity: None, source_id: "u".into(), quote: "修登录".into(), context_ids: vec![],
+            clear_context: false,
         }
+    }
+
+    #[test]
+    fn session_reuse_compares_continued_and_cleared_tasks_per_model() {
+        let used = |spent: u64, context: u64| Some(Usage { input: spent, context, ..Default::default() });
+        let mut rows = vec![];
+        for (task, spent, context, clear) in [("a", 2_000_000, 160_000, false), ("b", 3_000_000, 150_000, false), ("c", 4_000_000, 100_000, true)] {
+            let mut item = sample(task, "codex-win-2", "sol", "completed", "implementation", 1);
+            item.usage = used(spent, context);
+            item.clear_context = clear;
+            rows.push(item);
+        }
+        let mut lone = sample("d", "claude-win", "opus", "completed", "implementation", 1);
+        lone.usage = used(9_000_000, 300_000);
+        rows.push(lone);
+        let reuse = session_reuse(&rows);
+        // 只有一项的组合不给，样本太少没意义。
+        assert_eq!(reuse.len(), 1);
+        assert_eq!((reuse[0]["agent"].as_str(), reuse[0]["model"].as_str()), (Some("codex-win"), Some("sol")));
+        assert_eq!((reuse[0]["continued"]["tasks"].as_u64(), reuse[0]["continued"]["median_tokens"].as_u64()), (Some(2), Some(3_000_000)));
+        assert_eq!(reuse[0]["cleared"]["median_end_context"], 100_000);
     }
 
     #[test]
