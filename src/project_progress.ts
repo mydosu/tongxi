@@ -30,7 +30,7 @@ export function failureCause(attempt: ProjectAttempt): string | null {
   if (attempt.status !== 'failed' && attempt.status !== 'interrupted') return null;
   const error = (attempt.error || '').toLowerCase(), has = (words: string[]) => words.some(word => error.includes(word));
   if (error.includes('超出预算')) return 'budget';
-  if (error.includes('请求升档')) return 'escalate';
+  if (error.includes('请求升档') || error.includes('原地打转')) return 'escalate';
   if (attempt.status === 'interrupted' || has(['中断', '已停止', '超时', '超过当前工作流剩余时间', 'timeout'])) return 'interrupted';
   if (has(quotaWords)) return 'quota';
   if (has(['拒绝请求', '免费档', '-32603', '401', '认证', '余额', 'unavailable', 'overloaded'])) return 'provider';

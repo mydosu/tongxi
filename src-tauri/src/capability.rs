@@ -50,7 +50,7 @@ pub fn failure_cause(status: &str, error: Option<&str>) -> Option<&'static str> 
     let has = |words: &[&str]| words.iter().any(|word| error.contains(word));
     Some(if error.contains("超出预算") {
         "budget"
-    } else if error.contains("请求升档") {
+    } else if error.contains("请求升档") || error.contains("原地打转") {
         "escalate"
     } else if status == "interrupted" || has(&["中断", "已停止", "超时", "超过当前工作流剩余时间", "timeout"]) {
         "interrupted"
