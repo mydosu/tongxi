@@ -118,6 +118,7 @@ fn route(key: &str, purpose: &str, agent: &str, source_id: &str, quote: &str) ->
         complexity: None,
         hold_merge: false,
         budget_tokens: None,
+        advisor_calls: None,
     }
 }
 
@@ -142,6 +143,15 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
         model: model.map(str::to_owned),
         effort: effort.map(str::to_owned),
     }
+}
+
+#[test]
+fn advice_replies_carry_an_answer_and_optional_escalation() {
+    let advice = coordinator_policy::parse_advice(r#"{"advice":{"answer":"用通道，锁会和渲染线程互等","escalate":false}}"#).unwrap();
+    assert!(!advice.escalate && advice.answer.contains("通道"));
+    assert!(coordinator_policy::parse_advice(r#"{"advice":{"answer":"做不了","escalate":true}}"#).unwrap().escalate);
+    assert!(coordinator_policy::parse_advice(r#"{"advice":{"answer":"  "}}"#).is_err());
+    assert!(coordinator_policy::parse(r#"{"action":"delegate","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现","advisor_calls":9}]}"#).is_err());
 }
 
 #[test]

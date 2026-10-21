@@ -128,7 +128,7 @@ fn compact_routes(routes: &[crate::coordinator_store::TaskRoute]) -> Vec<Value> 
     routes
         .iter()
         .map(|route| {
-            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"merge":route.merge_state,"budget_tokens":route.budget_tokens})
+            json!({"task_id":route.task_id,"purpose":route.purpose,"source_id":route.source_id,"quote":clip(&route.quote,200),"context_ids":route.context_ids,"subagent":route.subagent,"merge":route.merge_state,"budget_tokens":route.budget_tokens,"advisor_calls":route.advisor_calls})
         })
         .collect()
 }
@@ -1382,14 +1382,28 @@ impl Runtime {
     /// 而是单独问调度一次拨款：追加、收尾（插话让它做完手头一步、提交、交报告）或叫停。
     /// 问不到（调度撞限额等）就默认追加一半；同一项最多问 3 次，之后默认收尾。
     fn watch_budget(&self, id: &str, task: &Task, done: &std::sync::atomic::AtomicBool, deadline: Instant) {
-        let Some(mut budget) = self.store.lock().unwrap().task_budget(&task.id) else { return };
+        let (budget, advice) = {
+            let store = self.store.lock().unwrap();
+            (store.task_budget(&task.id), store.task_advisor_calls(&task.id) > 0)
+        };
+        if budget.is_none() && !advice {
+            return;
+        }
+        let mut budget = budget.unwrap_or(u64::MAX);
         let mut asked = 0u32;
         loop {
+            // 每秒看一眼有没有请教，每 15 秒看一次用量。
             for _ in 0..15 {
                 if done.load(std::sync::atomic::Ordering::SeqCst) {
                     return;
                 }
+                if advice {
+                    self.serve_advice(id, task, deadline);
+                }
                 std::thread::sleep(Duration::from_secs(1));
+            }
+            if budget == u64::MAX {
+                continue;
             }
             let Some(attempt) = self.store.lock().unwrap().running_attempt(&task.id) else { continue };
             let Some(spent) = live_spent(&attempt) else { continue };
@@ -1450,31 +1464,43 @@ impl Runtime {
         }
     }
 
-    /// 单独问调度一次拨款。复用最近一回合的参考资料，调度的系统提示能命中缓存，一次只花几千 token。
-    /// usage：（当前预算, 已用, 已问过几次）。
-    fn ask_grant(
-        &self,
-        id: &str,
-        task: &Task,
-        attempt: &crate::project_store::Attempt,
-        usage: (u64, u64, u32),
-        can_wrap_up: bool,
-        deadline: Instant,
-    ) -> Result<coordinator_policy::Grant> {
+    /// 回答这项任务排着的请教：交给调度（复用缓存的系统提示），回答写回去，成员那边的工具调用就返回了。
+    /// 调度建议换强模型时，回答里让成员保留改动、写「需要升档」交回。
+    fn serve_advice(&self, id: &str, task: &Task, deadline: Instant) {
+        let Some((request, question, context)) = self.store.lock().unwrap().pending_advice(&task.id) else { return };
+        let attempt = self.store.lock().unwrap().running_attempt(&task.id);
+        let answered = attempt.ok_or_else(|| "任务已结束".to_owned()).and_then(|attempt| {
+            let clip = |text: &str, limit: usize| text.chars().take(limit).collect::<String>();
+            let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
+                "instructions":clip(&task.instructions, 2000),"question":question,"context":clip(&context, 12_000)});
+            let output = self.ask_coordinator(id, json!({"advice_request":request}), deadline)?;
+            coordinator_policy::parse_advice(&output)
+        });
+        let mut store = self.store.lock().unwrap();
+        match answered {
+            Ok(advice) => {
+                let answer = if advice.escalate {
+                    format!("{}\n\n顾问判断这项超出当前模型的能力，建议换更强的模型接手：请保留已做的改动，不要再硬做，在交付摘要里单独一行写「需要升档：卡在哪、试过什么」，然后结束本轮。", advice.answer.trim())
+                } else {
+                    advice.answer.trim().to_owned()
+                };
+                let _ = store.answer_advice(&request, "answered", &answer);
+                let _ = store.add_system_team_message(id, &format!("「{}」向调度请教了一次{}。", task.title, if advice.escalate { "，调度建议换强模型接手" } else { "" }));
+            }
+            Err(error) => {
+                let _ = store.answer_advice(&request, "failed", &format!("顾问没能回答（{error}）：按自己的判断继续"));
+            }
+        }
+        drop(store);
+        (self.notify)(id);
+    }
+
+    /// 单独问调度一件事（拨款、请教）：复用最近一回合的参考资料，调度的系统提示能命中缓存。返回调度的原始回复。
+    fn ask_coordinator(&self, id: &str, state: Value, deadline: Instant) -> Result<String> {
         let _turn = self.budget.asking.lock().unwrap();
-        let (budget, spent, asked) = usage;
         let manager = self.store.lock().unwrap().coordination(id)?.ok_or("调度记录缺失")?;
-        let tail = |text: &str, limit: usize| {
-            let chars: Vec<char> = text.chars().collect();
-            chars[chars.len().saturating_sub(limit)..].iter().collect::<String>()
-        };
-        let tools: Vec<&str> = attempt.tool_events.iter().rev().take(12).map(|event| event.title.as_str()).collect();
-        let minutes = (crate::store::now() - attempt.created_at).max(0) / 60_000;
-        let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
-            "budget_tokens":budget,"spent_tokens":spent,"grants_so_far":asked,"running_minutes":minutes,
-            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
-            "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
-        let state = json!({"grant_request":request,"ledger":manager.ledger,"quota":crate::quota::overview(&self.codex)});
+        let mut state = state;
+        state["ledger"] = json!(manager.ledger);
         let reference = self.budget.reference.lock().unwrap().clone().unwrap_or_else(|| "{}".into());
         let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
         let input = if matches!(crate::project_store::base_agent(&manager.coordinator.agent), "claude-win" | "codex-win") {
@@ -1492,9 +1518,35 @@ impl Runtime {
         let root = crate::coordinator_clients::manager_directory(&self.store.lock().unwrap().path, id, &manager.coordinator.agent)?;
         let result = self.native.run(record, &root, &input, deadline)?;
         if result.status != "completed" {
-            return Err(result.error.unwrap_or_else(|| "拨款回合未完成".into()));
+            return Err(result.error.unwrap_or_else(|| "调度回合未完成".into()));
         }
-        coordinator_policy::parse_grant(&result.output)
+        Ok(result.output)
+    }
+
+    /// 单独问调度一次拨款。复用最近一回合的参考资料，调度的系统提示能命中缓存，一次只花几千 token。
+    /// usage：（当前预算, 已用, 已问过几次）。
+    fn ask_grant(
+        &self,
+        id: &str,
+        task: &Task,
+        attempt: &crate::project_store::Attempt,
+        usage: (u64, u64, u32),
+        can_wrap_up: bool,
+        deadline: Instant,
+    ) -> Result<coordinator_policy::Grant> {
+        let (budget, spent, asked) = usage;
+        let tail = |text: &str, limit: usize| {
+            let chars: Vec<char> = text.chars().collect();
+            chars[chars.len().saturating_sub(limit)..].iter().collect::<String>()
+        };
+        let tools: Vec<&str> = attempt.tool_events.iter().rev().take(12).map(|event| event.title.as_str()).collect();
+        let minutes = (crate::store::now() - attempt.created_at).max(0) / 60_000;
+        let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
+            "budget_tokens":budget,"spent_tokens":spent,"grants_so_far":asked,"running_minutes":minutes,
+            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
+            "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
+        let output = self.ask_coordinator(id, json!({"grant_request":request,"quota":crate::quota::overview(&self.codex)}), deadline)?;
+        coordinator_policy::parse_grant(&output)
     }
 
     /// 滚动执行：互不依赖、会话不同的任务一起跑（最多 MAX_PARALLEL 项）；哪项做完就当场处理它的结果，
@@ -1739,6 +1791,12 @@ impl Runtime {
             route.allow_subagents,
         );
         prompt["user_updates"] = json!(self.store.lock().unwrap().project_user_updates(id)?);
+        if route.advisor_calls > 0 {
+            prompt["advisor"] = json!(format!(
+                "本任务开放请教：遇到拿不准的关键决定（设计取舍、定位不到的疑难问题、关键处怎么做）时，用 hub_ask_advisor 向调度请教，最多 {} 次。写清问题和你试过什么，context 里附上相关代码片段或报错；等回答回来再接着做。小事别用。",
+                route.advisor_calls
+            ));
+        }
         let grants = self.store.lock().unwrap().project_grants(&workflow.conversation_id);
         if !grants.is_empty() {
             prompt["project_grants"] = json!(grants);
