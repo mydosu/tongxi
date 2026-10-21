@@ -38,10 +38,15 @@ fn live_spent(attempt: &crate::project_store::Attempt) -> Option<u64> {
 }
 
 /// Command Code 线路一个账号就有近百个模型（两个账号又是同一份），整份交给调度要占掉七成输入；
-/// 用户在这条线路上只用 DeepSeek 系和免费档，其余不给调度看。别的线路（Codex、Claude 订阅等）原样给。
-fn catalog_keeps(model: &str, provider: Option<&str>) -> bool {
+/// 用户在这条线路上只用 DeepSeek 系和免费档，其余不给调度看；Hermes 上的 Anthropic、Gemini 线路用户不用，整条不给。
+/// Codex、Claude 订阅等其他线路原样给。
+fn catalog_keeps(base: &str, model: &str, provider: Option<&str>) -> bool {
     let id = model.to_ascii_lowercase();
-    !provider.is_some_and(|provider| provider.contains("command-code")) || id.contains("deepseek") || id.ends_with(":free") || id.ends_with("-free")
+    match provider {
+        Some(line) if line.contains("command-code") => id.contains("deepseek") || id.ends_with(":free") || id.ends_with("-free"),
+        Some("anthropic" | "gemini") if base == "hermes-win" => false,
+        _ => true,
+    }
 }
 
 /// 成员疑似原地打转：同一句话反复说（免费、弱模型常见），或工具调用接连失败。只看 since 之后的新内容
@@ -849,7 +854,7 @@ impl Runtime {
                         let models = runtime
                             .models
                             .iter()
-                            .filter(|model| catalog_keeps(&model.id, crate::goat::line_of(&model.id).or_else(|| model.provider_id.clone()).as_deref()))
+                            .filter(|model| catalog_keeps(base, &model.id, crate::goat::line_of(&model.id).or_else(|| model.provider_id.clone()).as_deref()))
                             .map(|model| {
                                 let mut value = json!({"id":model.id,"efforts":model.efforts});
                                 // 线路名优先取模型 id 里带的（和额度概况的键一致），没有再用目录给的提供商。
@@ -915,25 +920,24 @@ impl Runtime {
             // 每回合会变的放后面。serde_json 的对象按键名排序，混在一起时变化的键会排到大块前面，整段缓存失效。
             // 只放一次协作里几乎不变的：模型目录、价格表、默认角色、长期授权、倾向。Claude 管家把这段放进系统提示
             // 命中缓存（见 claude_bridge 的 splitReference）；历史画像在成员完成任务后会变，放到每回合状态里。
-            // 长期计划放最后：它比模型目录、价格表变得勤，变了也只让后半段缓存失效。
+            // 长期计划不放这里：调度常改它，放在系统提示里一改整段缓存就失效，所以放进每回合状态。
             let plan_root = self.store.lock().unwrap().project(&workflow.project_id)?.root;
             let plan = crate::project_plan::read(Path::new(&plan_root));
             let reference = format!(
-                "{{\"coordinator\":{},\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{},\"plan\":{}}}",
+                "{{\"coordinator\":{},\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{}}}",
                 json!(crate::project_store::base_agent(&manager.coordinator.agent)),
                 Value::Object(models_by_member),
                 crate::pricing::about(),
                 json!(crate::project_store::roles_of(&workflow)?),
                 json!((!grants.is_empty()).then_some(&grants)),
-                json!(preference),
-                json!(plan.map(|text| json!({"path":".tongxi/计划.md","text":text})))
+                json!(preference)
             );
             let inquiries = self.store.lock().unwrap().project_inquiries(&workflow.conversation_id).unwrap_or_default();
             // 这回合交给调度的新回答；回合进行中才答的不在里面，留给下回合。
             let user_updates = self.store.lock().unwrap().project_user_updates(id).unwrap_or_default();
             let new_user_messages: Vec<Value> = user_updates.iter().skip(heard_updates).map(|update| json!({"source_id":update.id,"text":update.content})).collect();
             let shown: Vec<String> = inquiries.iter().filter(|item| item.status == "answered" && !item.seen).map(|item| item.id.clone()).collect();
-            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"session_reuse":session_reuse,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&inquiries),"new_user_messages":new_user_messages});
+            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"session_reuse":session_reuse,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&inquiries),"new_user_messages":new_user_messages,"plan":plan.map(|text| json!({"path":".tongxi/计划.md","text":text}))});
             *self.budget.reference.lock().unwrap() = Some(reference.clone());
             let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
@@ -2154,12 +2158,14 @@ mod tests {
     }
 
     #[test]
-    fn command_code_lines_only_offer_deepseek_and_free_models() {
-        assert!(super::catalog_keeps("custom:command-code-daily-1:deepseek/deepseek-v4.1-flash", Some("command-code-daily-1")));
-        assert!(super::catalog_keeps("custom:command-code-daily-2:reflection/beam:free", Some("command-code-daily-2")));
-        assert!(!super::catalog_keeps("custom:command-code-daily-1:claude-opus-5-5", Some("command-code-daily-1")));
-        assert!(super::catalog_keeps("gpt-6.1-sol", None));
-        assert!(super::catalog_keeps("opus", Some("anthropic")));
+    fn catalog_leaves_out_lines_the_user_does_not_use() {
+        assert!(super::catalog_keeps("hermes-win", "custom:command-code-daily-1:deepseek/deepseek-v4.1-flash", Some("command-code-daily-1")));
+        assert!(super::catalog_keeps("hermes-win", "custom:command-code-daily-2:reflection/beam:free", Some("command-code-daily-2")));
+        assert!(!super::catalog_keeps("hermes-win", "custom:command-code-daily-1:claude-opus-5-5", Some("command-code-daily-1")));
+        assert!(!super::catalog_keeps("hermes-win", "anthropic:claude-fable-5.1", Some("anthropic")));
+        assert!(!super::catalog_keeps("hermes-win", "gemini:gemini-3.8-flash", Some("gemini")));
+        assert!(super::catalog_keeps("codex-win", "gpt-6.1-sol", None));
+        assert!(super::catalog_keeps("claude-win", "opus", None));
     }
 
     #[test]
