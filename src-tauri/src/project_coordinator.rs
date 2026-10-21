@@ -895,7 +895,10 @@ impl Runtime {
                 json!(preference),
                 json!(plan.map(|text| json!({"path":".tongxi/计划.md","text":text})))
             );
-            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&self.store.lock().unwrap().project_inquiries(&workflow.conversation_id).unwrap_or_default())});
+            let inquiries = self.store.lock().unwrap().project_inquiries(&workflow.conversation_id).unwrap_or_default();
+            // 这回合交给调度的新回答；回合进行中才答的不在里面，留给下回合。
+            let shown: Vec<String> = inquiries.iter().filter(|item| item.status == "answered" && !item.seen).map(|item| item.id.clone()).collect();
+            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&inquiries)});
             *self.budget.reference.lock().unwrap() = Some(reference.clone());
             let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
@@ -943,7 +946,7 @@ impl Runtime {
             let applied = decision
                 .and_then(|decision| self.apply_coordination(id, &result.id, decision, deadline));
             if applied.is_ok() {
-                let _ = self.store.lock().unwrap().mark_inquiries_seen(&workflow.conversation_id);
+                let _ = self.store.lock().unwrap().mark_inquiries_seen(&shown);
             }
             match applied {
                 Ok(true) => return Ok(()),
