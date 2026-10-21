@@ -1486,7 +1486,7 @@ impl Runtime {
             let reason = grant
                 .reason
                 .as_deref()
-                .map(str::trim)
+                .map(|reason| reason.trim().trim_end_matches('。'))
                 .filter(|reason| !reason.is_empty())
                 .map(|reason| format!("：{reason}"))
                 .unwrap_or_default();
