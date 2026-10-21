@@ -1531,6 +1531,12 @@ impl Runtime {
                     done.store(true, std::sync::atomic::Ordering::SeqCst);
                     // 软预算叫停的：不管成员怎么结束的，都记成超出预算的失败，改动留在工作树里不合并。
                     let stopped = self.budget.stopped.lock().unwrap().remove(&task.id);
+                    // 成员交代做不了、要换强模型：同样不合并，改动留在工作树里给接手的人。
+                    let stopped = stopped.or_else(|| match &result {
+                        Ok(attempt) if attempt.status == "completed" => coordinator_policy::escalation(&attempt.output)
+                            .map(|reason| format!("成员请求升档：{}", reason.chars().take(200).collect::<String>())),
+                        _ => None,
+                    });
                     let result = match (result, stopped) {
                         (Ok(mut attempt), Some(error)) => {
                             attempt.status = "failed".into();

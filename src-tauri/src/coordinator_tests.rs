@@ -145,6 +145,16 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
 }
 
 #[test]
+fn members_can_ask_for_a_stronger_model_on_their_own_line() {
+    let report = "改了 a.rs，b 的并发问题试了锁和通道都不行。\n交付摘要：只完成一半。\n需要升档：并发死锁定位不到，试过加锁、改通道";
+    assert_eq!(coordinator_policy::escalation(report), Some("并发死锁定位不到，试过加锁、改通道"));
+    assert_eq!(coordinator_policy::escalation("- 需要升档: 看不懂 shader"), Some("看不懂 shader"));
+    // 正文里提到这几个字不算。
+    assert_eq!(coordinator_policy::escalation("交付摘要：完成，暂时不需要升档：已通过"), None);
+    assert_eq!(crate::capability::failure_cause("failed", Some("成员请求升档：x")), Some("escalate"));
+}
+
+#[test]
 fn grant_replies_are_continue_wrap_up_or_stop_only() {
     let grant = coordinator_policy::parse_grant(r#"```json
 {"grant":{"action":"continue","extra_tokens":2000000,"reason":"只剩补测试"}}
