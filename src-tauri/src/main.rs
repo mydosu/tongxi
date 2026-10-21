@@ -2,6 +2,7 @@
 
 mod quota;
 mod advisor;
+mod project_plan;
 mod quota_reset;
 mod cli_open;
 mod cli_transcript;

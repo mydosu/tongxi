@@ -864,14 +864,18 @@ impl Runtime {
             // 每回合会变的放后面。serde_json 的对象按键名排序，混在一起时变化的键会排到大块前面，整段缓存失效。
             // 只放一次协作里几乎不变的：模型目录、价格表、默认角色、长期授权、倾向。Claude 管家把这段放进系统提示
             // 命中缓存（见 claude_bridge 的 splitReference）；历史画像在成员完成任务后会变，放到每回合状态里。
+            // 长期计划放最后：它比模型目录、价格表变得勤，变了也只让后半段缓存失效。
+            let plan_root = self.store.lock().unwrap().project(&workflow.project_id)?.root;
+            let plan = crate::project_plan::read(Path::new(&plan_root));
             let reference = format!(
-                "{{\"coordinator\":{},\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{}}}",
+                "{{\"coordinator\":{},\"models\":{},\"pricing\":{},\"default_roles\":{},\"project_grants\":{},\"preference\":{},\"plan\":{}}}",
                 json!(crate::project_store::base_agent(&manager.coordinator.agent)),
                 Value::Object(models_by_member),
                 crate::pricing::about(),
                 json!(crate::project_store::roles_of(&workflow)?),
                 json!((!grants.is_empty()).then_some(&grants)),
-                json!(preference)
+                json!(preference),
+                json!(plan.map(|text| json!({"path":".tongxi/计划.md","text":text})))
             );
             let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback});
             *self.budget.reference.lock().unwrap() = Some(reference.clone());
@@ -908,6 +912,9 @@ impl Runtime {
                 if let (true, Some(hours)) = (action == "pause", pause.resume_in_hours) {
                     if let Some(ledger) = ledger.as_deref().filter(|ledger| !ledger.trim().is_empty()) {
                         self.store.lock().unwrap().set_coordination_ledger(id, ledger)?;
+                    }
+                    if let Ok(decision) = &decision {
+                        self.save_plan(id, decision.plan.as_deref());
                     }
                     deadline = self.rest(id, &pause.reason, hours, deadline)?;
                     rejected = 0;
@@ -946,6 +953,7 @@ impl Runtime {
         if let Some(ledger) = decision.ledger.as_deref().filter(|ledger| !ledger.trim().is_empty()) {
             self.store.lock().unwrap().set_coordination_ledger(id, ledger)?;
         }
+        self.save_plan(id, decision.plan.as_deref());
         let replacements = decision
             .routes
             .iter()
@@ -1370,6 +1378,13 @@ impl Runtime {
                     }
                 }
             }
+            // 方案全文存进项目的 .tongxi/方案存档/，长期计划按路径引用，以后的协作也找得到。
+            if route.is_some_and(|route| route.purpose == "solution") && !result.output.trim().is_empty() {
+                let project = self.store.lock().unwrap().project(&workflow.project_id)?;
+                if let Ok(path) = crate::project_plan::archive(Path::new(&project.root), &task.title, &result.output, crate::store::now()) {
+                    let _ = self.store.lock().unwrap().add_system_team_message(id, &format!("「{}」的方案全文已存档：{path}", task.title));
+                }
+            }
             self.store.lock().unwrap().publish_coordinated_reply(
                 id,
                 &result,
@@ -1466,6 +1481,16 @@ impl Runtime {
             if action == "stop" {
                 return;
             }
+        }
+    }
+
+    /// 调度交了新版长期计划就写进项目的 .tongxi/计划.md；写不进去只记一条群消息，不影响调度。
+    fn save_plan(&self, id: &str, plan: Option<&str>) {
+        let Some(plan) = plan.filter(|plan| !plan.trim().is_empty()) else { return };
+        let workflow = self.store.lock().unwrap().workflow(id);
+        let project = workflow.and_then(|workflow| self.store.lock().unwrap().project(&workflow.project_id));
+        if let Err(error) = project.and_then(|project| crate::project_plan::write(Path::new(&project.root), plan)) {
+            let _ = self.store.lock().unwrap().add_system_team_message(id, &format!("长期计划没能写进文件：{error}"));
         }
     }
 
