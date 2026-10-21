@@ -292,6 +292,9 @@ fn window_tokens(quota: &mut Value, tokens_since: impl Fn(&str, i64) -> Option<u
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
     let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
+    // 失败执行的消耗按原因分；kept 是任务后来做完了的那部分（工作树留着、被接手，不全算白花）。
+    let mut failed = serde_json::Map::new();
+    let mut kept = 0u64;
     for attempt in &workflow.attempts {
         let Some(spent) = attempt.usage.as_ref().and_then(|usage| usage.spent()) else {
             if attempt.status != "starting" {
@@ -299,6 +302,16 @@ fn usage_overview(workflow: &Workflow) -> Value {
             }
             continue;
         };
+        if let Some(cause) = crate::capability::failure_cause(&attempt.status, attempt.error.as_deref()) {
+            let entry = failed.entry(cause).or_insert(json!(0));
+            *entry = json!(entry.as_u64().unwrap_or(0) + spent);
+            let done = attempt.task_id.as_ref().is_some_and(|task| {
+                workflow.tasks.iter().any(|item| &item.id == task && item.status == "completed")
+            });
+            if done {
+                kept += spent;
+            }
+        }
         if attempt.activity.as_deref() == Some(coordinator_policy::MANAGER_ACTIVITY) {
             coordinator += spent;
         } else {
@@ -306,7 +319,11 @@ fn usage_overview(workflow: &Workflow) -> Value {
         }
     }
     // unknown_attempts：用量未知的执行次数（成员没报、或只报了上下文占用），总数因此偏小。
-    json!({"member_tokens":members,"coordinator_tokens":coordinator,"unknown_attempts":unknown})
+    let mut value = json!({"member_tokens":members,"coordinator_tokens":coordinator,"unknown_attempts":unknown});
+    if !failed.is_empty() {
+        value["failed_tokens"] = json!({"by_cause":failed,"task_later_completed":kept});
+    }
+    value
 }
 
 impl Runtime {
@@ -1799,6 +1816,29 @@ mod tests {
             status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
             created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
         }
+    }
+
+    #[test]
+    fn failed_attempts_are_split_by_cause_and_later_completed_tasks_are_marked_kept() {
+        use crate::project_store::Usage;
+        let used = |n: u64| Some(Usage { input: n, ..Default::default() });
+        let mut quota = sample_attempt("codex-win", "sol", "failed", used(700));
+        quota.error = Some("Codex 项目运行未正常完成（额度限制（额度预计 10月21日 01:12 重置））".into());
+        quota.task_id = Some("t1".into());
+        let mut key = sample_attempt("hermes-win", "flash", "failed", used(20));
+        key.error = Some("项目成员的模型服务拒绝请求（Key 无效或余额不足），这条线路暂时不能用，未完成本阶段".into());
+        let stopped = sample_attempt("dsh-win", "flash", "interrupted", used(5));
+        let mut workflow = sample_workflow(vec![quota, key, stopped, sample_attempt("dsh-win", "flash", "completed", used(900))]);
+        workflow.tasks = vec![crate::project_store::Task {
+            id: "t1".into(), workflow_id: "w".into(), position: 0, title: "接手做完".into(), agent_id: "dsh-win".into(),
+            instructions: String::new(), files: vec![], depends_on: vec![], status: "completed".into(), output: String::new(),
+            error: None, model: None, effort: None, worktree: None, branch: None,
+        }];
+        let overview = super::usage_overview(&workflow);
+        let failed = &overview["failed_tokens"];
+        assert_eq!((failed["by_cause"]["quota"].as_u64(), failed["by_cause"]["provider"].as_u64(), failed["by_cause"]["interrupted"].as_u64()), (Some(700), Some(20), Some(5)));
+        assert_eq!(failed["task_later_completed"], 700);
+        assert_eq!(crate::capability::failure_cause("completed", None), None);
     }
 
     #[test]

@@ -25,6 +25,30 @@ export const modelLabel = (model: string | null | undefined) => {
 const categories: Record<string,string> = { architecture:'架构设计', feature:'功能实现', bugfix:'修 bug', algorithm:'复杂算法', refactor:'重构', testing:'测试验证', docs:'文档', ops:'环境运维', integration:'多模块集成', uncategorized:'未分类' };
 const percentOf = (value: number | null) => value == null ? '—' : `${Math.round(value * 100)}%`;
 
+/// 失败执行按原因归类，与 capability.rs 的 failure_cause 保持一致。
+const quotaWords = ['限流', '额度', 'rate limit', 'rate_limit', 'ratelimit', 'usage limit', 'quota', 'too many requests', '429'];
+export function failureCause(attempt: ProjectAttempt): string | null {
+  if (attempt.status !== 'failed' && attempt.status !== 'interrupted') return null;
+  const error = (attempt.error || '').toLowerCase(), has = (words: string[]) => words.some(word => error.includes(word));
+  if (attempt.status === 'interrupted' || has(['中断', '已停止', '超时', '超过当前工作流剩余时间', 'timeout'])) return 'interrupted';
+  if (has(quotaWords)) return 'quota';
+  if (has(['拒绝请求', '免费档', '-32603', '401', '认证', '余额', 'unavailable', 'overloaded'])) return 'provider';
+  return 'other';
+}
+const causes: Record<string,string> = { quota:'撞限额', provider:'线路报错', interrupted:'被中断', other:'其他' };
+
+/// 白花的额度：失败执行的消耗按原因分，任务后来做完了的单列（工作树留着、被接手，不全算白花）。
+function wasteRow(job: Workflow, escape: Escape) {
+  const failed = job.attempts.filter(attempt => failureCause(attempt) && known(attempt));
+  const total = spent(failed);
+  if (!total) return '';
+  const all = spent(job.attempts.filter(attempt => attempt.status !== 'starting'));
+  const parts = Object.keys(causes).map(cause => [cause, spent(failed.filter(attempt => failureCause(attempt) === cause))] as const).filter(([, value]) => value).map(([cause, value]) => `${causes[cause]} ${tokens(value)}`).join(' · ');
+  const done = new Set(job.tasks.filter(task => task.status === 'completed').map(task => task.id));
+  const kept = spent(failed.filter(attempt => attempt.task_id && done.has(attempt.task_id)));
+  return `<p class="usage-waste">失败执行用掉 <strong>${escape(tokens(total))}</strong>（占 ${all ? Math.round(total / all * 100) : 0}%）：${escape(parts)}${kept ? `；其中 ${escape(tokens(kept))} 的任务后来接着做完了` : ''}</p>`;
+}
+
 /// 用量明细：token 构成、调度占比、各成员消耗与费用口径、统计完整度。
 function usageDetail(job: Workflow, escape: Escape) {
   const finished = job.attempts.filter(attempt => attempt.status !== 'starting');
@@ -44,7 +68,7 @@ function usageDetail(job: Workflow, escape: Escape) {
     const money = [[costOf(mine, 'api_estimate'), 'API 等值'], [costOf(mine, 'provider'), '额度消耗']].filter(([value]) => value).map(([value, label]) => `$${(value as number).toFixed(2)} ${label}`).join(' · ');
     return `<tr><td>${escape(model)}<small>${escape(agent)}</small></td><td>${escape(tokens(spent(mine)))}</td><td>${escape(money || '—')}</td><td>${unknown ? `${unknown} 次未知` : '完整'}</td></tr>`;
   }).join('');
-  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${rows ? `<table><thead><tr><th>模型</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
+  return `<details class="project-usage-detail" data-keep="usage"><summary>用量明细</summary><div class="usage-breakdown">${cell('新输入', tokens(fresh))}${cell('缓存读取', tokens(read))}${cell('缓存写入', tokens(write))}${cell('输出', tokens(output))}${reasoning ? cell('其中推理', tokens(reasoning)) : ''}${cell('调度占比', all ? `${Math.round(manager / all * 100)}%` : '—')}${cell('统计完整度', `${finished.filter(known).length}/${finished.length}`)}</div>${wasteRow(job, escape)}${rows ? `<table><thead><tr><th>模型</th><th>token</th><th>费用</th><th>完整度</th></tr></thead><tbody>${rows}</tbody></table>` : ''}<p>API 等值是按 API 价折算的估算，订阅下不是实际扣款；额度消耗是服务商报的。不同订阅的额度和金额口径不同，不能直接相加比较。</p></details>`;
 }
 
 type QuotaWindow = { used_percent: number; resets_in_hours?: number; used_usd?: number; cap_usd?: number; exceeded?: boolean };
