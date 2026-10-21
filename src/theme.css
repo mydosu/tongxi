@@ -466,3 +466,4 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .project-usage-detail th, .project-capability th { text-align: left; font-weight: 600; color: #6b7392; padding: 4px 6px; border-bottom: 1px solid var(--glass-line); white-space: nowrap; }
 .project-usage-detail td, .project-capability td { padding: 4px 6px; border-bottom: 1px solid rgb(0 0 0 / .04); white-space: nowrap; }
 .project-capability td small, .project-usage-detail td small { display: block; color: #8a91aa; }
+.usage-waste strong { color: #b4533a; }
