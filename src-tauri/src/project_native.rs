@@ -146,6 +146,10 @@ pub(crate) fn failure_category(error: &Value) -> Option<String> {
 /// Do not mistake that transport-level error message for a successful project deliverable.
 fn provider_error_reply(output: &str) -> Option<&'static str> {
     let output = output.to_ascii_lowercase();
+    // 免费档：额度小得一项任务都撑不住，等重置也没用，不按「额度」报（否则会原地等），让调度换人或暂停。
+    if output.chars().count() < 4000 && ["free_tier", "free tier"].iter().any(|marker| output.contains(marker)) {
+        return Some("项目成员走的是免费档线路，用量很快到上限，不适合做项目任务，未完成本阶段");
+    }
     [
         "http 429",
         "weekly usage limit",
@@ -1186,6 +1190,11 @@ mod tests {
 
 Provider said: HTTP 401: Invalid 'Authorization' header or token.";
         assert!(provider_error_reply(rejected).is_some_and(|error| error.contains("Key 无效")));
+        let free = "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 250000
+Your Google API key is on the free tier";
+        let error = provider_error_reply(free).unwrap();
+        assert!(error.contains("免费档") && !crate::coordinator_policy::quota_exhausted(error));
+        assert!(crate::capability::environmental("failed", Some(error)));
         // 交付摘要里正常提到 401 不算。
         assert!(provider_error_reply("K12 已上线：未带 token 返回 401，并带 WWW-Authenticate: Bearer").is_none());
     }

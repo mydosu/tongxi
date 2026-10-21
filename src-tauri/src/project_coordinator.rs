@@ -616,6 +616,36 @@ impl Runtime {
         }
         Ok(deadline + started.elapsed())
     }
+    /// 调度主动暂停、到点自动继续：公开说明后等 hours 小时（可随时停止；用户在群里发话就提前结束），
+    /// 等待不计入协作时长，返回顺延后的截止时间。
+    fn rest(&self, id: &str, reason: &str, hours: f64, deadline: Instant) -> Result<Instant> {
+        let (offset, now) = crate::quota_reset::local_offset();
+        let at = now + (hours * 3600.0) as i64;
+        self.store.lock().unwrap().add_system_team_message(
+            id,
+            &format!(
+                "调度主动暂停协作：{}。预计 {} 自动继续；等待期间不计入协作时长，在群里发话会提前叫醒，也可随时停止协作。",
+                reason.trim().trim_end_matches('。'),
+                crate::quota_reset::local_label(at, offset)
+            ),
+        )?;
+        self.store.lock().unwrap().coordination_status(id, "resting")?;
+        (self.notify)(id);
+        let updates = self.store.lock().unwrap().project_user_updates(id)?.len();
+        let (started, wait) = (Instant::now(), Duration::from_secs_f64(hours * 3600.0));
+        let mut tick = 0u32;
+        while started.elapsed() < wait {
+            if self.native.cancelled(id) {
+                return Err("项目协作已停止，保留已产生的改动".into());
+            }
+            tick += 1;
+            if tick % 5 == 0 && self.store.lock().unwrap().project_user_updates(id)?.len() != updates {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        Ok(deadline + started.elapsed())
+    }
     fn coordinate_loop(&self, id: &str, deadline: Instant) -> Result<()> {
         let mut deadline = deadline;
         // 额度等待最多连续这么多次（每次等到重置时间，读不到时按 5、10……30 分钟递增），之后交给管家按失败处理。
@@ -827,6 +857,18 @@ impl Runtime {
                 return Err(error);
             }
             let decision = coordinator_policy::parse(&result.output);
+            // 主动暂停并估了恢复时间：就在这里等（不计入协作时长），到点或用户在群里发话就开下一回合。
+            if let Ok(coordinator_policy::Decision { action, pause: Some(pause), ledger, .. }) = &decision {
+                if let (true, Some(hours)) = (action == "pause", pause.resume_in_hours) {
+                    if let Some(ledger) = ledger.as_deref().filter(|ledger| !ledger.trim().is_empty()) {
+                        self.store.lock().unwrap().set_coordination_ledger(id, ledger)?;
+                    }
+                    deadline = self.rest(id, &pause.reason, hours, deadline)?;
+                    rejected = 0;
+                    feedback = None;
+                    continue;
+                }
+            }
             let applied = decision
                 .and_then(|decision| self.apply_coordination(id, &result.id, decision, deadline));
             match applied {
@@ -998,6 +1040,23 @@ impl Runtime {
                     .lock()
                     .unwrap()
                     .finish_workflow(id, "completed", &summary, None)?;
+                (self.notify)(id);
+                Ok(true)
+            }
+            "pause" => {
+                // 没给恢复时间的暂停：停下协作，已完成的保留，用户补充额度后点「继续」或在群里说。
+                let reason = decision.pause.as_ref().map_or("", |pause| pause.reason.trim());
+                self.store.lock().unwrap().add_system_team_message(
+                    id,
+                    &format!("调度主动暂停协作：{}。额度恢复或补充后，在群里说一声或点「继续」就接着做。", reason.trim_end_matches('。')),
+                )?;
+                self.store.lock().unwrap().coordination_status(id, "paused")?;
+                self.store.lock().unwrap().finish_workflow(
+                    id,
+                    "interrupted",
+                    "",
+                    Some("调度因额度不足主动暂停，已完成的结果都保留"),
+                )?;
                 (self.notify)(id);
                 Ok(true)
             }

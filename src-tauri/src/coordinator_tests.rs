@@ -144,6 +144,16 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
 }
 
 #[test]
+fn coordinator_can_pause_with_a_reason_and_optional_resume_time() {
+    let timed = coordinator_policy::parse(r#"{"action":"pause","ledger":"等 Codex","pause":{"reason":"Codex 5 小时窗口满了，GOAT 余额用完","resume_in_hours":2.9}}"#).unwrap();
+    assert_eq!(timed.pause.unwrap().resume_in_hours, Some(2.9));
+    assert!(coordinator_policy::parse(r#"{"action":"pause","pause":{"reason":"各家额度都用完了"}}"#).unwrap().pause.unwrap().resume_in_hours.is_none());
+    assert!(coordinator_policy::parse(r#"{"action":"pause"}"#).is_err(), "暂停要写原因");
+    assert!(coordinator_policy::parse(r#"{"action":"pause","pause":{"reason":"x","resume_in_hours":500}}"#).is_err());
+    assert!(coordinator_policy::parse(r#"{"action":"wait","pause":{"reason":"x"}}"#).is_err());
+}
+
+#[test]
 fn coordinator_writes_task_briefs_and_ledger_but_no_unknown_fields() {
     let valid = r#"{"action":"delegate","routes":[{"key":"a","purpose":"implementation","agent_id":"dsh-win","source_id":"u1","quote":"DSH负责实现"}]}"#;
     assert_eq!(coordinator_policy::parse(valid).unwrap().action, "delegate");

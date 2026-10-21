@@ -4,7 +4,7 @@ import { workflowBusy } from './project_ui';
 type Escape = (value: string | number) => string;
 const statuses: Record<string,string> = { queued:'等待执行',planning:'正在规划',running:'正在执行',reviewing:'正在验收',verifying:'正在验收',cancelling:'正在停止',interrupted:'已暂停',failed:'需要继续处理',completed:'已完成' };
 const purposes:Record<string,string>={solution:'正在出方案',implementation:'正在实现',verification:'正在验证',closeout:'正在收尾',reply:'正在回复'};
-const managerStatuses:Record<string,string>={routing:'正在调度',waiting_members:'等待成员结果',awaiting_user:'等待你的回答',paused:'已暂停',failed:'等待继续处理',finished:'本轮协调完成'};
+const managerStatuses:Record<string,string>={routing:'正在调度',waiting_members:'等待成员结果',awaiting_user:'等待你的回答',paused:'已暂停',resting:'额度不足，暂停中（到点自动继续）',failed:'等待继续处理',finished:'本轮协调完成'};
 const stages: Record<string,string> = { plan:'正在规划',implement:'正在执行',review:'正在验收',repair:'正在修复' };
 
 /// token 数写成 12.3k / 1.2M。
