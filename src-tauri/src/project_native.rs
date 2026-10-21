@@ -565,6 +565,8 @@ impl Runner {
             .insert(attempt_id.clone(), (workflow.clone(), client.clone()));
         let mut next_prompt = prompt.to_owned();
         let mut handled = std::collections::HashSet::new();
+        // 调度写了说明的任务，群里新说的话由调度用 notes 转，不再在回答提问后附给成员。
+        let briefed = serde_json::from_str::<Value>(prompt).ok().is_some_and(|value| value.get("coordinator_brief").is_some());
         let mut handled_updates = serde_json::from_str::<Value>(prompt)
             .ok()
             .and_then(|value| value["user_updates"].as_array().cloned())
@@ -687,7 +689,7 @@ impl Runner {
             }
             let continuation = (|| -> Result<String> {
                 let store = self.store.lock().unwrap();
-                let updates = store.project_user_updates(&workflow)?;
+                let updates = if briefed { Vec::new() } else { store.project_user_updates(&workflow)? };
                 let roles = crate::project_store::roles_of(&store.workflow(&workflow)?)?;
                 handled_updates.extend(updates.iter().map(|update| update.id.clone()));
                 Ok(format!("{}\n用户已回答：{}\n本轮最新补充要求：{}\n当前分工：{}\n从停下的位置继续同一项目目标，不重做已完成工具操作。",prompt,json!(answers),json!(updates),json!(roles)))

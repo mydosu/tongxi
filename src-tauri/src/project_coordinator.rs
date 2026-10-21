@@ -1029,6 +1029,7 @@ impl Runtime {
             .withdraw_coordination_tasks(id, &decision.withdraw, &replacements)?;
         // 调度自己拍板的取舍和要确认的事都挂到问答面板，群里只留一行提醒。
         let asked = self.post_inquiries(id, &decision)?;
+        self.forward_notes(id, &decision.notes);
         let decided = (asked > 0).then(|| format!("调度在问答面板挂了 {asked} 个新问题，有空时去答；能回退的先按调度的默认做法推进。"));
         if decision.action != "delegate" {
             if let Some(text) = &decided {
@@ -1118,6 +1119,12 @@ impl Runtime {
                     self.store.lock().unwrap().add_system_team_message(
                         id,
                         &format!("这次先到这里{kept}。剩下的板块：{lines}\n想做哪个、哪天做，在群里说一声（比如「今天做第 2 块」），会接着这次的账本开始。"),
+                    )?;
+                }
+                if let Some(tally) = &decision.leftovers {
+                    self.store.lock().unwrap().add_system_team_message(
+                        id,
+                        &format!("本场遗留：新增 {}、清掉 {}，池里还剩 {}（详见 .tongxi/计划.md 的遗留池）。", tally.added, tally.cleared, tally.remaining),
                     )?;
                 }
                 // 干过活的成员下次从零上下文开始：隔天续接只会整段重读过期的缓存。
@@ -1565,6 +1572,17 @@ impl Runtime {
         Ok(asked)
     }
 
+    /// 调度转给正在运行的成员的话：插进它当前的回合；任务没在跑或插不进去就记一条群消息，调度下回合自己改派。
+    fn forward_notes(&self, id: &str, notes: &[coordinator_policy::Note]) {
+        for note in notes.iter().filter(|note| !note.text.trim().is_empty()) {
+            let attempt = self.store.lock().unwrap().running_attempt(&note.task_id);
+            let sent = attempt.is_some_and(|attempt| self.native.steer_note(&attempt, &format!("调度转告：{}", note.text.trim())).unwrap_or(false));
+            if !sent {
+                let _ = self.store.lock().unwrap().add_system_team_message(id, &format!("调度要转告的话没送到（任务没在运行或成员不能插话）：{}", note.text.trim()));
+            }
+        }
+    }
+
     /// 调度交了新版长期计划就写进项目的 .tongxi/计划.md；写不进去只记一条群消息，不影响调度。
     fn save_plan(&self, id: &str, plan: Option<&str>) {
         let Some(plan) = plan.filter(|plan| !plan.trim().is_empty()) else { return };
@@ -1903,7 +1921,10 @@ impl Runtime {
             route.instructions.as_deref(),
             route.allow_subagents,
         );
-        prompt["user_updates"] = json!(self.store.lock().unwrap().project_user_updates(id)?);
+        // 群里新说的话交给调度，由它用 notes 转给相关的成员；没有调度说明的旧派法照旧附上。
+        if prompt.get("coordinator_brief").is_none() {
+            prompt["user_updates"] = json!(self.store.lock().unwrap().project_user_updates(id)?);
+        }
         if route.advisor_calls > 0 {
             prompt["advisor"] = json!(format!(
                 "本任务开放请教：遇到拿不准的关键决定（设计取舍、定位不到的疑难问题、关键处怎么做）时，用 hub_ask_advisor 向调度请教，最多 {} 次。写清问题和你试过什么，context 里附上相关代码片段或报错；等回答回来再接着做。小事别用。",
