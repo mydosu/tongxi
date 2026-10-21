@@ -37,6 +37,13 @@ fn live_spent(attempt: &crate::project_store::Attempt) -> Option<u64> {
     usage.spent()
 }
 
+/// Command Code 线路一个账号就有近百个模型（两个账号又是同一份），整份交给调度要占掉七成输入；
+/// 用户在这条线路上只用 DeepSeek 系和免费档，其余不给调度看。别的线路（Codex、Claude 订阅等）原样给。
+fn catalog_keeps(model: &str, provider: Option<&str>) -> bool {
+    let id = model.to_ascii_lowercase();
+    !provider.is_some_and(|provider| provider.contains("command-code")) || id.contains("deepseek") || id.ends_with(":free") || id.ends_with("-free")
+}
+
 /// 成员疑似原地打转：同一句话反复说（免费、弱模型常见），或工具调用接连失败。只看 since 之后的新内容
 /// （上次问过调度之后的），返回给调度看的证据。
 fn looping(attempt: &crate::project_store::Attempt, since: (usize, usize)) -> Option<String> {
@@ -842,6 +849,7 @@ impl Runtime {
                         let models = runtime
                             .models
                             .iter()
+                            .filter(|model| catalog_keeps(&model.id, crate::goat::line_of(&model.id).or_else(|| model.provider_id.clone()).as_deref()))
                             .map(|model| {
                                 let mut value = json!({"id":model.id,"efforts":model.efforts});
                                 // 线路名优先取模型 id 里带的（和额度概况的键一致），没有再用目录给的提供商。
@@ -2143,6 +2151,15 @@ mod tests {
             status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
             created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
         }
+    }
+
+    #[test]
+    fn command_code_lines_only_offer_deepseek_and_free_models() {
+        assert!(super::catalog_keeps("custom:command-code-daily-1:deepseek/deepseek-v4.1-flash", Some("command-code-daily-1")));
+        assert!(super::catalog_keeps("custom:command-code-daily-2:reflection/beam:free", Some("command-code-daily-2")));
+        assert!(!super::catalog_keeps("custom:command-code-daily-1:claude-opus-5-5", Some("command-code-daily-1")));
+        assert!(super::catalog_keeps("gpt-6.1-sol", None));
+        assert!(super::catalog_keeps("opus", Some("anthropic")));
     }
 
     #[test]
