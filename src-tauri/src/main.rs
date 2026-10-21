@@ -3,6 +3,7 @@
 mod quota;
 mod advisor;
 mod project_plan;
+mod project_inquiries;
 mod quota_reset;
 mod cli_open;
 mod cli_transcript;
@@ -970,6 +971,20 @@ fn answer_project_question(
         store.answer_project_question(&conversation_id, &question_id, &message_id, &content)
     })
 }
+/// 问答面板：项目群里调度挂的问题（没答的全部，加最近答过的）。
+#[tauri::command]
+fn project_inquiries(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<project_inquiries::Inquiry>, String> {
+    with_store(&state, |store| store.project_inquiries(&conversation_id))
+}
+#[tauri::command]
+fn answer_project_inquiry(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    inquiry_id: String,
+    answer: String,
+) -> Result<project_inquiries::Inquiry, String> {
+    with_store(&state, |store| store.answer_inquiry(&conversation_id, &inquiry_id, &answer))
+}
 #[tauri::command]
 fn create_conversation(
     state: State<'_, AppState>,
@@ -1406,6 +1421,8 @@ fn main() {
             attachment_data,
             paste_clipboard_files,
             answer_project_question,
+            project_inquiries,
+            answer_project_inquiry,
             update_group_members,
             save_local_message,
             app_info,

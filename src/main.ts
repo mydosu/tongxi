@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, CapabilityRow, ChatQuestion, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
+import type { Agent, CapabilityRow, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBusy } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -10,6 +10,7 @@ import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
+import { inquiryPage } from './project_inquiries';
 import { installMessageMenu } from './message_menu';
 import { projectProgressPage, progressContent, type QuotaEntry } from './project_progress';
 import { projectSettings } from './project_settings';
@@ -125,12 +126,67 @@ const currentWorkflow = () => roomProjects()[0] || null;
 // 任务开工前（建工作树、起会话）和做完后（合并结果）还没有在跑的执行记录，任务在进行就算忙。
 const projectAgentBusy = (id: string) => [...projectJobs.values()].some(job => workflowBusy(job) && (job.attempts.some(attempt => attempt.agent_id === id && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)) || job.tasks.some(task => task.agent_id === id && task.status === 'running')));
 const busyAgents = () => [...new Set([...projectJobs.values()].flatMap(job => [...job.attempts.map(attempt => attempt.agent_id), ...job.tasks.map(task => task.agent_id)]))].filter(projectAgentBusy).sort().join(',');
+// 协作问答：各项目群没答的问题数（侧栏角标），当前项目群的问题列表。
+const openInquiries = new Map<string, number>();
+let inquiryItems: Inquiry[] = [];
+let inquiryTimer = 0;
+let inquiryAnsweredOpen = false;
+async function refreshInquiries(groupId: string) {
+  try {
+    const items = await invoke<Inquiry[]>('project_inquiries', { conversationId: groupId });
+    const open = items.filter(item => item.status === 'open').length;
+    const changed = (openInquiries.get(groupId) || 0) !== open;
+    openInquiries.set(groupId, open);
+    if (changed && document.querySelector('#conversation-list')) renderList();
+    if (groupId !== selectedId) return;
+    const stamp = JSON.stringify(items.map(item => [item.id, item.status, item.seen, item.question]));
+    const before = JSON.stringify(inquiryItems.map(item => [item.id, item.status, item.seen, item.question]));
+    inquiryItems = items;
+    if (stamp !== before && screen === 'chat' && detail?.project && activeProjectModule === 'inquiries') renderProjectInquiries();
+  } catch { /* 读不到就保持原样 */ }
+}
+/// 协作有动静时（调度可能挂了新问题）稍后刷新一次问答，几条事件合成一次。
+function scheduleInquiryRefresh(groupId: string) {
+  window.clearTimeout(inquiryTimer);
+  inquiryTimer = window.setTimeout(() => void refreshInquiries(groupId), 800);
+}
+function renderProjectInquiries() {
+  if (!detail?.project) return;
+  const draft = new Map([...main.querySelectorAll<HTMLFormElement>('[data-inquiry-form]')].map(form => [form.dataset.inquiryForm!, form.querySelector('textarea')!.value]));
+  main.innerHTML = inquiryPage(detail.project.name, inquiryItems, escape, id => member(id).name);
+  main.querySelector('[data-project-return-team]')?.addEventListener('click', () => void selectProjectModule(selectedId, 'team'));
+  const answered = main.querySelector<HTMLDetailsElement>('.inquiry-answered');
+  if (answered) { answered.open = inquiryAnsweredOpen; answered.addEventListener('toggle', () => { inquiryAnsweredOpen = answered.open; }); }
+  main.querySelectorAll<HTMLFormElement>('[data-inquiry-form]').forEach(form => {
+    const id = form.dataset.inquiryForm!;
+    const box = form.querySelector('textarea')!;
+    box.value = draft.get(id) || '';
+    form.closest('.inquiry-card')?.querySelectorAll<HTMLButtonElement>('[data-inquiry-option]').forEach(button => button.addEventListener('click', () => { box.value = button.dataset.inquiryOption || ''; box.focus(); }));
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const answer = box.value.trim();
+      if (!answer) return;
+      form.querySelector('button')!.disabled = true;
+      try {
+        await invoke('answer_project_inquiry', { conversationId: selectedId, inquiryId: id, answer });
+        box.value = '';
+        toast('已回答，调度下一回合会按你的回答调整');
+      } catch (error) {
+        toast(errorText(error), true);
+        form.querySelector('button')!.disabled = false;
+      }
+      await refreshInquiries(selectedId);
+    });
+  });
+}
+
 function adoptProject(job: Workflow, event = false) {
   if (removedProjectJobs.has(job.id)) return;
   const old = projectJobs.get(job.id);
   if (!event && old && (old.updated_at > job.updated_at || old.attempts.length > job.attempts.length || (!workflowBusy(old) && workflowBusy(job)) || (old.status === 'cancelling' && workflowBusy(job) && job.status !== 'cancelling'))) return;
   const before = busyAgents();
   projectJobs.set(job.id, job);
+  if (event) scheduleInquiryRefresh(job.conversation_id);
   // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
   if (busyAgents() !== before && document.querySelector('#conversation-list')) renderList();
   updateProjectControls();
@@ -408,10 +464,10 @@ function renderList() {
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
       ${agent ? avatar(agent) : groupFace(conversation.id)}
       <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(attachmentText(visibleQuestionReply(conversation.preview,true)) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
-      ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
+      ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -586,6 +642,8 @@ async function refreshList() {
   if (generation !== listGeneration) return;
   conversations = result;
   renderList();
+  // 问答角标：没打开过的项目群也要看得到有几个问题待答（每个群只在第一次列出时查一次）。
+  for (const conversation of result) if (conversation.kind === 'group' && !openInquiries.has(conversation.id)) void refreshInquiries(conversation.id);
 }
 
 async function selectConversation(id: string) {
@@ -602,9 +660,10 @@ async function selectConversation(id: string) {
     detail = result;
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
-    activeProjectModule = (savedModule === 'team' || savedModule === 'progress' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
+    activeProjectModule = (savedModule === 'team' || savedModule === 'progress' || savedModule === 'inquiries' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
     expandedProjectGroup = result.project ? id : '';
     for (const job of result.workflows || []) adoptProject(job);
+    if (result.project) { inquiryItems = []; void refreshInquiries(id); }
     renderList();
     renderChat();
   } catch (error) {
@@ -624,7 +683,7 @@ async function selectConversation(id: string) {
 async function selectProjectModule(groupId: string, moduleId: string) {
   if (selectedId !== groupId) await selectConversation(groupId);
   if (!detail || detail.conversation.id !== groupId || !detail.project) return;
-  if (moduleId !== 'team' && moduleId !== 'progress' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
+  if (moduleId !== 'team' && moduleId !== 'progress' && moduleId !== 'inquiries' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
   activeProjectModule = moduleId;
   expandedProjectGroup = groupId;
   localStorage.setItem(`hub.project-module.${groupId}`, moduleId);
@@ -879,6 +938,7 @@ function updateMemberCount() {
 function updateRuntimeControls() {
   updateMemberCount();
   if (detail?.project && activeProjectModule === 'progress') { updateProjectProgress(); return; }
+  if (detail?.project && activeProjectModule === 'inquiries') return;
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
   const projectAgentId = activeProjectAgent();
   if (projectAgentId) {
@@ -1250,6 +1310,7 @@ function syncProjectTeamTimeline() {
 function updateProjectControls() {
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
   if (activeProjectModule === 'progress' && detail.project) { updateProjectProgress(); return; }
+  if (activeProjectModule === 'inquiries' && detail.project) return;
   if (activeProjectAgent()) { updateRuntimeControls(); return; }
   const job = currentWorkflow();
   const busy = workflowBusy(job);
@@ -1362,6 +1423,7 @@ function renderChat() {
   disposeProjectTranscript();
   enterView(`chat|${selectedId}|${activeProjectModule}`);
   if (detail?.project && activeProjectModule === 'progress') { renderProjectProgress(); return; }
+  if (detail?.project && activeProjectModule === 'inquiries') { renderProjectInquiries(); void refreshInquiries(selectedId); return; }
   const agentId = activeProjectAgent();
   if (agentId) {
     renderProjectAgentRoom(agentId);

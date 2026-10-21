@@ -317,6 +317,22 @@ fn window_tokens(quota: &mut Value, tokens_since: impl Fn(&str, i64) -> Option<u
     }
 }
 
+/// 问答面板给调度看的部分：没答的（问了多久）和新答的。
+fn inquiry_state(inquiries: &[crate::project_inquiries::Inquiry]) -> Value {
+    let now = crate::store::now();
+    let open: Vec<Value> = inquiries
+        .iter()
+        .filter(|item| item.status == "open")
+        .map(|item| json!({"key":item.key,"question":item.question,"default":item.default_choice,"reversible":item.reversible,"asked_hours_ago":((now - item.created_at) as f64 / 3_600_000.0).round()}))
+        .collect();
+    let answers: Vec<Value> = inquiries
+        .iter()
+        .filter(|item| item.status == "answered" && !item.seen)
+        .map(|item| json!({"key":item.key,"question":item.question,"answer":item.answer,"source_id":format!("inquiry:{}", item.id)}))
+        .collect();
+    json!({"open":open,"new_answers":answers})
+}
+
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
     let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
@@ -676,7 +692,9 @@ impl Runtime {
         )?;
         self.store.lock().unwrap().coordination_status(id, "resting")?;
         (self.notify)(id);
-        let updates = self.store.lock().unwrap().project_user_updates(id)?.len();
+        let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
+        let heard = |store: &crate::store::Store| -> Result<(usize, usize)> { Ok((store.project_user_updates(id)?.len(), store.answered_inquiries(&room))) };
+        let updates = heard(&self.store.lock().unwrap())?;
         let (started, wait) = (Instant::now(), Duration::from_secs_f64(hours * 3600.0));
         let mut tick = 0u32;
         while started.elapsed() < wait {
@@ -684,7 +702,7 @@ impl Runtime {
                 return Err("项目协作已停止，保留已产生的改动".into());
             }
             tick += 1;
-            if tick % 5 == 0 && self.store.lock().unwrap().project_user_updates(id)?.len() != updates {
+            if tick % 5 == 0 && heard(&self.store.lock().unwrap())? != updates {
                 break;
             }
             std::thread::sleep(Duration::from_secs(1));
@@ -877,7 +895,7 @@ impl Runtime {
                 json!(preference),
                 json!(plan.map(|text| json!({"path":".tongxi/计划.md","text":text})))
             );
-            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback});
+            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&self.store.lock().unwrap().project_inquiries(&workflow.conversation_id).unwrap_or_default())});
             *self.budget.reference.lock().unwrap() = Some(reference.clone());
             let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
@@ -924,6 +942,9 @@ impl Runtime {
             }
             let applied = decision
                 .and_then(|decision| self.apply_coordination(id, &result.id, decision, deadline));
+            if applied.is_ok() {
+                let _ = self.store.lock().unwrap().mark_inquiries_seen(&workflow.conversation_id);
+            }
             match applied {
                 Ok(true) => return Ok(()),
                 Ok(false) => {
@@ -963,18 +984,9 @@ impl Runtime {
             .lock()
             .unwrap()
             .withdraw_coordination_tasks(id, &decision.withdraw, &replacements)?;
-        // 调度自己拍板的取舍发到群里：不等回答，用户不同意直接在群里说。回合被退回重做时不发，免得重复。
-        let decided = (!decision.decisions.is_empty()).then(|| {
-            let lines = decision
-                .decisions
-                .iter()
-                .map(|item| match item.reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty()) {
-                    Some(reason) => format!("\n· {}：{}（{}）", item.question.trim(), item.choice.trim(), reason),
-                    None => format!("\n· {}：{}", item.question.trim(), item.choice.trim()),
-                })
-                .collect::<String>();
-            format!("调度先按下面的选择推进，不同意直接在群里说，会按你说的改。{lines}")
-        });
+        // 调度自己拍板的取舍和要确认的事都挂到问答面板，群里只留一行提醒。
+        let asked = self.post_inquiries(id, &decision)?;
+        let decided = (asked > 0).then(|| format!("调度在问答面板挂了 {asked} 个新问题，有空时去答；能回退的先按调度的默认做法推进。"));
         if decision.action != "delegate" {
             if let Some(text) = &decided {
                 self.store.lock().unwrap().add_system_team_message(id, text)?;
@@ -1001,55 +1013,36 @@ impl Runtime {
                 applied
             }
             "ask_user" => {
+                // 除了这件事已经没活可做：问题挂到问答面板（不可逆、先搁着），协作停下等回答。
                 let question = decision.question.ok_or("问题为空")?;
-                let db = self.store.lock().unwrap().path.clone();
-                // Reuse the existing public question/actual-answer path without exposing the hidden chat.
-                self.store
-                    .lock()
-                    .unwrap()
-                    .connection
-                    .execute(
-                        "UPDATE project_attempts SET status='running' WHERE id=?1",
-                        [attempt],
-                    )
-                    .map_err(|_| "问题状态保存失败")?;
-                let idq = crate::project_questions::post(
-                    &db,
-                    attempt,
-                    &question.prompt,
-                    question.options,
-                )?;
-                self.store
-                    .lock()
-                    .unwrap()
-                    .connection
-                    .execute(
-                        "UPDATE project_attempts SET status='completed' WHERE id=?1",
-                        [attempt],
-                    )
-                    .map_err(|_| "问题状态保存失败")?;
-                self.store
-                    .lock()
-                    .unwrap()
-                    .coordination_status(id, "awaiting_user")?;
+                let _ = attempt;
+                let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
+                let key = format!("ask:{}", question.prompt.trim().chars().take(50).collect::<String>());
+                let ask = crate::project_inquiries::Ask {
+                    key: key.clone(),
+                    question: question.prompt.trim().chars().take(400).collect(),
+                    background: None,
+                    options: question.options.into_iter().take(6).collect(),
+                    default: None,
+                    reversible: false,
+                };
+                self.store.lock().unwrap().ask_inquiry(&room, Some(id), "coordinator", &ask)?;
+                self.store.lock().unwrap().add_system_team_message(id, "调度有一件事要你确认才能继续，已挂到问答面板。")?;
+                self.store.lock().unwrap().coordination_status(id, "awaiting_user")?;
                 (self.notify)(id);
                 loop {
                     self.ensure_active(id, deadline)?;
-                    let answered: bool = self
+                    let open = self
                         .store
                         .lock()
                         .unwrap()
-                        .connection
-                        .query_row(
-                            "SELECT status='answered' FROM project_questions WHERE id=?1",
-                            [&idq],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or(false);
-                    if answered {
+                        .project_inquiries(&room)?
+                        .into_iter()
+                        .any(|inquiry| inquiry.key == key && inquiry.status == "open");
+                    if !open {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(500));
                 }
                 Ok(false)
             }
@@ -1482,6 +1475,30 @@ impl Runtime {
                 return;
             }
         }
+    }
+
+    /// 把调度的 decisions（先按选择推进的取舍，可回退）和 inquiries 挂到问答面板，撤下要撤的；返回新挂出的个数。
+    fn post_inquiries(&self, id: &str, decision: &Decision) -> Result<usize> {
+        let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
+        let decided = decision.decisions.iter().map(|item| crate::project_inquiries::Ask {
+            key: format!("decision:{}", item.question.trim().chars().take(50).collect::<String>()),
+            question: item.question.trim().chars().take(400).collect(),
+            background: item.reason.clone(),
+            options: vec![],
+            default: Some(item.choice.trim().chars().take(300).collect()),
+            reversible: true,
+        });
+        let mut asked = 0;
+        let store = self.store.lock().unwrap();
+        for ask in decided.chain(decision.inquiries.iter().cloned()) {
+            if store.ask_inquiry(&room, Some(id), "coordinator", &ask)? {
+                asked += 1;
+            }
+        }
+        for key in &decision.withdraw_inquiries {
+            store.withdraw_inquiry(&room, key)?;
+        }
+        Ok(asked)
     }
 
     /// 调度交了新版长期计划就写进项目的 .tongxi/计划.md；写不进去只记一条群消息，不影响调度。

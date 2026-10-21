@@ -100,6 +100,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
       status TEXT NOT NULL,answer TEXT,created_at INTEGER NOT NULL,answered_at INTEGER);
       CREATE INDEX IF NOT EXISTS advisor_request_task ON advisor_requests(task_id,status);")
         .map_err(|_| "请教记录结构迁移失败")?;
+    crate::project_inquiries::migrate(tx)?;
     crate::project_store::add_column(tx, "coordination_runs", "ledger", "TEXT")
 }
 /// 同一原文最多再开几轮（不含第一次）。
@@ -536,6 +537,14 @@ impl Store {
                     text: message.content,
                 });
             }
+        }
+        // 问答面板里答过的：用户原话，可以引用（包括当授权）。
+        for inquiry in self.project_inquiries(&job.conversation_id)?.into_iter().filter(|inquiry| inquiry.status == "answered") {
+            sources.push(Source {
+                id: format!("inquiry:{}", inquiry.id),
+                kind: "user".into(),
+                text: format!("（问答面板）问：{}\n答：{}", inquiry.question, inquiry.answer.unwrap_or_default()),
+            });
         }
         for task in job.tasks {
             if matches!(task.status.as_str(), "completed" | "failed" | "interrupted") {
