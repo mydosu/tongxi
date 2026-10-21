@@ -46,7 +46,7 @@ pub fn environmental(status: &str, error: Option<&str>) -> bool {
     let error = error.unwrap_or_default().to_lowercase();
     [
         "限额", "限流", "额度", "稍后", "不可用", "-32603", "rate limit", "unavailable", "网络", "network", "429", "usage limit", "已停止", "暂停", "中断", "超时", "超过当前工作流剩余时间",
-        "认证", "登录", "连接", "未运行", "未安装", "overloaded", "timeout", "auth",
+        "认证", "登录", "连接", "拒绝请求", "未运行", "未安装", "overloaded", "timeout", "auth",
     ]
     .iter()
     .any(|word| error.contains(word))

@@ -157,6 +157,22 @@ fn provider_error_reply(output: &str) -> Option<&'static str> {
     .iter()
     .any(|marker| output.contains(marker))
     .then_some("项目成员的模型服务返回额度或频率限制，未完成本阶段")
+    .or_else(|| {
+        // Hermes 把服务商的报错当成回复交回来（回合照常结束）。只认短回复里服务商原话的写法，
+        // 免得交付摘要里正常提到 401、余额的被误判。
+        (output.chars().count() < 800
+            && [
+                "provider said: http 4",
+                "rejected your api key",
+                "invalid api key",
+                "insufficient balance",
+                "insufficient_quota",
+                "payment required",
+            ]
+            .iter()
+            .any(|marker| output.contains(marker)))
+        .then_some("项目成员的模型服务拒绝请求（Key 无效或余额不足），这条线路暂时不能用，未完成本阶段")
+    })
 }
 
 impl Wire {
@@ -1104,8 +1120,8 @@ impl Runner {
 ")
         );
         }
-        if provider_error_reply(&wire.lock().unwrap().attempt.output).is_some() {
-            return Err("项目成员的模型服务返回额度或频率限制，未完成本阶段".into());
+        if let Some(error) = provider_error_reply(&wire.lock().unwrap().attempt.output) {
+            return Err(error.into());
         }
         Ok(())
     }
@@ -1165,6 +1181,12 @@ mod tests {
         assert!(provider_error_reply("HTTP 429: weekly usage limit reached").is_some());
         assert!(provider_error_reply("rate-limited after 3 attempts").is_some());
         assert!(provider_error_reply("验收通过，所有改动符合需求").is_none());
+        let rejected = "DeepSeek rejected your API key, so the model can't be reached. Update it in Settings → Providers, or run `hermes setup` in a terminal.
+
+Provider said: HTTP 401: Invalid 'Authorization' header or token.";
+        assert!(provider_error_reply(rejected).is_some_and(|error| error.contains("Key 无效")));
+        // 交付摘要里正常提到 401 不算。
+        assert!(provider_error_reply("K12 已上线：未带 token 返回 401，并带 WWW-Authenticate: Bearer").is_none());
     }
 
     #[test]
