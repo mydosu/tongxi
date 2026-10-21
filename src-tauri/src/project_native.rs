@@ -223,8 +223,9 @@ impl Wire {
         }
     }
     fn append_thought(&mut self, text: &str) {
+        // 思考记录到上限就不再往后记（只是过程展示），不影响这次运行的结果。
+        // 原来判成整次运行无效：长任务做完、推送了也被记成失败。
         if self.attempt.thought.len().saturating_add(text.len()) > 128_000 {
-            self.invalid = true;
             return;
         }
         crate::store::push_thought(&mut self.attempt.thought, &self.attempt.output, text);
@@ -1213,6 +1214,15 @@ Provider said: HTTP 401: Invalid 'Authorization' header or token.";
         assert_eq!(state.attempt.output, "final\n\nsecond");
         state.text("third", &"a".repeat(128_001), true);
         assert!(state.invalid);
+    }
+    #[test]
+    fn long_thought_stops_recording_without_failing_the_run() {
+        let mut state = wire();
+        state.append_thought(&"a".repeat(127_990));
+        let before = state.attempt.thought.len();
+        state.append_thought("再想一点");
+        assert_eq!(state.attempt.thought.len(), before);
+        assert!(!state.invalid);
     }
     #[test]
     fn native_failure_metadata_never_exposes_upstream_text_or_unknown_variants() {
