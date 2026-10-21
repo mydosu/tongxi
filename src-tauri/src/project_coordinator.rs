@@ -1502,7 +1502,9 @@ impl Runtime {
                     if stuck.is_some() {
                         format!("「{}」{why}，调度让它接着做{reason}。", task.title)
                     } else {
-                        let extra = grant.extra_tokens.filter(|extra| *extra > 0).unwrap_or(budget / 2).max(budget / 5);
+                        // 每次工具调用大约把上下文重读一遍：追加量至少够它再跑 15 次，不然一两分钟后又得来问。
+                        let per_call = attempt.usage.as_ref().map_or(0, |usage| usage.context);
+                        let extra = grant.extra_tokens.filter(|extra| *extra > 0).unwrap_or(budget / 2).max(budget / 5).max(per_call * 15);
                         budget = spent + extra;
                         format!("「{}」{why}，调度追加 {}{reason}。", task.title, token_label(extra))
                     }
@@ -1631,7 +1633,7 @@ impl Runtime {
         let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
             "trigger":if stuck.is_some() { "looping" } else { "budget" },"loop_evidence":stuck,
             "budget_tokens":(budget != u64::MAX).then_some(budget),"spent_tokens":(spent > 0).then_some(spent),"grants_so_far":asked,"running_minutes":minutes,
-            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
+            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"tokens_per_call":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
             "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
         let output = self.ask_coordinator(id, json!({"grant_request":request,"quota":crate::quota::overview(&self.codex)}), deadline)?;
         coordinator_policy::parse_grant(&output)
