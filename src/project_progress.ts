@@ -118,13 +118,16 @@ export function progressContent(jobs: Workflow[], members: ProjectAgentChat[], e
   const roster=members.map(member=>{
     const attempts=jobs.flatMap(job=>[...job.attempts].reverse()).filter(attempt=>attempt.agent_id===member.agent_id&&attempt.activity!=='coordinate');
     const active=attempts.find(attempt=>['starting','running','cancelling'].includes(attempt.status));
-    const last=attempts[0];
+    // 「等待继续处理 / 已暂停」只看当前这次协作，而且那项任务还在它手上、还没做完：
+    // 以前协作里撞限额后改派给别人做完的失败，不该一直挂在它身上。
+    const last=current?.attempts.filter(attempt=>attempt.agent_id===member.agent_id&&attempt.activity!=='coordinate').at(-1);
+    const pending=last&&['failed','interrupted'].includes(last.status)&&current!.tasks.some(item=>item.id===last.task_id&&item.agent_id===member.agent_id&&item.status!=='completed'&&item.status!=='skipped') ? last : undefined;
     const waiting=questions.some(question=>question.agent_id===member.agent_id&&question.status==='pending'&&!current?.attempts.some(a=>a.id===question.attempt_id&&a.activity==='coordinate'));
     // 任务开工前（建工作树、起会话）和做完后（合并结果）都还没有在跑的执行记录，但任务仍在进行，灯也要亮。
     const task=!active&&current&&workflowBusy(current) ? current.tasks.find(item=>item.status==='running'&&item.agent_id===member.agent_id) : undefined;
     const between=task ? (current!.attempts.some(attempt=>attempt.task_id===task.id&&attempt.status==='completed') ? '正在合并结果' : '正在准备') : '';
-    const status=waiting ? '等待你的回答' : active ? active.status==='cancelling'?'正在停止':active.activity==='discussion'?'正在交流':active.activity==='resolve:git'?'正在处理合并冲突':purposes[active.activity?.replace('task:','')||'']||stages[active.stage] || '正在工作' : between || (last?.status==='failed' ? '等待继续处理' : last?.status==='interrupted' ? '已暂停' : '空闲');
-    const light=waiting ? 'waiting' : active||task ? 'working' : last?.status==='failed' ? 'failed' : '';
+    const status=waiting ? '等待你的回答' : active ? active.status==='cancelling'?'正在停止':active.activity==='discussion'?'正在交流':active.activity==='resolve:git'?'正在处理合并冲突':purposes[active.activity?.replace('task:','')||'']||stages[active.stage] || '正在工作' : between || (pending?.status==='failed' ? '等待继续处理' : pending?.status==='interrupted' ? '已暂停' : '空闲');
+    const light=waiting ? 'waiting' : active||task ? 'working' : pending?.status==='failed' ? 'failed' : '';
     return `<button class="project-member-status ${light}" data-progress-agent="${escape(member.agent_id)}">${avatar(member.agent_id)}<div><strong>${escape(name(member.agent_id))}</strong><span>${escape(status)}</span></div><i></i></button>`;
   }).join('');
   const manager=current?.coordination;
