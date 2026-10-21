@@ -1212,6 +1212,18 @@ fn focus_main_window(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // 不把启动同席那个环境里的 OpenViking 身份（例如从 Claude Code 里重启同席时继承的
+    // OPENVIKING_API_KEY）传给成员：Codex 等插件以环境变量为先，会把记忆写成那个 agent。
+    // 各成员只读自己的 ovcli.conf 配置。
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("OPENVIKING_")
+        {
+            std::env::remove_var(name);
+        }
+    }
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "--project-chat-tools") {
         let result = if args.len() == 4 {
