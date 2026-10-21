@@ -607,3 +607,26 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 /* KaTeX 公式：不继承气泡的 pre-wrap，长公式在自身范围内横向滚动。 */
 .bubble .katex, .agent-turn-text .katex { white-space: normal; font-size: 1.05em; }
 .bubble .katex-display, .agent-turn-text .katex-display { margin: 6px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+/* 协作问答 */
+.inquiry-content { display: grid; gap: 14px; align-content: start; }
+.inquiry-card { display: grid; gap: 8px; padding: 16px 18px; border: 1px solid #e3e8ef; border-left: 3px solid #4fb987; border-radius: 10px; background: #fff; }
+.inquiry-card.held { border-left-color: #e0a43c; }
+.inquiry-card header { display: flex; align-items: baseline; gap: 12px; justify-content: space-between; }
+.inquiry-card header strong { color: #3f4c62; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.inquiry-card header small { flex: none; color: #9aa6b6; font-size: 11px; }
+.inquiry-meanwhile { margin: 0; color: #6f7d92; font-size: 12px; }
+.inquiry-background summary { cursor: pointer; color: #7d8ba0; font-size: 12px; }
+.inquiry-background p { margin: 6px 0 0; color: #5c6a80; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.inquiry-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.inquiry-option { padding: 4px 10px; border: 1px solid #d8dfe8; border-radius: 999px; background: #f6f8fb; color: #4f5d73; font-size: 12px; cursor: pointer; }
+.inquiry-option:hover { border-color: #9fb2c9; }
+.inquiry-answer { display: flex; gap: 8px; align-items: flex-end; }
+.inquiry-answer textarea { flex: 1; min-width: 0; resize: vertical; padding: 8px 10px; border: 1px solid #d8dfe8; border-radius: 8px; font: inherit; font-size: 13px; }
+.inquiry-empty { margin: 8px 0; color: #8f9cad; font-size: 13px; }
+.inquiry-answered summary { cursor: pointer; color: #6f7d92; font-size: 13px; padding: 6px 0; }
+.inquiry-answered ul { display: grid; gap: 10px; margin: 6px 0 0; padding: 0; list-style: none; }
+.inquiry-answered li { display: grid; gap: 3px; padding: 10px 12px; border-radius: 8px; background: rgb(255 255 255 / .6); font-size: 12px; }
+.inquiry-answered li strong { color: #4f5d73; font-weight: 600; }
+.inquiry-answered li span { color: #3f4c62; }
+.inquiry-answered li small { color: #9aa6b6; }
+@media (max-width: 640px) { .inquiry-answer { flex-direction: column; align-items: stretch; } .inquiry-card header { flex-direction: column; gap: 4px; } }

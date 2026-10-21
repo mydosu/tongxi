@@ -76,6 +76,8 @@ export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoic
 export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
 export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
 export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
+/** 协作问答：调度挂在项目问答面板上的问题。 */
+export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }
 export interface ProjectAttempt { id: string; created_at?: number; activity?: string | null; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; tool_events?: RunToolEvent[]; output: string; error: string | null; usage?: TokenUsage | null; }
 /** 一次任务的 token 用量：input 含缓存读写，output 含推理；context_only 表示只知道上下文占用，实际消耗未知。cost_kind：api_estimate 为 API 等值估算，provider 为服务商报的额度消耗。 */
 /** 历史表现画像的一行：成员+模型+强度+类别；比率是平滑后的估计，空值表示没有可用数据。 */

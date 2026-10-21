@@ -146,6 +146,18 @@ fn fallback(agent: &str, model: Option<&str>, effort: Option<&str>) -> RoleChoic
 }
 
 #[test]
+fn coordinator_hangs_questions_on_the_panel_instead_of_the_chat() {
+    let decision = coordinator_policy::parse(r#"{"action":"wait","inquiries":[{"key":"tts-version","question":"生产 TTS 情感版本用 4 还是 6？","options":["4","6"],"default":"先保持 4","reversible":true},{"key":"hermes-snapshot","question":"Hermes 回退快照删掉吗？","reversible":false}],"withdraw_inquiries":["live2d"]}"#).unwrap();
+    assert_eq!(decision.inquiries.len(), 2);
+    assert!(decision.inquiries[0].reversible && !decision.inquiries[1].reversible);
+    assert_eq!(decision.withdraw_inquiries, vec!["live2d".to_string()]);
+    // 没写 reversible 默认能回退。
+    let plain = coordinator_policy::parse(r#"{"action":"wait","inquiries":[{"key":"k","question":"问"}]}"#).unwrap();
+    assert!(plain.inquiries[0].reversible);
+    assert!(coordinator_policy::parse(r#"{"action":"wait","inquiries":[{"key":"","question":"问"}]}"#).is_err());
+}
+
+#[test]
 fn advice_replies_carry_an_answer_and_optional_escalation() {
     let advice = coordinator_policy::parse_advice(r#"{"advice":{"answer":"用通道，锁会和渲染线程互等","escalate":false}}"#).unwrap();
     assert!(!advice.escalate && advice.answer.contains("通道"));
