@@ -1429,6 +1429,8 @@ impl Runtime {
         let mut budget = budget.unwrap_or(u64::MAX);
         let mut asked = 0u32;
         let mut loop_mark = (0usize, 0usize);
+        // 已经让它收尾过：它要是不停、接着干，收尾阶段也有上限，超了再问调度（这次可以叫停）。
+        let mut wrapped = false;
         loop {
             // 每秒看一眼有没有请教，每 15 秒看一次用量。
             for _ in 0..15 {
@@ -1451,12 +1453,12 @@ impl Runtime {
             let can_wrap_up = matches!(crate::project_store::base_agent(&attempt.agent_id), "codex-win" | "claude-win");
             let grant = if asked >= 3 {
                 coordinator_policy::Grant {
-                    action: if can_wrap_up { "wrap_up" } else { "continue" }.into(),
+                    action: if wrapped { "stop" } else if can_wrap_up { "wrap_up" } else { "continue" }.into(),
                     extra_tokens: None,
-                    reason: Some("已经拨过三次".into()),
+                    reason: Some(if wrapped { "已经拨过三次，让它收尾也没停" } else { "已经拨过三次" }.into()),
                 }
             } else {
-                self.ask_grant(id, task, &attempt, (budget, spent, asked), stuck.as_deref(), can_wrap_up, deadline)
+                self.ask_grant(id, task, &attempt, (budget, spent, asked), stuck.as_deref(), (can_wrap_up, wrapped), deadline)
                     .unwrap_or_else(|error| coordinator_policy::Grant {
                         action: "continue".into(),
                         extra_tokens: None,
@@ -1485,7 +1487,10 @@ impl Runtime {
                         None => format!("同席提醒：这项任务的用量已超过调度给的预算（预算 {budget_label}，已用 {spent_label}）。请把手头这一步做完、跑和改动相关的测试、提交，然后停下交一份进度报告：做了什么、还剩什么。剩下的由调度另行安排。"),
                     };
                     let _ = self.native.steer_note(&attempt, &text);
-                    budget = u64::MAX;
+                    // 收尾阶段的上限：原预算的三分之一，至少够十次工具调用。
+                    let per_call = attempt.usage.as_ref().map_or(0, |usage| usage.context);
+                    budget = if budget == u64::MAX { u64::MAX } else { spent + (budget / 3).max(per_call * 10) };
+                    wrapped = true;
                     format!("「{}」{why}，调度让它收尾交报告{reason}。", task.title)
                 }
                 "stop" => {
@@ -1621,7 +1626,7 @@ impl Runtime {
         attempt: &crate::project_store::Attempt,
         usage: (u64, u64, u32),
         stuck: Option<&str>,
-        can_wrap_up: bool,
+        (can_wrap_up, wrapped): (bool, bool),
         deadline: Instant,
     ) -> Result<coordinator_policy::Grant> {
         let (budget, spent, asked) = usage;
@@ -1634,7 +1639,7 @@ impl Runtime {
         let request = json!({"task_id":task.id,"title":task.title,"agent_id":attempt.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
             "trigger":if stuck.is_some() { "looping" } else { "budget" },"loop_evidence":stuck,
             "budget_tokens":(budget != u64::MAX).then_some(budget),"spent_tokens":(spent > 0).then_some(spent),"grants_so_far":asked,"running_minutes":minutes,
-            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"tokens_per_call":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,
+            "context_tokens":attempt.usage.as_ref().map(|usage| usage.context),"tokens_per_call":attempt.usage.as_ref().map(|usage| usage.context),"can_wrap_up":can_wrap_up,"already_told_to_wrap_up":wrapped,
             "instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500),"recent_tools":tools});
         let output = self.ask_coordinator(id, json!({"grant_request":request,"quota":crate::quota::overview(&self.codex)}), deadline)?;
         coordinator_policy::parse_grant(&output)
