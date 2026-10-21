@@ -381,6 +381,19 @@ impl Store {
             .map_err(|_| "能力画像记录无效".into());
         rows
     }
+    /// since 之后这位成员（含它的各个席位、跑在它上面的调度回合）所有执行的确知 token 总量。
+    pub fn tokens_since(&self, base: &str, since: i64) -> Result<u64> {
+        let mut query = self
+            .connection
+            .prepare("SELECT usage FROM project_attempts WHERE created_at>=?1 AND (agent_id=?2 OR agent_id LIKE ?2 || '-%') AND usage IS NOT NULL")
+            .map_err(|_| "用量读取失败")?;
+        let rows = query
+            .query_map(params![since, base], |r| r.get::<_, String>(0))
+            .map_err(|_| "用量读取失败")?;
+        Ok(rows
+            .filter_map(|text| serde_json::from_str::<crate::project_store::Usage>(&text.ok()?).ok()?.spent())
+            .sum())
+    }
     pub fn set_merge_state(&self, task: &str, state: Option<&str>) -> Result<()> {
         self.connection
             .execute("UPDATE coordination_routes SET merge_state=?1 WHERE task_id=?2", params![state, task])

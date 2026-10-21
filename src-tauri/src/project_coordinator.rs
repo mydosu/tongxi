@@ -262,6 +262,24 @@ pub(crate) fn resource_pools(
     pools.into_iter().map(|(_, pool)| pool).collect()
 }
 
+/// 给订阅额度的每个窗口补上同席在这个窗口里用掉的 token（window_tokens），调度据此估算一项任务会吃掉多少额度。
+/// 窗口起点按「窗口长度 − 距重置」倒推；成员在同席以外的使用也算在 used_percent 里，估算偏保守。
+fn window_tokens(quota: &mut Value, tokens_since: impl Fn(&str, i64) -> Option<u64>) {
+    let now = crate::store::now();
+    for base in ["claude-win", "codex-win"] {
+        for (window, hours) in [("five_hour", 5.0), ("weekly", 168.0)] {
+            let Some(entry) = quota.get_mut(base).and_then(|member| member.get_mut(window)) else {
+                continue;
+            };
+            let Some(left) = entry["resets_in_hours"].as_f64() else { continue };
+            let since = now - ((hours - left).max(0.0) * 3_600_000.0) as i64;
+            if let Some(tokens) = tokens_since(base, since) {
+                entry["window_tokens"] = json!(tokens);
+            }
+        }
+    }
+}
+
 /// 本次协作到目前为止的用量：成员干活与调度自己分开算。
 fn usage_overview(workflow: &Workflow) -> Value {
     let (mut members, mut coordinator, mut unknown) = (0u64, 0u64, 0u64);
@@ -744,7 +762,8 @@ impl Runtime {
                 None => self.store.lock().unwrap().previous_ledger(id),
                 Some(_) => None,
             };
-            let quota = crate::quota::overview(&self.codex);
+            let mut quota = crate::quota::overview(&self.codex);
+            window_tokens(&mut quota, |base, since| self.store.lock().unwrap().tokens_since(base, since).ok());
             // 近一年的历史执行汇总成能力画像；读不到就不给，不影响调度。
             let capability = self
                 .store
@@ -1712,6 +1731,22 @@ mod tests {
             status: "running".into(), plan: None, roles: None, coordination: None, summary: String::new(), error: None,
             created_at: 0, updated_at: 0, tasks: vec![], attempts, changes: vec![], agent_messages: vec![], team_messages: vec![],
         }
+    }
+
+    #[test]
+    fn quota_windows_report_tokens_spent_since_window_start() {
+        let mut quota = serde_json::json!({"codex-win":{"five_hour":{"used_percent":100,"resets_in_hours":4.5},"weekly":{"used_percent":49}}});
+        let asked = std::cell::RefCell::new(Vec::new());
+        super::window_tokens(&mut quota, |base, since| {
+            asked.borrow_mut().push((base.to_owned(), crate::store::now() - since));
+            Some(16_500_000)
+        });
+        assert_eq!(quota["codex-win"]["five_hour"]["window_tokens"], 16_500_000);
+        // 没给距重置时间的窗口推不出起点，不填。
+        assert!(quota["codex-win"]["weekly"].get("window_tokens").is_none());
+        let (base, back) = asked.borrow()[0].clone();
+        assert_eq!(base, "codex-win");
+        assert!((1_799_000..1_801_000).contains(&back), "{back}");
     }
 
     #[test]
