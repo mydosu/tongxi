@@ -748,6 +748,8 @@ impl Runtime {
         let mut feedback: Option<String> = None;
         let mut rejected = 0;
         let mut routed_updates = 0;
+        // 调度已经在哪一回合看过的用户群聊消息条数；之后的作为 new_user_messages 单独标出来（重启后从头算，全部当新的）。
+        let mut heard_updates = 0usize;
         loop {
             self.ensure_active(id, deadline)?;
             // Queued independent work proceeds even if another member was stopped.
@@ -920,8 +922,10 @@ impl Runtime {
             );
             let inquiries = self.store.lock().unwrap().project_inquiries(&workflow.conversation_id).unwrap_or_default();
             // 这回合交给调度的新回答；回合进行中才答的不在里面，留给下回合。
+            let user_updates = self.store.lock().unwrap().project_user_updates(id).unwrap_or_default();
+            let new_user_messages: Vec<Value> = user_updates.iter().skip(heard_updates).map(|update| json!({"source_id":update.id,"text":update.content})).collect();
             let shown: Vec<String> = inquiries.iter().filter(|item| item.status == "answered" && !item.seen).map(|item| item.id.clone()).collect();
-            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"session_reuse":session_reuse,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&inquiries)});
+            let state = json!({"ledger":manager.ledger,"previous_ledger":previous_ledger,"quota":quota,"limits":{"new_sessions":{"max":crate::coordinator_store::temporary_limit(&preference),"opened":temporary.len()}},"usage":usage_overview(&workflow),"capability":capability,"session_reuse":session_reuse,"resource_pools":resource_pools(&workflow,&quota,&providers),"logical_tasks":logical_usage(&workflow,&manager.routes),"sources":compact_sources(&sources),"tasks":compact_tasks(&workflow),"routes":compact_routes(&manager.routes),"available_agents":catalogs,"routing_feedback":feedback,"inquiries":inquiry_state(&inquiries),"new_user_messages":new_user_messages});
             *self.budget.reference.lock().unwrap() = Some(reference.clone());
             let body = format!("参考资料（JSON，几回合内基本不变）：\n{reference}\n\n本回合状态（JSON）：\n{state}");
             // Claude、Codex 的调度会话把说明放在系统提示里（每回合不变、能命中缓存），这里只给资料和状态；其他线路说明放最前面。
@@ -970,6 +974,7 @@ impl Runtime {
                 .and_then(|decision| self.apply_coordination(id, &result.id, decision, deadline));
             if applied.is_ok() {
                 let _ = self.store.lock().unwrap().mark_inquiries_seen(&shown);
+                heard_updates = user_updates.len();
             }
             match applied {
                 Ok(true) => return Ok(()),
