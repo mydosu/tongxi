@@ -376,9 +376,6 @@ pub fn parse(raw: &str) -> Result<Decision, String> {
             return Err("子代理验证由改动者本人派出，不能新开会话".into());
         }
     }
-    if value.action == "delegate" && value.routes.is_empty() {
-        return Err("分派动作没有任务".into());
-    }
     if value.action != "delegate" && !value.routes.is_empty() {
         return Err("此动作不能同时追加任务".into());
     }
