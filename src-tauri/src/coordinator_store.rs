@@ -1024,6 +1024,35 @@ impl Store {
         self.coordination_status(id, "routing")?;
         self.workflow(id)
     }
+    /// 失败的任务当场重派：放回队列，成员、模型、说明按调度给的改，没给的照旧；工作树和分支留着接着用。
+    pub fn requeue_task(
+        &mut self,
+        id: &str,
+        task_id: &str,
+        agent: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        instructions: Option<&str>,
+    ) -> Result<()> {
+        let tx = self.connection.transaction().map_err(|_| "任务重派失败")?;
+        let changed = tx
+            .execute(
+                "UPDATE project_tasks SET status='queued',error=NULL,assigned_agent=COALESCE(?1,assigned_agent),\
+                 model=COALESCE(?2,model),effort=COALESCE(?3,effort) WHERE id=?4 AND workflow_id=?5 AND status='failed'",
+                params![agent, model, effort, task_id, id],
+            )
+            .map_err(|_| "任务重派失败")?;
+        if changed == 0 {
+            return Err("只有失败的任务能当场重派".into());
+        }
+        tx.execute(
+            "UPDATE coordination_routes SET instructions=COALESCE(?1,instructions) WHERE task_id=?2",
+            params![instructions, task_id],
+        )
+        .map_err(|_| "任务重派失败")?;
+        tx.commit().map_err(|_| "任务重派失败")?;
+        Ok(())
+    }
     pub fn finish_coordinated_task(
         &mut self,
         id: &str,
