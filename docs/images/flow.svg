@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 460" width="1280" height="460" role="img" aria-label="项目协作流程：你说一句话、调度主脑拆计划、成员并行、交叉验收、合并收尾">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 460" width="1280" height="460" role="img" aria-label="项目协作流程：你说一句话、主脑想清楚、成员并行、主脑把关、合并收尾">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#f5f2fc"/>
@@ -18,39 +18,39 @@
     </style>
   </defs>
   <rect width="1280" height="460" rx="28" fill="url(#bg)"/>
-  <text class="h" x="40" y="58">项目协作，一句话转起来</text>
-  <text class="s" x="40" y="86">每项任务在自己的 Git 工作树里做，做完验收、按顺序合并回项目</text>
+  <text class="h" x="40" y="58">项目协作，一句话交给主脑</text>
+  <text class="s" x="40" y="86">主脑带着成员做：改代码的活各开一棵 Git 工作树，成员做完结果自动交回主脑</text>
 
-  <!-- 下一次协作：回到开头 -->
+  <!-- 下一件事：回到开头 -->
   <path d="M1150 330V388H130V334" stroke="#a9b4d8" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="2 9"><animate attributeName="stroke-dashoffset" values="22;0" dur="1.2s" repeatCount="indefinite"/></path>
   <path d="M124 338l6-8 6 8z" fill="#a598d8"/>
   <rect x="470" y="374" width="340" height="30" rx="15" fill="#fff" fill-opacity=".9"/>
-  <text class="s" x="640" y="394" text-anchor="middle">下一次协作 · 接着上次的账本做</text>
+  <text class="s" x="640" y="394" text-anchor="middle">下一件事 · 接着任务书和计划做</text>
 
   <!-- 五个节点 -->
   <g transform="translate(30 114)">
     <rect width="200" height="216" rx="20" fill="#fff" fill-opacity=".86" stroke="#fff" filter="url(#card)"/>
     <circle cx="34" cy="36" r="15" fill="#a598d8"/><text class="n" x="34" y="41" text-anchor="middle">1</text>
     <text class="t" x="58" y="43">你说一句话</text>
-    <text class="d" x="22" y="96">在群里说目标</text>
-    <text class="d" x="22" y="124">点名的成员、模型照办</text>
+    <text class="d" x="22" y="96">在群里或主脑会话里说</text>
+    <text class="d" x="22" y="124">新事排在手上这件之后</text>
     <text class="d" x="22" y="152">长期授权写一次就行</text>
   </g>
   <g transform="translate(285 114)">
     <rect width="200" height="216" rx="20" fill="#fff" fill-opacity=".86" stroke="#fff" filter="url(#card)"/>
     <circle cx="34" cy="36" r="15" fill="#9aa6db"/><text class="n" x="34" y="41" text-anchor="middle">2</text>
-    <text class="t" x="58" y="43">调度主脑</text>
-    <text class="d" x="22" y="96">拆计划、记账本</text>
-    <text class="d" x="22" y="124">给每项任务写说明</text>
-    <text class="d" x="22" y="152">按额度和价格挑模型</text>
+    <text class="t" x="58" y="43">主脑想清楚</text>
+    <text class="d" x="22" y="96">长活先写任务书</text>
+    <text class="d" x="22" y="124">按难度挑成员和模型</text>
+    <text class="d" x="22" y="152">派完就接着做自己的</text>
   </g>
   <g transform="translate(540 114)">
     <rect width="200" height="216" rx="20" fill="#fff" fill-opacity=".86" stroke="#fff" filter="url(#card)"/>
     <circle cx="34" cy="36" r="15" fill="#8db6de"/><text class="n" x="34" y="41" text-anchor="middle">3</text>
     <text class="t" x="58" y="43">成员并行</text>
-    <text class="d" x="22" y="96">各自一棵 Git 工作树</text>
-    <text class="d" x="22" y="124">互不依赖的同时做</text>
-    <text class="d" x="22" y="152">做完附上交付摘要</text>
+    <text class="d" x="22" y="96">改代码的各开工作树</text>
+    <text class="d" x="22" y="124">几位成员同时做</text>
+    <text class="d" x="22" y="152">做完结果自动交回</text>
     <g transform="translate(22 172)">
       <rect width="156" height="6" rx="3" fill="#e6ebf6"/>
       <rect height="6" rx="3" fill="#a598d8"><animate attributeName="width" values="0;156;156" keyTimes="0;.7;1" dur="3.5s" repeatCount="indefinite"/></rect>
@@ -63,18 +63,18 @@
   <g transform="translate(795 114)">
     <rect width="200" height="216" rx="20" fill="#fff" fill-opacity=".86" stroke="#fff" filter="url(#card)"/>
     <circle cx="34" cy="36" r="15" fill="#8ec5c8"/><text class="n" x="34" y="41" text-anchor="middle">4</text>
-    <text class="t" x="58" y="43">交叉验收</text>
-    <text class="d" x="22" y="96">换一个会话来复核</text>
-    <text class="d" x="22" y="124">不过就返修，最多两轮</text>
+    <text class="t" x="58" y="43">主脑把关</text>
+    <text class="d" x="22" y="96">看成员交回的结果</text>
+    <text class="d" x="22" y="124">不够就让原成员接着改</text>
     <text class="d" x="22" y="152">途中随时可以插话</text>
   </g>
   <g transform="translate(1050 114)">
     <rect width="200" height="216" rx="20" fill="#fff" fill-opacity=".86" stroke="#fff" filter="url(#card)"/>
     <circle cx="34" cy="36" r="15" fill="#8fd3b6"/><text class="n" x="34" y="41" text-anchor="middle">5</text>
     <text class="t" x="58" y="43">合并收尾</text>
-    <text class="d" x="22" y="96">按顺序合并回项目</text>
-    <text class="d" x="22" y="124">一块做完就收尾</text>
-    <text class="d" x="22" y="152">剩下的板块列给你挑</text>
+    <text class="d" x="22" y="96">看过没问题就合并</text>
+    <text class="d" x="22" y="124">结论写进计划.md</text>
+    <text class="d" x="22" y="152">跟你说清做了什么</text>
   </g>
   <g transform="translate(257.5 222)">
     <circle r="18" fill="#a598d8" fill-opacity=".18"><animate attributeName="r" values="14;20;14" dur="2.4s" begin="0.0s" repeatCount="indefinite"/><animate attributeName="fill-opacity" values=".28;0;.28" dur="2.4s" begin="0.0s" repeatCount="indefinite"/></circle>
