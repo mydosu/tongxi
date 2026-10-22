@@ -2758,3 +2758,12 @@ fn context_ids_naming_a_sibling_route_become_dependencies() {
     assert_eq!(decision.routes[1].context_ids, ["r1"]);
     assert_eq!(decision.routes[1].depends_on, ["s5"]);
 }
+
+#[test]
+fn grants_decide_whether_merged_work_is_pushed() {
+    use crate::coordinator_policy::grants_push;
+    assert!(grants_push("允许commit和push，可以改动项目和生产文件"));
+    assert!(grants_push("允许提交并推送 main，不 force push"));
+    assert!(!grants_push("可以提交，不要 push"));
+    assert!(!grants_push("可以改动生产文件"));
+}
