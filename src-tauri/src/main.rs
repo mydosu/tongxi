@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod quota;
+mod usage_mode;
 mod advisor;
 mod project_plan;
 mod project_inquiries;

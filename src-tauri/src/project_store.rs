@@ -624,6 +624,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ("project_team_messages", "recipient_agent", "TEXT"),
         ("project_attempts", "activity", "TEXT"),
         ("project_attempts", "usage", "TEXT"),
+        ("project_attempts", "reported_usage", "TEXT"),
         ("project_questions", "attempt_id", "TEXT"),
         (
             "project_questions",
@@ -2375,6 +2376,12 @@ impl Store {
         }
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         tx.execute("UPDATE project_attempts SET status=?1,native_thread_id=?2,native_turn_id=?3,model=?4,reasoning_effort=?5,thought=?6,output=?7,error=?8,usage=?10 WHERE id=?9",params![attempt.status,attempt.native_thread_id,attempt.native_turn_id,attempt.model,attempt.reasoning_effort,attempt.thought,attempt.output,attempt.error,attempt.id,attempt.usage.as_ref().and_then(|usage|serde_json::to_string(usage).ok())]).map_err(|e|e.to_string())?;
+        // 执行结束：留下原样报的用量，再按这位成员报数的口径（本回合还是会话累计）核成本次的。
+        if matches!(attempt.status.as_str(), "completed" | "failed" | "interrupted") && attempt.usage.is_some() {
+            tx.execute("UPDATE project_attempts SET reported_usage=usage WHERE id=?1", [&attempt.id])
+                .map_err(|e| e.to_string())?;
+            crate::usage_mode::settle(&tx, &attempt.agent_id, now()).map_err(|e| e.to_string())?;
+        }
         if attempt.native_turn_id.is_some() {
             tx.execute("UPDATE messages SET status='delivered' WHERE id=(SELECT user_message_id FROM workflows WHERE id=?1) AND status='pending'", [&attempt.workflow_id]).map_err(|e|e.to_string())?;
         }

@@ -162,9 +162,15 @@ fn magpie_member(agent: &str) -> Option<Value> {
 }
 
 fn magpie_accounts() -> Option<Value> {
+    let value: Value = serde_json::from_str(&magpie_run(&["accounts", "--json"])?).ok()?;
+    value.is_array().then_some(value)
+}
+
+/// 跑一次 magpie 命令取标准输出；找不到 magpie、20 秒没答或退出码不为 0 都当取不到。
+pub(crate) fn magpie_run(args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new(magpie_exe()?);
     command
-        .args(["accounts", "--json"])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -174,18 +180,26 @@ fn magpie_accounts() -> Option<Value> {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = command.spawn().ok()?;
+    // 另起线程读输出：用量明细可能几百 KB，等进程退出再读会把管道塞满、两边互等。
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut text).ok().map(|_| text)
+    });
     let started = Instant::now();
-    while child.try_wait().ok()?.is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
         if started.elapsed() > Duration::from_secs(20) {
             let _ = child.kill();
+            let _ = child.wait();
             return None;
         }
         std::thread::sleep(Duration::from_millis(100));
-    }
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut text).ok()?;
-    let value: Value = serde_json::from_str(&text).ok()?;
-    value.is_array().then_some(value)
+    };
+    let text = reader.join().ok()??;
+    status.success().then_some(text)
 }
 
 /// magpie 可执行文件：MAGPIE_BIN 指定的，PATH 里的，或者正在运行的那个（它常不在 PATH 里）。
