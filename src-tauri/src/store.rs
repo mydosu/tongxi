@@ -206,17 +206,12 @@ pub struct ConversationDetail {
     pub sessions: Vec<Session>,
     pub discussions: Vec<crate::group_store::Discussion>,
     pub project: Option<crate::project_store::Project>,
-    pub project_roles: Option<crate::project_store::Roles>,
     pub project_coordinator: Option<crate::project_store::RoleChoice>,
-    /// 调度倾向：save / balanced / quality。
-    pub project_preference: String,
     /// 项目长期授权：用户写的一段话，每次协作都算用户原话授权。
     pub project_grants: String,
-    pub workflows: Vec<crate::project_store::Workflow>,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub project_agent_inbox: Vec<crate::project_store::RoomAgentMessage>,
-    pub project_questions: Vec<crate::project_questions::Question>,
     pub chat_questions: Vec<crate::chat_questions::Question>,
 }
 
@@ -538,7 +533,7 @@ impl Store {
                 )
                 .map_err(|e| e.to_string())?;
                 // 重建的表只有 v19 时的列，后来加的列（清空上下文、类别、合并状态等）重新补上。
-                crate::coordinator_store::migrate(&tx)?;
+                crate::project_store::migrate_coordination(&tx)?;
             }
         }
         // 一个成员可以同时在多个会话里回复：进行中的运行改为“每个成员 × 会话”唯一。
@@ -794,15 +789,11 @@ impl Store {
             sessions,
             discussions: self.discussions(id)?,
             project: self.conversation_project(id)?,
-            project_roles: self.conversation_project_roles(id)?,
             project_coordinator: self.project_coordinator(id)?,
-            project_preference: self.project_preference(id),
             project_grants: self.project_grants(id),
-            workflows: self.workflows(id)?,
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
             project_agent_inbox: self.project_chat_messages(id)?,
-            project_questions: self.project_questions(id)?,
             chat_questions: self.chat_questions(id)?,
         })
     }
@@ -860,7 +851,7 @@ impl Store {
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some(owner) = occupied.or(self.coordinator_occupies(agent_id, native_session_id, None)?) {
+        if let Some(owner) = occupied {
             return Err(format!("这个原生会话已被「{owner}」占用，先从那边换走"));
         }
         let changed = self
@@ -938,7 +929,7 @@ impl Store {
     pub fn archive(&mut self, id: &str, archived: bool) -> Result<Conversation> {
         self.conversation(id)?;
         self.guard_discussion(id)?;
-        self.guard_workflow(id)?;
+        self.guard_brain_jobs(id)?;
         self.connection
             .execute(
                 "UPDATE conversations SET archived=?1,updated_at=?2 WHERE id=?3",
@@ -951,7 +942,7 @@ impl Store {
     pub fn delete(&mut self, id: &str) -> Result<()> {
         let conversation = self.conversation(id)?;
         self.guard_discussion(id)?;
-        self.guard_workflow(id)?;
+        self.guard_brain_jobs(id)?;
         let project_chats = if conversation.kind == "group" {
             self.project_agent_chats(id)?
         } else {
@@ -983,16 +974,13 @@ impl Store {
     pub fn replace_members(&mut self, id: &str, members: &[String]) -> Result<Conversation> {
         let conversation = self.conversation(id)?;
         self.guard_discussion(id)?;
-        self.guard_workflow(id)?;
+        self.guard_brain_jobs(id)?;
         if conversation.kind != "group" {
             return Err("私聊成员固定，请另建会话".into());
         }
         valid_members("group", members)?;
-        // 只有被移出的成员牵涉到时才重置：调度管家被移出就回到默认，角色里有人被移出就清掉角色。
+        // 主脑所在的成员被移出就回到默认。
         let coordinator_gone = self.project_coordinator(id)?.is_some_and(|choice| !members.contains(&choice.agent));
-        let roles_gone = self.conversation_project_roles(id).ok().flatten().is_some_and(|roles| {
-            [&roles.plan.agent, &roles.implement.agent, &roles.review.agent].iter().any(|agent| !members.contains(agent))
-        });
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         if coordinator_gone {
             tx.execute(
@@ -1000,13 +988,6 @@ impl Store {
                 [id],
             )
             .map_err(|_| "管家配置重置失败")?;
-        }
-        if roles_gone {
-            tx.execute(
-                "UPDATE conversation_projects SET roles=NULL WHERE conversation_id=?1",
-                [id],
-            )
-            .map_err(|e| e.to_string())?;
         }
         for previous in &conversation.members {
             if !members.contains(previous) {
@@ -1080,7 +1061,6 @@ impl Store {
         self.validate_private_target(conversation_id, agent_id)?;
         // 交给 CLI 期间连消息也不存，免得拦下的话混进聊天记录。
         self.guard_cli_handoff(conversation_id, agent_id)?;
-        self.guard_project_task(conversation_id)?;
         self.save_message(conversation_id, message_id, content)?;
         if let Some(existing) = self.run_for_message(message_id)? {
             return Ok(existing);
@@ -1317,7 +1297,6 @@ impl Store {
             return Err("先恢复归档会话，再保存消息".into());
         }
         self.guard_discussion(conversation_id)?;
-        self.guard_workflow(conversation_id)?;
         let existing = self.connection.query_row("SELECT id,conversation_id,sender_id,content,status,created_at,thought FROM messages WHERE id=?1", [message_id], message_from_row).optional().map_err(|e| e.to_string())?;
         if let Some(existing) = existing {
             if existing.conversation_id == conversation_id && existing.content == content {
@@ -1509,16 +1488,7 @@ impl Store {
 
     /// 群聊/项目工作是否占用该代理。任何 SQL 或 JSON 解析失败都以 Err 失败关闭。
     fn agent_work_busy(&self, agent: &str) -> Result<bool> {
-        // 固定 schema：workflows.conversation_id 与 members.conversation_id 直接关联。
-        let workflow_busy = self
-            .connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM workflows w JOIN members m ON m.conversation_id=w.conversation_id WHERE w.status IN ('queued','planning','running','verifying','reviewing','cancelling') AND m.agent_id=?1)",
-                [agent],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if workflow_busy {
+        if self.brain_busy(agent) {
             return Ok(true);
         }
         self.connection

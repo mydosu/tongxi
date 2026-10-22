@@ -140,70 +140,8 @@ pub(crate) fn resolved_dsh_home() -> Option<PathBuf> {
         })
 }
 
-/// DSH 的 ACP 回包不带用量，只报上下文占用；但它的会话日志里每条 `assistant/message` 都记着这次模型调用的
-/// 真实用量（未命中缓存的输入、缓存读写、输出）。把 since（毫秒）之后的加起来，就是这一轮的精确用量。
-/// 日志在 `<DSH 家目录>/sessions/<目录>/<会话>/session.v4.jsonl[.zstd]`，zstd 版是一帧帧追加的。
-pub(crate) fn session_usage(session_id: &str, since: i64) -> Option<crate::project_store::Usage> {
-    let sessions = resolved_dsh_home()?.join("sessions");
-    let folder = std::fs::read_dir(&sessions)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path().join(session_id))
-        .find(|path| path.is_dir())?;
-    let text = match std::fs::read(folder.join("session.v4.jsonl.zstd")) {
-        Ok(bytes) => decode_frames(&bytes),
-        Err(_) => std::fs::read_to_string(folder.join("session.v4.jsonl")).ok()?,
-    };
-    usage_since(&text, since)
-}
 
-/// 解开一帧帧追加的 zstd 数据；坏帧跳过。
-fn decode_frames(bytes: &[u8]) -> String {
-    use std::io::Read;
-    const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
-    let starts: Vec<usize> = bytes
-        .windows(4)
-        .enumerate()
-        .filter(|(_, window)| *window == MAGIC)
-        .map(|(index, _)| index)
-        .collect();
-    let mut text = String::new();
-    for (index, start) in starts.iter().enumerate() {
-        let end = starts.get(index + 1).copied().unwrap_or(bytes.len());
-        let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(&bytes[*start..end]) else {
-            continue;
-        };
-        let mut frame = Vec::new();
-        if decoder.read_to_end(&mut frame).is_ok() {
-            text.push_str(&String::from_utf8_lossy(&frame));
-        }
-    }
-    text
-}
 
-fn usage_since(text: &str, since: i64) -> Option<crate::project_store::Usage> {
-    let mut usage = crate::project_store::Usage::default();
-    let mut found = false;
-    for event in text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
-        if event["type"] != "assistant/message" || event["time"].as_i64().is_none_or(|time| time < since) {
-            continue;
-        }
-        let item = &event["data"]["usage"];
-        let n = |key: &str| item[key].as_u64().unwrap_or(0);
-        if item.is_null() {
-            continue;
-        }
-        found = true;
-        let (read, write) = (n("cacheReadTokens"), n("cacheWriteTokens"));
-        usage.input += n("inputTokens") + read + write;
-        usage.cached += read;
-        usage.cache_write += write;
-        usage.output += n("outputTokens");
-        // 最后一次调用的总量就是这时的上下文大小。
-        usage.context = n("totalTokens");
-    }
-    found.then_some(usage)
-}
 
 /// 从 DSH 的会话投影缓存里取会话标题：优先会话已定下来的标题，
 /// 没有就用会话里第一句用户输入；都没有返回 None（不编、不猜）。
@@ -249,25 +187,6 @@ pub(crate) fn discover() -> Option<PathBuf> {
     .then_some(path)
 }
 impl Runtime {
-    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
-        self.shared_project_client()?;
-        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
-        let node = self.node.as_ref().ok_or("Node运行时不可用")?;
-        let installation = crate::service_install::dsh_path(&self.directory)?;
-        let mut command = Command::new(node);
-        command
-            .args(["--input-type=module", "-e", include_str!("dsh_bridge.mjs")])
-            .arg(installation)
-            .arg(directory.join("dsh-native"))
-            .current_dir(directory);
-        command
-            .env("AGENT_HUB_COORDINATOR_MODE", "1")
-            .env("AGENT_HUB_DSH_HOME", directory.join("dsh-native"))
-            .env_remove("AGENT_HUB_DSH_PROJECT_MODE");
-        let client = Client::spawn_command(command, |_| {}, || {})?;
-        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;
-        Ok(client)
-    }
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
         let client = {
@@ -334,22 +253,6 @@ impl Runtime {
                 last_checkpoint: Instant::now(),
             }),
         })
-    }
-    pub(crate) fn shared_project_loaded(&self, session: &str) {
-        self.inner.lock().unwrap().loaded.insert(session.to_owned());
-    }
-    pub(crate) fn project_session_is_loaded(&self, session: &str) -> bool {
-        self.inner.lock().unwrap().loaded.contains(session)
-    }
-    pub(crate) fn shared_project_client(&self) -> Result<Arc<Client>> {
-        let inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" {
-            return Err("项目成员尚未连接".into());
-        }
-        inner
-            .client
-            .clone()
-            .ok_or_else(|| "项目成员接口不可用".into())
     }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();
@@ -981,38 +884,5 @@ mod tests {
             completion_from_stop_reason(Some("cancelled")),
             ("interrupted", None)
         );
-    }
-}
-
-#[cfg(test)]
-mod session_usage_tests {
-    #[test]
-    fn sums_assistant_usage_after_the_turn_started() {
-        let log = [
-            r#"{"type":"session","version":4,"id":"s"}"#,
-            r#"{"type":"assistant/message","time":100,"data":{"usage":{"inputTokens":10184,"outputTokens":433,"totalTokens":10617}}}"#,
-            r#"{"type":"tool/result","time":150,"data":{}}"#,
-            r#"{"type":"assistant/message","time":200,"data":{"usage":{"inputTokens":713,"outputTokens":179,"totalTokens":11004,"cacheReadTokens":10112}}}"#,
-            r#"{"type":"assistant/message","time":300,"data":{"usage":{"inputTokens":50,"outputTokens":20,"totalTokens":11100,"cacheReadTokens":11000,"cacheWriteTokens":30}}}"#,
-        ]
-        .join("\n");
-        let usage = super::usage_since(&log, 150).unwrap();
-        // 只算这一轮（time ≥ 150）的两次调用；input 含缓存读写。
-        assert_eq!((usage.input, usage.cached, usage.cache_write, usage.output, usage.context), (713 + 10112 + 50 + 11000 + 30, 21112, 30, 199, 11100));
-        assert!(!usage.context_only);
-        assert!(super::usage_since(&log, 1000).is_none());
-    }
-
-    /// 手动核对：`cargo test -- --ignored dsh_live_session_usage --nocapture` 读本机最近一个 DSH 会话的总用量。
-    #[test]
-    #[ignore]
-    fn dsh_live_session_usage() {
-        let sessions = super::resolved_dsh_home().unwrap().join("sessions");
-        let mut folders: Vec<_> = std::fs::read_dir(&sessions).unwrap().flatten()
-            .flat_map(|dir| std::fs::read_dir(dir.path()).into_iter().flatten().flatten())
-            .filter(|entry| entry.path().is_dir()).collect();
-        folders.sort_by_key(|entry| entry.metadata().and_then(|meta| meta.modified()).ok());
-        let latest = std::env::var("DSH_SESSION").unwrap_or_else(|_| folders.last().unwrap().file_name().to_string_lossy().to_string());
-        println!("session {latest} → {:?}", super::session_usage(&latest, 0));
     }
 }

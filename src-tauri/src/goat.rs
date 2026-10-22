@@ -21,15 +21,6 @@ pub struct Line {
     pub key: String,
 }
 
-/// 模型 id 里带的线路名：Hermes 是 `custom:<线路>:<模型>`，DSH 是 `["<线路>","<模型>"]`。
-pub fn line_of(model: &str) -> Option<String> {
-    if let Some(rest) = model.strip_prefix("custom:") {
-        return rest.split_once(':').map(|(line, _)| line.to_owned());
-    }
-    serde_json::from_str::<Vec<String>>(model)
-        .ok()
-        .and_then(|parts| (parts.len() == 2).then(|| parts[0].clone()))
-}
 
 /// `.env` 风格文件里取一个变量。
 fn env_file(path: &Path, name: &str) -> Option<String> {
@@ -289,12 +280,6 @@ pub fn overview() -> serde_json::Map<String, Value> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn line_names_come_from_model_ids() {
-        assert_eq!(line_of("custom:command-code-daily-2:deepseek/deepseek-v4.1-flash").as_deref(), Some("command-code-daily-2"));
-        assert_eq!(line_of("[\"command-code-daily\",\"deepseek-v4-flash\"]").as_deref(), Some("command-code-daily"));
-        assert_eq!(line_of("gpt-6-luna"), None);
-    }
 
     #[test]
     fn reads_dsh_and_hermes_lines_without_touching_other_providers() {

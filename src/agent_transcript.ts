@@ -101,18 +101,13 @@ export class AgentTranscript {
   private patch(node: HTMLElement, entry: AgentEntry) {
     const { escape, name } = this.format;
     const busy = entryBusy(entry.status);
-    if (entry.attemptId) { node.dataset.attemptId = entry.attemptId; node.dataset.attemptStatus = entry.status; }
     if (entry.messageId) node.dataset.messageId = entry.messageId;
-    if (entry.workflowId) node.dataset.sourceWorkflow = entry.workflowId;
     if (entry.kind === 'peer') node.dataset.agentDirectMessageId = entry.id.slice(5);
-    const label = entry.kind === 'user' ? entry.source === 'project' ? '你 · 项目目标' : '你' : entry.kind === 'peer' ? `${name(entry.author)} · 成员直发` : name(entry.author);
+    const label = entry.kind === 'user' ? '你' : entry.kind === 'peer' ? `${name(entry.author)} · 成员直发` : name(entry.author);
     node.querySelector('[data-entry-label]')!.textContent = label;
     node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(entry.at);
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
     node.querySelector('[data-entry-live]')!.textContent = busy ? entry.status === 'cancelling' ? '正在停止…' : '正在处理…' : entry.status === 'interrupted' ? '已中断' : '';
-    const controls = node.querySelector<HTMLElement>('[data-entry-control]')!;
-    const control = busy && entry.workflowId ? `<button type="button" class="text-button" data-stop-project-agent="${escape(entry.author)}" data-stop-project-workflow="${escape(entry.workflowId)}" ${entry.status === 'cancelling' ? 'disabled' : ''}>中断</button>` : '';
-    if (controls.innerHTML !== control) controls.innerHTML = control;
     // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
     const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text') ?? null : null;
     this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy, entry.id);
@@ -121,7 +116,6 @@ export class AgentTranscript {
     const previousBusy = thought.dataset.active === 'true';
     const wasHidden = thought.hidden;
     thought.hidden = !plain;
-    if (entry.attemptId) thought.dataset.thoughtAttemptId = entry.attemptId;
     thought.dataset.active = String(busy);
     const chosen = userOpened.get(`${entry.id}:plain`);
     if (chosen !== undefined) { if (thought.open !== chosen) thought.open = chosen; }

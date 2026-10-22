@@ -1,22 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ConversationDetail, NativeSession } from './types';
-import { baseAgent } from './seats';
+import { baseAgent, isBrain } from './seats';
 
 type Escape = (value: string | number) => string;
 export const PROJECT_AGENTS = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'];
-export interface SessionBinding { agent_id: string; target: 'member' | 'coordinator'; native_session_id: string | null; native_cwd: string | null; busy: boolean; }
+export interface SessionBinding { agent_id: string; target: 'member'; native_session_id: string | null; native_cwd: string | null; busy: boolean; }
 /// target=seat：新建项目时给同一成员再开的席位（agentId 是底层成员，保存时先开席位再绑会话）。
-export interface BindingChoice { agentId: string; target: 'member' | 'coordinator' | 'seat'; nativeSessionId: string | null; nativeCwd: string | null; }
-interface Row { agent: string; target: 'member' | 'coordinator' | 'seat'; current: string | null; busy: boolean; key?: string; }
-export interface PickerHost { escape: Escape; name: (id: string) => string; avatar: (id: string) => string; connect: (id: string) => Promise<void>;
-  /** 调度管家是成员另开的隐藏会话：显示成员本身的名字和头像，不和项目里的某个会话混在一起。 */
-  globalName?: (id: string) => string; plainAvatar?: (id: string) => string; }
+export interface BindingChoice { agentId: string; target: 'member' | 'seat'; nativeSessionId: string | null; nativeCwd: string | null; }
+interface Row { agent: string; target: 'member' | 'seat'; current: string | null; busy: boolean; key?: string; }
+export interface PickerHost { escape: Escape; name: (id: string) => string; avatar: (id: string) => string; connect: (id: string) => Promise<void>; }
 
-const roleText = (row: Row) => row.target === 'coordinator' ? '调度管家 · 独立的隐藏会话' : row.target === 'seat' ? '同一成员的另一个会话' : '项目成员';
+const roleText = (row: Row) => isBrain(row.agent) ? '主脑 · 接你的话、给成员派活' : row.target === 'seat' ? '同一成员的另一个会话' : '项目成员';
 const short = (id: string) => id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
 const when = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '时间未知';
 
-/// 给每位成员（含调度、额外席位）挑一个原生会话：第一项永远是「新建会话」，其余是该成员自己已有的会话。
+/// 给每位成员（含主脑、额外席位）挑一个原生会话：第一项永远是「新建会话」，其余是该成员自己已有的会话。
 /// 同一成员的会话列表只读一次，各行共用；席位读的是底层成员的会话。
 /// `allowSeats` 时成员行带「＋」，可以给同一成员再开席位（最多 3 个）。
 export function mountSessionPicker(container: HTMLElement, initial: Row[], host: PickerHost, allowSeats = false) {
@@ -32,10 +30,10 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
     if (!lists.has(base)) lists.set(base, invoke<NativeSession[]>('native_sessions', { agentId: base, conversationId: null }).then(list => { list.forEach(item => { if (item.cwd) cwd.set(`${base}|${item.id}`, item.cwd); }); return list; }).catch(error => { lists.delete(base); throw error; }));
     return lists.get(base)!;
   };
-  const tail = (row: Row) => allowSeats && row.target === 'member'
+  const tail = (row: Row) => allowSeats && row.target === 'member' && !isBrain(row.agent)
     ? '<button type="button" class="seat-plus" data-seat-plus title="同一成员再开一个平行的会话" aria-label="再开一个会话">＋</button>'
     : row.target === 'seat' ? '<button type="button" class="seat-plus" data-seat-drop title="去掉这个会话" aria-label="去掉这个会话">×</button>' : '';
-  const rowHtml = (row: Row) => `<div class="session-bind-row${row.busy ? ' busy' : ''}" data-bind-key="${escape(row.key!)}" data-bind-agent="${escape(row.agent)}" data-bind-target="${row.target}">${row.target === 'coordinator' ? (host.plainAvatar ?? host.avatar)(row.agent) : host.avatar(row.agent)}<div class="session-bind-who"><strong>${escape(row.target === 'coordinator' ? (host.globalName ?? host.name)(row.agent) : host.name(row.agent))}</strong><small>${roleText(row)}${row.busy ? ' · 正在执行，结束后可切换' : ''}</small></div><div class="session-bind-choice"><select data-bind-session aria-label="${escape(host.name(row.agent))}${roleText(row)}的会话" ${row.busy ? 'disabled' : ''}><option value="">＋ 新建会话（不绑定）</option>${row.current ? `<option value="${escape(row.current)}" selected>当前绑定 · ${escape(short(row.current))}</option>` : ''}</select><small class="session-bind-note">正在读取已有会话…</small></div>${tail(row)}</div>`;
+  const rowHtml = (row: Row) => `<div class="session-bind-row${row.busy ? ' busy' : ''}" data-bind-key="${escape(row.key!)}" data-bind-agent="${escape(row.agent)}" data-bind-target="${row.target}">${host.avatar(row.agent)}<div class="session-bind-who"><strong>${escape(host.name(row.agent))}</strong><small>${roleText(row)}${row.busy ? ' · 正在执行，结束后可切换' : ''}</small></div><div class="session-bind-choice"><select data-bind-session aria-label="${escape(host.name(row.agent))}${roleText(row)}的会话" ${row.busy ? 'disabled' : ''}><option value="">＋ 新建会话（不绑定）</option>${row.current ? `<option value="${escape(row.current)}" selected>当前绑定 · ${escape(short(row.current))}</option>` : ''}</select><small class="session-bind-note">正在读取已有会话…</small></div>${tail(row)}</div>`;
   const fill = async (element: HTMLElement) => {
     const row = rows.find(item => item.key === element.dataset.bindKey)!;
     const select = element.querySelector<HTMLSelectElement>('[data-bind-session]')!, note = element.querySelector<HTMLElement>('.session-bind-note')!;
@@ -83,12 +81,10 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
   });
   paint(rows);
   return {
-    /// 换一批成员/调度行；已经加上的席位行保留（底层成员仍在时）。
+    /// 换一批成员/主脑行；已经加上的席位行保留（底层成员仍在时）。
     render(next: Row[]) {
-      const seats = rows.filter(row => row.target === 'seat' && next.some(item => item.target === 'member' && item.agent === row.agent));
-      const members = next.filter(row => row.target !== 'coordinator');
-      const ordered = members.flatMap(row => [row, ...seats.filter(seat => row.target === 'member' && seat.agent === row.agent)]);
-      paint([...ordered, ...next.filter(row => row.target === 'coordinator')]);
+      const seats = rows.filter(row => row.target === 'seat' && next.some(item => item.agent === row.agent));
+      paint(next.flatMap(row => [row, ...seats.filter(seat => seat.agent === row.agent)]));
     },
     /// 只回传改动过的行；`all` 为真时回传全部（新建项目时一次性落定）。
     choices(all = false): BindingChoice[] {
@@ -102,13 +98,13 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
   };
 }
 
-export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['hermes-win', 'codex-win', 'dsh-win', 'claude-win'].find(id => members.includes(id)) || members[0];
+export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win'].find(id => members.includes(id)) || members[0];
 
-/// 项目进行中切换各成员（含额外席位）与调度的原生会话：正在执行的那位锁住，其余下一轮生效。
+/// 项目进行中切换各成员（含额外席位）与主脑的原生会话：正在执行的那位锁住，其余下一轮生效。
 export async function projectSessionsDialog(detail: ConversationDetail, host: PickerHost & { modal: HTMLDialogElement; open: (title: string, note: string, body: string) => void; saved: () => Promise<void> }) {
   const room = detail.conversation.id;
   const bindings = await invoke<SessionBinding[]>('project_session_bindings', { conversationId: room });
-  host.open('项目会话绑定', '为每位成员、每个席位和调度管家选择续接哪一个原生会话。选「新建会话」则下一轮由成员新开会话；切换从下一轮任务开始生效。', `<form id="project-session-form"><div class="session-bind-list"></div><p class="model-setting-note">项目会话固定在项目目录里工作；原会话的聊天历史会被成员带进来作为背景。同一个原生会话同一时刻只能挂在一处。多开席位请到「项目成员配置」。</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" class="secondary" data-session-cancel>取消</button><button class="primary">保存会话绑定</button></div></form>`);
+  host.open('项目会话绑定', '为主脑、每位成员和每个席位选择续接哪一个原生会话。选「新建会话」则下一轮由成员新开会话；切换从下一轮任务开始生效。', `<form id="project-session-form"><div class="session-bind-list"></div><p class="model-setting-note">项目会话固定在项目目录里工作；原会话的聊天历史会被成员带进来作为背景。同一个原生会话同一时刻只能挂在一处。多开席位请到「项目成员配置」。</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" class="secondary" data-session-cancel>取消</button><button class="primary">保存会话绑定</button></div></form>`);
   const form = host.modal.querySelector<HTMLFormElement>('#project-session-form')!;
   const picker = mountSessionPicker(form.querySelector('.session-bind-list')!, bindings.map(binding => ({ agent: binding.agent_id, target: binding.target, current: binding.native_session_id, busy: binding.busy })), host);
   form.querySelector('[data-session-cancel]')!.addEventListener('click', () => host.modal.close());

@@ -3,7 +3,7 @@
 //! 派活、插话、停止先记进 brain_jobs（主脑的工具进程只碰数据库），由主程序里的投递线程真正发给成员；
 //! 成员交回的结果和用户在问答面板的回答记进 brain_inbox，再作为新消息送进主脑会话（主脑正在回复时用插话）。
 use crate::codex::RuntimeSnapshot;
-use crate::project_store::{base_agent, is_brain, BRAIN_SLOT, EXECUTOR_AGENTS};
+use crate::project_store::{base_agent, is_brain, RoleChoice, BRAIN_SLOT, EXECUTOR_AGENTS};
 use crate::store::{now, RunRecord, Store};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -33,6 +33,107 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            content TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);",
     )
     .map_err(|_| "主脑结构迁移失败".into())
+}
+
+impl Store {
+    pub fn project_coordinator(&self, room: &str) -> Result<Option<RoleChoice>> {
+        let value: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT settings FROM project_coordinator_settings WHERE conversation_id=?1",
+                [room],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "主脑设置读取失败")?;
+        value
+            .map(|value| serde_json::from_str(&value).map_err(|_| "主脑设置无效".into()))
+            .transpose()
+    }
+    pub fn set_project_coordinator(&mut self, room: &str, choice: &RoleChoice) -> Result<()> {
+        let conversation = self.conversation(room)?;
+        if conversation.kind != "group"
+            || conversation.archived
+            || self.conversation_project(room)?.is_none()
+        {
+            return Err("请先绑定未归档项目群".into());
+        }
+        if !crate::project_store::EXECUTOR_AGENTS.contains(&choice.agent.as_str())
+            || !conversation.members.contains(&choice.agent)
+        {
+            return Err("主脑应从本项目的 Codex、Hermes、DSH 或 Claude 成员中选择".into());
+        }
+        self.connection.execute("INSERT INTO project_coordinator_settings(conversation_id,settings) VALUES(?1,?2) ON CONFLICT(conversation_id) DO UPDATE SET settings=excluded.settings",params![room,serde_json::to_string(choice).map_err(|_|"主脑设置无效")?]).map_err(|_|"主脑设置保存失败")?;
+        Ok(())
+    }
+    /// 用户在项目设置里写的长期授权（比如「允许提交并推送 main」）：每次协作都算用户原话授权，没写就是空。
+    pub fn project_grants(&self, room: &str) -> String {
+        self.connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key=?1",
+                [format!("project_grants:{room}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+    pub fn set_project_grants(&mut self, room: &str, grants: &str) -> Result<()> {
+        let grants = grants.trim();
+        if grants.chars().count() > 500 {
+            return Err("长期授权不超过 500 字".into());
+        }
+        if self.conversation_project(room)?.is_none() {
+            return Err("请先绑定项目".into());
+        }
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("project_grants:{room}"), grants],
+            )
+            .map_err(|_| "长期授权保存失败")?;
+        Ok(())
+    }
+}
+
+impl Store {
+    /// 主脑派给这位成员（任一席位）、还没交回的活。
+    pub fn brain_busy(&self, agent: &str) -> bool {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM brain_jobs WHERE kind='task' AND status IN ('pending','running') AND (seat=?1 OR seat LIKE ?1 || '-%'))",
+                [agent],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
+    }
+    /// 主脑在这个群里还有派出去没交回的活时，不能归档、删除或改成员。
+    pub fn guard_brain_jobs(&self, room: &str) -> Result<()> {
+        let busy: bool = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM brain_jobs WHERE room=?1 AND status IN ('pending','running'))",
+                [room],
+                |row| row.get(0),
+            )
+            .map_err(|_| "主脑派活状态读取失败")?;
+        if busy {
+            return Err("主脑派的活还没交回，先停掉或等成员交回".into());
+        }
+        Ok(())
+    }
+    /// 开了「公开动态」的项目群里最近的进展摘要：(项目名, 内容)，最新的在前。
+    pub fn shared_team_updates(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let mut query = self
+            .connection
+            .prepare("SELECT p.name,t.content FROM project_team_messages t JOIN projects p ON p.id=t.project_id WHERE p.summary_enabled=1 ORDER BY t.created_at DESC,t.id DESC LIMIT ?1")
+            .map_err(|_| "项目动态读取失败")?;
+        let rows = query
+            .query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|_| "项目动态读取失败")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "项目动态读取失败".into())
+    }
 }
 
 /// 本项目的主脑跑在哪个成员上：项目设置里选的，没选或已不在群里就按默认顺序挑。

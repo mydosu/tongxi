@@ -248,17 +248,6 @@ impl Client {
     pub fn set_request_handler(&self, handler: RequestHandler) {
         *self.request_handler.lock().unwrap() = Some(handler);
     }
-    pub fn swap_request_handler(&self, handler: Option<RequestHandler>) -> Option<RequestHandler> {
-        std::mem::replace(&mut *self.request_handler.lock().unwrap(), handler)
-    }
-    pub fn listen(&self, listener: MessageListener) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.listeners.lock().unwrap().insert(id, listener);
-        id
-    }
-    pub fn unlisten(&self, id: u64) {
-        self.listeners.lock().unwrap().remove(&id);
-    }
 
     pub fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         self.rpc_timeout(method, params, Duration::from_secs(60))
@@ -308,49 +297,6 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn project_observer_detaches_without_stopping_the_shared_connection() {
-        let mut command = Command::new("python");
-        command.args([
-            "-u",
-            "-c",
-            r#"
-import json,sys
-for line in sys.stdin:
-    value=json.loads(line)
-    if 'method' in value:
-        print(json.dumps({'method':'fixture/update','params':{}}),flush=True)
-        print(json.dumps({'id':value['id'],'result':{'ok':True}}),flush=True)
-"#,
-        ]);
-        let primary = Arc::new(AtomicU64::new(0));
-        let count = primary.clone();
-        let client = Client::spawn_command(
-            command,
-            move |_| {
-                count.fetch_add(1, Ordering::SeqCst);
-            },
-            || {},
-        )
-        .unwrap();
-        let project = Arc::new(AtomicU64::new(0));
-        let count = project.clone();
-        let listener = client.listen(Arc::new(move |_| {
-            count.fetch_add(1, Ordering::SeqCst);
-        }));
-        assert_eq!(
-            client.rpc("fixture/first", json!({})).unwrap(),
-            json!({"ok":true})
-        );
-        client.unlisten(listener);
-        assert_eq!(
-            client.rpc("fixture/private", json!({})).unwrap(),
-            json!({"ok":true})
-        );
-        assert_eq!(primary.load(Ordering::SeqCst), 2);
-        assert_eq!(project.load(Ordering::SeqCst), 1);
-        client.stop();
-    }
     #[test]
     fn native_errors_expose_only_a_safe_category_and_protocol_code() {
         let secret = "PRIVATE_NATIVE_TOKEN_DO_NOT_EXPOSE";

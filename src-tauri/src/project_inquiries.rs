@@ -145,18 +145,7 @@ impl Store {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "问答读取失败".into())
     }
 
-    /// 挂问题。同一个 key 已经答过就不再问（返回 false）；还没答的更新内容；撤下过的重新挂出来。
-    pub fn ask_inquiry(&self, room: &str, workflow: Option<&str>, asked_by: &str, ask: &Ask) -> Result<bool> {
-        ask_on(&self.connection, room, workflow, asked_by, ask)
-    }
 
-    /// 撤下没答的问题（事情已经没意义了）。
-    pub fn withdraw_inquiry(&self, room: &str, key: &str) -> Result<()> {
-        self.connection
-            .execute("UPDATE project_inquiries SET status='withdrawn' WHERE conversation_id=?1 AND key=?2 AND status='open'", params![room, key.trim()])
-            .map_err(|_| "问题撤下失败")?;
-        Ok(())
-    }
 
     pub fn answer_inquiry(&self, room: &str, id: &str, answer: &str) -> Result<Inquiry> {
         let answer = answer.trim();
@@ -177,54 +166,5 @@ impl Store {
         self.connection.query_row(&sql, [id], row).map_err(|_| "回答读取失败".into())
     }
 
-    /// 调度这回合看过了这几条新回答：下回合不再当新的给。只标交给它的那几条，回合进行中才答的留给下回合。
-    pub fn mark_inquiries_seen(&self, ids: &[String]) -> Result<()> {
-        for id in ids {
-            self.connection
-                .execute("UPDATE project_inquiries SET seen=1 WHERE id=?1 AND status='answered'", [id])
-                .map_err(|_| "问答状态保存失败")?;
-        }
-        Ok(())
-    }
 
-    /// 累计答过几个：调度暂停等待时用它判断有没有新回答进来。
-    pub fn answered_inquiries(&self, room: &str) -> usize {
-        self.connection
-            .query_row("SELECT COUNT(*) FROM project_inquiries WHERE conversation_id=?1 AND status='answered'", [room], |r| r.get::<_, i64>(0))
-            .map_or(0, |n| n as usize)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ask(key: &str, question: &str) -> Ask {
-        Ask { key: key.into(), question: question.into(), background: None, options: vec!["4".into(), "6".into()], default: Some("先用 4".into()), reversible: true }
-    }
-
-    #[test]
-    fn questions_dedupe_by_key_and_answered_ones_are_not_asked_again() {
-        let dir = std::env::temp_dir().join(format!("inquiry-test-{}", uuid::Uuid::new_v4()));
-        let mut store = Store::open(&dir.join("hub.db")).unwrap();
-        let room = store.create("项目", "group", &["codex-win".into()]).unwrap().id;
-        assert!(store.ask_inquiry(&room, None, "coordinator", &ask("tts-version", "生产用哪个情感版本？")).unwrap());
-        assert!(!store.ask_inquiry(&room, None, "coordinator", &ask("tts-version", "生产 TTS 情感版本用 4 还是 6？")).unwrap());
-        let open = store.project_inquiries(&room).unwrap();
-        assert_eq!((open.len(), open[0].question.as_str()), (1, "生产 TTS 情感版本用 4 还是 6？"));
-        let answered = store.answer_inquiry(&room, &open[0].id, "用 6").unwrap();
-        assert_eq!((answered.status.as_str(), answered.answer.as_deref(), answered.seen), ("answered", Some("用 6"), false));
-        assert!(store.answer_inquiry(&room, &open[0].id, "再答一次").is_err());
-        // 答过的不再问。
-        assert!(!store.ask_inquiry(&room, None, "coordinator", &ask("tts-version", "还是问一下")).unwrap());
-        assert_eq!(store.answered_inquiries(&room), 1);
-        let id = store.project_inquiries(&room).unwrap()[0].id.clone();
-        store.mark_inquiries_seen(&[id]).unwrap();
-        assert!(store.project_inquiries(&room).unwrap()[0].seen);
-        // 撤下后再挂出来算新问题。
-        store.ask_inquiry(&room, None, "coordinator", &ask("live2d", "Live2D 还要吗？")).unwrap();
-        store.withdraw_inquiry(&room, "live2d").unwrap();
-        assert!(store.ask_inquiry(&room, None, "coordinator", &ask("live2d", "Live2D 还要吗？")).unwrap());
-        assert!(check(&[ask(" ", "x")]).is_err() && check(&[ask("k", "问")]).is_ok());
-    }
 }

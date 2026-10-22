@@ -21,24 +21,19 @@ export interface ConversationDetail {
   conversation: Conversation; messages: Message[];
   discussions: Discussion[];
   project: Project | null;
-  project_roles: Roles | null;
   project_coordinator?: RoleChoice | null;
-  /** 调度倾向：save 省额度 / balanced 平衡 / quality 质量优先。 */
-  project_preference?: string;
   project_grants?: string;
-  workflows: Workflow[];
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
   project_agent_inbox?: ProjectRoomAgentMessage[];
-  project_questions?: ProjectQuestion[];
   chat_questions?: ChatQuestion[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
-export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; /** 后端算好的显示名：起过名就是它，否则成员名（多个会话时带编号）。 */ name?: string; /** 调度为协作新开的会话；和用户建的一样留在项目里。 */ opened_by_coordinator?: boolean; }
+export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; /** 后端算好的显示名：起过名就是它，否则成员名（多个会话时带编号）。 */ name?: string; }
 export interface ProjectRoomAgentMessage { id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
 export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {
-  version: string; milestone: number; database_path: string; hud_shortcut: boolean; autoconnect?: boolean; resume_workflow?: string | null;
+  version: string; milestone: number; database_path: string; hud_shortcut: boolean; autoconnect?: boolean;
 }
 
 export interface RunRecord {
@@ -70,21 +65,9 @@ export interface Discussion {
 }
 
 export interface Project { id: string; name: string; root: string; summary_enabled: boolean; created_at: number; }
-export interface ExecutionChoice { model: string; reasoning_effort: string | null; rationale: string; }
 export type RoleChoice = { agent: string; model: string | null; effort: string | null };
-export type Roles = { plan: RoleChoice; implement: RoleChoice; review: RoleChoice };
-export type TaskChoice = { position: number; agent_id: string; model: string | null; effort: string | null };
-export interface PlannedTask { title: string; agent_id: string; instructions: string; files: string[]; depends_on: number[]; execution?: ExecutionChoice | null; }
-export interface ProjectTask extends PlannedTask { id: string; workflow_id: string; position: number; status: string; output: string; error: string | null; model?: string | null; effort?: string | null; worktree?: string | null; branch?: string | null; }
-/** 协作问答：调度挂在项目问答面板上的问题。 */
+/** 协作问答：主脑挂在项目问答面板上的问题。 */
 export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }
-export interface ProjectAttempt { id: string; created_at?: number; activity?: string | null; workflow_id: string; task_id: string | null; agent_id: string; stage: string; status: string; native_thread_id: string | null; native_turn_id: string | null; model: string | null; reasoning_effort: string | null; thought: string; tool_events?: RunToolEvent[]; output: string; error: string | null; usage?: TokenUsage | null; }
-/** 一次任务的 token 用量：input 含缓存读写，output 含推理；context_only 表示只知道上下文占用，实际消耗未知。cost_kind：api_estimate 为 API 等值估算，provider 为服务商报的额度消耗。 */
-/** 历史表现画像的一行：成员+模型+强度+类别；比率是平滑后的估计，空值表示没有可用数据。 */
-export interface CapabilityRow { agent: string; model: string; effort: string; category: string; samples: number; success_rate: number; first_pass_rate: number | null; avg_attempt_tokens: number | null; avg_task_tokens: number | null; avg_repairs: number | null; confidence: 'low' | 'medium' | 'high'; }
-export interface TokenUsage { input: number; cached: number; cache_write?: number; output: number; reasoning: number; cost_usd?: number; cost_kind?: 'api_estimate' | 'provider'; context_only?: boolean; context?: number; }
-export interface WorkflowAgentMessage { id: string; workflow_id: string; attempt_id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
-export interface Workflow { id: string; project_id: string; conversation_id: string; user_message_id: string; request: string; status: string; plan: { summary: string; tasks: PlannedTask[] } | null; roles?: Roles | string | null; coordination?: {coordinator:RoleChoice;status:string;ledger?:string|null;routes:{task_id:string;purpose:string;source_id:string;quote:string;context_ids:string[];instructions?:string|null;reason?:string|null;allow_subagents?:boolean}[]}; summary: string; error: string | null; created_at: number; updated_at: number; tasks: ProjectTask[]; attempts: ProjectAttempt[]; changes: { attempt_id: string; path: string; operation: string; before_hash: string | null; after_hash: string | null }[]; agent_messages?: WorkflowAgentMessage[]; team_messages?: ProjectTeamMessage[]; }
 
 export interface ServiceInfo {
   id: string; name: string; connection: 'disconnected' | 'connecting' | 'connected';
@@ -107,6 +90,5 @@ export interface ServiceUpdateStatus {
   rollback_available: boolean;
 }
 
-export interface ProjectQuestion { attempt_id?:string|null;id:string;workflow_id:string;conversation_id:string;agent_id:string;prompt:string;options:string[];status:string;answer:string|null; }
 export interface ChatQuestion { id:string;conversation_id:string;run_id:string;message_id:string;agent_id:string;prompt:string;options:string[];status:string;mode:string;answer:string|null;delivery:string;error:string|null; }
 export interface PendingChatQuestion { kind?:string;id:string;conversation_id:string;agent_id:string;group_id:string|null; }

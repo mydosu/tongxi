@@ -99,17 +99,6 @@ fn models_from_response(response: &Value) -> Vec<ModelOption> {
 }
 
 impl Runtime {
-    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
-        self.shared_project_client()?;
-        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
-        let mut command = self.target.command(directory)?;
-        command
-            .env("AGENT_HUB_COORDINATOR_MODE", "1")
-            .env("AGENT_HUB_HERMES_SESSION_DB", directory.join("sessions.db"));
-        let client = Client::spawn_command(command, |_| {}, || {})?;
-        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;
-        Ok(client)
-    }
     /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
         let client = {
@@ -160,16 +149,6 @@ impl Runtime {
                 last_checkpoint: Instant::now(),
             }),
         })
-    }
-    pub(crate) fn shared_project_client(&self) -> Result<Arc<Client>> {
-        let inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" {
-            return Err("项目成员尚未连接".into());
-        }
-        inner
-            .client
-            .clone()
-            .ok_or_else(|| "项目成员接口不可用".into())
     }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();

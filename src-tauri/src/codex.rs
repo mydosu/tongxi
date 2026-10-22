@@ -550,24 +550,6 @@ pub(crate) fn native_version(executable: &PathBuf) -> Option<String> {
 }
 
 impl Runtime {
-    pub(crate) fn coordinator_client(&self, directory: &std::path::Path) -> Result<Arc<Client>> {
-        self.shared_project_client()?;
-        let executable = self
-            .executable
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("Codex程序不可用")?;
-        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
-        let mut command = Command::new(executable);
-        command
-            .args(crate::coordinator_clients::codex_arguments())
-            .current_dir(directory);
-        let client = Client::spawn_command(command, |_| {}, || {})?;
-        client.rpc("initialize",json!({"clientInfo":{"name":"tongxi_coordinator","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
-        client.write(&json!({"method":"initialized","params":{}}))?;
-        Ok(client)
-    }
     /// 只读列出 codex 自己的历史会话（app-server 的 thread/list）。
     pub fn list_sessions(&self) -> Result<Vec<NativeSession>> {
         let client = {
@@ -1322,7 +1304,7 @@ impl Runtime {
                 .into();
                 if run.snapshot.record.status == "failed" {
                     let category =
-                        crate::project_native::failure_category(&params["turn"]["error"])
+                        failure_category(&params["turn"]["error"])
                             .unwrap_or_else(|| "原生执行失败".into());
                     run.snapshot.record.error = Some(if is_quota_stall(&category) {
                         format!(
@@ -1590,4 +1572,56 @@ mod tests {
         ));
         assert_eq!(run.snapshot.thought, "先分析。再归纳。");
     }
+}
+
+/// Only protocol enum variants and a bounded HTTP status may reach the UI.
+/// Upstream messages/additionalDetails can contain configuration or credentials.
+pub(crate) fn failure_category(error: &Value) -> Option<String> {
+    let info = &error["codexErrorInfo"];
+    if info.is_null() {
+        return None;
+    }
+    let name = if let Some(name) = info.as_str() {
+        let label = match name {
+            "contextWindowExceeded" => "上下文超限",
+            "sessionBudgetExceeded" | "usageLimitExceeded" | "rateLimitExceeded" => {
+                let label = if name == "rateLimitExceeded" {
+                    "请求频率限制"
+                } else {
+                    "额度限制"
+                };
+                // 只从原文里取重置时间，原文本身不外传。
+                let (offset, now) = crate::quota_reset::local_offset();
+                let reset = crate::quota_reset::reset_at(&error.to_string(), now, offset)
+                    .map(crate::quota_reset::marker)
+                    .unwrap_or_default();
+                return Some(format!("{label}{reset}"));
+            }
+            "flexUnavailable" | "serverOverloaded" => "服务繁忙",
+            "unauthorized" => "认证失败",
+            "badRequest" => "请求不受支持",
+            "cyberPolicy" | "misalignmentPolicyViolation" | "tooManyDenials" => "原生策略拒绝",
+            "internalServerError" => "服务内部错误",
+            "sandboxError" => "原生权限错误",
+            _ => "其他原生错误",
+        };
+        return Some(label.into());
+    } else {
+        [
+            ("httpConnectionFailed", "HTTP 连接失败"),
+            ("responseStreamConnectionFailed", "回复连接失败"),
+            ("responseStreamDisconnected", "回复连接中断"),
+        ]
+        .into_iter()
+        .find(|(key, _)| info.get(key).is_some())
+    };
+    if let Some((key, label)) = name {
+        let status = info[key]["httpStatusCode"]
+            .as_u64()
+            .filter(|status| (100..=599).contains(status));
+        return Some(
+            status.map_or_else(|| label.into(), |status| format!("{label}，HTTP {status}")),
+        );
+    }
+    Some("其他原生错误".into())
 }
