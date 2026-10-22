@@ -30,8 +30,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
   for (const message of chat.messages) {
     rows.set(`message:${message.id}`, {
       id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
-      // 消息只记底层成员（claude-win），署名用这条会话所属的席位（主脑、克大姐……），和进行中的回复一致。
-      source: 'private', author: message.sender_id === 'user' ? 'user' : agent, body: message.content, thought: message.thought || '',
+      source: 'private', author: message.sender_id, body: message.content, thought: message.thought || '',
       tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
   }
