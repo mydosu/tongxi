@@ -947,7 +947,7 @@ impl Runtime {
             ) {
                 body
             } else {
-                format!("{}\n\n{body}", coordinator_policy::MANAGER_INSTRUCTION)
+                format!("{}\n\n{body}", coordinator_policy::manager_instruction())
             };
             let result = self.native.run(attempt, &root, &input, deadline)?;
             if result.status != "completed" {
@@ -1635,7 +1635,7 @@ impl Runtime {
         let input = if matches!(crate::project_store::base_agent(&manager.coordinator.agent), "claude-win" | "codex-win") {
             body
         } else {
-            format!("{}\n\n{body}", coordinator_policy::MANAGER_INSTRUCTION)
+            format!("{}\n\n{body}", coordinator_policy::manager_instruction())
         };
         let record = self.store.lock().unwrap().begin_coordinated_attempt(
             id,

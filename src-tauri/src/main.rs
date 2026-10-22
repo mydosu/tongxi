@@ -1292,6 +1292,7 @@ fn main() {
                 }
                 None => app.path().app_local_data_dir()?,
             };
+            coordinator_policy::set_prompt_dir(directory.join("prompts"));
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
             ));

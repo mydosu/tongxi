@@ -4,8 +4,8 @@
 import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, statSync, openSync, readSync, closeSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 
 // 同席以 `node -e` 内嵌启动（参数从 argv[1] 起）；单独调试时也可 `node claude_bridge.mjs`。
@@ -13,6 +13,18 @@ const [exe, data] = process.argv.slice(process.argv[1]?.endsWith('.mjs') ? 2 : 1
 const coordinatorMode = process.env.AGENT_HUB_COORDINATOR_MODE === '1';
 // 管家指令整体替换 Claude Code 的默认系统提示：否则模型仍以编码 Agent 身份尝试调用已禁用的工具。
 const coordinatorInstruction = process.env.AGENT_HUB_COORDINATOR_INSTRUCTION || '';
+const coordinatorInstructionFiles = (process.env.AGENT_HUB_COORDINATOR_INSTRUCTION_FILES || '')
+  .split(delimiter).filter(Boolean);
+// 外置说明每回合重读：同席改了说明文件，下一回合就用新的；都读不到再用启动时带进来的那份。
+function currentCoordinatorInstruction() {
+  for (const file of coordinatorInstructionFiles) {
+    try {
+      const text = readFileSync(file, 'utf8').trim();
+      if (text) return text;
+    } catch {}
+  }
+  return coordinatorInstruction;
+}
 // Windows 上 PowerShell 往原生程序的管道里送文本会补 CRLF，`… | wsl bash -s` 的末行只剩回车符，
 // bash 报 command not found 并以 127 退出（前面的命令其实都跑完了）。提前告诉成员换种写法。
 const windowsHint = process.platform === 'win32'
@@ -273,7 +285,7 @@ function prompt(id, params) {
     // 系统提示末尾就是一个断点，放这里每回合都能命中；留在消息里的话每回合都要重写一遍缓存。
     const [reference, prompt] = splitReference(params.prompt);
     params.prompt = prompt;
-    const system = [coordinatorInstruction, reference].filter(Boolean).join('\n\n');
+    const system = [currentCoordinatorInstruction(), reference].filter(Boolean).join('\n\n');
     // 说明加参考资料有十几万字，超过 Windows 命令行约 3.2 万字符的上限，走文件传。
     if (system) {
       const file = join(data, 'coordinator-system.txt');
