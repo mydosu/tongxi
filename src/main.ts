@@ -164,14 +164,17 @@ function renderBrainJobs(force = false) {
   if (!detail?.project) return;
   const overview = brainOverview;
   const brainBusy = !!overview?.chat && busyIn(runtimes[baseAgent(overview.seat)], overview.chat);
-  // 内容没变就不重绘，展开的结果和滚动位置都留着；用时每分钟跟着走一次。
-  const stamp = JSON.stringify([overview, brainBusy, Math.floor(Date.now() / 60000)]);
+  // 内容没变就不重绘，展开的结果和滚动位置都留着；有在做的活时用时每分钟跟着走一次。
+  const stamp = JSON.stringify([overview, brainBusy, overview?.jobs.some(jobLive) ? Math.floor(Date.now() / 60000) : 0]);
   if (!force && stamp === brainJobsPaint && main.querySelector('.brain-jobs-content')) return;
   brainJobsPaint = stamp;
   const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
+  // 展开的计划、结果框自己也能滚，重绘后按折叠键放回原处。
+  const inner = new Map([...main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text')].map(box => [box.parentElement!.dataset.jobFold!, box.scrollTop]));
   main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds);
   const content = main.querySelector<HTMLElement>('.brain-jobs-content');
   if (content) content.scrollTop = scroll;
+  main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text').forEach(box => { box.scrollTop = inner.get(box.parentElement!.dataset.jobFold!) || 0; });
   main.querySelector('[data-project-return-team]')?.addEventListener('click', () => void selectProjectModule(selectedId, 'team'));
   main.querySelectorAll<HTMLButtonElement>('[data-open-seat]').forEach(button => button.addEventListener('click', () => void selectProjectModule(selectedId, button.dataset.openSeat!)));
   main.querySelectorAll<HTMLDetailsElement>('details[data-job-fold]').forEach(fold => fold.addEventListener('toggle', event => {
