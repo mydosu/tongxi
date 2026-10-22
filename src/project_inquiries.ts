@@ -20,7 +20,7 @@ function openCard(item: Inquiry, escape: Escape, name: (agent: string) => string
     <p class="inquiry-meanwhile">${meanwhile}</p>
     ${item.background ? `<details class="inquiry-background"><summary>为什么问</summary><p>${escape(item.background)}</p></details>` : ''}
     ${options ? `<div class="inquiry-options">${options}</div>` : ''}
-    <form class="inquiry-answer" data-inquiry-form="${escape(item.id)}"><textarea rows="2" placeholder="写下你的回答，可以补充条件或理由" required></textarea><button type="submit" class="primary">回答</button></form>
+    <form class="inquiry-answer" data-inquiry-form="${escape(item.id)}"><textarea rows="1" placeholder="写下你的回答，可以补充条件或理由" required></textarea><button type="submit" class="primary">回答</button></form>
   </article>`;
 }
 

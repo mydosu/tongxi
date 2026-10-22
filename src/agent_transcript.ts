@@ -4,11 +4,13 @@ import { agentMarkdown } from './agent_markdown';
 import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
 import { attachmentHtml, attachmentText } from './attachments';
 import { plainThought, thoughtFlow, type FlowPart } from './thought_flow';
+import { thoughtFollowing } from './thought_scroll';
 
 /** 用户亲手展开/收起过的思考框（条目 id + 第几段）：节点被重建或刷新时照这个恢复，不会一点开就被重绘关掉。 */
 const userOpened = new Map<string, boolean>();
 const remember = (details: HTMLDetailsElement, key: () => string) =>
   details.querySelector('summary')!.addEventListener('click', () => userOpened.set(key(), !details.open));
+// 思考框跟不跟到底由 thought_scroll 统一判断（按滚动方向，见那里的说明）。
 
 interface TranscriptFormat {
   escape: (value: string | number) => string;
@@ -61,7 +63,7 @@ export class AgentTranscript {
     this.frame = requestAnimationFrame(() => {
       for (const thought of this.list.querySelectorAll<HTMLDetailsElement>('.thought[data-active="true"][open]')) {
         const body = thought.querySelector<HTMLElement>('.thought-body')!;
-        if (body.dataset.follow !== 'false') body.scrollTop = body.scrollHeight;
+        if (thoughtFollowing(body)) body.scrollTop = body.scrollHeight;
       }
       if (this.following && this.viewport.isConnected) this.viewport.scrollTop = this.viewport.scrollHeight;
     });
@@ -93,8 +95,6 @@ export class AgentTranscript {
     node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-flow" hidden></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
     const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
     remember(thought, () => `${node.dataset.entryId}:plain`);
-    const body = thought.querySelector<HTMLElement>('.thought-body')!;
-    body.addEventListener('scroll', () => { body.dataset.follow = String(body.scrollHeight - body.scrollTop - body.clientHeight < 28); }, { passive: true });
     return node;
   }
 
@@ -124,7 +124,7 @@ export class AgentTranscript {
     const summary = thought.querySelector('summary')!; const state = busy ? '思考中' : '已思考'; if (summary.textContent !== state) summary.textContent = state;
     const body = thought.querySelector<HTMLElement>('.thought-body')!;
     if (body.textContent !== plain) {
-      const follow = body.dataset.follow !== 'false';
+      const follow = thoughtFollowing(body);
       body.textContent = plain;
       if (follow) body.scrollTop = body.scrollHeight;
     }
@@ -173,8 +173,6 @@ export class AgentTranscript {
           details.className = 'thought agent-turn-thought';
           details.innerHTML = '<summary></summary><div class="thought-body"></div>';
           remember(details, () => `${entryId}:${[...host.children].indexOf(details)}`);
-          const body = details.querySelector<HTMLElement>('.thought-body')!;
-          body.addEventListener('scroll', () => { body.dataset.follow = String(body.scrollHeight - body.scrollTop - body.clientHeight < 28); }, { passive: true });
           node = details;
         } else {
           node = document.createElement('div');
@@ -193,7 +191,7 @@ export class AgentTranscript {
         const summary = details.querySelector('summary')!; const label = live ? '思考中' : '已思考'; if (summary.textContent !== label) summary.textContent = label;
         const body = details.querySelector<HTMLElement>('.thought-body')!;
         if (body.textContent !== part.text) {
-          const follow = body.dataset.follow !== 'false';
+          const follow = thoughtFollowing(body);
           body.textContent = part.text;
           if (follow) body.scrollTop = body.scrollHeight;
         }

@@ -9,10 +9,26 @@ interface DialogHost extends PickerHost { globalName?: (id: string) => string; m
 export function projectTeamMessages(room: string, saved: ProjectTeamMessage[]) {
   return saved.filter(message => message.conversation_id === room).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 }
+const clock = (at: number) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(at);
+/// 交回的结果给个颜色：做完了、被停下了、失败。
+const returnTone = (state: string) => state.startsWith('做完') ? 'done' : state.includes('停') ? 'stopped' : 'failed';
+/// 同席自己发的派活、交回记录：不用气泡，串成一条接力线（主脑 → 成员，成员交回）。
+function relayHtml(message: ProjectTeamMessage, escape: Escape) {
+  const text = attachmentText(message.content).trim();
+  const handoff = text.match(/^主脑 → (.+?)：([\s\S]*)$/);
+  const back = handoff ? null : text.match(/^(.+?) 交回任务 (\S+)：(.+)$/);
+  const head = handoff ? `<strong>主脑</strong><span class="relay-arrow" aria-label="派给">→</span><strong>${escape(handoff[1])}</strong>`
+    : back ? `<strong>${escape(back[1])}</strong><span>交回</span><span class="relay-tag ${returnTone(back[3])}">${escape(back[3])}</span><small>任务 ${escape(back[2])}</small>`
+    : '<strong>同席</strong>';
+  const body = handoff ? `<p class="relay-text">${escape(handoff[2].trim())}</p>` : back ? '' : `<div class="relay-text markdown">${agentMarkdown(text, escape)}</div>`;
+  const kind = handoff ? 'handoff' : back ? `return ${returnTone(back[3])}` : 'note';
+  return `<article class="project-team-message system relay-item ${kind}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2"><span class="relay-node" aria-hidden="true"></span><div class="relay-body"><div class="relay-line">${head}<time>${clock(message.created_at)}</time></div>${body}</div></article>`;
+}
 export function projectTeamMessageHtml(message: ProjectTeamMessage, escape: Escape, name: (id: string) => string, avatar: (id: string) => string, own = '<span class="system-avatar">你</span>') {
+  if (message.kind === 'system' && !message.sender_agent) return relayHtml(message, escape);
   const author = message.kind === 'user' ? '你' : message.sender_agent ? name(message.sender_agent) : '同席';
   const portrait = message.sender_agent ? avatar(message.sender_agent) : message.kind === 'user' ? own : '<span class="system-avatar">·</span>';
-  return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(message.created_at)}</time></div>${message.kind === 'user' ? `<div class="bubble">${escape(attachmentText(message.content))}</div>` : `<div class="bubble markdown">${agentMarkdown(attachmentText(message.content), escape)}</div>`}${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
+  return `<article class="message project-team-message ${message.kind === 'user' ? 'own' : 'agent-message'} ${message.kind === 'system' ? 'system' : ''}" data-team-message-id="${escape(message.id)}" data-timeline-at="${message.created_at}" data-timeline-order="2">${portrait}<div class="project-team-message-body"><div class="message-author"><strong>${escape(author)}</strong><time>${clock(message.created_at)}</time></div>${message.kind === 'user' ? `<div class="bubble">${escape(attachmentText(message.content))}</div>` : `<div class="bubble markdown">${agentMarkdown(attachmentText(message.content), escape)}</div>`}${attachmentHtml(message.content,message.conversation_id,escape)}</div></article>`;
 }
 /// 后端存的是 Windows 规范化路径（以 `\\?\` 开头），给人看时去掉这个前缀。
 const plainPath = (path: string) => path.startsWith('\\\\?\\') ? path.slice(4) : path;
