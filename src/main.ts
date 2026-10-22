@@ -5,13 +5,14 @@ import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, 
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
+import { patchMessage } from './live_patch';
 import { plainThought, steerIds, thoughtFlow, type FlowPart } from './thought_flow';
 import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
-import { brainJobsPage, jobLive } from './project_brain_jobs';
+import { brainJobsPage, jobLive, modelText } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
@@ -59,6 +60,11 @@ let info: AppInfo | null = null;
 let conversations: Conversation[] = [];
 let detail: ConversationDetail | null = null;
 let selectedId = localStorage.getItem('hub.selected') || '';
+/// 回复区下一帧的重画（见 paintLiveMessages）；正在显示的消息列表属于哪个会话（同一会话重画时保留滚动位置）。
+let liveFrame = 0;
+let shownConversation = '';
+let listPaused = false;
+let listTop = 0;
 let hudActive = false;
 let filter: 'all' | 'direct' | 'group' = 'all';
 let archived = false;
@@ -678,11 +684,19 @@ async function refreshList() {
 
 async function selectConversation(id: string) {
   const generation = ++detailGeneration;
+  const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
   activeProjectModule = 'team';
   localStorage.setItem('hub.selected', id);
   renderList();
+  // 换到另一个会话（例如新建的排到了最上面）时，侧栏把它滚进视野；同一会话重新载入不动侧栏。
+  const list = document.querySelector<HTMLElement>('#conversation-list'), card = list?.querySelector<HTMLElement>('.conversation.active');
+  if (switched && list && card) {
+    const box = list.getBoundingClientRect(), at = card.getBoundingClientRect();
+    if (at.top < box.top) list.scrollTop -= box.top - at.top + 8;
+    else if (at.bottom > box.bottom) list.scrollTop += at.bottom - box.bottom + 8;
+  }
   if (hudActive) void emit('hud:select', { id });
   try {
     const result = await invoke<ConversationDetail>('get_conversation', { id });
@@ -752,6 +766,8 @@ function renderMessage(message: Message, includeDetails = true) {
   // 带位置标记的工具调用穿插在回复里显示；没有标记的（旧消息）仍汇总在回复顶部。
   const placed = new Set(flow?.flatMap(part => part.kind === 'tool' ? [part.text] : []));
   const toolsHtml = toolActivity(toolEvents.filter(event => !placed.has(event.event_id)), escape);
+  // 没有回复内容的失败：把原因写进气泡（原生成员的报错只在运行记录里，toast 一闪就没了）。
+  const failure = message.status === 'failed' ? Object.values(runtimes).flatMap(runsOf).find(run => run.assistant_message_id === message.id)?.error : '';
   const shown=attachmentText(own?message.content:visibleQuestionReply(message.content,message.status==='streaming'));
   const questionOnly=!own&&message.content.includes('```tongxi-question')&&!shown;
   const portrait = own ? ownFace() : avatar(member(message.sender_id));
@@ -761,7 +777,7 @@ function renderMessage(message: Message, includeDetails = true) {
   const partsHtml = (parts: FlowPart[]) => parts.map(part => part.kind === 'thought' ? thoughtBlock(part.text, streaming && part === lastPart) : part.kind === 'tool' ? toolHtml(part.text) : `<div class="bubble markdown">${agentMarkdown(attachmentText(part.text), escape)}</div>`).join('');
   const bodyHtml = flow?.length
     ? partsHtml(flow)
-    : `<div class="bubble${own ? '' : ' markdown'}">${(own ? escape : (value: string) => agentMarkdown(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : '本次运行未产生回复内容。'))}</div>`;
+    : `<div class="bubble${own ? '' : ' markdown'}">${(own ? escape : (value: string) => agentMarkdown(value, escape))(questionOnly?'':shown || (message.status === 'streaming' ? '正在等待回复…' : message.status === 'interrupted' ? '已停止，尚无回复内容。' : failure ? `运行失败：${failure}` : '本次运行未产生回复内容。'))}</div>`;
   const delivery = `${attachmentHtml(message.content,message.conversation_id,escape)}<div class="message-delivery">${icon('check')}${labels[message.status]}</div>`;
   if (flow?.some(part => part.kind === 'steer')) {
     // 回复中途插过话：插话之前的回复留在原处，插话消息跟在后面，之后的回复在插话下面另起一条。
@@ -996,28 +1012,78 @@ function updateRuntimeControls() {
   const note = main.querySelector('#runtime-note');
   if (note && isNative && cli) note.textContent = `这条会话已交给 ${member(currentAgentId()).name} 的 CLI，同席暂停使用；关闭 CLI 窗口或点“收回到同席”后继续。`;
   else if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (selectedRun?.status === 'starting' ? '正在准备原生会话…' : selectedRun?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复… 可直接输入插话${NATIVE_STEER.has(currentAgentId()) ? '引导，不会打断' : '，发送时会先停止当前回复'} · Esc 停止`) : currentRuntime().connection === 'connected' ? (currentAgentId() === 'albion-wsl' ? `${member(currentAgentId()).name} 已连接。` : `${member(currentAgentId()).name} 已连接；原生工具和问答可用。`) : currentRuntime().connection === 'connecting' ? `正在连接 ${member(currentAgentId()).name}…` : `${member(currentAgentId()).name} 未连接；连接后才能发送。`);
+  // 状态行前面的小圆点跟着变色：回复中、已连接、连接中、出错或没连。
+  if (note && isNative) note.parentElement!.dataset.state = cli ? 'away' : currentRuntime().error ? 'error' : currentRun ? 'busy' : currentRuntime().connection === 'connected' ? 'ready' : currentRuntime().connection === 'connecting' ? 'connecting' : 'off';
   renderLiveSettings();
   updateDiscussionControls();
   updateProjectControls();
+  // 流式事件有时几毫秒来一个、每次一两个字：回复区一帧最多重画一次。
+  if (!liveFrame) liveFrame = requestAnimationFrame(() => { liveFrame = 0; paintLiveMessages(); });
+}
+
+function paintLiveMessages() {
+  if (!detail || !selectedId) return;
   for (const snapshot of Object.values(runtimes)) for (const active of runsOf(snapshot)) {
     if (active.conversation_id !== selectedId || (!liveRun(active) && !detail.messages.some(message => message.id === active.assistant_message_id))) continue;
-    const messages = main.querySelector('#messages')!;
-    const old = messages.querySelector(`[data-message-id="${active.assistant_message_id}"]`);
-    const thoughtScroll = captureThoughtScroll(old as HTMLElement | null);
+    const messages = main.querySelector('#messages');
+    if (!messages) return;
+    const old = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
+    // 内容没变就不重画：否则别的成员在流式时，这里已说完的回复也跟着每帧重建，点不开折叠、选不中文字。
+    const paint = `${active.status}|${active.text.length}|${active.thought?.length || 0}|${detail.messages.length}|${(active.tool_events || []).map(tool => `${tool.event_id}:${tool.status}:${tool.output?.length || 0}`).join(',')}`;
+    if (old?.dataset.paint === paint) continue;
+    const thoughtScroll = captureThoughtScroll(old);
     const toolState = captureToolState(old);
     const html = renderMessage({ id: active.assistant_message_id, conversation_id: selectedId, sender_id: active.agent_id, content: active.text, thought: active.thought, tool_events: active.tool_events, status: liveRun(active) ? 'streaming' : active.status as Message['status'], created_at: detail.messages.find(message => message.id === active.assistant_message_id)?.created_at || Date.now() }, detail.conversation.kind !== 'group');
     const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
-    if (old) old.outerHTML = html;
-    else { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
+    // 能就地更新就不整条替换：思考框的节点留着，用户往上翻的滚动不会被每帧的重画打断。
+    const patched = !!old && patchMessage(old, html);
+    if (!patched && old) old.outerHTML = html;
+    else if (!old) { messages.querySelector('.welcome')?.remove(); messages.insertAdjacentHTML('beforeend', html); }
     const updated = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
     // 插话已经挪进这条回复里显示，去掉按时间单独排的那一份。
     for (const id of steerIds(active.thought)) for (const node of messages.querySelectorAll(`[data-message-id="${CSS.escape(id)}"]`)) if (!updated?.contains(node)) node.remove();
-    if (updated) restoreThoughtScroll(updated, thoughtScroll);
-    if (updated) restoreToolState(updated, toolState);
-    if (nearBottom) pinToBottom(messages);
+    if (updated) {
+      updated.dataset.paint = paint;
+      if (!patched) restoreThoughtScroll(updated, thoughtScroll);
+      restoreToolState(updated, toolState);
+      restoreOpenedDetails(updated);
+    }
+    if (nearBottom && !listPaused) pinToBottom(messages);
   }
   syncChatQuestions();
 }
+
+/// 用户亲手展开/收起过的折叠块（消息 id + 第几个）：整页重画、流式重画后照这个恢复，不会一点开就被关掉。
+const openedDetails = new Map<string, boolean>();
+function detailsKey(details: HTMLDetailsElement) {
+  const owner = details.closest<HTMLElement>('[data-message-id]');
+  return owner ? `${owner.dataset.messageId}:${[...owner.querySelectorAll('details')].indexOf(details)}` : '';
+}
+function restoreOpenedDetails(root: ParentNode) {
+  for (const details of root.querySelectorAll<HTMLDetailsElement>('details')) {
+    const chosen = openedDetails.get(detailsKey(details));
+    if (chosen !== undefined && details.open !== chosen) details.open = chosen;
+  }
+}
+/// 消息列表跟不跟到底：用户往上翻就停，自己翻回底部再跟（理由同思考框，见 thought_scroll）。
+main.addEventListener('wheel', event => {
+  const target = event.target as Element | null;
+  if (event.deltaY < 0 && target?.closest('#messages') && !target.closest('.thought-body')) listPaused = true;
+}, { passive: true });
+main.addEventListener('scroll', event => {
+  const list = event.target;
+  if (!(list instanceof HTMLElement) || list.id !== 'messages') return;
+  const gap = list.scrollHeight - list.scrollTop - list.clientHeight;
+  if (list.scrollTop < listTop && gap > 4) listPaused = true;
+  else if (gap <= 4 && list.scrollTop >= listTop) listPaused = false;
+  listTop = list.scrollTop;
+}, { capture: true, passive: true });
+main.addEventListener('click', event => {
+  const details = (event.target as Element | null)?.closest('summary')?.parentElement;
+  if (!(details instanceof HTMLDetailsElement) || !details.closest('#messages')) return;
+  const key = detailsKey(details);
+  if (key) openedDetails.set(key, !details.open);
+});
 
 async function connectAgent(agentId = currentAgentId()) {
   try { adoptRuntime(await invoke<RuntimeSnapshot>(`connect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${member(agentId).name} 原生接口已连接`); }
@@ -1319,10 +1385,13 @@ function updateProjectControls() {
     const ready = members.length > 0 && members.every(agent => runtimes[agent]?.connection === 'connected');
     connect.hidden = !detail.project;
     connect.disabled = !detail.project || groupConnecting || discussionBusy(currentDiscussion()) || detail.conversation.archived || ready;
-    connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '项目成员已连接' : '连接项目成员';
+    connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '成员都已连接' : '连接项目成员';
+    connect.classList.toggle('ready', ready);
   }
   const title = main.querySelector('#project-title');
-  if (title) title.textContent = detail.project ? `${detail.project.name} · 项目群聊` : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要一位 Windows 成员';
+  if (title) title.textContent = detail.project ? detail.project.name : eligible ? '项目协作 · 选择目录后在此群聊中直接交流与开发' : '项目协作至少需要一位 Windows 成员';
+  if (title instanceof HTMLElement) title.title = detail.project ? `项目目录：${detail.project.root.replace(/^\\\\\?\\/, '')}` : '';
+  main.querySelector('#project-controls')?.classList.toggle('bound', !!detail.project);
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
   if (share) {
     const project = detail.project;
@@ -1468,6 +1537,9 @@ function renderConversationChat() {
     return;
   }
   const conversation = detail.conversation;
+  // 同一会话重画（例如回复结束后重新载入）时，翻到上面在看的就留在原处，不拉回底部。
+  const previous = main.querySelector<HTMLElement>('#messages');
+  const keepTop = previous && shownConversation === conversation.id && (listPaused || previous.scrollHeight - previous.scrollTop - previous.clientHeight > 120) ? previous.scrollTop : null;
   const roster = conversation.members.map(member);
   const isGroup = conversation.kind === 'group';
   const directAgent = conversation.kind === 'direct' ? roster[0] : null;
@@ -1476,8 +1548,8 @@ function renderConversationChat() {
   // 回复中途的插话跟着那条回复显示，不再按自己的时间单独排。
   const steered = new Set([...detail.messages.map(message => message.thought), ...Object.values(runtimes).flatMap(snapshot => runsOf(snapshot).map(run => run.thought))].flatMap(steerIds));
   const name = directAgent?.name || ''; 
-  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : `${roster.length} 位成员 · 共同讨论，分别思考`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
-    <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
+  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : detail.project ? `项目群 · ${detail.project_agent_chats.filter(chat => !isBrain(chat.agent_id)).length} 个成员会话 · 你的话交给主脑` : `${roster.length} 位成员 · 群聊讨论`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
+    <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"${detail.project ? ' hidden' : ''}><span class="status-dot" aria-hidden="true"></span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
       <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">项目成员配置</button><button data-project-sessions class="secondary" hidden>会话绑定</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.filter(message => !steered.has(message.id)).map(message => renderMessage(message, !isGroup)).join('')}` : `<div class="welcome">${directAgent && portrait(directAgent) ? `<div class="albion-hero small" style="background-image:url('${portrait(directAgent)}')" aria-hidden="true"></div>` : `<div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div>`}<span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
@@ -1536,7 +1608,11 @@ function renderConversationChat() {
   });
   document.querySelector('#composer')!.addEventListener('submit', event => { event.preventDefault(); void submit(); });
   document.querySelectorAll<HTMLButtonElement>('[data-suggestion]').forEach(button => button.addEventListener('click', () => { input.value = button.dataset.suggestion!; localStorage.setItem(draftKey(conversation.id), input.value); input.focus(); }));
-  pinToBottom(document.querySelector('#messages'));
+  const messages = main.querySelector<HTMLElement>('#messages');
+  if (messages) restoreOpenedDetails(messages);
+  if (messages && keepTop !== null) messages.scrollTop = keepTop; else { listPaused = false; pinToBottom(messages); }
+  listTop = messages?.scrollTop ?? 0;
+  shownConversation = conversation.id;
   resizeComposer(input);
   updateRuntimeControls();
 }
@@ -1701,7 +1777,7 @@ function renderLiveSettingsInner(force: boolean) {
   const providerKey = `${conversation.id}:${settingsAgentId}`;
   const provider = liveProviderSelection[providerKey] || selectedProvider(catalog, session.model || snapshot?.default_model);
   const providerHtml = providers.length > 1 ? `<label>提供商<select id="live-provider" aria-label="当前会话模型提供商">${providerOptionsHtml(catalog, provider, escape)}</select></label>` : '';
-  const modelHtml = `<select id="live-model" aria-label="当前会话模型">${modelOptionsHtml(catalog, provider, session.model, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`)}${session.model && !catalog.some(item => item.id === session.model) ? `<option value="${escape(session.model)}" selected>${escape(session.model)} · 待验证</option>` : ''}</select>`;
+  const modelHtml = `<select id="live-model" aria-label="当前会话模型">${modelOptionsHtml(catalog, provider, session.model, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`)}${session.model && !catalog.some(item => item.id === session.model) ? `<option value="${escape(session.model)}" selected>${escape(modelText(session.model))} · 待验证</option>` : ''}</select>`;
   const efforts = catalog.find(item => item.id === selectedModel)?.efforts || Object.keys(effortLabels);
   host.innerHTML = `${conversation.kind === 'group' ? `<label>成员<select id="live-agent" aria-label="设置成员">${conversation.members.map(id => `<option value="${escape(id)}" ${id === settingsAgentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>` : ''}${providerHtml}<label class="live-model-field">模型${modelHtml}</label><label>思考<select id="live-effort" aria-label="当前会话思考强度"><option value="">${autoProjectSetting ? '自动按任务 · 聊天默认' : '默认'}</option>${efforts.map(effort => `<option value="${escape(effort)}" ${session.reasoning_effort === effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><button type="button" id="live-reset" class="text-button">恢复默认</button>${connected ? '' : '<button type="button" id="live-connect" class="text-button">连接并读取模型</button>'}<span id="live-setting-status" role="status"></span>`;
   host.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button').forEach(control => { control.disabled = conversation.archived; });
@@ -1923,7 +1999,7 @@ function serviceStatusHtml(info: ServiceInfo | undefined, snapshot: RuntimeSnaps
   const updateLabels: Record<string, string> = { unchecked: '未检测', managed: '同席管理的版本', external: '本机安装的版本', maintenance: '维护中' };
   const update = info ? (updateLabels[info.update_state] ?? escape(info.update_state)) : '未检测';
   // 状态块两行对齐：连接（含运行版本）/ 更新；安装那一行由接入扫描画在上面。
-  return `<div class="fact-row"><span class="fact-label">连接</span><span class="status-dot ${connection === 'connected' ? '' : 'muted'}"></span><span>${label}${busy ? ' · 运行中' : ''}</span><span class="fact-sub">${serviceVersionText(info, snapshot)}</span></div><div class="fact-row"><span class="fact-label">更新</span><span data-service-update>${update}</span></div>`;
+  return `<div class="fact-row"><span class="fact-label">连接</span><span class="status-dot ${connection === 'connected' ? '' : 'muted'}"></span><span>${label}${busy ? ' · 运行中' : ''}</span><span class="fact-sub" title="${serviceVersionText(info, snapshot)}">${serviceVersionText(info, snapshot)}</span></div><div class="fact-row"><span class="fact-label">更新</span><span data-service-update>${update}</span></div>`;
 }
 
 // The backend re-detects the service under its maintenance lock and reports the

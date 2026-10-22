@@ -1,4 +1,5 @@
 import type { BrainJob, BrainOverview } from './types';
+import { agentMarkdown } from './agent_markdown';
 
 type Escape = (value: string | number) => string;
 
@@ -26,7 +27,7 @@ function state(job: BrainJob): [string, string] {
 }
 
 /// DSH 的模型存成 JSON 数组（线路 + 模型），拆开显示。
-function modelText(model: string | null) {
+export function modelText(model: string | null) {
   if (!model) return '会话默认模型';
   try { const parts = JSON.parse(model); if (Array.isArray(parts)) return parts.join(' / '); } catch { /* 普通模型名 */ }
   return model;
@@ -38,7 +39,8 @@ function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, o
   const long = job.content.trim() !== title;
   const timing = jobLive(job) ? `${when(job.created_at)} 派出 · 已 ${span(job.created_at, Date.now())}` : `${when(job.created_at)} 派出 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`;
   const tree = job.branch ? `<span title="${escape(job.worktree || '')}">工作树 ${escape(job.branch)}${job.worktree ? '' : '（已合并或丢弃）'}</span>` : '<span>在项目目录里做</span>';
-  const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary><div class="brain-job-text">${escape(body)}</div></details>`;
+  // 任务原文照原样显示；交回的结果是成员的回复，按 Markdown 排版。
+  const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary><div class="brain-job-text${key === 'result' ? ' markdown' : ''}">${key === 'result' ? agentMarkdown(body, escape) : escape(body)}</div></details>`;
   return `<article class="brain-job ${tone}" data-job-id="${escape(job.id)}">
     <header>${avatar(job.seat)}<strong>${escape(job.name)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(timing)}</small></header>
     <p class="brain-job-title">${escape(title)}</p>

@@ -11,9 +11,22 @@ export function agentMarkdown(text: string, escape: (value: string | number) => 
   let code: string[] = [];
   const flush = () => { if (paragraph.length) output.push(`<p>${paragraph.map(inline).join('<br>')}</p>`); paragraph = []; };
   const closeList = () => { if (list) output.push(`</${list}>`); list = null; };
+  // 连续几行 `| … |`：第二行是 `|---|` 分隔行才排成表格，否则照普通段落显示（流式中分隔行还没到也一样）。
+  let table: string[] = [];
+  const cells = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table; table = [];
+    if (rows.length < 2 || !/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(rows[1])) { paragraph.push(...rows); return; }
+    const align = cells(rows[1]).map(cell => cell.endsWith(':') ? (cell.startsWith(':') ? 'center' : 'right') : '');
+    const row = (line: string, tag: 'th' | 'td') => `<tr>${cells(line).map((cell, i) => `<${tag}${align[i] ? ` style="text-align:${align[i]}"` : ''}>${inline(cell)}</${tag}>`).join('')}</tr>`;
+    output.push(`<div class="md-table"><table><thead>${row(rows[0], 'th')}</thead><tbody>${rows.slice(2).map(line => row(line, 'td')).join('')}</tbody></table></div>`);
+  };
   // 跨行的公式块（`$$` 或 `\[` 独占一行开头、后面几行才闭合）整体交给 KaTeX。
   let math: { close: string; lines: string[] } | null = null;
   for (const line of text.split('\n')) {
+    if (!fence && !math && /^\s*\|.*\|\s*$/.test(line)) { if (!table.length) { flush(); closeList(); } table.push(line); continue; }
+    flushTable();
     if (math) {
       const end = line.indexOf(math.close);
       if (end < 0) { math.lines.push(line); continue; }
@@ -45,7 +58,7 @@ export function agentMarkdown(text: string, escape: (value: string | number) => 
     if (/^>\s?/.test(line)) { flush(); output.push(`<blockquote>${inline(line.replace(/^>\s?/, ''))}</blockquote>`); continue; }
     paragraph.push(line);
   }
-  flush(); closeList();
+  flushTable(); flush(); closeList();
   if (fence) output.push(`<pre><code>${escape(code.join('\n'))}</code></pre>`);
   // 流式中还没闭合的公式块先按原文显示，闭合后再渲染。
   if (math) output.push(`<p>${escape(math.close === '$$' ? '$$' : '\\[')}${math.lines.map(line => escape(line)).join('<br>')}</p>`);

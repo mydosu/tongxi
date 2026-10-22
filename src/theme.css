@@ -12,6 +12,13 @@
   --accent: #58628f;
   --accent-2: #7f74b4;
   --line: rgb(118 126 172 / .15);
+  /* 次要文字两档，状态四色：在做/成功、排队、搁着/被停、失败。 */
+  --muted: #747b99;
+  --faint: #9ea3bd;
+  --ok: #4a9f7b;
+  --queue: #6c86b6;
+  --warn: #b5873a;
+  --err: #b0634f;
   --ease: cubic-bezier(.2, .8, .2, 1);
   --veil: .16;
 }
@@ -239,7 +246,7 @@ html:not([data-hud]) .main.view-enter > :nth-child(2) { animation-delay: .05s; }
 .session-bind-note .text-button { color: #6c62a8; }
 .modal:has(#project-session-form), .modal:has(#project-form) { width: 600px; }
 
-@media (max-width: 1120px) { html:not([data-hud]) .shell { grid-template-columns: 228px minmax(0, 1fr); } .theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1120px) { html:not([data-hud]) .shell { grid-template-columns: 236px minmax(0, 1fr); } .theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 /* ---------- 席位 ---------- */
 .avatar.seat { position: relative; }
@@ -314,7 +321,9 @@ html:not([data-hud]) .chat-heading { flex: 1; }
 .theme-name small { display: inline-flex; align-items: center; gap: 4px; }
 .theme-mode, .theme-remove { padding: 1px 6px; border-radius: 6px; font-size: 10px; color: #6c62a8; background: rgb(255 255 255 / .8); border: 1px solid rgb(165 152 216 / .35); }
 .theme-remove { color: #ad6659; padding: 1px 5px; }
-.theme-grid { max-height: 52vh; overflow-y: auto; padding: 3px; }
+.theme-grid { max-height: 52vh; overflow-y: auto; padding: 3px 10px 3px 3px; scrollbar-gutter: stable; }
+.theme-mode:hover { background: #fff; border-color: rgb(165 152 216 / .7); }
+.theme-remove:hover { background: rgb(255 243 240); border-color: rgb(173 102 89 / .45); }
 
 /* ---------- 设置收进胶囊：平时一行摘要，点开是浮层 ---------- */
 .chat-tools { position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0 2px; flex-shrink: 0; z-index: 12; }
@@ -383,6 +392,15 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .service-facts .setup-line > .fact-label { flex: none; min-width: 0; }
 .service-facts .setup-line > span:not(.fact-label) { flex: 0 1 auto; min-width: 0; }
 .service-more > button span { font-size: 10px; }
+/* 状态值不折行，后面的运行版本、来源放不下就省略（悬停看全）；版本说明挪到按钮上面，几张卡的按钮行对齐 */
+.service-facts .setup-line { flex-wrap: nowrap; }
+.service-facts .setup-line > span:not(.fact-label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fact-row > span:not(.fact-label):not(.fact-sub):not(.status-dot) { flex: none; white-space: nowrap; }
+.fact-sub { flex: 1; text-align: right; }
+html:not([data-hud]) .fact-row > .status-dot { width: 7px; height: 7px; background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .14); }
+html:not([data-hud]) .fact-row > .status-dot.muted { background: #c6c9d8; box-shadow: none; }
+.service-actions, .service-check-result { order: 2; }
+.service-update:not([hidden]) { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: -4px; padding: 0 12px; color: var(--faint); }
 
 /* ---------- 项目成员勾选 ---------- */
 .project-roster { display: grid; gap: 8px; border: 1px solid rgb(255 255 255 / .85); border-radius: 12px; padding: 12px 14px 14px; margin: 2px 0 16px; background: rgb(255 255 255 / .45); }
@@ -430,3 +448,127 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .self-avatar-row { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; padding: 14px 18px; border-radius: 18px; background: var(--glass-card, rgb(255 255 255 / .55)); border: 1px solid var(--glass-line, rgb(255 255 255 / .6)); }
 .self-avatar-row > div > strong { display: block; font-size: 14px; color: #3a4157; }
 .self-avatar-row > div > span { font-size: 12px; color: #8a90ad; }
+
+/* ---------- 字号下限：辅助文字不小于 11px ---------- */
+html:not([data-hud]) .conversation-meta, html:not([data-hud]) .conversation-meta small { font-size: 11px; }
+html:not([data-hud]) .conversation-meta small { color: var(--faint); }
+html:not([data-hud]) .conversation-preview { font-size: 11.5px; color: #8b90a8; }
+html:not([data-hud]) .local-indicator, html:not([data-hud]) .list-label { font-size: 11px; }
+html:not([data-hud]) .chat-header p { font-size: 12px; color: var(--muted); }
+html:not([data-hud]) .message-author { font-size: 12px; }
+html:not([data-hud]) .message-author time, html:not([data-hud]) .message-delivery, html:not([data-hud]) .date-divider { font-size: 11px; color: var(--faint); }
+html:not([data-hud]) .discussion-status, html:not([data-hud]) #live-setting-status { font-size: 11.5px; }
+html:not([data-hud]) .modal-heading p { font-size: 12.5px; line-height: 1.75; color: var(--muted); }
+html:not([data-hud]) .modal-footer > span { font-size: 11px; color: var(--faint); }
+
+/* ---------- 状态行：一颗圆点 + 一句话，不再是一条框 ---------- */
+html:not([data-hud]) .milestone-note { gap: 9px; padding: 2px 2px 4px 4px; background: transparent; border: 0; border-radius: 0; font-size: 12px; color: var(--muted); }
+.milestone-note > .status-dot { width: 7px; height: 7px; background: #c6c9d8; }
+.milestone-note[data-state="ready"] > .status-dot { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .16); }
+.milestone-note[data-state="busy"] > .status-dot { background: var(--ok); animation: member-pulse 1.6s ease-in-out infinite; }
+.milestone-note[data-state="connecting"] > .status-dot { background: var(--queue); animation: member-pulse 1.6s ease-in-out infinite; }
+.milestone-note[data-state="away"] > .status-dot { background: var(--warn); }
+.milestone-note[data-state="error"] > .status-dot { background: var(--err); }
+.milestone-note[data-state="error"] { color: var(--err); }
+html:not([data-hud]) .milestone-note .secondary { padding: 4px 12px; font-size: 12px; }
+
+/* ---------- 输入框：标题行收掉（上面的状态行已经说了），提示一行放得下就放，放不下省略 ---------- */
+html:not([data-hud]) .composer { padding: 12px 14px 10px 16px; }
+html:not([data-hud]) .composer-top { display: none; }
+html:not([data-hud]) .composer textarea { margin: 2px 0 8px; font-size: 14px; line-height: 1.75; }
+html:not([data-hud]) .composer-bottom > span, html:not([data-hud]) .project-chat-composer-bottom > span { flex: 1; min-width: 0; max-width: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 1.4; color: var(--faint); }
+html:not([data-hud]) .project-chat-composer-bottom .attachment-picker { margin-right: 2px; }
+html:not([data-hud]) .composer-actions { gap: 6px; }
+html:not([data-hud]) .attachment-picker { width: 30px; height: 30px; border-radius: 10px; border-color: rgb(165 152 216 / .3); color: #6c6aa8; background: rgb(255 255 255 / .5); }
+html:not([data-hud]) .attachment-picker:hover { background: #fff; border-color: rgb(165 152 216 / .6); }
+html:not([data-hud]) #save-message { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); padding-inline: 10px; }
+html:not([data-hud]) #save-message:hover:not(:disabled) { background: rgb(255 255 255 / .7); color: #4f5878; }
+html:not([data-hud]) .composer .primary, html:not([data-hud]) .project-chat-composer-bottom .primary { padding: 8px 16px; font-size: 12.5px; border-radius: 11px; }
+
+/* ---------- 项目群：一条工具栏（项目名、目录、操作） ---------- */
+html:not([data-hud]) .project-controls { gap: 14px; margin: 0 0 2px; padding: 8px 8px 8px 16px; border-radius: 14px; }
+.project-controls.bound .project-entry-copy small { display: none; }
+html:not([data-hud]) .project-entry-copy strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; color: var(--ink); cursor: default; }
+html:not([data-hud]) .project-entry-copy small { font-size: 11.5px; color: var(--faint); }
+html:not([data-hud]) .project-entry-actions { gap: 4px; }
+html:not([data-hud]) .project-entry-actions > button { padding: 5px 11px; font-size: 12px; border-radius: 9px; }
+html:not([data-hud]) .project-entry-actions > .secondary { background: transparent; border-color: transparent; box-shadow: none; color: #59618a; }
+html:not([data-hud]) .project-entry-actions > .secondary:hover:not(:disabled) { background: rgb(255 255 255 / .85); }
+html:not([data-hud]) #connect-project-members:not(.ready):not([hidden]) { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+html:not([data-hud]) #connect-project-members.ready { display: inline-flex; align-items: center; gap: 6px; opacity: 1; color: var(--ok); cursor: default; }
+#connect-project-members.ready::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .16); }
+html:not([data-hud]) #share-project-summary { padding: 5px 10px; font-size: 12px; color: var(--faint); }
+html:not([data-hud]) #share-project-summary[aria-pressed="true"] { color: var(--accent-2); }
+
+/* ---------- 团队对话：派活和交回串成一条接力线 ---------- */
+.relay-item { position: relative; display: flex; gap: 12px; max-width: 760px; margin: 0 0 0 14px; padding: 4px 0 10px; color: var(--muted); }
+.relay-item::before { content: ''; position: absolute; left: 4.5px; top: 0; bottom: 0; width: 1.5px; border-radius: 2px; background: linear-gradient(rgb(165 152 216 / .5), rgb(141 182 222 / .5)); }
+.relay-item:not(.relay-item + .relay-item)::before { top: 14px; }
+.relay-item:not(:has(+ .relay-item))::before { bottom: auto; height: 14px; }
+.relay-item:not(.relay-item + .relay-item):not(:has(+ .relay-item))::before { display: none; }
+.relay-item:not(:has(+ .relay-item)) { margin-bottom: 20px; }
+.relay-node { position: relative; z-index: 1; flex: none; width: 11px; height: 11px; margin-top: 5px; border-radius: 50%; background: #fff; border: 2px solid var(--lilac); }
+.relay-item.handoff .relay-node { background: var(--lilac); border-color: #fff; box-shadow: 0 0 0 1.5px var(--lilac); }
+.relay-item.return.done .relay-node { border-color: var(--ok); }
+.relay-item.return.stopped .relay-node { border-color: var(--warn); }
+.relay-item.return.failed .relay-node { border-color: var(--err); }
+.relay-item.note .relay-node { border-color: #c6c9d8; }
+.relay-body { flex: 1; min-width: 0; }
+.relay-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 21px; font-size: 12.5px; }
+.relay-line strong { color: var(--ink); font-weight: 600; }
+.relay-arrow { color: var(--accent-2); font-weight: 600; }
+.relay-line small, .relay-line time { font-size: 11px; color: var(--faint); }
+.relay-tag { padding: 0 9px; border-radius: 999px; font-size: 11.5px; line-height: 20px; }
+.relay-tag.done { background: rgb(74 159 123 / .13); color: var(--ok); }
+.relay-tag.stopped { background: rgb(181 135 58 / .13); color: var(--warn); }
+.relay-tag.failed { background: rgb(176 99 79 / .11); color: var(--err); }
+.relay-text { width: fit-content; max-width: 100%; margin: 5px 0 0; padding: 8px 13px; border-radius: 4px 12px 12px 12px; background: rgb(255 255 255 / .58); border: 1px solid rgb(255 255 255 / .85); color: #4b5372; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.relay-text.markdown { white-space: normal; }
+.relay-text.markdown p { margin: 0 0 6px; }
+.relay-text.markdown > :last-child { margin-bottom: 0; }
+
+/* ---------- 成员和主脑会话 ---------- */
+.agent-tools-summary > summary::before { content: none; }
+html:not([data-hud]) .project-agent-chat-heading { border-bottom-color: var(--glass-line); padding: 4px 2px 8px; }
+html:not([data-hud]) .project-chat-settings-note { font-size: 11.5px; color: var(--faint); }
+html:not([data-hud]) .project-agent-chat-heading > button { padding: 3px 10px; border-radius: 8px; font-size: 12px; color: var(--muted); }
+html:not([data-hud]) .project-agent-chat-heading > button:hover { background: rgb(255 255 255 / .75); color: var(--accent-2); }
+html:not([data-hud]) .project-agent-room-body { padding: 12px 20px 14px; }
+html:not([data-hud]) .agent-turn-meta { font-size: 12px; }
+html:not([data-hud]) .agent-turn-meta > span:first-child { color: #4f5878; font-weight: 600; }
+html:not([data-hud]) .agent-turn-meta time { font-size: 11px; color: var(--faint); }
+html:not([data-hud]) .agent-turn-text { color: #363d55; }
+html:not([data-hud]) .agent-turn-text code, html:not([data-hud]) .agent-turn-text pre { background: rgb(246 245 252 / .85); }
+html:not([data-hud]) .agent-user-entry { border-radius: 4px 12px 12px 4px; border-left-width: 2px; padding: 11px 16px; }
+html:not([data-hud]) .agent-chat-share { margin-top: 10px; font-size: 11.5px; color: var(--faint); }
+html:not([data-hud]) .agent-chat-share:hover { color: var(--accent-2); }
+html:not([data-hud]) .agent-tools-summary > summary { display: flex; align-items: center; gap: 7px; width: fit-content; max-width: 100%; padding: 5px 10px; border-radius: 9px; font-size: 12px; color: var(--muted); }
+html:not([data-hud]) .tool-chevron { color: var(--faint); }
+
+/* ---------- 弹窗里的分组：同一种卡片 ---------- */
+html:not([data-hud]) .project-coordinator-settings, html:not([data-hud]) .project-grant-settings { gap: 9px; border: 1px solid rgb(255 255 255 / .85); border-radius: 14px; padding: 12px 14px 14px; background: rgb(255 255 255 / .45); }
+html:not([data-hud]) .project-coordinator-settings legend, html:not([data-hud]) .project-grant-settings legend, html:not([data-hud]) .project-member-settings-row legend { color: #4d567c; font-size: 13px; font-weight: 600; }
+html:not([data-hud]) .project-coordinator-settings label, html:not([data-hud]) .project-member-settings-row label { font-size: 11.5px; color: var(--muted); }
+html:not([data-hud]) .project-coordinator-settings select, html:not([data-hud]) .project-member-settings-row select, html:not([data-hud]) .seat-add-row select, html:not([data-hud]) .seat-add-row input { height: 36px; border: 1px solid rgb(205 205 228 / .8); border-radius: 10px; background: rgb(255 255 255 / .82); color: #444c66; font-size: 12.5px; }
+html:not([data-hud]) .project-grant-settings textarea { font-size: 12.5px; line-height: 1.65; color: #444c66; }
+html:not([data-hud]) .project-coordinator-settings small, html:not([data-hud]) .project-grant-settings small, html:not([data-hud]) .project-member-settings-row small, .project-roster small, .project-seat-settings small { color: var(--faint); font-size: 11.5px; line-height: 1.65; }
+html:not([data-hud]) .project-member-settings-row { border-bottom-color: var(--glass-line); }
+html:not([data-hud]) .modal-heading .icon-button { flex: none; color: #6c7392; }
+html:not([data-hud]) .modal-heading .icon-button:focus-visible { outline: none; background: rgb(255 255 255 / .8); box-shadow: 0 0 0 3px rgb(165 152 216 / .25); }
+
+/* ---------- 侧栏 ---------- */
+html:not([data-hud]) .project-chevron { font-size: 12px; color: var(--faint); margin: 0 -3px; }
+html:not([data-hud]) .conversation { gap: 9px; padding-inline: 9px; }
+html:not([data-hud]) .question-sidebar-badge { padding: 0 6px; border-radius: 999px; background: rgb(181 135 58 / .13); color: var(--warn); font-size: 10.5px; line-height: 17px; }
+html:not([data-hud]) .project-module-row { min-height: 32px; color: #5f6787; }
+html:not([data-hud]) .project-module-row.active { color: var(--ink); font-weight: 500; box-shadow: 0 2px 10px rgb(96 100 160 / .1); }
+html:not([data-hud]) .project-module-icon { color: #7f74b4; }
+
+/* ---------- 表单细节：勾选框统一成淡紫，目录路径像一枚标签 ---------- */
+html:not([data-hud]) input[type="checkbox"], html:not([data-hud]) input[type="radio"] { accent-color: var(--accent-2); }
+html:not([data-hud]) .summary-toggle { gap: 8px; font-size: 12.5px; color: #4f5878; cursor: pointer; }
+html:not([data-hud]) #registered-project-info { margin: 0; }
+html:not([data-hud]) #registered-project-info:not(:empty) { padding: 6px 11px; border-radius: 9px; background: rgb(255 255 255 / .55); border: 1px solid rgb(255 255 255 / .85); color: var(--muted); font: 12px 'Cascadia Code', Consolas, monospace; overflow-wrap: anywhere; user-select: text; }
+html:not([data-hud]) .model-setting-note { color: var(--muted); font-size: 12px; }
+html:not([data-hud]) .session-bind-choice select { padding-right: 28px; text-overflow: ellipsis; }
+html:not([data-hud]) .session-bind-who small, html:not([data-hud]) .session-bind-note { font-size: 11px; color: var(--faint); }

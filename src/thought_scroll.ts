@@ -10,6 +10,24 @@ export interface ThoughtScrollState {
   live: boolean;
 }
 
+/** 思考框是否跟着新内容滚到底（记在 `data-follow` 上）：用户往上翻（滚轮、拖滚动条、方向键）就停，自己翻回底部再跟。
+ *  只看「离底部多近」不够：平滑滚动第一帧只上移几像素，还算「在底部」，下一次流式更新又把它拉回去。 */
+const lastTop = new WeakMap<HTMLElement, number>();
+document.addEventListener('wheel', event => {
+  const body = (event.target as Element | null)?.closest?.<HTMLElement>('.thought-body');
+  if (body && event.deltaY < 0 && body.scrollTop > 0) body.dataset.follow = 'false';
+}, { capture: true, passive: true });
+document.addEventListener('scroll', event => {
+  const body = event.target;
+  if (!(body instanceof HTMLElement) || !body.classList.contains('thought-body')) return;
+  const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+  const previous = lastTop.get(body) ?? body.scrollTop;
+  if (body.scrollTop < previous && gap > 4) body.dataset.follow = 'false';
+  else if (gap <= 4 && body.scrollTop >= previous) body.dataset.follow = 'true';
+  lastTop.set(body, body.scrollTop);
+}, { capture: true, passive: true });
+export const thoughtFollowing = (body: HTMLElement) => body.dataset.follow !== 'false';
+
 /** 正在增长的总是最后一段思考。 */
 function lastThought(message: HTMLElement | null) {
   const all = message?.querySelectorAll<HTMLDetailsElement>('.thought');
@@ -22,7 +40,7 @@ export function captureThoughtScroll(message: HTMLElement | null): ThoughtScroll
   if (!details || !body) return null;
   return {
     open: details.open,
-    follow: details.open && body.scrollHeight - body.scrollTop - body.clientHeight <= 24,
+    follow: details.open && thoughtFollowing(body) && body.scrollHeight - body.scrollTop - body.clientHeight <= 24,
     top: body.scrollTop,
     count,
     opened: [...message!.querySelectorAll<HTMLDetailsElement>('.thought')].map(item => item.open),
@@ -40,6 +58,7 @@ export function restoreThoughtScroll(message: HTMLElement, previous: ThoughtScro
   previous?.opened.slice(0, previous.count - 1).forEach((open, index) => { if (all[index]) all[index].open = open; });
   if (state) details.open = state.open;
   if (!details.open) return;
+  if (state && !state.follow) body.dataset.follow = 'false';
 
   const restore = () => {
     if (!body.isConnected) return;
