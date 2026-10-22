@@ -1956,6 +1956,19 @@ impl Runtime {
         if !grants.is_empty() {
             prompt["project_grants"] = json!(grants);
         }
+        // 同席重启打断的任务接回同一会话：提醒成员从断点接着做，别把读过的代码、做过的步骤从头再来一遍。
+        let cut_short = self
+            .store
+            .lock()
+            .unwrap()
+            .attempts(id)?
+            .into_iter()
+            .rev()
+            .find(|earlier| earlier.task_id.as_deref() == Some(task.id.as_str()) && earlier.id != attempt.id)
+            .is_some_and(|earlier| earlier.status == "interrupted" && earlier.agent_id == task.agent_id);
+        if cut_short {
+            prompt["resume"] = json!("这项任务上次做到一半被中断了（同席重启或协作暂停），你的会话里还留着之前的进度：先用 git status、git diff 看看工作树里已经有的改动，从断点接着做，不要从头重来，也不要重读已经读过的代码。");
+        }
         if branch.is_some() {
             // 工作树在任务结束后会删掉：被 .gitignore 忽略的产物不会合并，要留的写到项目根目录。
             prompt["workspace"] = json!(format!(
