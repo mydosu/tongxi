@@ -19,6 +19,8 @@ type Result<T> = std::result::Result<T, String>;
 /// 没指定主脑成员时按这个顺序挑。
 const BRAIN_PREFERENCE: [&str; 4] = ["claude-win", "codex-win", "hermes-win", "dsh-win"];
 const REPORT_LIMIT: usize = 6000;
+/// 派活页里每件活的结果最多带这么多字，全文去成员会话看。
+const RESULT_LIMIT: usize = 8000;
 
 pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
@@ -134,6 +136,129 @@ impl Store {
             .map_err(|_| "项目动态读取失败")?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "项目动态读取失败".into())
     }
+    /// 派活页：主脑派出去的每件活（最新的在前）和主脑还没收到的消息数。
+    pub fn brain_overview(&self, room: &str) -> Result<BrainOverview> {
+        let seat = brain_seat(self, room)?;
+        let chat: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2",
+                params![room, seat],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "主脑会话读取失败")?;
+        let waiting: i64 = self
+            .connection
+            .query_row("SELECT count(*) FROM brain_inbox WHERE room=?1 AND delivered=0", [room], |row| row.get(0))
+            .map_err(|_| "主脑收件读取失败")?;
+        let mut query = self
+            .connection
+            .prepare(
+                "SELECT j.id,j.seat,j.chat,j.content,COALESCE(j.model,(SELECT model FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
+                        COALESCE(j.effort,(SELECT reasoning_effort FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
+                        j.worktree,j.branch,j.status,j.error,r.status,m.content,j.created_at,j.finished_at
+                 FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id
+                 WHERE j.room=?1 AND j.kind='task' ORDER BY j.created_at DESC",
+            )
+            .map_err(|_| "派活记录读取失败")?;
+        let jobs = query
+            .query_map([room], |row| {
+                let seat: String = row.get(1)?;
+                let status: String = row.get(8)?;
+                // 还在做的活结果不完整，做完了才带上。
+                let result: Option<String> = if matches!(status.as_str(), "done" | "failed") { row.get(11)? } else { None };
+                Ok(BrainJob {
+                    id: row.get(0)?,
+                    name: label(&self.connection, room, &seat),
+                    seat,
+                    chat: row.get(2)?,
+                    content: row.get(3)?,
+                    model: row.get(4)?,
+                    effort: row.get(5)?,
+                    worktree: row.get(6)?,
+                    branch: row.get(7)?,
+                    status,
+                    error: row.get(9)?,
+                    run_status: row.get(10)?,
+                    result: result.map(|text| tail(text.trim(), RESULT_LIMIT)),
+                    created_at: row.get(12)?,
+                    finished_at: row.get(13)?,
+                })
+            })
+            .map_err(|_| "派活记录读取失败")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "派活记录读取失败")?;
+        Ok(BrainOverview { seat, chat, waiting, jobs })
+    }
+    /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
+    pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
+        let (id, seat, status, _, _) = job_status(&self.connection, room, job)?;
+        let name = label(&self.connection, room, &seat);
+        let cancelled = status == "pending"
+            && self
+                .connection
+                .execute(
+                    "UPDATE brain_jobs SET status='failed',error='你在派活页取消了',finished_at=?1 WHERE id=?2 AND status='pending'",
+                    params![now(), id],
+                )
+                .map_err(|_| "任务状态保存失败")?
+                > 0;
+        let note = if cancelled {
+            format!("【同席】用户在派活页取消了给 {name} 的任务 {}（还没开始）", short(&id))
+        } else {
+            let chat: String = self
+                .connection
+                .query_row("SELECT chat FROM brain_jobs WHERE id=?1 AND status='running'", [&id], |row| row.get(0))
+                .optional()
+                .map_err(|_| "任务读取失败")?
+                .ok_or("这件活已经结束了")?;
+            self.connection
+                .execute(
+                    "INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES(?1,?2,?3,?4,'stop','','pending',?5)",
+                    params![Uuid::new_v4().to_string(), room, seat, chat, now()],
+                )
+                .map_err(|_| "停止请求保存失败")?;
+            format!("【同席】用户在派活页停掉了 {name} 正在做的任务 {}", short(&id))
+        };
+        self.connection
+            .execute(
+                "INSERT INTO brain_inbox(id,room,content,created_at) VALUES(?1,?2,?3,?4)",
+                params![Uuid::new_v4().to_string(), room, note, now()],
+            )
+            .map_err(|_| "主脑消息保存失败")?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct BrainJob {
+    id: String,
+    seat: String,
+    name: String,
+    chat: String,
+    content: String,
+    model: Option<String>,
+    effort: Option<String>,
+    /// 工作树还在时的路径；合并或丢弃后为空，分支名留着。
+    worktree: Option<String>,
+    branch: Option<String>,
+    /// pending 排队、running 在做、done 做完、failed 失败或被停下（看 run_status）。
+    status: String,
+    error: Option<String>,
+    run_status: Option<String>,
+    result: Option<String>,
+    created_at: i64,
+    finished_at: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BrainOverview {
+    seat: String,
+    chat: Option<String>,
+    /// 交回的结果、问答回答里还没送进主脑会话的条数。
+    waiting: i64,
+    jobs: Vec<BrainJob>,
 }
 
 /// 本项目的主脑跑在哪个成员上：项目设置里选的，没选或已不在群里就按默认顺序挑。
@@ -1051,5 +1176,51 @@ impl Courier {
             "INSERT INTO metadata(key,value) VALUES('brain_models',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
             [Value::Object(catalog).to_string()],
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::store::{now, Store};
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    #[test]
+    fn overview_lists_jobs_and_stopping_a_queued_job_cancels_it_and_tells_the_brain() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-overview-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        for (id, status, at) in [("job-old", "done", 1), ("job-new", "pending", 2)] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO brain_jobs(id,room,seat,chat,kind,content,model,status,created_at) VALUES(?1,?2,'codex-win','chat-x','task','跑测试','gpt-6-luna',?3,?4)",
+                    params![id, room, status, at],
+                )
+                .unwrap();
+        }
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('steer-1',?1,'codex-win','chat-x','steer','改方向','done',?2)", params![room, now()])
+            .unwrap();
+
+        let overview = store.brain_overview(&room).unwrap();
+        assert_eq!(overview.seat, "claude-win-brain");
+        let ids: Vec<&str> = overview.jobs.iter().map(|job| job.id.as_str()).collect();
+        assert_eq!(ids, ["job-new", "job-old"], "只列派活，不列插话和停止，最新的在前");
+        assert_eq!(overview.jobs[0].model.as_deref(), Some("gpt-6-luna"));
+        assert_eq!(overview.waiting, 0);
+
+        store.stop_brain_job(&room, "job-new").unwrap();
+        let overview = store.brain_overview(&room).unwrap();
+        assert_eq!(overview.jobs[0].status, "failed");
+        assert_eq!(overview.jobs[0].error.as_deref(), Some("你在派活页取消了"));
+        assert_eq!(overview.waiting, 1, "主脑会收到一条说明");
+        assert!(store.stop_brain_job(&room, "job-old").is_err(), "已经结束的活不能再停");
+        let _ = std::fs::remove_dir_all(base);
     }
 }

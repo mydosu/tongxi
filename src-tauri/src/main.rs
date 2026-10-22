@@ -941,6 +941,16 @@ fn answer_project_inquiry(
     with_store(&state, |store| store.answer_inquiry(&conversation_id, &inquiry_id, &answer))
 }
 #[tauri::command]
+fn brain_overview(state: State<'_, AppState>, conversation_id: String) -> Result<project_brain::BrainOverview, String> {
+    with_store(&state, |store| store.brain_overview(&conversation_id))
+}
+#[tauri::command]
+fn stop_brain_job(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, job_id: String) -> Result<(), String> {
+    with_store(&state, |store| store.stop_brain_job(&conversation_id, &job_id))?;
+    let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
+    Ok(())
+}
+#[tauri::command]
 fn create_conversation(
     state: State<'_, AppState>,
     title: String,
@@ -1354,6 +1364,8 @@ fn main() {
             paste_clipboard_files,
             project_inquiries,
             answer_project_inquiry,
+            brain_overview,
+            stop_brain_job,
             update_group_members,
             save_local_message,
             app_info,

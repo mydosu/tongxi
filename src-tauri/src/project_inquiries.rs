@@ -145,8 +145,6 @@ impl Store {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "问答读取失败".into())
     }
 
-
-
     pub fn answer_inquiry(&self, room: &str, id: &str, answer: &str) -> Result<Inquiry> {
         let answer = answer.trim();
         if answer.is_empty() || answer.chars().count() > 4000 {
@@ -165,6 +163,5 @@ impl Store {
         let sql = format!("SELECT {COLUMNS} FROM project_inquiries WHERE id=?1");
         self.connection.query_row(&sql, [id], row).map_err(|_| "回答读取失败".into())
     }
-
 
 }

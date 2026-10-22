@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
+import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -11,6 +11,7 @@ import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
+import { brainJobsPage, jobLive } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
@@ -131,6 +132,59 @@ function scheduleInquiryRefresh(groupId: string) {
   window.clearTimeout(inquiryTimer);
   inquiryTimer = window.setTimeout(() => void refreshInquiries(groupId), 800);
 }
+// 主脑派活：各项目群在外面的活数（侧栏角标），当前项目群的派活总览。
+const liveBrainJobs = new Map<string, number>();
+let brainOverview: BrainOverview | null = null;
+let brainJobsTimer = 0;
+const openJobFolds = new Set<string>();
+let brainJobsPaint = '';
+async function refreshBrainJobs(groupId: string) {
+  try {
+    const overview = await invoke<BrainOverview>('brain_overview', { conversationId: groupId });
+    const live = overview.jobs.filter(jobLive).length;
+    const changed = (liveBrainJobs.get(groupId) || 0) !== live;
+    liveBrainJobs.set(groupId, live);
+    if (changed && document.querySelector('#conversation-list')) renderList();
+    if (groupId !== selectedId) return;
+    brainOverview = overview;
+    if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs') renderBrainJobs();
+  } catch { liveBrainJobs.set(groupId, 0); }
+}
+function scheduleBrainJobsRefresh(groupId: string) {
+  window.clearTimeout(brainJobsTimer);
+  brainJobsTimer = window.setTimeout(() => void refreshBrainJobs(groupId), 500);
+}
+function renderBrainJobs(force = false) {
+  if (!detail?.project) return;
+  const overview = brainOverview;
+  const brainBusy = !!overview?.chat && busyIn(runtimes[baseAgent(overview.seat)], overview.chat);
+  // 内容没变就不重绘，展开的结果和滚动位置都留着；用时每分钟跟着走一次。
+  const stamp = JSON.stringify([overview, brainBusy, Math.floor(Date.now() / 60000)]);
+  if (!force && stamp === brainJobsPaint && main.querySelector('.brain-jobs-content')) return;
+  brainJobsPaint = stamp;
+  const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
+  main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds);
+  const content = main.querySelector<HTMLElement>('.brain-jobs-content');
+  if (content) content.scrollTop = scroll;
+  main.querySelector('[data-project-return-team]')?.addEventListener('click', () => void selectProjectModule(selectedId, 'team'));
+  main.querySelectorAll<HTMLButtonElement>('[data-open-seat]').forEach(button => button.addEventListener('click', () => void selectProjectModule(selectedId, button.dataset.openSeat!)));
+  main.querySelectorAll<HTMLDetailsElement>('details[data-job-fold]').forEach(fold => fold.addEventListener('toggle', event => {
+    if (event.target !== fold) return;
+    if (fold.open) openJobFolds.add(fold.dataset.jobFold!); else openJobFolds.delete(fold.dataset.jobFold!);
+  }));
+  main.querySelectorAll<HTMLButtonElement>('[data-stop-job]').forEach(button => button.addEventListener('click', async () => {
+    // 点两下才停：成员做到一半的活停了就没了。
+    if (!button.dataset.armed) { button.dataset.armed = '1'; button.textContent = '确认停止？'; button.classList.add('danger'); return; }
+    button.disabled = true;
+    try {
+      await invoke('stop_brain_job', { conversationId: selectedId, jobId: button.dataset.stopJob });
+      toast('已停下，主脑会收到说明');
+    } catch (error) { toast(errorText(error), true); button.disabled = false; }
+    await refreshBrainJobs(selectedId);
+  }));
+}
+setInterval(() => { if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs' && brainOverview?.jobs.some(jobLive)) renderBrainJobs(); }, 30000);
+
 function renderProjectInquiries() {
   if (!detail?.project) return;
   const draft = new Map([...main.querySelectorAll<HTMLFormElement>('[data-inquiry-form]')].map(form => [form.dataset.inquiryForm!, form.querySelector('textarea')!.value]));
@@ -190,7 +244,10 @@ function adoptRuntime(snapshot: RuntimeSnapshot, agentId = currentAgentId()) {
   const before = busyProjectChats();
   runtimes[agentId] = snapshot;
   // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
-  if (busyProjectChats() !== before && document.querySelector('#conversation-list')) renderList();
+  if (busyProjectChats() !== before && document.querySelector('#conversation-list')) {
+    renderList();
+    if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs') renderBrainJobs();
+  }
   return true;
 }
 
@@ -439,7 +496,7 @@ function renderList() {
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>主脑派活</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 件活在外面">${liveBrainJobs.get(conversation.id)} 在做</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -616,6 +673,7 @@ async function refreshList() {
   renderList();
   // 问答角标：没打开过的项目群也要看得到有几个问题待答（每个群只在第一次列出时查一次）。
   for (const conversation of result) if (conversation.kind === 'group' && !openInquiries.has(conversation.id)) void refreshInquiries(conversation.id);
+  for (const conversation of result) if (conversation.kind === 'group' && !liveBrainJobs.has(conversation.id)) void refreshBrainJobs(conversation.id);
 }
 
 async function selectConversation(id: string) {
@@ -632,9 +690,9 @@ async function selectConversation(id: string) {
     detail = result;
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
-    activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
+    activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || savedModule === 'brain-jobs' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
     expandedProjectGroup = result.project ? id : '';
-    if (result.project) { inquiryItems = []; void refreshInquiries(id); }
+    if (result.project) { inquiryItems = []; brainOverview = null; void refreshInquiries(id); void refreshBrainJobs(id); }
     renderList();
     renderChat();
   } catch (error) {
@@ -654,7 +712,7 @@ async function selectConversation(id: string) {
 async function selectProjectModule(groupId: string, moduleId: string) {
   if (selectedId !== groupId) await selectConversation(groupId);
   if (!detail || detail.conversation.id !== groupId || !detail.project) return;
-  if (moduleId !== 'team' && moduleId !== 'inquiries' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
+  if (moduleId !== 'team' && moduleId !== 'inquiries' && moduleId !== 'brain-jobs' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
   activeProjectModule = moduleId;
   expandedProjectGroup = groupId;
   localStorage.setItem(`hub.project-module.${groupId}`, moduleId);
@@ -896,7 +954,7 @@ function updateMemberCount() {
 
 function updateRuntimeControls() {
   updateMemberCount();
-  if (detail?.project && activeProjectModule === 'inquiries') return;
+  if (detail?.project && (activeProjectModule === 'inquiries' || activeProjectModule === 'brain-jobs')) return;
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
   const projectAgentId = activeProjectAgent();
   if (projectAgentId) {
@@ -1246,7 +1304,7 @@ function syncProjectTeamTimeline() {
 
 function updateProjectControls() {
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
-  if (activeProjectModule === 'inquiries' && detail.project) return;
+  if ((activeProjectModule === 'inquiries' || activeProjectModule === 'brain-jobs') && detail.project) return;
   if (activeProjectAgent()) { updateRuntimeControls(); return; }
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
   const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'].includes(agent));
@@ -1322,6 +1380,7 @@ function renderChat() {
   disposeProjectTranscript();
   enterView(`chat|${selectedId}|${activeProjectModule}`);
   if (detail?.project && activeProjectModule === 'inquiries') { renderProjectInquiries(); void refreshInquiries(selectedId); return; }
+  if (detail?.project && activeProjectModule === 'brain-jobs') { renderBrainJobs(true); void refreshBrainJobs(selectedId); return; }
   const agentId = activeProjectAgent();
   if (agentId) {
     renderProjectAgentRoom(agentId);
@@ -2348,6 +2407,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       // 主脑派活、成员交回：项目群的进展摘要跟着刷新。
       await listen<string>('brain-state', event => {
         scheduleInquiryRefresh(event.payload);
+        scheduleBrainJobsRefresh(event.payload);
         if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
       });
       eventSubscribed = true;

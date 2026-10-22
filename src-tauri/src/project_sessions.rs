@@ -66,10 +66,6 @@ fn clean(value: Option<&str>) -> Option<String> {
 
 impl Store {
 
-
-
-
-
     /// 席位正在干活：主脑派的活和私聊都跑在专属会话里，运行记在底层成员上。
     fn member_busy(&self, chat: &str, agent: &str) -> Result<bool> {
         let run: bool = self
@@ -82,7 +78,6 @@ impl Store {
             .map_err(|_| "会话运行状态读取失败")?;
         Ok(run)
     }
-
 
     /// 当前群的全部会话绑定：每位项目成员一行，外加当前调度管家一行。
     pub fn project_session_bindings(&mut self, room: &str) -> Result<Vec<SessionBinding>> {
@@ -195,10 +190,6 @@ impl Store {
         Ok(seat)
     }
 
-
-
-
-
     /// 撤掉一个额外席位：正在干活或还有未完成任务时拒绝；它的专属会话归档保留，不删历史。
     /// 成员名（全局）：用户在「成员与服务」里起的名字；陪伴用它自己配置里的名字；都没有就是默认名。
     pub fn member_name(&self, agent: &str) -> String {
@@ -238,7 +229,6 @@ impl Store {
         }
         Ok(self.member_name(agent))
     }
-
 
     pub fn seat_name(&self, room: &str, seat: &str) -> String {
         if crate::project_store::is_brain(seat) {
@@ -345,7 +335,6 @@ impl Store {
 
 }
 
-
 #[tauri::command]
 pub fn project_session_bindings(
     state: tauri::State<'_, crate::AppState>,
@@ -442,9 +431,6 @@ mod tests {
         store.bind_project(&room, Some(&project)).unwrap();
         (store, room, base)
     }
-
-
-
 
     #[test]
     fn one_agent_can_hold_several_project_seats_with_their_own_sessions() {
