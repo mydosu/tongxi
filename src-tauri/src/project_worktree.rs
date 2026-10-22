@@ -358,6 +358,26 @@ pub fn merged(root: &Path, branch: &str) -> bool {
     git(root, &["merge-base", "--is-ancestor", branch, "HEAD"]).is_ok()
 }
 
+/// 把当前分支推到它的上游，返回一句摘要。远端先有了新提交就先合并进来（冲突照常停下、保留现场，
+/// 交给调用方处理），绝不强推。当前分支没有上游时不推。
+pub fn publish(root: &Path) -> Result<String> {
+    let _serial = serial();
+    let upstream = git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .map_err(|_| "当前分支没有上游，不自动推送".to_string())?;
+    let upstream = upstream.trim().to_owned();
+    let remote = upstream.split('/').next().unwrap_or("origin").to_owned();
+    git(root, &["fetch", &remote]).map_err(|error| format!("拉取 {remote} 失败：{error}"))?;
+    if git(root, &["merge-base", "--is-ancestor", &upstream, "HEAD"]).is_err() {
+        git(root, &["merge", "--no-edit", &upstream])
+            .map_err(|error| format!("合并远端 {upstream} 未完成：{error}"))?;
+    }
+    if git(root, &["merge-base", "--is-ancestor", "HEAD", &upstream]).is_ok() {
+        return Ok(format!("{upstream} 已是最新"));
+    }
+    git(root, &["push", &remote, "HEAD"]).map_err(|error| format!("推送到 {upstream} 失败：{error}"))?;
+    Ok(format!("已推送到 {upstream}"))
+}
+
 pub fn git_dir(root: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim()))
 }

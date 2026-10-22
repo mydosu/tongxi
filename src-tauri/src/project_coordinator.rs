@@ -1797,6 +1797,27 @@ impl Runtime {
                 "任务改动已合并，临时工作树清理未完成；已有结果保留，不影响后续工作。",
             )?;
         }
+        self.publish_merged(id, root, deadline)
+    }
+    /// 长期授权允许推送时，合并后直接把主线推上去：成员不用自己 rebase、推送，也不会因为没授权把推送攒成遗留。
+    fn publish_merged(&self, id: &str, root: &Path, deadline: Instant) -> Result<()> {
+        let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
+        if !coordinator_policy::grants_push(&self.store.lock().unwrap().project_grants(&room)) {
+            return Ok(());
+        }
+        let mut outcome = crate::project_worktree::publish(root);
+        if outcome.is_err() {
+            if let Some(problem) = crate::project_worktree::midway_state(root)? {
+                self.resolve_git_state(id, root, &format!("合并远端新提交时出现冲突；{problem}"), deadline)?;
+                outcome = crate::project_worktree::publish(root);
+            }
+        }
+        if let Err(error) = outcome {
+            self.store.lock().unwrap().add_system_team_message(
+                id,
+                &format!("改动已合并进本地主线，按长期授权自动推送没成功：{error}。调度可以派一项收尾来处理。"),
+            )?;
+        }
         Ok(())
     }
     fn run_coordinated_task(
