@@ -225,6 +225,35 @@ pub fn parse_grant(raw: &str) -> Result<Grant, String> {
     Ok(grant)
 }
 
+/// 任务失败后当场问调度：retry 就在本轮换人、换模型或补说明重做，later 留到下一回合。
+#[derive(Clone, Debug, Deserialize)]
+pub struct Redo {
+    pub action: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub fn parse_redo(raw: &str) -> Result<Redo, String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        redo: Redo,
+    }
+    let document = crate::project_store::json_document(raw, 8_000)?;
+    let redo = serde_json::from_str::<Reply>(document).map_err(|_| "重派回复格式无效".to_owned())?.redo;
+    if !matches!(redo.action.as_str(), "retry" | "later") {
+        return Err("重派动作无效".into());
+    }
+    Ok(redo)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pause {

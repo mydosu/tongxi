@@ -1680,10 +1680,48 @@ impl Runtime {
         coordinator_policy::parse_grant(&output)
     }
 
+    /// 任务失败后当场问调度要不要在本轮重做，不等整批跑完再到下一回合。调度说重做就把任务放回队列，返回 true。
+    fn ask_redo(&self, id: &str, task: &Task, attempt: &crate::project_store::Attempt, tries: u32, deadline: Instant) -> Result<bool> {
+        let tail = |text: &str, limit: usize| {
+            let chars: Vec<char> = text.chars().collect();
+            chars[chars.len().saturating_sub(limit)..].iter().collect::<String>()
+        };
+        let request = json!({"task_id":task.id,"title":task.title,"agent_id":task.agent_id,"model":attempt.model,"effort":attempt.reasoning_effort,
+            "error":attempt.error,"redone_so_far":tries,"instructions":tail(&task.instructions, 1500),"recent_output":tail(&attempt.output, 1500)});
+        let output = self.ask_coordinator(id, json!({"redo_request":request,"quota":crate::quota::overview(&self.codex)}), deadline)?;
+        let redo = coordinator_policy::parse_redo(&output)?;
+        let reason = redo.reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty()).unwrap_or("调度没写理由");
+        if redo.action != "retry" {
+            self.store.lock().unwrap().add_system_team_message(id, &format!("「{}」失败了，调度决定留到下一回合处理：{reason}", task.title))?;
+            return Ok(false);
+        }
+        let agent = redo.agent_id.clone().unwrap_or_else(|| task.agent_id.clone());
+        let room = self.store.lock().unwrap().workflow(id)?.conversation_id;
+        self.member_settings(&room, &agent)?;
+        let snapshot = self.snapshot(&agent);
+        let model = redo.model.clone().or_else(|| (agent == task.agent_id).then(|| attempt.model.clone()).flatten()).or(snapshot.default_model.clone());
+        crate::models::validate_selection(&snapshot.models, model.as_deref(), redo.effort.as_deref(), snapshot.default_model.as_deref())?;
+        self.store.lock().unwrap().requeue_task(
+            id,
+            &task.id,
+            redo.agent_id.as_deref(),
+            redo.model.as_deref(),
+            redo.effort.as_deref(),
+            redo.instructions.as_deref().filter(|text| !text.trim().is_empty()),
+        )?;
+        self.store.lock().unwrap().add_system_team_message(
+            id,
+            &format!("「{}」失败了，调度安排本轮马上重做（{}{}）：{reason}", task.title, crate::store::agent_name(&agent),
+                model.as_deref().map(|model| format!(" · {model}")).unwrap_or_default()),
+        )?;
+        Ok(true)
+    }
+
     /// 滚动执行：互不依赖、会话不同的任务一起跑（最多 MAX_PARALLEL 项）；哪项做完就当场处理它的结果，
     /// 并立刻补上因此能开工的任务，不等同批里最慢的那项。都跑完、没有能开工的了才交回调度。
     fn run_coordinated_batch(&self, id: &str, deadline: Instant) -> Result<bool> {
         const MAX_PARALLEL: usize = 4;
+        const MAX_REDO: u32 = 2;
         let first = self.runnable_tasks(id, &HashSet::new(), &HashSet::new(), MAX_PARALLEL)?;
         if first.is_empty() {
             return Ok(false);
@@ -1736,6 +1774,8 @@ impl Runtime {
                 start(task, &mut busy);
             }
             let mut failure: Option<String> = None;
+            // 每项任务在本轮当场重做的次数；超过就照常留给下一回合调度。
+            let mut redone: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
             while !busy.is_empty() {
                 let Ok((task, result)) = receiver.recv() else {
                     break;
@@ -1746,8 +1786,35 @@ impl Runtime {
                 }
                 // 出错就不再开新任务，等在跑的都结束后把错误交回去。
                 let outcome = result
-                    .and_then(|result| self.finish_batch_task(id, &task, result, deadline))
-                    .and_then(|_| self.ensure_active(id, deadline))
+                    .and_then(|result| {
+                        let failed = (result.status == "failed").then(|| result.clone());
+                        self.finish_batch_task(id, &task, result, deadline)?;
+                        Ok(failed)
+                    })
+                    .and_then(|failed| {
+                        self.ensure_active(id, deadline)?;
+                        // 失败了当场问调度，换人、换模型或补说明后在本轮重做；额度用完的照旧交给等额度的流程。
+                        let Some(attempt) = failed.filter(|attempt| !attempt.error.as_deref().is_some_and(coordinator_policy::quota_exhausted)) else {
+                            return Ok(());
+                        };
+                        let tries = redone.get(&task.id).copied().unwrap_or(0);
+                        if tries >= MAX_REDO {
+                            return Ok(());
+                        }
+                        match self.ask_redo(id, &task, &attempt, tries, deadline) {
+                            Ok(true) => {
+                                redone.insert(task.id.clone(), tries + 1);
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                self.store.lock().unwrap().add_system_team_message(
+                                    id,
+                                    &format!("「{}」失败后没能当场问到调度（{error}），留到下一回合处理。", task.title),
+                                )?;
+                            }
+                        }
+                        Ok(())
+                    })
                     .and_then(|_| {
                         let busy_tasks = busy.iter().map(|task| task.id.clone()).collect();
                         let busy_agents = busy.iter().map(|task| task.agent_id.clone()).collect();
@@ -1819,6 +1886,23 @@ impl Runtime {
             )?;
         }
         Ok(())
+    }
+    fn begin_task_attempt(
+        &self,
+        id: &str,
+        task: &Task,
+        model: &Option<String>,
+        effort: &Option<String>,
+        deadline: Instant,
+    ) -> Result<crate::project_store::Attempt> {
+        loop {
+            self.ensure_active(id, deadline)?;
+            match self.store.lock().unwrap().begin_coordinated_attempt(id, Some(task), &task.agent_id, model.clone(), effort.clone()) {
+                Ok(value) => return Ok(value),
+                Err(error) if error == "成员仍有项目任务或私聊运行" => std::thread::sleep(Duration::from_millis(150)),
+                Err(error) => return Err(error),
+            }
+        }
     }
     fn run_coordinated_task(
         &self,
@@ -1910,23 +1994,7 @@ impl Runtime {
             effort.as_deref(),
             snapshot.default_model.as_deref(),
         )?;
-        let attempt = loop {
-            self.ensure_active(id, deadline)?;
-            let result = self.store.lock().unwrap().begin_coordinated_attempt(
-                id,
-                Some(task),
-                &task.agent_id,
-                model.clone(),
-                effort.clone(),
-            );
-            match result {
-                Ok(value) => break value,
-                Err(error) if error == "成员仍有项目任务或私聊运行" => {
-                    std::thread::sleep(Duration::from_millis(150))
-                }
-                Err(error) => return Err(error),
-            }
-        };
+        let attempt = self.begin_task_attempt(id, task, &model, &effort, deadline)?;
         let contexts = route
             .context_ids
             .iter()
@@ -1995,9 +2063,31 @@ impl Runtime {
         let before = branch
             .as_ref()
             .and_then(|_| crate::project_worktree::root_changes(root).ok());
-        let result = self
+        let mut result = self
             .native
             .run(attempt, &cwd, &prompt.to_string(), deadline)?;
+        // 实现任务结束了却一点没做（没改动、没提交、也没写交付摘要），多半是成员没认出这条消息就是任务。
+        // 不留到下一轮调度：同席当场在同一会话里再交代一次；还是空手才记为没交付，后面依赖它的任务也不放行。
+        let undelivered = |result: &crate::project_store::Attempt| {
+            route.purpose == "implementation"
+                && result.status == "completed"
+                && !result.output.contains(coordinator_policy::DELIVERY_MARK)
+                && crate::project_worktree::coordinated_files(&cwd).is_ok_and(|files| files.is_empty())
+                && branch.as_deref().is_some_and(|branch| crate::project_worktree::merged(root, branch))
+        };
+        if undelivered(&result) {
+            self.store.lock().unwrap().add_system_team_message(
+                id,
+                &format!("「{}」成员没开始做就结束了（没有改动、也没有交付摘要），同席在同一会话里再交代一次。", task.title),
+            )?;
+            let again = self.begin_task_attempt(id, task, &model, &effort, deadline)?;
+            prompt["nudge"] = json!("上一条消息就是派给你的任务，不需要等别的指令：现在就按 coordinator_brief 开始做，做完照要求给出交付摘要。");
+            result = self.native.run(again, &cwd, &prompt.to_string(), deadline)?;
+            if undelivered(&result) {
+                result.status = "failed".into();
+                result.error = Some("成员两次都没开始做：没有改动、提交，也没有交付摘要。可以换人或换模型重派".into());
+            }
+        }
         if let Some(before) = before {
             if let Ok(after) = crate::project_worktree::root_changes(root) {
                 let stray = crate::project_worktree::changed_since(&before, &after);

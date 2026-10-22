@@ -2681,6 +2681,29 @@ fn quota_blocked_task_can_be_handed_to_another_member_on_the_same_worktree() {
 }
 
 #[test]
+fn failed_task_is_requeued_in_the_same_round_with_the_coordinators_changes() {
+    let redo = coordinator_policy::parse_redo(r#"{"redo":{"action":"retry","agent_id":"dsh-win","reason":"换人"}}"#).unwrap();
+    assert_eq!(redo.agent_id.as_deref(), Some("dsh-win"));
+    assert!(coordinator_policy::parse_redo(r#"{"redo":{"action":"stop"}}"#).is_err());
+    let mut f = Fixture::new();
+    let request = "实现核心";
+    let workflow = f.coordinated(request, "hermes-win");
+    let first = route("impl", "implementation", "codex-win", &workflow.user_message_id, request);
+    let ids = f.store.enqueue_routes(&workflow.id, &[(first, None, None)]).unwrap();
+    assert!(f.store.requeue_task(&workflow.id, &ids[0], Some("dsh-win"), None, None, None).is_err(), "没失败的不重派");
+    f.store
+        .connection
+        .execute("UPDATE project_tasks SET status='failed',error='没开始做',worktree='wt',branch='hub/x' WHERE id=?1", [&ids[0]])
+        .unwrap();
+    f.store.requeue_task(&workflow.id, &ids[0], Some("dsh-win"), None, None, Some("补一句说明")).unwrap();
+    let task = f.store.task(&ids[0]).unwrap();
+    assert_eq!((task.agent_id.as_str(), task.status.as_str(), task.error.as_deref()), ("dsh-win", "queued", None));
+    assert_eq!(task.worktree.as_deref(), Some("wt"), "接着原工作树做");
+    let routes = f.store.coordination_routes(&workflow.id).unwrap();
+    assert_eq!(routes[0].instructions.as_deref(), Some("补一句说明"));
+}
+
+#[test]
 fn project_grants_are_saved_per_project_and_shown_in_detail() {
     let mut f = Fixture::new();
     let room = f.room.clone();
