@@ -109,8 +109,8 @@ export class AgentTranscript {
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
     node.querySelector('[data-entry-live]')!.textContent = busy ? entry.status === 'cancelling' ? '正在停止…' : '正在处理…' : entry.status === 'interrupted' ? '已中断' : '';
     // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
-    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text') ?? null : null;
-    this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy, entry.id);
+    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text' || (part.kind === 'steer' && !!entry.steers?.[part.text])) ?? null : null;
+    this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy, entry);
     const plain = flow ? '' : plainThought(entry.thought);
     const thought = node.querySelector<HTMLDetailsElement>('.agent-turn-thought')!;
     const previousBusy = thought.dataset.active === 'true';
@@ -128,14 +128,15 @@ export class AgentTranscript {
       body.textContent = plain;
       if (follow) body.scrollTop = body.scrollHeight;
     }
-    const text = node.querySelector<HTMLElement>('.agent-turn-text')!;
+    // 只找条目自己那一层：穿插显示的每段正文、插话也用 agent-turn-text，而且排在前面。
+    const text = node.querySelector<HTMLElement>(':scope > .agent-turn-text')!;
     const output = flow?.length ? '' : attachmentText(entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
     if (text.dataset.output !== output) {
       if (entry.kind === 'agent') text.innerHTML = agentMarkdown(output, escape); else text.textContent = output;
       text.dataset.output = output;
     }
     text.hidden = !output;
-    let attached=node.querySelector<HTMLElement>('.agent-turn-attachments');
+    let attached=node.querySelector<HTMLElement>(':scope > .agent-turn-attachments');
     if(!attached){attached=document.createElement('div');attached.className='agent-turn-attachments';text.after(attached);}
     const attachment=attachmentHtml(entry.body,entry.attachmentRoom||'',escape);
     if(attached.innerHTML!==attachment)attached.innerHTML=attachment;
@@ -160,7 +161,7 @@ export class AgentTranscript {
   }
 
   /** 按片段逐个打补丁：已存在的段只更新文字，展开状态和滚动位置不被重绘打断。 */
-  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean, entryId: string) {
+  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean, { id: entryId, steers }: AgentEntry) {
     host.hidden = !flow?.length;
     const parts = flow || [];
     while (host.children.length > parts.length) host.lastElementChild!.remove();
@@ -174,6 +175,10 @@ export class AgentTranscript {
           details.innerHTML = '<summary></summary><div class="thought-body"></div>';
           remember(details, () => `${entryId}:${[...host.children].indexOf(details)}`);
           node = details;
+        } else if (part.kind === 'steer') {
+          node = document.createElement('div');
+          node.className = 'agent-turn-steer agent-user-entry';
+          node.innerHTML = '<header class="agent-turn-meta"><span>插话</span><time></time></header><div class="agent-turn-text"></div>';
         } else {
           node = document.createElement('div');
           node.className = 'agent-turn-text';
@@ -195,6 +200,10 @@ export class AgentTranscript {
           body.textContent = part.text;
           if (follow) body.scrollTop = body.scrollHeight;
         }
+      } else if (part.kind === 'steer') {
+        const said = steers![part.text];
+        node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(said.at);
+        node.querySelector('.agent-turn-text')!.textContent = attachmentText(said.body);
       } else {
         const output = attachmentText(part.text);
         if (node.dataset.output !== output) { node.innerHTML = agentMarkdown(output, this.format.escape); node.dataset.output = output; }
