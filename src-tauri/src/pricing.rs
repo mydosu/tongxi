@@ -493,6 +493,8 @@ mod tests {
         assert_eq!(bundled_price("sonnet", "Sonnet 5.5")["name"], "Claude Sonnet 5.5");
         assert_eq!(bundled_price("claude-sonnet-5", "Sonnet 5")["name"], "Claude Sonnet 5");
         assert_eq!(bundled_price("default", "Default (recommended) · Opus 5.5")["name"], "Claude Opus 5.5");
+        assert_eq!(bundled_price("claude/claude-sonnet-5-5", "Claude Sonnet 5.5")["name"], "Claude Sonnet 5.5");
+        assert_eq!(bundled_price("default", "默认 · Claude Opus 5.5")["name"], "Claude Opus 5.5");
         assert_eq!(bundled_price("gpt-6.1-sol", "GPT-6.1 Sol")["name"], "GPT-6.1 Sol");
         assert_eq!(bundled_price("gpt-6-sol", "gpt-6-sol")["name"], "GPT-6 Sol");
         assert_eq!(bundled_price("gpt-6-luna", "GPT-6 Luna")["name"], "GPT-6 Luna");

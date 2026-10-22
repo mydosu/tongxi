@@ -94,6 +94,33 @@ function readCatalog() {
   });
 }
 
+// Claude Code 走 magpie 这类本地网关时（settings.json 的 env 设了 ANTHROPIC_BASE_URL），模型目录以网关为准：
+// CLI 自己的目录只给 sonnet、opus 这类别名，别名还可能被映射成别的型号；网关的 /v1/models 给真实型号和强度等级。
+function gateway() {
+  let settings = {};
+  try { settings = JSON.parse(readFileSync(join(configRoot, 'settings.json'), 'utf8')) || {}; } catch {}
+  const env = settings.env || {};
+  const base = process.env.ANTHROPIC_BASE_URL || env.ANTHROPIC_BASE_URL;
+  const token = process.env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
+  return base ? { base: String(base).replace(/\/+$/, ''), token, model: settings.model } : null;
+}
+
+async function readGatewayCatalog() {
+  const route = gateway();
+  if (!route) return null;
+  const response = await fetch(`${route.base}/v1/models`, {
+    headers: route.token ? { Authorization: `Bearer ${route.token}` } : {}, signal: AbortSignal.timeout(15000) });
+  if (!response.ok) return null;
+  const listed = (await response.json())?.data;
+  const models = (Array.isArray(listed) ? listed : []).filter(model => model.owned_by === 'claude' || String(model.id).startsWith('claude'));
+  if (!models.length) return null;
+  const entries = models.map(model => ({ value: String(model.id), name: String(model.display_name || model.id),
+    efforts: Array.isArray(model.reasoning_levels) ? model.reasoning_levels.map(String) : [] }));
+  // 不指定模型时用 Claude Code 设置里的那个；写明是哪个型号，调度才知道「默认」是什么。
+  const preset = entries.find(entry => entry.value === String(route.model || '').replace(/\[1m\]$/i, ''));
+  return [{ value: 'default', name: preset ? `默认 · ${preset.name}` : '默认', efforts: preset?.efforts || [] }, ...entries];
+}
+
 function withVersion(name, description) {
   if (/\d/.test(name)) return name;
   const version = String(description || '').split('·')[0].trim();
@@ -464,7 +491,7 @@ async function handle(message) {
   const { id, method, params } = message;
   switch (method) {
     case 'initialize':
-      [version, catalog] = await Promise.all([readVersion(), readCatalog()]);
+      [version, catalog] = await Promise.all([readVersion(), readGatewayCatalog().catch(() => null).then(list => list || readCatalog())]);
       return { protocolVersion: 1, agentInfo: { name: 'claude-code', title: 'Claude Code', version },
         agentCapabilities: { loadSession: true, promptCapabilities: { image: true, embeddedContext: true } }, authMethods: [] };
     case 'session/new':
