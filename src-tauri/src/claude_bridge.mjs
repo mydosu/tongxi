@@ -30,6 +30,9 @@ function currentCoordinatorInstruction() {
 const windowsHint = process.platform === 'win32'
   ? '运行环境提示：你在 Windows 上运行。PowerShell 经管道把文本送给原生程序（如 `Get-Content x.sh | wsl -d Ubuntu -- bash -s`）时会补 CRLF，bash 会因末行的回车符报 command not found 并以 127 退出。要在 WSL 里执行脚本，请把脚本存成 LF 换行后按路径运行（`wsl -d Ubuntu -- bash /mnt/d/路径/x.sh`），或用 `wsl -d Ubuntu -- bash -c` 直接传命令，不要用管道喂给 `bash -s`。'
   : '';
+// 新会话自带的英文附件会把模型带成英文叙述，任务说明里的中文要求压不住：放进系统提示。
+const languageHint = '语言要求：过程说明、回复和交付摘要一律用中文写，代码、命令、路径和英文术语照原样；用户明确要求别的语言时照用户的。';
+const memberHint = [languageHint, windowsHint].filter(Boolean).join('\n\n');
 const configRoot = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 const sessions = new Map();
 let catalog = null;
@@ -294,7 +297,7 @@ function prompt(id, params) {
     }
   } else {
     args.push('--permission-mode', 'bypassPermissions');
-    if (windowsHint) args.push('--append-system-prompt', windowsHint);
+    args.push('--append-system-prompt', memberHint);
     const mcp = mcpConfig(session.mcpServers);
     if (mcp) args.push('--mcp-config', mcp);
   }
