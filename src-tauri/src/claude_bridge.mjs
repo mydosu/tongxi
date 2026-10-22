@@ -248,17 +248,38 @@ function splitReference(prompt) {
 // 回合用量按 ACP PromptResponse.usage 回报：inputTokens 含缓存读写，费用放 _meta。
 // modelUsage 按模型分列、连子 agent（Task）用的模型一起算，有就用它的合计（子 agent 的消耗记在这位成员身上）；
 // 没有再退回主线程的 usage。
-function usageOf(result, context) {
+// --resume 续接的会话，claude 在结果里报的 modelUsage 和费用是整个会话累计的，不是这一回合的：
+// 同一会话接着做下一项任务时，前面任务的用量会再记一遍，越往后越多。记下每个会话上回合的累计值，回报差额。
+const baselineFile = join(data, 'usage-baseline.json');
+function readBaselines() {
+  try { return JSON.parse(readFileSync(baselineFile, 'utf8')) || {}; } catch { return {}; }
+}
+
+function usageOf(result, context, sessionId, resumed, spent) {
   const u = result.usage || {};
   const models = Object.values(result.modelUsage || {});
   const sum = key => models.reduce((total, model) => total + (Number(model[key]) || 0), 0);
-  const [read, write, fresh, output, thought] = models.length
+  const totals = models.length
     ? [sum('cacheReadInputTokens'), sum('cacheCreationInputTokens'), sum('inputTokens'), sum('outputTokens'), sum('thinkingTokens')]
     : [u.cache_read_input_tokens || 0, u.cache_creation_input_tokens || 0, u.input_tokens || 0, u.output_tokens || 0, u.output_tokens_details?.thinking_tokens || 0];
+  const cost = Number.isFinite(result.total_cost_usd) ? result.total_cost_usd : null;
+  const baselines = readBaselines();
+  const base = baselines[sessionId];
+  baselines[sessionId] = { totals, cost };
+  try { writeFileSync(baselineFile, JSON.stringify(baselines)); } catch {}
+  let [read, write, fresh, output, thought] = totals;
+  let costUsd = cost;
+  if (base && totals.every((value, index) => value >= (base.totals[index] || 0))) {
+    [read, write, fresh, output, thought] = totals.map((value, index) => value - (base.totals[index] || 0));
+    costUsd = cost !== null && Number.isFinite(base.cost) ? Math.max(0, cost - base.cost) : null;
+  } else if (resumed && !base && spent) {
+    // 续接的旧会话没有记过累计值：这一回合只能按流里逐条累加的输入估，输出和费用不报。
+    return { usage: { inputTokens: spent, outputTokens: 0, totalTokens: spent }, _meta: { contextTokens: context } };
+  }
   const input = fresh + read + write;
   if (!input && !output) return {};
   return { usage: { inputTokens: input, outputTokens: output, cachedReadTokens: read, cachedWriteTokens: write, ...(thought ? { thoughtTokens: thought } : {}), totalTokens: input + output },
-    _meta: { contextTokens: context, ...(Number.isFinite(result.total_cost_usd) ? { costUsd: result.total_cost_usd } : {}) } };
+    _meta: { contextTokens: context, ...(costUsd !== null ? { costUsd } : {}) } };
 }
 
 function failureMessage(result) {
@@ -279,7 +300,8 @@ function prompt(id, params) {
     '--include-partial-messages', '--disallowedTools', 'AskUserQuestion'];
   if (session.model && session.model !== 'default') args.push('--model', session.model);
   if (session.effort) args.push('--effort', session.effort);
-  args.push(session.started || transcript(params.sessionId) ? '--resume' : '--session-id', params.sessionId);
+  const resumed = Boolean(session.started || transcript(params.sessionId));
+  args.push(resumed ? '--resume' : '--session-id', params.sessionId);
   if (coordinatorMode) {
     // 管家只调度：不给任何内置工具，也不加载用户或插件的 MCP。
     args.push('--tools', '', '--strict-mcp-config', '--permission-mode', 'default', '--permission-prompts', 'none',
@@ -387,7 +409,7 @@ function prompt(id, params) {
     } else if (result && !result.is_error) {
       const reason = result.stop_reason === 'max_tokens' ? 'max_tokens'
         : result.stop_reason === 'refusal' ? 'refusal' : 'end_turn';
-      send({ id, result: { stopReason: reason, ...usageOf(result, context) } });
+      send({ id, result: { stopReason: reason, ...usageOf(result, context, params.sessionId, resumed, spent) } });
     } else if (result) {
       noteFailure(`prompt failed: ${result.subtype} ${String(result.result || '').slice(0, 300)}`);
       const limited = /429|额度/.test(failureMessage(result));
