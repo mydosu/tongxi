@@ -585,6 +585,7 @@ impl Store {
         }
         crate::chat_questions::migrate(&tx)?;
         crate::backgrounds::migrate(&tx)?;
+        crate::project_brain::migrate(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         let mut store = Self {
             connection,

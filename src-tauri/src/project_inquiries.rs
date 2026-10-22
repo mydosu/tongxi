@@ -102,6 +102,38 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Inquiry> {
 }
 const COLUMNS: &str = "id,conversation_id,workflow_id,key,asked_by,question,background,options,default_choice,reversible,status,answer,seen,created_at,answered_at";
 
+/// 挂问题。同一个 key 已经答过就不再问（返回 false）；还没答的更新内容；撤下过的重新挂出来。
+/// 主脑的工具进程只有数据库连接，也走这里。
+pub fn ask_on(connection: &rusqlite::Connection, room: &str, workflow: Option<&str>, asked_by: &str, ask: &Ask) -> Result<bool> {
+    let key = ask.key.trim();
+    let existing: Option<String> = connection
+        .query_row("SELECT status FROM project_inquiries WHERE conversation_id=?1 AND key=?2", params![room, key], |r| r.get(0))
+        .ok();
+    let options = serde_json::to_string(&ask.options).unwrap();
+    let background = ask.background.as_deref().unwrap_or_default().trim();
+    match existing.as_deref() {
+        Some("answered") => Ok(false),
+        Some(status) => {
+            connection
+                .execute(
+                    "UPDATE project_inquiries SET question=?1,background=?2,options=?3,default_choice=?4,reversible=?5,status='open',workflow_id=COALESCE(?6,workflow_id) WHERE conversation_id=?7 AND key=?8",
+                    params![ask.question.trim(), background, options, ask.default, ask.reversible, workflow, room, key],
+                )
+                .map_err(|_| "问题更新失败")?;
+            Ok(status == "withdrawn")
+        }
+        None => {
+            connection
+                .execute(
+                    "INSERT INTO project_inquiries(id,conversation_id,workflow_id,key,asked_by,question,background,options,default_choice,reversible,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'open',?11)",
+                    params![uuid::Uuid::new_v4().to_string(), room, workflow, key, asked_by, ask.question.trim(), background, options, ask.default, ask.reversible, now()],
+                )
+                .map_err(|_| "问题保存失败")?;
+            Ok(true)
+        }
+    }
+}
+
 impl Store {
     /// 面板用：没答的全部，加最近答过的 30 条。
     pub fn project_inquiries(&self, room: &str) -> Result<Vec<Inquiry>> {
@@ -115,34 +147,7 @@ impl Store {
 
     /// 挂问题。同一个 key 已经答过就不再问（返回 false）；还没答的更新内容；撤下过的重新挂出来。
     pub fn ask_inquiry(&self, room: &str, workflow: Option<&str>, asked_by: &str, ask: &Ask) -> Result<bool> {
-        let key = ask.key.trim();
-        let existing: Option<String> = self
-            .connection
-            .query_row("SELECT status FROM project_inquiries WHERE conversation_id=?1 AND key=?2", params![room, key], |r| r.get(0))
-            .ok();
-        let options = serde_json::to_string(&ask.options).unwrap();
-        let background = ask.background.as_deref().unwrap_or_default().trim();
-        match existing.as_deref() {
-            Some("answered") => Ok(false),
-            Some(status) => {
-                self.connection
-                    .execute(
-                        "UPDATE project_inquiries SET question=?1,background=?2,options=?3,default_choice=?4,reversible=?5,status='open',workflow_id=COALESCE(?6,workflow_id) WHERE conversation_id=?7 AND key=?8",
-                        params![ask.question.trim(), background, options, ask.default, ask.reversible, workflow, room, key],
-                    )
-                    .map_err(|_| "问题更新失败")?;
-                Ok(status == "withdrawn")
-            }
-            None => {
-                self.connection
-                    .execute(
-                        "INSERT INTO project_inquiries(id,conversation_id,workflow_id,key,asked_by,question,background,options,default_choice,reversible,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'open',?11)",
-                        params![uuid::Uuid::new_v4().to_string(), room, workflow, key, asked_by, ask.question.trim(), background, options, ask.default, ask.reversible, now()],
-                    )
-                    .map_err(|_| "问题保存失败")?;
-                Ok(true)
-            }
-        }
+        ask_on(&self.connection, room, workflow, asked_by, ask)
     }
 
     /// 撤下没答的问题（事情已经没意义了）。

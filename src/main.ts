@@ -16,7 +16,7 @@ import { projectProgressPage, progressContent, type QuotaEntry } from './project
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
-import { baseAgent, isSeat, seatSlot } from './seats';
+import { baseAgent, isBrain, isSeat, seatSlot } from './seats';
 import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
@@ -51,7 +51,7 @@ const portrait = (agent: Agent) => agent.avatar && /^data:image\/[a-z+]+;base64,
 const solidColor = (agent: Agent) => /^color:#[0-9a-f]{6}$/i.test(agent.avatar || '') ? agent.avatar!.slice(6) : '';
 const avatar = (agent: Agent, size = '', numbered = true) => solidColor(agent) ? `<span class="avatar solid ${size}${numbered && seatNumber(agent.id) ? ' seat' : ''}" style="background:${solidColor(agent)}" aria-hidden="true">${escape(globalMember(baseAgent(agent.id)).name[0] || '·')}${numbered && seatNumber(agent.id) ? `<i class="seat-badge">${seatNumber(agent.id)}</i>` : ''}</span>` : portrait(agent) ? `<span class="avatar albion-portrait ${size}${numbered && seatNumber(agent.id) ? ' seat' : ''}" style="background-image:url('${portrait(agent)}')" aria-hidden="true">${numbered && seatNumber(agent.id) ? `<i class="seat-badge">${seatNumber(agent.id)}</i>` : ''}</span>` : numbered && seatNumber(agent.id) ? `<span class="avatar ${escape(agent.accent)} ${size} seat" aria-hidden="true">${globalMember(baseAgent(agent.id)).name[0]}<i class="seat-badge">${seatNumber(agent.id)}</i></span>` : `<span class="avatar ${escape(agent.accent)} ${size}" aria-hidden="true">${globalMember(agent.id).name[0]}</span>`;
 /// 同一成员在当前项目里开了多个会话时的编号（1、2、3…）；只有一个会话就不编号。
-const seatNumber = (id: string) => isSeat(id) ? seatSlot(id) : detail?.project_agent_chats?.some(chat => isSeat(chat.agent_id) && baseAgent(chat.agent_id) === id) ? '1' : '';
+const seatNumber = (id: string) => isSeat(id) ? seatSlot(id) : detail?.project_agent_chats?.some(chat => isSeat(chat.agent_id) && !isBrain(chat.agent_id) && baseAgent(chat.agent_id) === id) ? '1' : '';
 const brand = `<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><defs><linearGradient id="brand-silver" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7c8590"/><stop offset="1" stop-color="#4a5158"/></linearGradient></defs><rect width="40" height="40" rx="12" fill="url(#brand-silver)"/><path d="M13 13h14v14H13z" stroke="#f0f3f6" stroke-width="1.2" fill="none"/><circle cx="13" cy="13" r="3" fill="#e7ca87"/><circle cx="27" cy="13" r="3" fill="#e2efe5"/><circle cx="27" cy="27" r="3" fill="#97bce0"/><circle cx="13" cy="27" r="3" fill="#e5b8b5"/></svg>`;
 
 let agents: Agent[] = [];
@@ -440,7 +440,7 @@ function member(id: string): Agent {
 }
 function globalMember(id: string): Agent {
   const owner = isSeat(id) ? agents.find(agent => agent.id === baseAgent(id)) : null;
-  if (owner) return { ...owner, id, name: `${owner.name} ${seatSlot(id)}号` };
+  if (owner) return { ...owner, id, name: isBrain(id) ? '主脑' : `${owner.name} ${seatSlot(id)}号` };
   return agents.find(agent => agent.id === id) || { id, name: id, subtitle: '', role: '', location: '', accent: '', status: 'not_connected' };
 }
 function time(timestamp: number) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(timestamp); }
@@ -467,7 +467,7 @@ function renderList() {
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'progress' ? 'active' : ''}" data-project-module="progress" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">◴</span><span>项目协作进度</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -1227,6 +1227,28 @@ async function sendGroupMessage() {
     try { await invoke('answer_project_question',{conversationId:detail.conversation.id,questionId:question.id,messageId:crypto.randomUUID(),content});
       submittedAttachments(id,content);localStorage.removeItem(draftKey(detail.conversation.id));await selectConversation(detail.conversation.id);
     } catch(error){toast(errorText(error),true);}return;
+  }
+  if (detail.project) {
+    // 项目群里说的话直接交给主脑；群里只看主脑和成员的进展摘要。
+    const brain = detail.project_agent_chats.find(chat => isBrain(chat.agent_id));
+    if (!brain) { toast('项目里还没有能当主脑的成员', true); return; }
+    if (content !== attachmentText(content)) { toast('附件请到主脑会话里发', true); return; }
+    const agent = baseAgent(brain.agent_id);
+    if (runtimes[agent]?.connection !== 'connected') { toast(`请先连接${globalMember(agent).name}`, true); return; }
+    sending = true; updateRuntimeControls();
+    try {
+      const messageId = crypto.randomUUID();
+      if (busyIn(runtimes[agent], brain.conversation_id)) {
+        if (agent !== 'codex-win' && agent !== 'claude-win') { toast('主脑正在回复，等它这一轮说完再发', true); return; }
+        await invoke('steer_agent_message', { agentId: agent, conversationId: brain.conversation_id, messageId, content });
+      } else await invoke<RunRecord>(`send_${harnessKey(agent)}_message`, { conversationId: brain.conversation_id, messageId, content });
+      const input = main.querySelector<HTMLTextAreaElement>('#message-input');
+      if (input && input.value.trim() === content) { input.value = ''; resizeComposer(input); }
+      if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
+      await selectProjectModule(id, brain.agent_id);
+    } catch (error) { toast(errorText(error), true); }
+    finally { sending = false; updateRuntimeControls(); }
+    return;
   }
   if (detail.project) {
     const activeWorkflow = currentWorkflow();
@@ -2494,6 +2516,10 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         if (!discussionBusy(event.payload.discussion)) {
           void refreshList().then(() => { if (screen === 'chat' && selectedId === event.payload.discussion.conversation_id) return selectConversation(selectedId); }).catch(error => toast(errorText(error), true));
         }
+      });
+      // 主脑派活、成员交回：项目群的进展摘要跟着刷新。
+      await listen<string>('brain-state', event => {
+        if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
       });
       await listen<{ revision: number; workflow: Workflow }>('project-state', event => {
         if (event.payload.revision < projectRevision) return;

@@ -670,6 +670,27 @@ pub fn create(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Re
     Ok(path)
 }
 
+/// 主脑派活用：从当前 HEAD 开一个工作树和新分支。主目录有没提交的改动也照开（它们不会带进工作树），由主脑自己掂量。
+pub fn add(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
+    if !is_repo(root) {
+        return Err("项目目录不是 git 仓库，不能开工作树".into());
+    }
+    let _serial = serial();
+    let path = worktree_root.join(name);
+    if path.exists() {
+        return Err(format!("工作树目录已存在：{name}"));
+    }
+    std::fs::create_dir_all(worktree_root).map_err(|_| "工作树根目录创建失败".to_string())?;
+    let path_text = path.to_string_lossy().to_string();
+    git(root, &["worktree", "add", &path_text, "-b", branch])?;
+    Ok(path)
+}
+
+/// 在项目目录里跑一条 git 命令取输出（主脑工具查分支状态用）。
+pub fn git_output(root: &Path, args: &[&str]) -> Result<String> {
+    git(root, args)
+}
+
 /// Reattach a completed task branch after a failed workflow released its worktree directory.
 pub fn attach(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
     if !is_repo(root) {

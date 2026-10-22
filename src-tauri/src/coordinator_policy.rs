@@ -6,40 +6,15 @@ use serde_json::Value;
 pub const MANAGER_ACTIVITY: &str = "coordinate";
 /// 管家所在成员处理原仓库合并/变基中途状态的回合。
 pub const GIT_REPAIR_ACTIVITY: &str = "resolve:git";
-/// 调度和成员的说明放在外置文件里，改了下一回合就生效，不用重新打包重启：
-/// 先找数据目录下的 prompts/（用户自己改的版本），调试版再找源码里的 prompts/，都没有就用打包进来的那份。
 const MANAGER_DEFAULT: &str = include_str!("../prompts/manager.md");
-const MEMBER_DEFAULT: &str = include_str!("../prompts/member.md");
-static PROMPT_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-pub fn set_prompt_dir(directory: std::path::PathBuf) {
-    let _ = PROMPT_DIR.set(directory);
-}
-
-/// 依次可能存放某份说明的外置文件，排在前面的优先。
-pub fn prompt_files(name: &str) -> Vec<std::path::PathBuf> {
-    let mut files: Vec<std::path::PathBuf> = PROMPT_DIR.get().map(|dir| dir.join(name)).into_iter().collect();
-    if cfg!(debug_assertions) {
-        files.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts").join(name));
-    }
-    files
-}
-
-fn load_prompt(name: &str, fallback: &str) -> String {
-    prompt_files(name)
-        .iter()
-        .find_map(|file| std::fs::read_to_string(file).ok())
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| fallback.trim().to_owned())
-}
+pub use crate::prompts::prompt_files;
 
 pub fn manager_instruction() -> String {
-    load_prompt("manager.md", MANAGER_DEFAULT)
+    crate::prompts::load("manager.md", MANAGER_DEFAULT)
 }
 
 pub fn member_instruction() -> String {
-    load_prompt("member.md", MEMBER_DEFAULT)
+    crate::prompts::member()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
