@@ -600,7 +600,7 @@ pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Ve
         )
         .map_err(|_| "私聊工具目录不可用")?;
     Ok(if linked {
-        project_chat_tool_specs()
+        project_chat_tool_specs(&connection, conversation_id)
     } else {
         tool_specs()
             .into_iter()
@@ -616,8 +616,19 @@ pub fn project_chat_dynamic_tools(db: &Path, conversation_id: &str) -> Result<Ve
     .collect())
 }
 
-fn project_chat_tool_specs() -> Vec<Value> {
+/// 主脑会话用主脑那套工具；成员会话只留问用户、记忆和发群消息，活由主脑派。
+fn project_chat_tool_specs(connection: &Connection, conversation_id: &str) -> Vec<Value> {
+    if crate::project_brain::is_brain_chat(connection, conversation_id) {
+        return crate::project_brain::tool_specs();
+    }
     tool_specs()
+        .into_iter()
+        .filter(|tool| {
+            tool["name"].as_str().is_some_and(|name| {
+                name == "hub_ask_user" || name == "hub_broadcast" || name.starts_with("hub_memory_")
+            })
+        })
+        .collect()
 }
 
 fn chat_context(
@@ -646,6 +657,9 @@ fn chat_tool(
             |row| row.get(0),
         )
         .map_err(|_| "私聊工具归属不可用")?;
+    if linked && crate::project_brain::is_brain_chat(connection, conversation_id) {
+        return crate::project_brain::call(connection, conversation_id, name, args);
+    }
     if !linked || name == "hub_ask_user" {
         let private_run:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND discussion_id IS NULL AND status IN ('starting','running'))",[conversation_id],|row|row.get(0)).map_err(|_|"私聊状态不可用")?;
         if !linked || private_run {
@@ -783,7 +797,7 @@ fn chat_broadcast(connection: &Connection, conversation_id: &str, content: &str)
     let allowed: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM members WHERE conversation_id=?1 AND agent_id=?2)",
-            params![group, agent],
+            params![group, base_agent(&agent)],
             |row| row.get(0),
         )
         .map_err(|_| "团队成员校验失败")?;
@@ -864,7 +878,7 @@ pub fn serve_project_chat(db: &Path, conversation_id: &str) -> Result<()> {
             }
             "ping" => json!({"result":{}}),
             "tools/list" if initialized => {
-                json!({"result":{"tools":if linked {project_chat_tool_specs()} else {tool_specs().into_iter().filter(|tool|tool["name"]=="hub_ask_user").collect::<Vec<_>>()}}})
+                json!({"result":{"tools":if linked {project_chat_tool_specs(&connection, conversation_id)} else {tool_specs().into_iter().filter(|tool|tool["name"]=="hub_ask_user").collect::<Vec<_>>()}}})
             }
             "tools/call" if initialized => {
                 match chat_tool(

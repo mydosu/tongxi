@@ -5,6 +5,8 @@ mod usage_mode;
 mod advisor;
 mod project_plan;
 mod project_inquiries;
+mod project_brain;
+mod prompts;
 mod quota_reset;
 mod cli_open;
 mod cli_transcript;
@@ -1293,7 +1295,7 @@ fn main() {
                 }
                 None => app.path().app_local_data_dir()?,
             };
-            coordinator_policy::set_prompt_dir(directory.join("prompts"));
+            prompts::set_prompt_dir(directory.join("prompts"));
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
             ));
@@ -1340,6 +1342,14 @@ fn main() {
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
             ));
+            project_brain::Courier::start(
+                app.handle().clone(),
+                store.clone(),
+                app.state::<Arc<codex::Runtime>>().inner().clone(),
+                app.state::<Arc<hermes::Runtime>>().inner().clone(),
+                app.state::<Arc<dsh::Runtime>>().inner().clone(),
+                app.state::<Arc<claude::Runtime>>().inner().clone(),
+            );
             app.manage(services::MaintenanceLock::default());
             app.manage(AppState {
                 store,

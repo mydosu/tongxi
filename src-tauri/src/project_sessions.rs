@@ -456,6 +456,9 @@ impl Store {
     }
 
     pub fn seat_name(&self, room: &str, seat: &str) -> String {
+        if crate::project_store::is_brain(seat) {
+            return "主脑".into();
+        }
         let base = base_agent(seat);
         let custom: Option<String> = if base == seat {
             self.connection
@@ -524,7 +527,7 @@ impl Store {
     }
 
     pub fn remove_project_seat(&mut self, room: &str, seat: &str) -> Result<()> {
-        if base_agent(seat) == seat || !is_executor(seat) {
+        if base_agent(seat) == seat || !is_executor(seat) || crate::project_store::is_brain(seat) {
             return Err("只能撤掉额外开的席位".into());
         }
         let chats = self.project_agent_chats(room)?;

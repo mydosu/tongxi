@@ -176,15 +176,22 @@ pub fn prompt(db: &Path, room: &str, content: &str, images: bool) -> Result<Vec<
         .take(20)
         .map(|item| load(db, room, &item.id))
         .collect::<Result<Vec<_>>>()?;
-    let mut body = text(content).to_owned();
+    // 主脑会话：新原生会话的第一条带上主脑说明；它问用户走问答面板，不用私聊提问的说明。
+    let brain = crate::project_brain::preamble(db, room);
+    let mut body = match &brain {
+        Some(Some(preamble)) => format!("{preamble}\n\n{}", text(content)),
+        _ => text(content).to_owned(),
+    };
     if !items.is_empty() {
         body.push_str("\n\n用户附件已保存到本机，按需用原生工具读取。图片可用图片或视觉工具查看；若当前模型和工具无法查看，请如实说明，不猜测图像内容。\n");
         for item in &items {
             body.push_str(&format!("{}：{}\n", item.name, item.path));
         }
     }
-    body.push_str("\n\n");
-    body.push_str(crate::chat_questions::GUIDANCE);
+    if brain.is_none() {
+        body.push_str("\n\n");
+        body.push_str(crate::chat_questions::GUIDANCE);
+    }
     let mut input = vec![json!({"type":"text","text":body})];
     if images {
         for item in items.iter().filter(|item| item.mime.starts_with("image/")) {

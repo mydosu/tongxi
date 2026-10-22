@@ -2171,6 +2171,8 @@ pub fn set_project_coordinator(
     }
     let mut store = runtime.store.lock().unwrap();
     store.set_project_coordinator(&conversation_id, &coordinator)?;
+    // 换了主脑成员就建好它的主脑会话，模型和思考强度同步过去。
+    store.ensure_project_agent_chats(&conversation_id)?;
     store.detail(&conversation_id)
 }
 

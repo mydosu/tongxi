@@ -52,20 +52,32 @@ pub const REVIEWER_AGENTS: [&str; 4] = EXECUTOR_AGENTS;
 /// 同一成员在项目里的额外席位（`codex-win-2` 这类 id）：各有自己的专属会话与模型，
 /// 调度把它们当独立成员派活，执行时落回底层成员的原生连接。
 pub const SEAT_SLOTS: [u8; 3] = [2, 3, 4];
+/// 主脑也是一个席位（`claude-win-brain` 这类）：项目里唯一一条主脑会话，跑在底层成员的原生连接上。
+pub const BRAIN_SLOT: &str = "brain";
 pub fn seat_ids() -> Vec<String> {
     EXECUTOR_AGENTS
         .iter()
-        .flat_map(|agent| SEAT_SLOTS.iter().map(move |slot| format!("{agent}-{slot}")))
+        .flat_map(|agent| {
+            SEAT_SLOTS
+                .iter()
+                .map(move |slot| format!("{agent}-{slot}"))
+                .chain(std::iter::once(format!("{agent}-{BRAIN_SLOT}")))
+        })
         .collect()
 }
 /// 席位 → 底层成员；不是席位就原样返回。
 pub fn base_agent(id: &str) -> &str {
     if let Some((base, slot)) = id.rsplit_once('-') {
-        if EXECUTOR_AGENTS.contains(&base) && SEAT_SLOTS.iter().any(|n| n.to_string() == slot) {
+        if EXECUTOR_AGENTS.contains(&base)
+            && (slot == BRAIN_SLOT || SEAT_SLOTS.iter().any(|n| n.to_string() == slot))
+        {
             return base;
         }
     }
     id
+}
+pub fn is_brain(id: &str) -> bool {
+    base_agent(id) != id && id.ends_with(BRAIN_SLOT)
 }
 /// 项目成员（含额外席位）。
 pub fn is_executor(id: &str) -> bool {
@@ -1409,8 +1421,14 @@ impl Store {
             .map_err(|_| "Agent 会话读取失败")?;
         drop(statement);
         // 只列出仍在群里的成员的会话；移出的成员（及其多开的会话）数据保留，加回来就恢复。
+        // 主脑只列当前那一条（换过主脑成员的，旧主脑会话留着不显示），排在最前。
         let members = self.conversation(group_id)?.members;
-        chats.retain(|chat| members.iter().any(|member| member == base_agent(&chat.agent_id)));
+        let brain = crate::project_brain::brain_seat(self, group_id).ok();
+        chats.retain(|chat| {
+            members.iter().any(|member| member == base_agent(&chat.agent_id))
+                && (!is_brain(&chat.agent_id) || brain.as_deref() == Some(chat.agent_id.as_str()))
+        });
+        chats.sort_by_key(|chat| !is_brain(&chat.agent_id));
         for chat in &mut chats {
             chat.name = self.seat_name(group_id, &chat.agent_id);
         }
@@ -1470,6 +1488,9 @@ impl Store {
                 seats.push(seat);
             }
         }
+        if let Ok(brain) = crate::project_brain::brain_seat(self, group_id) {
+            seats.push(brain);
+        }
         for seat in seats {
             let label = self.seat_name(group_id, &seat);
             let agent = base_agent(&seat).to_owned();
@@ -1500,6 +1521,7 @@ impl Store {
             ).map_err(|_| "Agent 项目会话绑定失败")?;
             tx.commit().map_err(|_| "Agent 项目会话保存失败")?;
         }
+        crate::project_brain::sync_brain_settings(self, group_id)?;
         self.project_agent_chats(group_id)
     }
 
