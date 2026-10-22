@@ -231,8 +231,20 @@ pub fn section_title(title: &str) -> &str {
 
 pub fn parse(raw: &str) -> Result<Decision, String> {
     let document = crate::project_store::json_document(raw, 64_000)?;
-    let value: Decision = serde_json::from_str(document)
+    let mut value: Decision = serde_json::from_str(document)
         .map_err(|_| "调度返回的 JSON 格式无效或带了未知字段".to_owned())?;
+    // 调度常把同批前置任务的 key 写进 context_ids：那时还没有结果可引用，按依赖处理。
+    let keys: Vec<String> = value.routes.iter().map(|route| route.key.clone()).collect();
+    for route in &mut value.routes {
+        let (siblings, results): (Vec<_>, Vec<_>) =
+            route.context_ids.drain(..).partition(|id| keys.contains(id) && *id != route.key);
+        route.context_ids = results;
+        for key in siblings {
+            if !route.depends_on.contains(&key) {
+                route.depends_on.push(key);
+            }
+        }
+    }
     if !matches!(
         value.action.as_str(),
         "delegate" | "ask_user" | "wait" | "finish" | "pause"
