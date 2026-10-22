@@ -1,3 +1,4 @@
+import { steerIds } from './thought_flow';
 import type { ConversationDetail, RunToolEvent, RuntimeSnapshot } from './types';
 
 /** Display data only: merging logs never changes the separate native sessions. */
@@ -17,6 +18,8 @@ export interface AgentEntry {
   messageId?: string;
   attachmentRoom?: string;
   protocol?: { label: string; raw: string };
+  /** 回复中途插进来的话（按消息 id），显示在回复里被打断的位置。 */
+  steers?: Record<string, { body: string; at: number }>;
 }
 
 export const entryBusy = (status: string) => ['starting', 'running', 'cancelling', 'streaming'].includes(status);
@@ -27,7 +30,8 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
   for (const message of chat.messages) {
     rows.set(`message:${message.id}`, {
       id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
-      source: 'private', author: message.sender_id, body: message.content, thought: message.thought || '',
+      // 消息只记底层成员（claude-win），署名用这条会话所属的席位（主脑、克大姐……），和进行中的回复一致。
+      source: 'private', author: message.sender_id === 'user' ? 'user' : agent, body: message.content, thought: message.thought || '',
       tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
   }
@@ -43,6 +47,16 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
       tools: toolActivity(active.tool_events || []), status: active.status, error: active.error, model: active.model, effort: active.reasoning_effort,
       messageId: active.assistant_message_id,
     });
+  }
+  // 插话跟着被它打断的回复显示，不再按自己的时间排到整条回复后面。
+  for (const row of [...rows.values()]) {
+    if (row.kind !== 'agent' || row.body.includes('```tongxi-question')) continue;
+    for (const id of steerIds(row.thought)) {
+      const said = rows.get(`message:${id}`);
+      if (said?.kind !== 'user') continue;
+      (row.steers ??= {})[id] = { body: said.body, at: said.at };
+      rows.delete(said.id);
+    }
   }
   for (const message of chat.project_agent_inbox || []) rows.set(`peer:${message.id}`, {
     id: `peer:${message.id}`, at: message.created_at, kind: 'peer', source: 'peer', author: message.sender_agent,
