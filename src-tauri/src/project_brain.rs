@@ -189,7 +189,17 @@ impl Store {
             .map_err(|_| "派活记录读取失败")?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| "派活记录读取失败")?;
-        Ok(BrainOverview { seat, chat, waiting, jobs })
+        let root: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT p.root FROM conversation_projects cp JOIN projects p ON p.id=cp.project_id WHERE cp.conversation_id=?1",
+                [room],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "项目目录读取失败")?;
+        let plans = root.map(|root| plan_docs(Path::new(&root))).unwrap_or_default();
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -259,6 +269,36 @@ pub struct BrainOverview {
     /// 交回的结果、问答回答里还没送进主脑会话的条数。
     waiting: i64,
     jobs: Vec<BrainJob>,
+    plans: Vec<PlanDoc>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PlanDoc {
+    name: String,
+    /// 任务书（.tongxi/任务书/*.md）还是长期计划（.tongxi/计划.md）。
+    brief: bool,
+    text: String,
+    modified: i64,
+}
+
+/// 派活页的「计划与任务书」：只读主脑写在项目里的文件，最近改过的任务书在前，计划放最后。
+fn plan_docs(root: &Path) -> Vec<PlanDoc> {
+    let read = |path: &Path, brief: bool| -> Option<PlanDoc> {
+        let modified = path.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
+        Some(PlanDoc { name: path.file_stem()?.to_string_lossy().into(), brief, text: std::fs::read_to_string(path).ok()?, modified })
+    };
+    let dir = root.join(".tongxi");
+    let mut docs: Vec<PlanDoc> = std::fs::read_dir(dir.join("任务书"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .filter_map(|path| read(&path, true))
+        .collect();
+    docs.sort_by(|a, b| b.modified.cmp(&a.modified));
+    docs.extend(read(&dir.join("计划.md"), false));
+    docs
 }
 
 /// 本项目的主脑跑在哪个成员上：项目设置里选的，没选或已不在群里就按默认顺序挑。
@@ -1214,6 +1254,16 @@ mod tests {
         assert_eq!(ids, ["job-new", "job-old"], "只列派活，不列插话和停止，最新的在前");
         assert_eq!(overview.jobs[0].model.as_deref(), Some("gpt-6-luna"));
         assert_eq!(overview.waiting, 0);
+        assert!(overview.plans.is_empty(), "主脑还没写计划时什么都不列");
+
+        std::fs::create_dir_all(root.join(".tongxi/任务书")).unwrap();
+        std::fs::write(root.join(".tongxi/计划.md"), "# 计划").unwrap();
+        std::fs::write(root.join(".tongxi/任务书/删旧.md"), "- [x] 一
+- [ ] 二").unwrap();
+        std::fs::write(root.join(".tongxi/任务书/草稿.txt"), "不是任务书").unwrap();
+        let plans = store.brain_overview(&room).unwrap().plans;
+        let names: Vec<(&str, bool)> = plans.iter().map(|doc| (doc.name.as_str(), doc.brief)).collect();
+        assert_eq!(names, [("删旧", true), ("计划", false)], "只列 .md 任务书，计划放最后");
 
         store.stop_brain_job(&room, "job-new").unwrap();
         let overview = store.brain_overview(&room).unwrap();

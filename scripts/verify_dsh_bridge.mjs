@@ -14,7 +14,6 @@ const bridge = readFileSync(join(src, 'dsh_bridge.mjs'), 'utf8');
 const MODES = [
   ['私聊', {}],
   ['项目', { AGENT_HUB_DSH_PROJECT_MODE: '1' }],
-  ['调度', { AGENT_HUB_COORDINATOR_MODE: '1' }],
 ];
 
 function installLatest() {

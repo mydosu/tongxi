@@ -189,7 +189,8 @@ function renderBrainJobs(force = false) {
     await refreshBrainJobs(selectedId);
   }));
 }
-setInterval(() => { if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs' && brainOverview?.jobs.some(jobLive)) renderBrainJobs(); }, 30000);
+// 计划和任务书是主脑直接写的文件，没有事件通知：开着派活页时隔几秒重读一次（没变不重绘），用时也跟着走。
+setInterval(() => { if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs') void refreshBrainJobs(selectedId); }, 10000);
 
 function renderProjectInquiries() {
   if (!detail?.project) return;

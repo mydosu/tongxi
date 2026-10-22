@@ -35,12 +35,6 @@ impl Store {
                     return Err("请先停止本轮讨论再删除".into());
                 }
             }
-            "peer_message" => {
-                let belongs:bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM project_team_messages WHERE id=?1 AND conversation_id=?2 AND recipient_agent IS NOT NULL)",params![id,room],|row|row.get(0)).map_err(|_|"成员消息读取失败")?;
-                if !belongs {
-                    return Err("成员消息不属于此会话".into());
-                }
-            }
             "team_message" => {
                 let belongs: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM project_team_messages WHERE id=?1 AND conversation_id=?2)", params![id,room], |row|row.get(0)).map_err(|_|"团队消息读取失败")?;
                 if !belongs {
@@ -53,12 +47,7 @@ impl Store {
             .connection
             .transaction()
             .map_err(|_| "删除事务创建失败")?;
-        if kind == "peer_message" {
-            tx.execute("DELETE FROM project_agent_messages WHERE id=?1", [id])
-                .map_err(|_| "成员消息删除失败")?;
-            tx.execute("DELETE FROM project_team_messages WHERE id=?1", [id])
-                .map_err(|_| "成员消息删除失败")?;
-        } else if kind == "team_message" {
+        if kind == "team_message" {
             tx.execute("DELETE FROM project_team_messages WHERE id=?1", [id])
                 .map_err(|_| "团队消息删除失败")?;
         } else {

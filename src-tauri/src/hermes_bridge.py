@@ -78,17 +78,7 @@ class ChatSessions(SessionManager):
 
     def _make_agent(self, **kwargs):
         self._relaxed_db()
-        coordinator = os.environ.get('AGENT_HUB_COORDINATOR_MODE') == '1'
-        if coordinator:
-            kwargs['enabled_toolsets'] = []
-            kwargs['disabled_toolsets'] = []
         agent = super()._make_agent(**kwargs)
-        if coordinator:
-            import types
-            agent.tools = []
-            def reject_tools(_self, *_args, **_kwargs):
-                raise RuntimeError('Coordinator has no project tool permissions')
-            agent._execute_tool_calls = types.MethodType(reject_tools, agent)
         agent._hub_default_reasoning = copy.deepcopy(agent.reasoning_config)
         # 思考块只从流式增量推给 ACP 客户端：profile 里 model.streaming=false 的会话
         # （例如阿尔比恩）非流式请求，Hermes 的非流式兜底又要求「未设 stream_delta_callback」，

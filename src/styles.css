@@ -559,6 +559,10 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-job-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; color: var(--faint); font-size: 11.5px; }
 .brain-job-error { margin: 0; color: var(--err); font-size: 12.5px; }
 .brain-job-text { margin-top: 6px; padding: 11px 14px; max-height: 420px; overflow: auto; border-radius: 10px; background: rgb(246 245 252 / .8); color: #4a526e; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.brain-job-text.markdown { white-space: normal; }
+.brain-job-text.markdown p { margin: 0 0 8px; }
+.brain-job-text.markdown > :last-child { margin-bottom: 0; }
+.brain-job-text.markdown ul, .brain-job-text.markdown ol { padding-left: 20px; margin: 4px 0 8px; }
 .brain-job-actions { display: flex; align-items: center; gap: 12px; padding-top: 2px; }
 .brain-job-actions .secondary { padding: 6px 14px; font-size: 12px; }
 .brain-job-actions .text-button { font-size: 12px; color: var(--muted); }
@@ -566,6 +570,17 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-job-actions .secondary.danger { color: var(--err); border-color: rgb(176 99 79 / .35); background: rgb(255 246 243 / .8); }
 .brain-jobs-ended[open] { display: grid; gap: 10px; }
 .brain-jobs-ended .brain-job { background: rgb(255 255 255 / .48); box-shadow: none; }
+.brain-plans { display: grid; gap: 8px; padding: 14px 18px; border: 1px solid rgb(255 255 255 / .9); border-radius: 16px; background: rgb(255 255 255 / .55); }
+.brain-plans h2 { margin: 0; color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.brain-plan summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 4px 0; color: var(--muted); font-size: 12.5px; }
+.brain-plan summary::-webkit-details-marker { display: none; }
+.brain-plan summary::before { content: '▸'; color: var(--faint); transition: transform .15s; }
+.brain-plan[open] summary::before { transform: rotate(90deg); }
+.brain-plan summary strong { color: var(--ink); font-weight: 500; }
+.brain-plan summary:hover strong { color: var(--accent-2); }
+.brain-plan summary small { margin-left: auto; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.brain-plan-progress { padding: 1px 9px; border-radius: 999px; background: rgb(108 134 182 / .13); color: var(--queue); font-size: 11.5px; }
+.brain-plan-progress.done { background: rgb(74 159 123 / .13); color: var(--ok); }
 @media (prefers-reduced-motion: reduce) { .brain-status-dot.busy { animation: none; } }
 @media (max-width: 640px) { .inquiry-answer { flex-direction: column; align-items: stretch; } .inquiry-card header { flex-direction: column; gap: 4px; } }
 .brain-job-text.markdown { white-space: normal; }
