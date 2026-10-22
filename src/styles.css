@@ -4,50 +4,13 @@
 body { margin: 0; }
 .project-chevron { color: #8a95a5; margin-left: auto; flex-shrink: 0; font-size: 13px; }
 .project-progress-content { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px; }
-.project-progress-overview { padding: 24px 26px; border: 1px solid #e2e7ef; background: #fff; border-radius: 13px; }
-.project-progress-heading { display: flex; align-items: center; justify-content: space-between; }
-.project-progress-heading h2 { margin: 9px 0 18px; font-size: 22px; font-weight: 500; color: #435369; }
-.project-progress-heading > strong { font-size: 35px; font-weight: 400; color: #748ba7; }
-.project-progress-heading > strong small { font-size: 15px; margin-left: 4px; }
-.project-progress-meter { height: 7px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
-.project-progress-meter span { display: block; height: 100%; background: #9aadc4; transition: width .2s; }
-.project-progress-overview p { margin: 10px 0 0; color: #8b96a5; font-size: 12px; }
-.project-member-status-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 18px 0 24px; }
-.project-member-status { display: flex; align-items: center; gap: 11px; padding: 17px 15px; border: 1px solid #e3e8ef; border-radius: 10px; background: #fff; text-align: left; }
-.project-member-status > div { display: grid; gap: 4px; min-width: 0; }
-.project-member-status strong { color: #56667c; font-size: 13px; font-weight: 500; }
-.project-member-status span:not(.avatar) { color: #8f9cad; font-size: 11px; }
-.project-member-status > i { width: 6px; height: 6px; background: #d0d6df; border-radius: 50%; margin-left: auto; }
-.project-member-status.working > i { background: #4fb987; box-shadow: 0 0 0 3px #e3f4ec; animation: member-pulse 1.6s ease-in-out infinite; }
-.project-member-status.waiting > i { background: #e0a43c; box-shadow: 0 0 0 3px #fbf0dc; }
-.project-member-status.failed > i { background: #d9786b; box-shadow: 0 0 0 3px #f9e6e3; }
 @keyframes member-pulse { 50% { box-shadow: 0 0 0 5px #e3f4ec; opacity: .75; } }
-@media (prefers-reduced-motion: reduce) { .project-member-status.working > i { animation: none; } }
-.project-progress-work { border: 1px solid #e2e7ee; border-radius: 12px; padding: 18px 22px; background: #fff; }
-.project-progress-work > header { display: flex; align-items: center; gap: 14px; }
-.project-progress-work h3 { font-size: 14px; margin: 0; color: #516176; }
-.project-progress-work header > span { color: #8a96a6; font-size: 11px; }
-.project-progress-work header button { margin-left: auto; }
-.project-progress-work ol { list-style: none; padding: 4px 0 0; margin: 0; }
-.project-progress-work li { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #edf0f5; }
-.project-progress-work li:last-child { border-bottom: 0; }
-.project-progress-work li > div { display: grid; gap: 5px; }
-.project-progress-work li strong { color: #5b697d; font-size: 13px; font-weight: 400; }
-.project-progress-work li small { color: #98a3b3; font-size: 11px; }
-.progress-task-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid #e2e7ed; color: #abb4c1; }
-.progress-task-mark.completed { color: #88a295; background: #f0f5f2; border-color: #e4ece7; }
 .project-member-settings-row { display: flex; gap: 12px; border: 0; border-bottom: 1px solid #e8ecf2; padding: 16px 0 20px; margin: 8px 0 18px; flex-wrap: wrap; }
 .project-member-settings-row legend { color: #59697e; font-weight: 500; font-size: 14px; }
 .project-member-settings-row label { display: grid; gap: 7px; flex: 1 1 140px; min-width: 0; color: #8794a7; font-size: 11px; }
 .modal:has(#project-member-settings) { width: 720px; }
-.project-question-answer { margin-top: 10px; align-self: flex-start; }
 .project-member-settings-row select { min-width: 0; width: 100%; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; color: #5b6879; padding: 6px; background: #fff; }
 .project-member-settings-row small { flex-basis: 100%; color: #9da7b5; font-size: 10px; }
-.project-planner-settings { display: grid; gap: 8px; border: 1px solid #dfe6ef; border-radius: 10px; padding: 12px 14px 14px; margin: 2px 0 16px; background: #f7f9fc; }
-.project-planner-settings legend { color: #506781; font-size: 13px; font-weight: 600; padding: 0 5px; }
-.project-planner-settings label { display: grid; gap: 6px; color: #78879b; font-size: 11px; }
-.project-planner-settings select { width: 100%; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; color: #46566b; padding: 6px 9px; background: #fff; }
-.project-planner-settings small { color: #95a1b1; font-size: 11px; }
 .project-grant-settings { display: grid; gap: 8px; border: 1px solid #dfe6ef; border-radius: 10px; padding: 12px 14px 14px; margin: 2px 0 16px; background: #f7f9fc; }
 .project-grant-settings legend { color: #506781; font-size: 13px; font-weight: 600; padding: 0 5px; }
 .project-grant-settings textarea { width: 100%; box-sizing: border-box; border: 1px solid #dce3ec; border-radius: 7px; color: #46566b; padding: 8px 9px; background: #fff; font: inherit; font-size: 12px; resize: vertical; }
@@ -59,7 +22,7 @@ body { margin: 0; }
 .project-coordinator-settings [data-coordinator-model-controls] { display: flex; flex-wrap: wrap; gap: 10px; }
 .project-coordinator-settings [data-coordinator-model-controls] label { flex: 1 1 130px; }
 .project-coordinator-settings small { color: #8a9bb0; font-size: 11px; line-height: 1.6; }
-@media(max-width:1050px) { .project-progress-content { padding: 22px; } .project-member-status-grid { gap: 8px; } .project-member-status { padding: 13px 10px; gap: 8px; } }
+@media(max-width:1050px) { .project-progress-content { padding: 22px; } }
 .message-context-menu { position: fixed; z-index: 100; min-width: 190px; padding: 6px; border: 1px solid #e0e5ed; border-radius: 9px; background: #fff; box-shadow: 0 8px 28px #28344826; }
 .message-context-menu button { width: 100%; padding: 9px 10px; text-align: left; color: #ab6659; font-size: 13px; border-radius: 5px; }
 .message-context-menu button:hover { background: #faf1ef; }
@@ -129,8 +92,6 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .conversation-item.drop-after::after { bottom: 1px; }
 .conversation-branch-row { display: flex; align-items: center; gap: 2px; }
 .conversation-branch-row > .conversation { flex: 1; min-width: 0; margin: 0; }
-.project-expand { width: 27px; height: 34px; flex: 0 0 auto; border-radius: 7px; color: #858d98; font-size: 17px; }
-.project-expand:hover { background: #e2e5e8; }
 .project-subnav { display: grid; gap: 2px; margin: 3px 0 4px 32px; padding-left: 9px; border-left: 1px solid #d3d7dc; }
 .project-subnav[hidden] { display: none; }
 .project-module-row { width: 100%; min-height: 33px; display: flex; align-items: center; gap: 7px; padding: 5px 7px; border-radius: 7px; text-align: left; color: #687587; font-size: 12px; }
@@ -222,16 +183,7 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .member-card strong { font-size: 12px; font-weight: 600; }
 .member-card span:not(.avatar) { font-size: 10px; color: #8a93a0; }
 .member-card small { font-size: 9px; color: #9ca4ae; display: flex; align-items: center; gap: 4px; }
-.workspace-note { border-top: 1px solid #e0e2e5; margin-top: 31px; padding-top: 27px; }
-.workspace-note .eyebrow { font-size: 9px; color: #969ea9; }
-.workspace-note h3 { font-size: 17px; line-height: 1.6; font-weight: 500; color: #6b7582; margin: 13px 0 10px; }
-.workspace-note p { font-size: 10px; line-height: 1.9; color: #8f97a3; }
 .tiny-rule { width: 22px; height: 1px; background: #d5d8dc; margin: 23px 0 15px; }
-.phase-progress { margin-top: auto; padding-top: 45px; color: #8d95a1; font-size: 9px; }
-.phase-progress div { display: flex; gap: 5px; margin: 10px 0; }
-.phase-progress i { height: 3px; border-radius: 4px; background: #e1e3e6; width: 25px; }
-.phase-progress i:first-child { background: #979faa; }
-.phase-progress small { color: #9fa7b1; font-size: 9px; }
 .date-divider { text-align: center; font-size: 9px; color: #979faa; margin: 0 0 25px; }
 .message { max-width: 90%; margin: 0 0 25px auto; }
 .message-author { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 10px; }
@@ -322,36 +274,8 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 /* 摘要开关是行内 label：覆盖 .field 的纵向排版，checkbox 保持原生大小，不占整行。 */
 .summary-toggle { flex-direction: row; align-items: center; }
 .summary-toggle input[type="checkbox"] { width: auto; padding: 0; flex: none; }
-.workflow-card { padding: 15px; margin: 12px 0 24px; border: 1px solid #d9dbe0; border-radius: 11px; background: #f5f5f6; font-size: 11px; color: #515862; }
-.workflow-heading { display: flex; align-items: center; gap: 12px; }
-.workflow-heading > button { margin-left: auto; }
-.workflow-status { font-size: 10px; color: #76808e; }
-.workflow-status.completed { color: #515862; }
-.workflow-status.failed, .workflow-error { color: #a56c5c; }
-.workflow-summary, .workflow-result { line-height: 1.8; margin: 12px 0; white-space: pre-wrap; }
-.workflow-result { color: #515862; }
-.project-accordion { margin-top: 10px; border-top: 1px solid #dedfe3; }
-.project-accordion > summary { display: flex; align-items: center; gap: 10px; padding: 9px 2px 3px; cursor: pointer; list-style: none; color: #5e6874; }
-.project-accordion > summary::-webkit-details-marker { display: none; }
-.project-accordion > summary::before { content: '›'; color: #929ba6; font-size: 15px; transition: transform .16s ease; }
-.project-accordion[open] > summary::before { transform: rotate(90deg); }
-.project-accordion > summary small { margin-left: auto; color: #8a929c; font-size: 10px; }
-.project-workspace { margin-top: 8px; }
+.workflow-error { color: #a56c5c; }
 .project-active-dot { width: 6px; height: 6px; border-radius: 50%; background: #7291b4; box-shadow: 0 0 0 3px #e8edf3; }
-.team-progress { padding: 2px 4px 10px; }
-.team-progress > div:first-child { display: flex; justify-content: space-between; color: #697482; font-size: 10px; }
-.team-task-list { display: grid; gap: 5px; margin: 8px 0; padding: 0; list-style: none; }
-.team-task-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 9px; border-radius: 7px; background: #f0f1f3; color: #555e69; }
-.team-task-row small { color: #858e99; white-space: nowrap; }
-.team-plan { margin: 8px 0; color: #79818c; }
-.team-plan > summary { cursor: pointer; }
-.team-plan p { margin: 5px 0; white-space: pre-wrap; line-height: 1.6; }
-.team-feed { display: grid; gap: 7px; padding: 4px 3px; }
-.team-message { display: flex; align-items: flex-start; gap: 8px; padding: 8px 9px; border-radius: 9px; background: #fff; }
-.team-message > div { min-width: 0; }
-.team-message strong { color: #57616d; font-size: 10px; font-weight: 600; }
-.team-message p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-.team-message.system { background: #eef0f2; color: #737d89; }
 .system-avatar { width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 7px; background: #dfe3e8; color: #737d89; }
 .team-feed-empty { margin: 8px 3px; color: #929aa5; font-size: 10px; }
 .project-team-message { display: flex; align-items: flex-start; gap: 10px; margin-left: 0; margin-right: auto; }
@@ -363,35 +287,12 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .project-team-message.own .bubble { border-radius: 12px 2px 12px 12px; background: #ecedef; }
 .project-team-message.system { max-width: 100%; color: #87919e; }
 .project-team-message.system .bubble { background: #f2f4f6; color: #7e8a98; font-size: 11px; }
-.task-list { padding-left: 19px; margin: 10px 0; }
-.task-list li { margin: 10px 0; }
-.task-list li > div { display: flex; justify-content: space-between; gap: 12px; }
-.task-list strong { font-weight: 500; }
-.task-list span, .task-list small { color: #818a98; font-size: 10px; }
-.task-list small { display: block; overflow-wrap: anywhere; margin-top: 5px; }
-.attempt-list details, .project-changes { border-top: 1px solid #dddfe3; padding: 9px 0; }
-.attempt-list summary, .project-changes summary { cursor: pointer; line-height: 1.6; }
-.attempt-list summary > span { float: right; color: #818a98; }
-.attempt-list small { display: block; color: #818a98; padding: 5px 0; overflow-wrap: anywhere; }
 .agent-message-list { border-top: 1px solid #dddfe3; padding: 10px 0; }
 .agent-message-list > strong { color: #687383; font-size: 11px; font-weight: 600; }
 .agent-message-row { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #f6f7f9; }
 .agent-message-row > span { color: #7e8793; font-size: 10px; }
 .agent-message-row > p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-.attempt-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.8; background: #fff; border-radius: 5px; padding: 10px; user-select: text; }
-.attempt-thought { margin: 7px 0 10px; color: #717b89; }
-.attempt-thought > summary { display: flex; align-items: center; gap: 7px; padding: 5px 2px; color: #7a8492; font-size: 10px; cursor: pointer; list-style: none; }
-.attempt-thought > summary::-webkit-details-marker { display: none; }
-.attempt-thought > summary::before { content: '›'; color: #9aa3af; font-size: 13px; transition: transform .16s ease; }
-.attempt-thought[open] > summary::before { transform: rotate(90deg); }
-.attempt-thought[data-active="true"] > summary { color: #697686; }
-.attempt-thought[data-active="true"] > summary::after { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #8798ad; box-shadow: 0 0 0 3px #edf1f6; animation: thought-pulse 1.8s ease-in-out infinite; }
-.attempt-thought-output { max-height: min(320px, 34vh); overflow: auto; overscroll-behavior: contain; padding: 8px 11px 10px; border-left: 2px solid #dfe4eb; border-radius: 0 7px 7px 0; background: #f7f8fa; scrollbar-gutter: stable; scrollbar-width: thin; }
-.attempt-thought-content { white-space: pre-wrap; overflow-wrap: anywhere; color: #727d8c; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; line-height: 1.75; user-select: text; }
 @keyframes thought-pulse { 50% { opacity: .4; box-shadow: 0 0 0 5px #edf1f6; } }
-.project-changes ul { padding-left: 18px; }
-.project-changes li { margin: 6px 0; overflow-wrap: anywhere; }
-.project-changes li > span { color: #818a98; font-size: 9px; margin-left: 10px; }
 .field select { padding: 10px; border: 1px solid #dbdee2; border-radius: 8px; background: #fff; color: #4d555f; }
 .services-intro { margin-bottom: 30px; }
 .services-intro h2 { font-size: 29px; line-height: 1.6; font-weight: 500; margin: 11px 0; }
@@ -449,7 +350,7 @@ html[data-hud] .main { height: 100dvh; display: flex; flex-direction: column; ga
 /* 头部整条在浮窗里收起：想拖动就拖输入栏的空白处。原先「把头部按钮/里程碑行/设置条交给主窗口」
    那条规则不能少——它们在头部之外，漏掉就会占掉近两百像素，把正文区挤没（真 bug）。 */
 html[data-hud] .chat-header, html[data-hud] .chat-header .chat-actions, html[data-hud] .chat-header .eyebrow,
-html[data-hud] .live-settings, html[data-hud] .workflow-card, html[data-hud] .milestone-note,
+html[data-hud] .live-settings, html[data-hud] .milestone-note,
 html[data-hud] .discussion-controls, html[data-hud] .chat-footer,
 html[data-hud] #project-controls, html[data-hud] .project-controls { display: none; }
 html[data-hud] .chat-content { padding: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -576,9 +477,6 @@ html[data-hud] .agent-transcript-entry { padding: 0; }
 html[data-hud] .agent-turn-meta, html[data-hud] .agent-turn-actions { display: none; }
 html[data-hud] .agent-turn-text { color: #fff; font-size: 14.5px; }
 html[data-hud] .agent-user-entry { background: transparent; border: 0; color: #f0c04a; }
-
-.project-coordinator-status{display:flex;align-items:center;gap:12px;padding:16px 20px;margin-bottom:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel,#fff)}
-.project-coordinator-status>div{display:flex;flex-direction:column;gap:4px;flex:1}.project-coordinator-status span,.project-coordinator-status small{color:var(--muted);font-size:12px}
 
 /* HUD 输入栏：和 Hermes 一样是一条圆角胶囊——把手、附件、输入、模型、退出排成一行。
    按钮区用 display:contents 摊平，再用 order 统一排序；附件托盘有内容时单独换到下一行。 */
