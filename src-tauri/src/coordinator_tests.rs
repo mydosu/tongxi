@@ -2772,5 +2772,5 @@ fn grants_decide_whether_merged_work_is_pushed() {
 fn instructions_load_from_external_prompt_files() {
     assert!(coordinator_policy::manager_instruction().starts_with("你是本项目的调度主脑"));
     let member = coordinator_policy::member_prompt("a", "implementation", "", "", vec![], None, false);
-    assert!(member["instruction"].as_str().unwrap().starts_with("按用户原话"));
+    assert!(member["instruction"].as_str().unwrap().starts_with("这条消息就是派给你的任务"));
 }
