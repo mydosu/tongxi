@@ -1039,6 +1039,16 @@ impl Runtime {
         match decision.action.as_str() {
             "delegate" => {
                 let workflow = self.store.lock().unwrap().workflow(id)?;
+                // 不追加任务的分派：队列里还有活（比如恢复协作时被打断的任务已重新排队）就照常接着跑，不算格式错误。
+                if decision.routes.is_empty() {
+                    if !workflow.tasks.iter().any(|task| task.status == "queued") {
+                        return Err("分派动作没有任务".into());
+                    }
+                    if let Some(text) = &decided {
+                        self.store.lock().unwrap().add_system_team_message(id, text)?;
+                    }
+                    return Ok(false);
+                }
                 let sources = self.store.lock().unwrap().coordination_sources(id)?;
                 let mut routes = decision.routes;
                 let aliases = self.store.lock().unwrap().member_aliases(&workflow.conversation_id);
