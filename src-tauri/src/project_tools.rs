@@ -625,7 +625,8 @@ fn chat_context(
     conversation_id: &str,
 ) -> Result<(String, String, String)> {
     let context: (String,String,String) = connection.query_row("SELECT project_id,group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1", [conversation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|_| "项目会话归属读取失败")?.ok_or("这不是项目内 Agent 会话")?;
-    let allowed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM members m JOIN conversations c ON c.id=m.conversation_id JOIN conversation_projects p ON p.conversation_id=c.id WHERE m.conversation_id=?1 AND m.agent_id=?2 AND p.project_id=?3 AND c.archived=0)", params![context.1,context.2,context.0], |row| row.get(0)).map_err(|_| "项目成员归属校验失败")?;
+    // 调度新开的会话（claude-win-2 这类）在群成员表里记的是本体，按本体校验。
+    let allowed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM members m JOIN conversations c ON c.id=m.conversation_id JOIN conversation_projects p ON p.conversation_id=c.id WHERE m.conversation_id=?1 AND m.agent_id=?2 AND p.project_id=?3 AND c.archived=0)", params![context.1,crate::project_store::base_agent(&context.2),context.0], |row| row.get(0)).map_err(|_| "项目成员归属校验失败")?;
     if !allowed {
         return Err("该项目会话已归档、解除绑定或成员已退出".into());
     }
@@ -960,6 +961,22 @@ pub fn serve(db: &Path, attempt: &str) -> Result<()> {
 mod agent_message_tests {
     use super::*;
     use crate::project_store::Roles;
+
+    #[test]
+    fn extra_seats_pass_the_membership_check_as_their_base_agent() {
+        let base = std::env::temp_dir().join(format!("hub-seat-tools-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = crate::store::Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["codex-win".into()]).unwrap();
+        let project = store.register_project("测试项目", root.to_str().unwrap()).unwrap();
+        store.bind_project(&room.id, Some(&project.id)).unwrap();
+        let seat = store.add_project_seat(&room.id, "codex-win", None).unwrap();
+        let chats = store.ensure_project_agent_chats(&room.id).unwrap();
+        let chat = chats.iter().find(|chat| chat.agent_id == seat).unwrap();
+        assert_eq!(chat_context(&store.connection, &chat.conversation_id).unwrap().2, seat);
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn project_agents_can_direct_message_each_other_through_the_scoped_inbox() {

@@ -1058,7 +1058,7 @@ impl Runner {
         let mut work_prompt = if manager {
             prompt.to_owned()
         } else {
-            format!("本轮工作目录：{}。所有实现、修改和测试只在此目录；项目原生会话保持同一会话，目录可能随任务切换。\n{}",root.display(),prompt)
+            format!("本轮工作目录：{}。所有实现、修改和测试只在此目录。\n{}",root.display(),prompt)
         };
         // 用户插话排着队时，这一步说完后在同一会话里接着发给它，直到没有新的插话。
         loop {
