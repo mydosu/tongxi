@@ -466,6 +466,29 @@ mod tests {
     }
 
     #[test]
+    fn replies_in_a_seat_chat_are_recorded_under_the_seat() {
+        let (mut store, room, base) = room();
+        let seat = store.add_project_seat(&room, "codex-win", Some("快手")).unwrap();
+        let chat = store.project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == seat).unwrap();
+        let mut run = store.begin_agent_run(&chat.conversation_id, &Uuid::new_v4().to_string(), "做事", "codex-win").unwrap();
+        assert_eq!(run.agent_id, "codex-win", "运行仍按成员走");
+        store.mark_turn(&mut run, "turn").unwrap();
+        run.status = "completed".into();
+        store.checkpoint(&run, "做完了", "").unwrap();
+        assert_eq!(store.detail(&chat.conversation_id).unwrap().messages[1].sender_id, seat);
+        // 分享按「发送者 = 席位」认回复，额外席位的回复也能分享。
+        store.share_project_agent_message(&room, &chat.conversation_id, &run.assistant_message_id).unwrap();
+        // 旧版本记在成员名下的回复，重新打开（跑迁移）后改记席位。
+        let db = base.join("data").join("hub.db");
+        drop(store);
+        rusqlite::Connection::open(&db).unwrap()
+            .execute("UPDATE messages SET sender_id='codex-win' WHERE id=?1", [&run.assistant_message_id]).unwrap();
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.detail(&chat.conversation_id).unwrap().messages[1].sender_id, seat);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn an_archived_project_group_no_longer_holds_its_directory() {
         let (mut store, room, base) = room();
         let root = base.join("project");

@@ -226,6 +226,12 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     }
     migrate_coordination(tx)?;
     crate::project_sessions::migrate(tx)?;
+    // 旧版本把席位会话里的回复记在成员名下（claude-win），这里改记成席位（claude-win-2、claude-win-brain）。
+    // 只动发送者正好是该席位底层成员的回复，重复跑不会再改。
+    tx.execute_batch("UPDATE messages SET sender_id=(SELECT p.agent_id FROM project_agent_chats p WHERE p.conversation_id=messages.conversation_id)
+        WHERE sender_id<>'user' AND EXISTS(SELECT 1 FROM project_agent_chats p WHERE p.conversation_id=messages.conversation_id
+          AND substr(p.agent_id,1,length(messages.sender_id)+1)=messages.sender_id||'-');")
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

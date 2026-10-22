@@ -1068,6 +1068,15 @@ impl Store {
         self.insert_run(conversation_id, message_id, agent_id, None, None)
     }
 
+    /// 回复记在谁名下：项目里的会话属于某个席位（主脑、克小姐……），记席位 id；其他会话记成员 id。
+    /// 运行本身仍按成员 id 走（各成员的运行时只认成员）。
+    fn reply_sender(&self, conversation_id: &str, agent_id: &str) -> Result<String> {
+        Ok(match self.project_agent_chat_context(conversation_id)? {
+            Some((_, _, seat)) if crate::project_store::base_agent(&seat) == agent_id => seat,
+            _ => agent_id.to_owned(),
+        })
+    }
+
     pub(crate) fn insert_run(
         &mut self,
         conversation_id: &str,
@@ -1100,13 +1109,14 @@ impl Store {
             discussion_id: discussion_id.map(String::from),
             round,
         };
+        let sender = self.reply_sender(conversation_id, agent_id)?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE messages SET status='pending' WHERE id=?1 AND status='local_only'",
             [message_id],
         )
         .map_err(|e| e.to_string())?;
-        tx.execute("INSERT INTO messages(id,conversation_id,sender_id,content,status,created_at) VALUES(?1,?2,?3,'','streaming',?4)", params![record.assistant_message_id,conversation_id,agent_id,now()]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO messages(id,conversation_id,sender_id,content,status,created_at) VALUES(?1,?2,?3,'','streaming',?4)", params![record.assistant_message_id,conversation_id,sender,now()]).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO runs(id,conversation_id,agent_id,user_message_id,assistant_message_id,status,model,reasoning_effort,discussion_id,round) VALUES(?1,?2,?3,?4,?5,'starting',?6,?7,?8,?9)", params![record.id,conversation_id,agent_id,message_id,record.assistant_message_id,record.model,record.reasoning_effort,discussion_id,round]).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(record)
@@ -1384,10 +1394,11 @@ impl Store {
 
     /// 把 CLI 里新增的对话补进同席的聊天记录（人说的话记为已送达，成员回复记为已完成）。
     pub(crate) fn import_cli_turns(&mut self, conversation: &str, agent: &str, turns: &[crate::cli_transcript::Turn]) -> Result<usize> {
+        let replier = self.reply_sender(conversation, agent)?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         let mut latest = 0;
         for turn in turns {
-            let (sender, status) = if turn.user { ("user", "delivered") } else { (agent, "completed") };
+            let (sender, status) = if turn.user { ("user", "delivered") } else { (replier.as_str(), "completed") };
             tx.execute(
                 "INSERT INTO messages(id,conversation_id,sender_id,content,status,created_at,thought) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 params![Uuid::new_v4().to_string(), conversation, sender, turn.text, status, turn.at, turn.thought],
