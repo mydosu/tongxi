@@ -62,10 +62,10 @@ fn share_usage(data: &Value) {
 /// 走 Command Code（GOAT）的线路按「成员:线路」另列，多给剩余额度、本月用量和本期消耗。
 pub fn overview(codex: &Arc<crate::codex::Runtime>) -> Value {
     let mut members = serde_json::Map::new();
-    if let Some(value) = cached("claude-win", claude) {
+    if let Some(value) = magpie_member("claude").or_else(|| cached("claude-win", claude)) {
         members.insert("claude-win".into(), value);
     }
-    if let Some(value) = cached("codex-win", || codex_limits(codex)) {
+    if let Some(value) = magpie_member("codex").or_else(|| cached("codex-win", || codex_limits(codex))) {
         members.insert("codex-win".into(), value);
     }
     members.extend(crate::goat::overview());
@@ -118,6 +118,115 @@ fn claude_fetch() -> Option<Value> {
     Some(data)
 }
 
+/// 用户用 magpie 统一管各家订阅时，额度以它为准：一家可能挂着好几个账号，magpie 会在账号之间切换，
+/// 官方接口只看得到当前登录的那一个。返回当前在用账号的窗口；有多个账号时另列 accounts（不含邮箱）。
+fn magpie_member(agent: &str) -> Option<Value> {
+    let accounts = cached("magpie", magpie_accounts)?;
+    let mine: Vec<&Value> = accounts
+        .as_array()?
+        .iter()
+        .filter(|account| account["agent"] == agent && account["on"] != false)
+        .collect();
+    let current = mine.iter().find(|account| account["active"] == true).or(mine.first())?;
+    let windows = |account: &Value| {
+        let mut value = json!({});
+        for item in account["windows"].as_array().into_iter().flatten() {
+            let name = match item["name"].as_str() {
+                Some("5 hours") => "five_hour",
+                Some("7 days") => "weekly",
+                _ => continue,
+            };
+            if let Some(window) = window(item["used"].as_f64(), item["resetsAt"].as_str().and_then(iso_secs)) {
+                value[name] = window;
+            }
+        }
+        value
+    };
+    let mut value = windows(current);
+    if value.as_object().is_some_and(|map| map.is_empty()) {
+        return None;
+    }
+    if mine.len() > 1 {
+        value["accounts"] = mine
+            .iter()
+            .map(|account| {
+                let mut entry = windows(account);
+                entry["plan"] = account["plan"].clone();
+                entry["active"] = json!(account["active"] == true);
+                entry
+            })
+            .collect();
+        value["note"] = json!("magpie 管着这家的多个账号，当前账号用满时会切到别的账号；看总余量要把 accounts 合起来算");
+    }
+    Some(value)
+}
+
+fn magpie_accounts() -> Option<Value> {
+    let mut command = std::process::Command::new(magpie_exe()?);
+    command
+        .args(["accounts", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = command.spawn().ok()?;
+    let started = Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if started.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut text).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value.is_array().then_some(value)
+}
+
+/// magpie 可执行文件：MAGPIE_BIN 指定的，PATH 里的，或者正在运行的那个（它常不在 PATH 里）。
+fn magpie_exe() -> Option<std::path::PathBuf> {
+    static FOUND: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(path) = found.lock().ok()?.clone().filter(|path| path.exists()) {
+        return Some(path);
+    }
+    let path = std::env::var_os("MAGPIE_BIN")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            let names = ["magpie.exe", "magpie-windows-amd64.exe", "magpie"];
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .flat_map(|dir| names.map(|name| dir.join(name)))
+                .find(|path| path.is_file())
+        })
+        .or_else(running_magpie)?;
+    *found.lock().ok()? = Some(path.clone());
+    Some(path)
+}
+
+#[cfg(windows)]
+fn running_magpie() -> Option<std::path::PathBuf> {
+    use std::os::windows::process::CommandExt;
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", "(Get-Process magpie* -ErrorAction SilentlyContinue | Where-Object Path | Select-Object -First 1).Path"])
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let path = std::path::PathBuf::from(text);
+    path.is_file().then_some(path)
+}
+
+#[cfg(not(windows))]
+fn running_magpie() -> Option<std::path::PathBuf> {
+    None
+}
+
 fn codex_limits(codex: &Arc<crate::codex::Runtime>) -> Option<Value> {
     let client = codex.shared_project_client().ok()?;
     let reply = client
@@ -152,7 +261,16 @@ fn iso_secs(text: &str) -> Option<i64> {
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+    // 带时区的（magpie 给本地时间如 "-06:00"）换回 UTC；没写或写 Z 的按 UTC。
+    let zone = text.get(19..).unwrap_or_default().trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match zone.as_bytes().first() {
+        Some(sign @ (b'+' | b'-')) => {
+            let minutes = zone.get(1..3)?.parse::<i64>().ok()? * 60 + zone.get(4..6)?.parse::<i64>().ok()?;
+            if *sign == b'+' { minutes * 60 } else { -minutes * 60 }
+        }
+        _ => 0,
+    };
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
 }
 
 #[cfg(test)]
@@ -165,6 +283,8 @@ mod tests {
             Some("2026-10-16T21:59:59Z")
         );
         assert_eq!(super::iso_secs("bad"), None);
+        assert_eq!(super::iso_secs("1970-01-01T18:00:01-06:00"), Some(86_401));
+        assert_eq!(super::iso_secs("1970-01-02T00:00:01.5Z"), Some(86_401));
     }
 }
 
@@ -174,4 +294,6 @@ mod tests {
 #[ignore]
 fn quota_live() {
     println!("claude → {:?}", claude());
+    println!("magpie claude → {:?}", magpie_member("claude"));
+    println!("magpie codex → {:?}", magpie_member("codex"));
 }
