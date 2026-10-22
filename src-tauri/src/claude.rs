@@ -139,27 +139,6 @@ impl Runtime {
         }
         Ok(command)
     }
-    pub(crate) fn coordinator_client(&self, directory: &Path) -> Result<Arc<Client>> {
-        self.shared_project_client()?;
-        std::fs::create_dir_all(directory).map_err(|_| "管家目录创建失败")?;
-        let mut command = self.bridge(&directory.join("claude-native"))?;
-        command
-            .current_dir(directory)
-            .env("AGENT_HUB_COORDINATOR_MODE", "1")
-            .env(
-                "AGENT_HUB_COORDINATOR_INSTRUCTION",
-                crate::coordinator_policy::manager_instruction(),
-            )
-            // 每回合按这个顺序重读外置说明，改了不用重启管家。
-            .env(
-                "AGENT_HUB_COORDINATOR_INSTRUCTION_FILES",
-                std::env::join_paths(crate::coordinator_policy::prompt_files("manager.md"))
-                    .unwrap_or_default(),
-            );
-        let client = Client::spawn_command(command, |_| {}, || {})?;
-        client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;
-        Ok(client)
-    }
     /// 只读列出 Claude 自己的原生会话（ACP session/list，由桥读取 ~/.claude/projects）。
     pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
         let client = {
@@ -191,22 +170,6 @@ impl Runtime {
                 last_checkpoint: Instant::now(),
             }),
         })
-    }
-    pub(crate) fn shared_project_loaded(&self, session: &str) {
-        self.inner.lock().unwrap().loaded.insert(session.to_owned());
-    }
-    pub(crate) fn project_session_is_loaded(&self, session: &str) -> bool {
-        self.inner.lock().unwrap().loaded.contains(session)
-    }
-    pub(crate) fn shared_project_client(&self) -> Result<Arc<Client>> {
-        let inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" {
-            return Err("项目成员尚未连接".into());
-        }
-        inner
-            .client
-            .clone()
-            .ok_or_else(|| "项目成员接口不可用".into())
     }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let inner = self.inner.lock().unwrap();

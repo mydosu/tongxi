@@ -372,15 +372,14 @@ fn runtime_busy(app: &tauri::AppHandle, service_id: &str) -> bool {
 /// 顺序固定：(1) `ensure_managed`；(2) `register` 占住本进程的维护 map；
 /// (3) 在短 StoreMutex 作用域内 `begin_service_maintenance`，由 store 原子标记该
 /// 成员已被维护占用 —— 这一个原子标记同时覆盖运行、项目任务与群讨论发言三类入口；
-/// (4) StoreMutex 释放之后，再查 runtime 快照的 connecting / 活动 run，以及
-/// `projects::Runtime::agent_project_busy`，挡住还在运行的项目 attempt。
+/// (4) StoreMutex 释放之后，再查 runtime 快照的 connecting / 活动 run。
 ///
 /// 第 (3) 步失败（StoreMutex 中毒同样算失败）就直接返回 Err：此时 `guard` 里还没有
 /// store，`Drop` 不会去清理标记，因此不可能误清别人写下的标记，只释放维护 map。
 /// 第 (4) 步命中 busy 也返回 Err，`Drop` 会先清掉本次自己的标记再释放维护 map。
 ///
 /// ponytail: 运行 / 项目 / 群讨论的受理入口已接齐 `acquire`，并与 store 的原子标记、
-/// 这里的 `agent_project_busy` 一起挡住并发；主动断开走 `acquire_shutdown`（放行
+/// 这里的运行检查一起挡住并发；主动断开走 `acquire_shutdown`（放行
 /// privateRun，好让本 app 停掉自己的私聊会话），整服务重启走 `acquire(..., "restart")`。
 /// 命令层的 handle / UI 接线留到下一批。
 pub fn acquire<'a>(
@@ -401,16 +400,9 @@ pub fn acquire<'a>(
     }
     // 标记成功写入后 guard 才接管 store，`Drop` 才会负责清理它。
     guard.store = Some(store);
+    // 主脑派的活也是成员会话里的运行，这里一并挡住。
     if runtime_busy(app, service_id) {
         return Err("运行中，先等待或停止".to_string());
-    }
-    // 原子标记落定后再查项目运行时：命中就返回 Err，`Drop` 会清掉本次标记，
-    // 不会因为一次维护请求而留下悬挂的项目 attempt。
-    if app
-        .state::<Arc<crate::projects::Runtime>>()
-        .agent_project_busy(service_id)
-    {
-        return Err("该项目成员正在执行项目任务，请等待完成或先停止".to_string());
     }
     Ok(guard)
 }
@@ -419,7 +411,7 @@ pub fn acquire<'a>(
 ///
 /// 顺序与 `acquire` 一致：(1) `ensure_managed`；(2) `register` 占住本进程维护 map；
 /// (3) 在短 StoreMutex 作用域内 `begin_service_shutdown`，由 store 原子标记该成员；
-/// (4) StoreMutex 释放后，只兜底查 `projects::Runtime::agent_project_busy`。
+/// (4) StoreMutex 释放后，只兜底查主脑派给该成员、还没交回的活。
 ///
 /// `begin_service_shutdown` 与 maintenance 一样严格挡 project / group 忙态，但**放行**
 /// privateRun：主动断开本来就是要停掉本 app 自己的私聊会话，所以这里不再查 runtime
@@ -448,12 +440,10 @@ pub fn acquire_shutdown<'a>(
     }
     // 标记成功写入后 guard 才接管 store，`Drop` 才会负责清理它。
     guard.store = Some(store);
-    // 断开也不能踩正在跑的项目 attempt；命中就返回 Err，`Drop` 清掉本次标记。
-    if app
-        .state::<Arc<crate::projects::Runtime>>()
-        .agent_project_busy(service_id)
-    {
-        return Err("该项目成员正在执行项目任务，请等待完成或先停止".to_string());
+    // 断开不能踩主脑派给它、还没交回的活。
+    let busy = guard.store.as_ref().map_or(true, |store| store.lock().map_or(true, |store| store.brain_busy(service_id)));
+    if busy {
+        return Err("该成员手上有主脑派的活，请等它交回或先停止".to_string());
     }
     Ok(guard)
 }
@@ -853,14 +843,10 @@ const DIGEST_HEADER: &str =
 
 /// Builds the public development digest of recent project activity.
 ///
-/// 只读 store 里的共享（跨项目）workflow 状态，绝不读私聊内容。失败关闭：
-/// `Ok(空)` 与 `Err` 一律返回空 String，调用方因此不会注入任何内容；只有确实存在
-/// 共享 workflow 时才渲染 digest。
+/// 只读开了「公开动态」的项目群里主脑发的进展摘要，绝不读私聊内容。失败关闭：
+/// 读不到或没有内容一律返回空 String，调用方因此不会注入任何内容。
 pub fn dev_digest(store: &crate::store::Store) -> String {
-    match store.shared_workflows() {
-        Ok(workflows) if !workflows.is_empty() => digest_from_workflows(&workflows),
-        Ok(_) | Err(_) => String::new(),
-    }
+    store.shared_team_updates(8).map(|updates| digest_from_updates(&updates)).unwrap_or_default()
 }
 
 /// Keeps at most `limit` characters, never splitting a UTF-8 code point.
@@ -868,106 +854,14 @@ fn snippet(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-fn workflow_status_zh(status: &str) -> &'static str {
-    match status {
-        "queued" => "排队中",
-        "planning" => "制定方案中",
-        "running" => "执行中",
-        "verifying" => "检查中",
-        "reviewing" => "验收中",
-        "cancelling" => "停止中",
-        "completed" => "已完成",
-        "failed" => "已失败",
-        "interrupted" => "已中断",
-        _ => "未知",
+/// (项目名, 摘要)，最新的在前。
+fn digest_from_updates(updates: &[(String, String)]) -> String {
+    if updates.is_empty() {
+        return String::new();
     }
-}
-
-fn stage_zh(stage: &str) -> &'static str {
-    match stage {
-        "plan" => "方案",
-        "implement" => "实现",
-        "verify" => "检查",
-        "review" => "验收",
-        "repair" => "修复",
-        _ => "其他",
-    }
-}
-
-fn attempt_status_zh(status: &str) -> &'static str {
-    match status {
-        "starting" | "running" | "cancelling" => "进行中",
-        "completed" => "完成",
-        "failed" => "失败",
-        "interrupted" => "中断",
-        _ => "未知",
-    }
-}
-
-/// Renders the digest: newest two live workflows plus the newest three finished
-/// ones, one line each. An empty list says so without the header.
-fn digest_from_workflows(workflows: &[crate::project_store::Workflow]) -> String {
-    const LIVE: [&str; 6] = [
-        "queued",
-        "planning",
-        "running",
-        "verifying",
-        "reviewing",
-        "cancelling",
-    ];
-    let is_live = |status: &str| LIVE.contains(&status);
-    let mut live: Vec<&crate::project_store::Workflow> = workflows
-        .iter()
-        .filter(|workflow| is_live(workflow.status.as_str()))
-        .collect();
-    let mut finished: Vec<&crate::project_store::Workflow> = workflows
-        .iter()
-        .filter(|workflow| !is_live(workflow.status.as_str()))
-        .collect();
-    live.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| b.id.cmp(&a.id))
-    });
-    finished.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| b.id.cmp(&a.id))
-    });
-    live.truncate(2);
-    finished.truncate(3);
-
     let mut lines = vec![DIGEST_HEADER.to_string()];
-    for workflow in live.into_iter().chain(finished) {
-        let mut line = format!(
-            "项目：{}｜状态：{}",
-            snippet(workflow.request.trim(), 80),
-            workflow_status_zh(&workflow.status)
-        );
-        let summary = workflow.summary.trim();
-        if !summary.is_empty() {
-            line.push_str(&format!("｜成果：{}", snippet(summary, 100)));
-        }
-        if let Some(error) = workflow
-            .error
-            .as_deref()
-            .map(str::trim)
-            .filter(|error| !error.is_empty())
-        {
-            line.push_str(&format!("｜问题：{}", snippet(error, 100)));
-        }
-        if let Some(attempt) = workflow.attempts.last() {
-            line.push_str(&format!(
-                "（{} {} {}）",
-                attempt.agent_id,
-                stage_zh(&attempt.stage),
-                attempt_status_zh(&attempt.status)
-            ));
-        }
-        lines.push(line);
-    }
-    if lines.len() == 1 {
-        return "当前没有进行中的项目协作。".to_string();
+    for (project, content) in updates {
+        lines.push(format!("项目 {project}：{}", snippet(content.trim(), 120)));
     }
     lines.join("\n")
 }
@@ -1083,121 +977,12 @@ mod tests {
         }
     }
 
-    fn workflow(
-        id: &str,
-        status: &str,
-        updated_at: i64,
-        request: &str,
-        summary: &str,
-        error: Option<&str>,
-        attempts: Vec<crate::project_store::Attempt>,
-    ) -> crate::project_store::Workflow {
-        crate::project_store::Workflow {
-            id: id.to_string(),
-            project_id: "project".to_string(),
-            conversation_id: "room".to_string(),
-            user_message_id: format!("message-{id}"),
-            request: request.to_string(),
-            status: status.to_string(),
-            plan: None,
-            roles: None,
-            coordination: None,
-            summary: summary.to_string(),
-            error: error.map(str::to_owned),
-            created_at: 0,
-            updated_at,
-            tasks: Vec::new(),
-            attempts,
-            changes: Vec::new(),
-            agent_messages: Vec::new(),
-            team_messages: Vec::new(),
-        }
-    }
-
-    fn attempt(agent: &str, stage: &str, status: &str) -> crate::project_store::Attempt {
-        crate::project_store::Attempt {
-            id: format!("attempt-{agent}-{stage}"),
-            created_at: 1,
-            activity: None,
-            workflow_id: "workflow".to_string(),
-            task_id: None,
-            agent_id: agent.to_string(),
-            stage: stage.to_string(),
-            status: status.to_string(),
-            native_thread_id: None,
-            native_turn_id: None,
-            model: None,
-            reasoning_effort: None,
-            thought: String::new(),
-            tool_events: Vec::new(),
-            output: String::new(),
-            error: None,
-            usage: None,
-        }
-    }
-
     #[test]
-    fn digest_empty_workflows_are_declared() {
-        let digest = digest_from_workflows(&[]);
-        assert_eq!(digest, "当前没有进行中的项目协作。");
-    }
-
-    #[test]
-    fn digest_caps_live_and_finished_workflows() {
-        let workflows = vec![
-            workflow("live-10", "queued", 10, "需求 10", "", None, Vec::new()),
-            workflow("live-20", "planning", 20, "需求 20", "", None, Vec::new()),
-            workflow(
-                "live-30",
-                "running",
-                30,
-                "需求 30",
-                "已完成一部分",
-                None,
-                Vec::new(),
-            ),
-            workflow(
-                "live-40",
-                "verifying",
-                40,
-                "需求 40",
-                "",
-                None,
-                vec![attempt("codex-win", "verify", "running")],
-            ),
-            workflow(
-                "done-5",
-                "completed",
-                5,
-                "需求 5",
-                "全部通过",
-                None,
-                Vec::new(),
-            ),
-            workflow(
-                "done-6",
-                "failed",
-                6,
-                "需求 6",
-                "",
-                Some("构建失败"),
-                Vec::new(),
-            ),
-            workflow("done-7", "interrupted", 7, "需求 7", "", None, Vec::new()),
-        ];
-        let digest = digest_from_workflows(&workflows);
+    fn digest_lists_project_updates_newest_first() {
+        assert_eq!(digest_from_updates(&[]), "");
+        let digest = digest_from_updates(&[("同席".into(), "主脑 → Codex：修复登录".into()), ("阿尔比恩".into(), "Codex 交回任务 1a2b：做完了".into())]);
         assert!(digest.starts_with("以下是同席项目的公共开发动态"));
-        assert!(digest.contains("需求 40"));
-        assert!(digest.contains("需求 30"));
-        assert!(!digest.contains("需求 20"));
-        assert!(!digest.contains("需求 10"));
-        assert!(digest.contains("需求 7"));
-        assert!(digest.contains("需求 6"));
-        assert!(digest.contains("需求 5"));
-        assert!(digest.contains("状态：执行中"));
-        assert!(digest.contains("成果：全部通过"));
-        assert!(digest.contains("问题：构建失败"));
-        assert!(digest.contains("（codex-win 检查 进行中）"));
-        assert_eq!(digest.lines().count(), 6);
+        assert_eq!(digest.lines().nth(1), Some("项目 同席：主脑 → Codex：修复登录"));
+        assert_eq!(digest.lines().count(), 3);
     }
 }

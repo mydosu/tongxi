@@ -1,12 +1,11 @@
-import type { ConversationDetail, RunToolEvent, RuntimeSnapshot, Workflow } from './types';
-import { projectReply } from './agent_protocol';
+import type { ConversationDetail, RunToolEvent, RuntimeSnapshot } from './types';
 
 /** Display data only: merging logs never changes the separate native sessions. */
 export interface AgentEntry {
   id: string;
   at: number;
   kind: 'user' | 'agent' | 'peer';
-  source: 'private' | 'project' | 'peer';
+  source: 'private' | 'peer';
   author: string;
   body: string;
   thought: string;
@@ -17,15 +16,13 @@ export interface AgentEntry {
   effort?: string | null;
   messageId?: string;
   attachmentRoom?: string;
-  attemptId?: string;
-  workflowId?: string;
   protocol?: { label: string; raw: string };
 }
 
 export const entryBusy = (status: string) => ['starting', 'running', 'cancelling', 'streaming'].includes(status);
 const toolActivity = (events: RunToolEvent[]) => events.filter(event => !['userMessage','hookPrompt','plan','functionCallOutput'].includes(event.kind));
 
-export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Workflow[], runtime: RuntimeSnapshot): AgentEntry[] {
+export function agentTimeline(agent: string, chat: ConversationDetail, runtime: RuntimeSnapshot): AgentEntry[] {
   const rows = new Map<string, AgentEntry>();
   for (const message of chat.messages) {
     rows.set(`message:${message.id}`, {
@@ -46,24 +43,6 @@ export function agentTimeline(agent: string, chat: ConversationDetail, jobs: Wor
       tools: toolActivity(active.tool_events || []), status: active.status, error: active.error, model: active.model, effort: active.reasoning_effort,
       messageId: active.assistant_message_id,
     });
-  }
-  for (const job of jobs) {
-    const attempts = job.attempts.filter(attempt => attempt.agent_id === agent && attempt.stage !== 'verify' && attempt.activity !== 'coordinate');
-    if (attempts.length) rows.set(`request:${job.id}`, {
-      id: `request:${job.id}`, at: job.created_at, kind: 'user', source: 'project', author: 'user', body: job.request,
-      thought: '', tools: [], status: 'delivered', error: null, workflowId: job.id, attachmentRoom: job.conversation_id,
-    });
-    attempts.forEach((attempt, index) => rows.set(`attempt:${attempt.id}`, {
-      id: `attempt:${attempt.id}`, at: attempt.created_at ?? job.created_at + index + 1,
-      kind: 'agent', source: 'project', author: agent, ...projectReply(attempt, job), thought: attempt.thought,
-      tools: toolActivity(attempt.tool_events || []), status: attempt.status, error: attempt.error, model: attempt.model,
-      effort: attempt.reasoning_effort, attemptId: attempt.id, workflowId: job.id,
-    }));
-    for (const message of job.agent_messages || []) {
-      if (message.sender_agent !== agent && message.recipient_agent !== agent) continue;
-      rows.set(`peer:${message.id}`, { id: `peer:${message.id}`, at: message.created_at, kind: 'peer', source: 'peer',
-        author: message.sender_agent, body: message.content, thought: '', tools: [], status: 'completed', error: null });
-    }
   }
   for (const message of chat.project_agent_inbox || []) rows.set(`peer:${message.id}`, {
     id: `peer:${message.id}`, at: message.created_at, kind: 'peer', source: 'peer', author: message.sender_agent,

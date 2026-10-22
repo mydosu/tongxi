@@ -12,10 +12,6 @@ pub fn reset_at(text: &str, now: i64, offset: i64) -> Option<i64> {
         .filter(|at| *at > now - 60 && *at < now + 8 * 86_400)
 }
 
-/// 报错里带的重置时刻已经过去了（比如等额度期间同席停着，回来才处理这条报错）：应当马上重试，而不是当作没读到。
-pub fn already_reset(text: &str, now: i64) -> bool {
-    epoch(&text.to_lowercase()).is_some_and(|at| at <= now)
-}
 
 /// 附在错误摘要后的机器可读标记，协调器据此等到重置。
 pub fn marker(at: i64) -> String {
@@ -195,14 +191,6 @@ mod tests {
         assert_eq!(reset_at(r#"{"resetsAt": 1791903000000}"#, NOW, CST), Some(1_791_903_000));
     }
 
-    #[test]
-    fn a_reset_time_already_passed_means_retry_now() {
-        let text = "模型服务限流（额度预计 10月13日 17:00 重置，resets_at=1791882000）";
-        assert_eq!(reset_at(text, NOW, CST), None);
-        assert!(already_reset(text, NOW));
-        assert!(!already_reset("…resets_at=1791903000）", NOW));
-        assert!(!already_reset("rate limited", NOW));
-    }
 
     #[test]
     fn reads_relative_durations() {

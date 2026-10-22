@@ -1,9 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod quota;
-mod usage_mode;
-mod advisor;
-mod project_plan;
 mod project_inquiries;
 mod project_brain;
 mod prompts;
@@ -28,33 +25,18 @@ mod clients;
 mod companion;
 mod codex;
 mod conversation_cleanup;
-mod coordinator_clients;
-mod coordinator_policy;
-mod capability;
 mod goat;
-mod coordinator_store;
-#[cfg(test)]
-mod coordinator_tests;
 mod discussion;
 mod dsh;
 mod group_store;
 mod hermes;
 mod models;
-mod pricing;
 mod process_scope;
-mod project_coordinator;
-mod project_directives;
 mod project_memory;
-mod project_models;
-mod project_native;
-mod project_questions;
 mod project_sessions;
 mod project_store;
-#[cfg(test)]
-mod project_tests;
 mod project_tools;
 mod project_worktree;
-mod secret_scan;
 mod projects;
 mod rpc;
 mod service_apply;
@@ -569,24 +551,11 @@ async fn steer_agent_message(
     state: State<'_, AppState>,
     codex: State<'_, Arc<codex::Runtime>>,
     claude: State<'_, Arc<claude::Runtime>>,
-    projects: State<'_, Arc<projects::Runtime>>,
     agent_id: String,
     conversation_id: String,
     message_id: String,
     content: String,
 ) -> Result<store::Message, String> {
-    // 成员专属会话里正在跑项目任务：话送进这项任务，而不是私聊回复。
-    let task = with_store(&state, |store| store.project_task_in_chat(&conversation_id))?;
-    if let Some(attempt) = task {
-        let native = projects.inner().native.clone();
-        let text = content.clone();
-        tauri::async_runtime::spawn_blocking(move || native.steer(&attempt, &text).map(|_| ()))
-            .await
-            .map_err(|_| "插话异常".to_string())??;
-        return with_store(&state, |store| {
-            store.save_delivered_message(&conversation_id, &message_id, &content)
-        });
-    }
     let (codex, claude) = (codex.inner().clone(), claude.inner().clone());
     let (room, text, steer_id) = (conversation_id.clone(), content.clone(), message_id.clone());
     tauri::async_runtime::spawn_blocking(move || match agent_id.as_str() {
@@ -824,18 +793,13 @@ fn share_project_agent_message(
 #[tauri::command]
 fn remove_conversation_item(
     state: State<'_, AppState>,
-    runtime: State<'_, Arc<projects::Runtime>>,
     conversation_id: String,
     kind: String,
     id: String,
 ) -> Result<conversation_cleanup::RemovedItem, String> {
-    let removed = with_store(&state, |store| {
+    with_store(&state, |store| {
         store.remove_conversation_item(&conversation_id, &kind, &id)
-    })?;
-    if let Some(workflow) = &removed.workflow_id {
-        runtime.coordinators.remove(workflow)?;
-    }
-    Ok(removed)
+    })
 }
 
 #[tauri::command]
@@ -962,19 +926,7 @@ fn answer_chat_question(
     }
     Ok(question)
 }
-#[tauri::command]
-fn answer_project_question(
-    state: State<'_, AppState>,
-    conversation_id: String,
-    question_id: String,
-    message_id: String,
-    content: String,
-) -> Result<(), String> {
-    with_store(&state, |store| {
-        store.answer_project_question(&conversation_id, &question_id, &message_id, &content)
-    })
-}
-/// 问答面板：项目群里调度挂的问题（没答的全部，加最近答过的）。
+/// 问答面板：项目群里主脑挂的问题（没答的全部，加最近答过的）。
 #[tauri::command]
 fn project_inquiries(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<project_inquiries::Inquiry>, String> {
     with_store(&state, |store| store.project_inquiries(&conversation_id))
@@ -1027,7 +979,6 @@ fn archive_conversation(
 }
 #[tauri::command]
 fn delete_conversation(
-    projects: State<'_, Arc<projects::Runtime>>,
     albion: State<'_, albion::Runtime>,
     dsh: State<'_, Arc<dsh::Runtime>>,
     claude: State<'_, Arc<claude::Runtime>>,
@@ -1035,24 +986,13 @@ fn delete_conversation(
     hermes: State<'_, Arc<hermes::Runtime>>,
     id: String,
 ) -> Result<(), String> {
-    let ids = runtime.mutate(&id, |store| {
-        Ok(store
-            .workflows(&id)?
-            .into_iter()
-            .map(|job| job.id)
-            .collect::<Vec<_>>())
-    })?;
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
             claude.guard(&id, || {
                 hermes.guard(&id, || runtime.mutate(&id, |store| store.delete(&id)))
             })
         })
-    })?;
-    for workflow in ids {
-        projects.coordinators.remove(&workflow)?;
-    }
-    Ok(())
+    })
 }
 #[tauri::command]
 fn update_group_members(
@@ -1095,8 +1035,6 @@ struct AppInfo {
     hud_shortcut: bool,
     /// 启动时是否自动扫描并接入本机成员；`AGENT_HUB_AUTOCONNECT=0` 关掉（自动化测试用）。
     autoconnect: bool,
-    /// 启动参数 `--resume-workflow <id>`：成员接入后自动继续这次协作（修复后重新部署时用）。
-    resume_workflow: Option<String>,
 }
 
 #[tauri::command]
@@ -1109,12 +1047,6 @@ fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<AppInfo
             database_path: store.path.to_string_lossy().into(),
             hud_shortcut: app.global_shortcut().is_registered(hud_shortcut()),
             autoconnect: std::env::var("AGENT_HUB_AUTOCONNECT").map_or(true, |value| value != "0"),
-            resume_workflow: {
-                let args: Vec<String> = std::env::args().collect();
-                args.iter()
-                    .position(|arg| arg == "--resume-workflow")
-                    .and_then(|at| args.get(at + 1).cloned())
-            },
         })
     })
 }
@@ -1148,10 +1080,7 @@ async fn native_sessions(
     };
     // 标出占用情况与当前绑定，界面据此决定能不能点「接入」。
     with_store(&state, |store| {
-        let mut owners = store.native_session_owners(&agent_id)?;
-        for (id, owner, _) in store.coordinator_session_owners(&agent_id)? {
-            owners.entry(id).or_insert(owner);
-        }
+        let owners = store.native_session_owners(&agent_id)?;
         let bound = conversation_id
             .as_deref()
             .and_then(|id| store.detail(id).ok())
@@ -1242,17 +1171,6 @@ fn main() {
         }
         return;
     }
-    if args.get(1).is_some_and(|arg| arg == "--project-tools") {
-        let result = if args.len() == 4 {
-            project_tools::serve(std::path::Path::new(&args[2]), &args[3].to_string_lossy())
-        } else {
-            Err("项目工具启动参数无效".into())
-        };
-        if result.is_err() {
-            std::process::exit(1);
-        }
-        return;
-    }
     // 全局快捷键 Ctrl+Shift+H：和托盘、HUD 自己的退出按钮共用 open_hud/close_hud 这一对路径。
     let hud_shortcut = hud_shortcut();
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
@@ -1302,7 +1220,6 @@ fn main() {
             let codex_runtime =
                 codex::Runtime::new(app.handle().clone(), store.clone(), directory.clone());
             codex_runtime.watch_quota_resume();
-            pricing::init(&directory);
             app.manage(codex_runtime);
             app.manage(hermes::Runtime::new(
                 app.handle().clone(),
@@ -1332,15 +1249,6 @@ fn main() {
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
                 app.state::<albion::Runtime>().0.clone(),
-            ));
-            app.manage(projects::Runtime::new(
-                app.handle().clone(),
-                store.clone(),
-                directory.clone(),
-                app.state::<Arc<codex::Runtime>>().inner().clone(),
-                app.state::<Arc<hermes::Runtime>>().inner().clone(),
-                app.state::<Arc<dsh::Runtime>>().inner().clone(),
-                app.state::<Arc<claude::Runtime>>().inner().clone(),
             ));
             project_brain::Courier::start(
                 app.handle().clone(),
@@ -1444,7 +1352,6 @@ fn main() {
             stage_attachment,
             attachment_data,
             paste_clipboard_files,
-            answer_project_question,
             project_inquiries,
             answer_project_inquiry,
             update_group_members,
@@ -1487,20 +1394,8 @@ fn main() {
             projects::list_projects,
             projects::register_project,
             projects::bind_project,
-            projects::project_status,
-            projects::start_project,
-            projects::plan_project,
-            projects::confirm_project,
-            projects::continue_project,
-            projects::update_paused_project_roles,
-            projects::set_project_roles,
-            project_coordinator::set_project_coordinator,
-            project_coordinator::set_project_preference,
-            project_coordinator::project_capability,
-            project_coordinator::project_quota,
-            project_coordinator::set_project_grants,
-            pricing::pricing_status,
-            pricing::refresh_pricing,
+            projects::set_project_coordinator,
+            projects::set_project_grants,
             project_sessions::project_session_bindings,
             project_sessions::bind_project_sessions,
             project_sessions::add_project_seat,
@@ -1521,9 +1416,6 @@ fn main() {
             avatars::set_agent_avatar,
             avatars::own_avatars,
             avatars::set_own_avatar,
-            projects::cancel_project,
-            projects::cancel_project_agent,
-            projects::post_project_team_message,
             projects::set_project_summary,
             projects::release_project,
             services::service_inventory,
@@ -1544,7 +1436,6 @@ fn main() {
         .expect("Agent Hub failed to start")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<Arc<projects::Runtime>>().stop();
                 app.state::<Arc<discussion::Runtime>>().stop();
                 app.state::<Arc<codex::Runtime>>().stop();
                 app.state::<Arc<hermes::Runtime>>().stop();

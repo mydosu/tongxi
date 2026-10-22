@@ -310,171 +310,18 @@ fn is_excluded_dir(name: &str) -> bool {
     )
 }
 
-fn is_link(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| {
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & 0x400 != 0
-        }
-        #[cfg(not(windows))]
-        {
-            metadata.file_type().is_symlink()
-        }
-    })
-}
 
-/// 原仓库是否卡在合并/变基中途：返回给管家汇报的一句说明（含冲突文件），正常返回 `None`。
-pub fn midway_state(root: &Path) -> Result<Option<String>> {
-    let git_dir = PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim());
-    let operation =
-        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
-            Some("变基中途")
-        } else if git_dir.join("MERGE_HEAD").exists() {
-            Some("合并中途")
-        } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
-            Some("拣选提交中途")
-        } else {
-            None
-        };
-    let mut conflicts = git(root, &["diff", "--name-only", "--diff-filter=U", "-z"])?
-        .split('\0')
-        .filter(|file| !file.is_empty())
-        .map(String::from)
-        .collect::<Vec<_>>();
-    if operation.is_none() && conflicts.is_empty() {
-        return Ok(None);
-    }
-    conflicts.truncate(20);
-    let mut text = format!("原仓库处于{}", operation.unwrap_or("未解决的冲突状态"));
-    if !conflicts.is_empty() {
-        text.push_str(&format!("，冲突文件：{}", conflicts.join("、")));
-    }
-    Ok(Some(text))
-}
 
 /// `branch` 是否已经并入当前分支（冲突处理后用来核实，而不是相信成员的口头汇报）。
 pub fn merged(root: &Path, branch: &str) -> bool {
     git(root, &["merge-base", "--is-ancestor", branch, "HEAD"]).is_ok()
 }
 
-/// 把当前分支推到它的上游，返回一句摘要。远端先有了新提交就先合并进来（冲突照常停下、保留现场，
-/// 交给调用方处理），绝不强推。当前分支没有上游时不推。
-pub fn publish(root: &Path) -> Result<String> {
-    let _serial = serial();
-    let upstream = git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-        .map_err(|_| "当前分支没有上游，不自动推送".to_string())?;
-    let upstream = upstream.trim().to_owned();
-    let remote = upstream.split('/').next().unwrap_or("origin").to_owned();
-    git(root, &["fetch", &remote]).map_err(|error| format!("拉取 {remote} 失败：{error}"))?;
-    if git(root, &["merge-base", "--is-ancestor", &upstream, "HEAD"]).is_err() {
-        git(root, &["merge", "--no-edit", &upstream])
-            .map_err(|error| format!("合并远端 {upstream} 未完成：{error}"))?;
-    }
-    if git(root, &["merge-base", "--is-ancestor", "HEAD", &upstream]).is_ok() {
-        return Ok(format!("{upstream} 已是最新"));
-    }
-    git(root, &["push", &remote, "HEAD"]).map_err(|error| format!("推送到 {upstream} 失败：{error}"))?;
-    Ok(format!("已推送到 {upstream}"))
-}
 
-pub fn git_dir(root: &Path) -> Result<PathBuf> {
-    Ok(PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim()))
-}
 
-/// 已跟踪文件相对 HEAD 新增的行（行号按新文件计）。没 HEAD 时返回空表，调用方按全文处理。
-pub fn added_lines(
-    root: &Path,
-    files: &[&String],
-) -> Result<std::collections::HashMap<String, Vec<(usize, String)>>> {
-    let mut result = std::collections::HashMap::new();
-    if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
-        return Ok(result);
-    }
-    for batch in files.chunks(128) {
-        let mut args = vec!["ls-files", "-z", "--"];
-        args.extend(batch.iter().map(|file| file.as_str()));
-        for file in git(root, &args)?.split(' ').filter(|file| !file.is_empty()) {
-            result.insert(file.to_owned(), Vec::new());
-        }
-        let mut args = vec!["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--"];
-        args.extend(batch.iter().map(|file| file.as_str()));
-        let (mut current, mut line) = (None::<String>, 0usize);
-        for text in git(root, &args)?.lines() {
-            if let Some(path) = text.strip_prefix("+++ ") {
-                current = path.strip_prefix("b/").map(String::from);
-            } else if let Some(hunk) = text.strip_prefix("@@ ") {
-                line = hunk
-                    .split_whitespace()
-                    .find_map(|part| part.strip_prefix('+'))
-                    .and_then(|range| range.split(',').next()?.parse().ok())
-                    .unwrap_or(1);
-            } else if let (Some(added), Some(file)) = (text.strip_prefix('+'), &current) {
-                result.entry(file.clone()).or_default().push((line, added.to_owned()));
-                line += 1;
-            }
-        }
-    }
-    Ok(result)
-}
 
-/// 原仓库当前的未提交改动（路径集合，含未跟踪文件；Python 字节码缓存除外）。
-/// 任务前后各取一次，用来发现成员绕过任务工作树、直接改了项目根目录的情况。
-/// 值是文件大小与修改时间的指纹：已经改过的文件再次被改也能看出来（只比路径集合会漏掉）。
-pub fn root_changes(root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
-    let _serial = serial();
-    let status = git(
-        root,
-        &["status", "--porcelain", "-z", "--untracked-files=all"],
-    )?;
-    Ok(status
-        .split(' ')
-        // 记录形如 "XY 路径"；整段输出首尾空白会被裁掉，所以不按固定列取，而在状态码后的空格处切开。
-        .filter_map(|entry| {
-            entry
-                .trim_start()
-                .split_once(' ')
-                .map(|(_, path)| path.to_owned())
-        })
-        .filter(|path| !path.split('/').any(|part| part == "__pycache__"))
-        .map(|path| {
-            let print = std::fs::metadata(root.join(&path)).map_or_else(
-                |_| "missing".to_owned(),
-                |meta| {
-                    let modified = meta
-                        .modified()
-                        .ok()
-                        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map_or(0, |at| at.as_nanos());
-                    format!("{}:{modified}", meta.len())
-                },
-            );
-            (path, print)
-        })
-        .collect())
-}
 
-/// 把文件撤出暂存区（工作区内容不动）。
-pub fn unstage(path: &Path, files: &[String]) -> Result<()> {
-    for batch in files.chunks(128) {
-        let mut args = vec!["reset", "-q", "--"];
-        args.extend(batch.iter().map(String::as_str));
-        git(path, &args)?;
-    }
-    Ok(())
-}
 
-/// 两次快照之间新出现或内容有变的路径。
-pub fn changed_since(
-    before: &std::collections::BTreeMap<String, String>,
-    after: &std::collections::BTreeMap<String, String>,
-) -> Vec<String> {
-    after
-        .iter()
-        .filter(|(path, print)| before.get(*path) != Some(*print))
-        .map(|(path, _)| path.clone())
-        .collect()
-}
 
 /// 多个任务同时开工、做完的任务同时在合并：开工前提交、建工作树、合并和查根目录状态
 /// 在同一进程内串行，避免 git index.lock 冲突。
@@ -484,133 +331,6 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     CHECKPOINT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 开工前提交原仓库里的未提交改动，返回给团队看的一句说明；仓库本来就干净返回 `None`。
-///
-/// 已跟踪文件的改动全部提交；新增的未跟踪文件沿用安全基线的过滤——凭据文件、生成/依赖目录、
-/// 链接与受保护路径不提交，改为写进 `.git/info/exclude`，以后也不会进入任务工作树。
-/// 仓库正处于合并或变基中途时拒绝自动提交，交给用户处理。
-pub fn checkpoint(root: &Path) -> Result<Option<String>> {
-    if !is_repo(root) {
-        return Err("目标目录不是 git 仓库".into());
-    }
-    let _serial = serial();
-    let git_dir = PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?.trim());
-    if let Some(problem) = midway_state(root)? {
-        return Err(format!("{problem}，无法自动提交"));
-    }
-    let tracked = if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
-        git(root, &["diff", "HEAD", "--name-only", "--no-renames", "-z"])?
-    } else {
-        git(
-            root,
-            &["diff", "--cached", "--name-only", "--no-renames", "-z"],
-        )?
-    };
-    let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    let mut files = tracked
-        .split('\0')
-        .filter(|file| !file.is_empty())
-        .map(String::from)
-        .collect::<Vec<_>>();
-    let mut excluded = Vec::new();
-    for file in untracked.split('\0').filter(|file| !file.is_empty()) {
-        let parts = file.split('/').collect::<Vec<_>>();
-        let generated = parts[..parts.len() - 1]
-            .iter()
-            .position(|part| is_excluded_dir(part));
-        if let Some(index) = generated {
-            excluded.push(format!("{}/", parts[..=index].join("/")));
-        } else if is_link(&root.join(file))
-            || is_secret_filename(file)
-            || crate::project_store::protected_relative(file).is_err()
-        {
-            excluded.push(file.to_owned());
-        } else {
-            files.push(file.to_owned());
-        }
-    }
-    // 未提交的改动里有高置信度的密钥就不自动提交，交给用户处理；低置信度的只在说明里提醒。
-    let findings = crate::secret_scan::scan(root, &files);
-    let (high, low): (Vec<_>, Vec<_>) = findings.into_iter().partition(|finding| finding.high);
-    if !high.is_empty() {
-        return Err(format!(
-            "原仓库未提交的改动里有疑似密钥：{}。为免泄露没有自动提交；请移除或加入 .gitignore，确认安全的文件可把路径写进 .git/info/{} 后再继续协作",
-            crate::secret_scan::describe(&high),
-            crate::secret_scan::ALLOW_FILE
-        ));
-    }
-    excluded.sort();
-    excluded.dedup();
-    if !excluded.is_empty() {
-        use std::io::Write as _;
-        std::fs::create_dir_all(git_dir.join("info"))
-            .map_err(|_| "无法保护项目中的凭据与生成目录".to_string())?;
-        let mut exclude = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(git_dir.join("info").join("exclude"))
-            .map_err(|_| "无法保护项目中的凭据与生成目录".to_string())?;
-        for path in &excluded {
-            writeln!(exclude, "/{path}")
-                .map_err(|_| "无法保护项目中的凭据与生成目录".to_string())?;
-        }
-    }
-    let skipped = (!excluded.is_empty())
-        .then(|| format!("{} 个凭据或生成文件未提交，已加入本地忽略", excluded.len()));
-    if files.is_empty() {
-        return Ok(skipped);
-    }
-    let exe = discover().ok_or("未找到 git 可执行文件，请检查 PATH 或 AGENT_HUB_GIT_EXE")?;
-    let previous = git(root, &["rev-parse", "--short", "HEAD"]).ok();
-    for batch in files.chunks(128) {
-        let mut args = vec!["add", "-A", "--"];
-        args.extend(batch.iter().map(String::as_str));
-        run(&exe, root, &args, GIT_TIMEOUT, || false)?;
-    }
-    // 自动提交跳过仓库的 hooks（可能交互或很慢）；敏感内容由上面的扫描把关。
-    // 提交失败就撤回暂存，工作区内容不动，仓库回到开工前的样子。
-    let committed = run(
-        &exe,
-        root,
-        &[
-            "-c",
-            "user.name=agent-hub",
-            "-c",
-            "user.email=hub@local",
-            "commit",
-            "--no-verify",
-            "-q",
-            "-m",
-            "同席管家：开始任务前提交原仓库中未提交的改动",
-        ],
-        GIT_TIMEOUT,
-        || false,
-    );
-    if let Err(error) = committed {
-        if previous.is_some() {
-            for batch in files.chunks(128) {
-                let mut args = vec!["reset", "-q", "--"];
-                args.extend(batch.iter().map(String::as_str));
-                let _ = run(&exe, root, &args, GIT_TIMEOUT, || false);
-            }
-        }
-        return Err(format!("开工前自动提交失败，已撤回暂存、改动原样保留：{error}"));
-    }
-    let head = git(root, &["rev-parse", "--short", "HEAD"])?;
-    let mut summary = format!("已提交 {} 个文件（提交 {}", files.len(), head.trim());
-    if let Some(previous) = previous {
-        summary.push_str(&format!("，要撤回可在项目目录运行 git reset --soft {}", previous.trim()));
-    }
-    summary.push('）');
-    if !low.is_empty() {
-        summary.push_str(&format!("；提醒：{} 看起来像写死的密码或密钥，请确认", crate::secret_scan::describe(&low)));
-    }
-    if let Some(skipped) = skipped {
-        summary.push('；');
-        summary.push_str(&skipped);
-    }
-    Ok(Some(summary))
-}
 
 fn is_secret_filename(name: &str) -> bool {
     name.rsplit('/').next().is_some_and(|leaf| {
@@ -630,45 +350,6 @@ fn is_secret_filename(name: &str) -> bool {
     })
 }
 
-/// 在 `worktree_root/name` 建一个新工作树，检出到新分支 `branch`，返回工作树路径。
-///
-/// 安全默认：原仓库有未提交改动时拒绝开始。目标目录或分支已存在一律明确报错，不静默复用。
-pub fn create(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
-    if !is_repo(root) {
-        return Err("目标目录不是 git 仓库".into());
-    }
-    let _serial = serial();
-    let status = git(
-        root,
-        &["status", "--porcelain", "-z", "--untracked-files=all"],
-    )?;
-    let source_dirty = status.len() >= OUTPUT_CAP.saturating_sub(8)
-        || status
-            .split('\0')
-            .filter(|entry| !entry.is_empty())
-            .any(|entry| {
-                let Some(path) = entry.strip_prefix("?? ") else {
-                    return true;
-                };
-                !(path.split('/').any(|part| part == "__pycache__")
-                    && (path.ends_with(".pyc") || path.ends_with(".pyo")))
-            });
-    if source_dirty {
-        return Err("原仓库存在未提交改动，请先提交或暂存后再开始任务".into());
-    }
-    let path = worktree_root.join(name);
-    if path.exists() {
-        return Err(format!("工作树目录已存在：{name}"));
-    }
-    let reference = format!("refs/heads/{branch}");
-    if git(root, &["rev-parse", "--verify", "--quiet", &reference]).is_ok() {
-        return Err(format!("分支已存在：{branch}"));
-    }
-    std::fs::create_dir_all(worktree_root).map_err(|_| "工作树根目录创建失败".to_string())?;
-    let path_text = path.to_string_lossy().to_string();
-    git(root, &["worktree", "add", &path_text, "-b", branch])?;
-    Ok(path)
-}
 
 /// 主脑派活用：从当前 HEAD 开一个工作树和新分支。主目录有没提交的改动也照开（它们不会带进工作树），由主脑自己掂量。
 pub fn add(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
@@ -691,57 +372,7 @@ pub fn git_output(root: &Path, args: &[&str]) -> Result<String> {
     git(root, args)
 }
 
-/// Reattach a completed task branch after a failed workflow released its worktree directory.
-pub fn attach(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
-    if !is_repo(root) {
-        return Err("目标目录不是 git 仓库".into());
-    }
-    let path = worktree_root.join(name);
-    if path.exists() {
-        return Err(format!("工作树目录已存在：{name}"));
-    }
-    let reference = format!("refs/heads/{branch}");
-    git(root, &["rev-parse", "--verify", "--quiet", &reference])
-        .map_err(|_| "已完成任务分支不存在，不能从原方案继续".to_string())?;
-    std::fs::create_dir_all(worktree_root).map_err(|_| "工作树根目录创建失败".to_string())?;
-    let path_text = path.to_string_lossy().to_string();
-    git(root, &["worktree", "add", &path_text, branch])?;
-    Ok(path)
-}
 
-/// Reuse an interrupted task's existing worktree without discarding uncommitted partial work.
-pub fn reuse(root: &Path, worktree_root: &Path, path: &Path, branch: &str) -> Result<PathBuf> {
-    let root = root.canonicalize().map_err(|_| "项目目录不可用")?;
-    let worktree_root = worktree_root
-        .canonicalize()
-        .map_err(|_| "工作树目录不可用")?;
-    let path = path.canonicalize().map_err(|_| "中断任务的工作树不存在")?;
-    if path.parent() != Some(worktree_root.as_path()) {
-        return Err("中断任务工作树不在同席授权目录内".into());
-    }
-    let top = git(&path, &["rev-parse", "--show-toplevel"])?;
-    let top = PathBuf::from(top.trim())
-        .canonicalize()
-        .map_err(|_| "工作树身份无效")?;
-    if top != path {
-        return Err("中断任务工作树身份不匹配".into());
-    }
-    let current = git(&path, &["branch", "--show-current"])?;
-    if current.trim() != branch {
-        return Err("中断任务工作树分支不匹配".into());
-    }
-    let listed = git(&root, &["worktree", "list", "--porcelain"])?;
-    if !listed.lines().any(|line| {
-        line.strip_prefix("worktree ").is_some_and(|entry| {
-            Path::new(entry)
-                .canonicalize()
-                .is_ok_and(|entry| entry == path)
-        })
-    }) {
-        return Err("Git 未登记此中断任务工作树".into());
-    }
-    Ok(path)
-}
 
 /// 删掉一个工作树（`--force`：任务分支上的改动已在别处保留，这里只清理现场）。
 pub fn remove(root: &Path, path: &Path) -> Result<()> {
@@ -837,83 +468,7 @@ fn unlink_links(dir: &Path) {
     }
 }
 
-/// 提交工作树里**任务授权文件**的改动，供随后合并进主分支。
-///
-/// 只提交 `files` 里的改动：检查/构建产生的产物（如 `__pycache__`）不进任务分支，
-/// 否则多个任务会因同名产物在合并时冲突。显式给定提交身份，不依赖仓库或全局 git 配置；
-/// 没有任何改动时返回 Ok（不产生空提交）。
-pub fn commit(path: &Path, message: &str, files: &[String]) -> Result<String> {
-    let exe = discover().ok_or("未找到 git 可执行文件，请检查 PATH 或 AGENT_HUB_GIT_EXE")?;
-    let mut authorized = Vec::new();
-    for file in files {
-        let tracked = run(
-            &exe,
-            path,
-            &["ls-files", "--error-unmatch", "--", file],
-            GIT_TIMEOUT,
-            || false,
-        )
-        .is_ok();
-        if path.join(file).exists() || tracked {
-            authorized.push(file.as_str());
-        }
-    }
-    if authorized.is_empty() {
-        return Ok(message.to_owned());
-    }
-    let mut args = vec!["add", "-A", "--"];
-    args.extend(authorized);
-    run(&exe, path, &args, GIT_TIMEOUT, || false)?;
-    if run(
-        &exe,
-        path,
-        &["diff", "--cached", "--name-only"],
-        GIT_TIMEOUT,
-        || false,
-    )?
-    .is_empty()
-    {
-        return Ok(message.to_owned());
-    }
-    run(
-        &exe,
-        path,
-        &[
-            "-c",
-            "user.name=agent-hub",
-            "-c",
-            "user.email=hub@local",
-            "commit",
-            "--no-verify",
-            "-q",
-            "-m",
-            message,
-        ],
-        GIT_TIMEOUT,
-        || false,
-    )?;
-    Ok(message.to_owned())
-}
 
-/// Dynamic tasks commit their actual changes, retaining the existing protected-path rules.
-pub fn coordinated_files(path: &Path) -> Result<Vec<String>> {
-    let staged = git(path, &["diff", "--cached", "--name-only", "-z"])?;
-    for file in staged.split('\0').filter(|file| !file.is_empty()) {
-        crate::project_store::protected_relative(file)
-            .map_err(|_| "原生任务暂存了受保护路径，不能自动提交")?;
-    }
-    let tracked = git(path, &["diff", "HEAD", "--name-only", "-z"])?;
-    let untracked = git(path, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    let mut files = tracked
-        .split('\0')
-        .chain(untracked.split('\0'))
-        .filter(|file| !file.is_empty())
-        .filter_map(|file| crate::project_store::protected_relative(file).ok())
-        .collect::<Vec<_>>();
-    files.sort();
-    files.dedup();
-    Ok(files)
-}
 
 /// 把 `branch` 合并进 root 当前分支，返回一句摘要。
 ///
@@ -1036,130 +591,9 @@ mod tests {
             && git_ok(exe, repo, &["commit", "-q", "-m", "init"])
     }
 
-    #[test]
-    fn checkpoint_commits_dirty_work_and_keeps_secrets_and_generated_files_out() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        assert!(init_repo(&exe, &repo));
-        assert_eq!(checkpoint(&repo).unwrap(), None);
 
-        std::fs::write(repo.join("base.txt"), "changed\n").unwrap();
-        std::fs::write(repo.join("new.py"), "print(1)\n").unwrap();
-        std::fs::write(repo.join("server.key"), "secret\n").unwrap();
-        std::fs::create_dir_all(repo.join("node_modules/pkg")).unwrap();
-        std::fs::write(repo.join("node_modules/pkg/index.js"), "x\n").unwrap();
-        assert!(create(&repo, &base.join("wt"), "blocked", "hub/blocked").is_err());
 
-        let summary = checkpoint(&repo).unwrap().unwrap();
-        assert!(summary.contains("已提交 2 个文件"), "{summary}");
-        assert!(summary.contains("2 个凭据或生成文件未提交"), "{summary}");
-        let committed = git(&repo, &["show", "--name-only", "--format=", "HEAD"]).unwrap();
-        assert!(committed.contains("base.txt") && committed.contains("new.py"));
-        assert!(!committed.contains("server.key") && !committed.contains("node_modules"));
-        // 提交后仓库干净，任务工作树可以照常创建并带上刚提交的改动。
-        let path = create(&repo, &base.join("wt"), "task", "hub/task").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(path.join("base.txt")).unwrap(),
-            "changed\n"
-        );
-        assert!(!path.join("server.key").exists());
-        remove(&repo, &path).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
-    #[test]
-    fn root_changes_lists_modified_and_new_files_but_not_bytecode() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        assert!(init_repo(&exe, &repo));
-        assert!(root_changes(&repo).unwrap().is_empty());
-        std::fs::write(
-            repo.join("base.txt"),
-            "changed
-",
-        )
-        .unwrap();
-        std::fs::create_dir_all(repo.join("tests/pi").join("__pycache__")).unwrap();
-        std::fs::write(
-            repo.join("tests/pi/probe.sh"),
-            "echo
-",
-        )
-        .unwrap();
-        std::fs::write(repo.join("tests/pi/__pycache__/x.pyc"), "x").unwrap();
-        let changes = root_changes(&repo).unwrap();
-        assert_eq!(
-            changes.into_keys().collect::<Vec<_>>(),
-            vec!["base.txt".to_string(), "tests/pi/probe.sh".to_string()]
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn checkpoint_refuses_a_repository_in_the_middle_of_a_merge() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        assert!(init_repo(&exe, &repo));
-        assert!(git_ok(&exe, &repo, &["checkout", "-q", "-b", "side"]));
-        std::fs::write(repo.join("base.txt"), "side\n").unwrap();
-        assert!(git_ok(&exe, &repo, &["commit", "-qam", "side"]));
-        assert!(git_ok(&exe, &repo, &["checkout", "-q", "-"]));
-        std::fs::write(repo.join("base.txt"), "main\n").unwrap();
-        assert!(git_ok(&exe, &repo, &["commit", "-qam", "main"]));
-        assert!(!git_ok(&exe, &repo, &["merge", "-q", "side"]));
-        let problem = midway_state(&repo).unwrap().unwrap();
-        assert!(
-            problem.contains("合并中途") && problem.contains("base.txt"),
-            "{problem}"
-        );
-        assert!(checkpoint(&repo).unwrap_err().contains("无法自动提交"));
-        assert!(!merged(&repo, "side"));
-        std::fs::write(repo.join("base.txt"), "both\n").unwrap();
-        assert!(git_ok(&exe, &repo, &["commit", "-qam", "resolved"]));
-        assert_eq!(midway_state(&repo).unwrap(), None);
-        assert!(merged(&repo, "side"));
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn worktree_lifecycle_merges_task_content_into_main() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        let worktree_root = base.join("wt");
-        assert!(init_repo(&exe, &repo));
-
-        let path = create(&repo, &worktree_root, "task-a", "hub/task-a").unwrap();
-        assert_eq!(path, worktree_root.join("task-a"));
-        assert!(path.join("base.txt").is_file());
-
-        // 在工作树里真实改文件并提交，主分支此时还看不到。
-        std::fs::write(path.join("feature.txt"), "hello\n").unwrap();
-        assert!(git_ok(&exe, &path, &["add", "feature.txt"]));
-        assert!(git_ok(&exe, &path, &["commit", "-q", "-m", "feature"]));
-        assert!(!repo.join("feature.txt").exists());
-
-        let summary = merge(&repo, "hub/task-a").unwrap();
-        assert!(summary.contains("hub/task-a"));
-        assert!(repo.join("feature.txt").is_file());
-        assert_eq!(
-            std::fs::read_to_string(repo.join("feature.txt")).unwrap(),
-            "hello\n"
-        );
-
-        remove(&repo, &path).unwrap();
-        assert!(!path.exists());
-
-        let resumed = attach(&repo, &worktree_root, "task-a-resumed", "hub/task-a").unwrap();
-        assert!(resumed.join("feature.txt").is_file());
-        assert!(merge(&repo, "hub/task-a").is_ok());
-        remove(&repo, &resumed).unwrap();
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
     #[test]
     fn remove_sweeps_leftover_empty_dirs_but_keeps_other_content() {
@@ -1168,7 +602,7 @@ mod tests {
         let repo = base.join("repo");
         let worktree_root = base.join("wt");
         assert!(init_repo(&exe, &repo));
-        let path = create(&repo, &worktree_root, "task-sweep", "hub/task-sweep").unwrap();
+        let path = add(&repo, &worktree_root, "task-sweep", "hub/task-sweep").unwrap();
         let leftover = worktree_root.join("old-empty");
         let other = worktree_root.join("other-project");
         std::fs::create_dir_all(&leftover).unwrap();
@@ -1192,7 +626,7 @@ mod tests {
         std::fs::write(deps.join("pkg").join("index.js"), "keep
 ").unwrap();
 
-        let path = create(&repo, &worktree_root, "task-junction", "hub/task-junction").unwrap();
+        let path = add(&repo, &worktree_root, "task-junction", "hub/task-junction").unwrap();
         let link = path.join("node_modules");
         let made = Command::new("cmd")
             .args(["/C", "mklink", "/J"])
@@ -1218,7 +652,7 @@ mod tests {
         let worktree_root = base.join("wt");
         assert!(init_repo(&exe, &repo));
 
-        let path = create(
+        let path = add(
             &repo,
             &worktree_root,
             "task-native-cleanup",
@@ -1254,56 +688,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    #[test]
-    fn interrupted_worktree_reuse_preserves_partial_files_and_checks_identity() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        let worktree_root = base.join("wt");
-        assert!(init_repo(&exe, &repo));
-        let path = create(&repo, &worktree_root, "task-resume", "hub/task-resume").unwrap();
-        std::fs::write(path.join("feat.txt"), "partial edit\n").unwrap();
-        let reused = reuse(&repo, &worktree_root, &path, "hub/task-resume").unwrap();
-        assert_eq!(reused, path.canonicalize().unwrap());
-        assert_eq!(
-            std::fs::read_to_string(reused.join("feat.txt")).unwrap(),
-            "partial edit\n"
-        );
-        assert!(reuse(&repo, &worktree_root, &path, "hub/wrong-branch").is_err());
-        remove(&repo, &reused).unwrap();
-        let _ = std::fs::remove_dir_all(base);
-    }
 
-    #[test]
-    fn worktree_commit_records_changes_for_merge_and_noops_when_clean() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        let worktree_root = base.join("wt");
-        assert!(init_repo(&exe, &repo));
-
-        let path = create(&repo, &worktree_root, "task-d", "hub/task-d").unwrap();
-        // 只提交授权文件：构建/检查产物（如 __pycache__）不该进任务分支。
-        std::fs::create_dir_all(path.join("__pycache__")).unwrap();
-        std::fs::write(path.join("__pycache__/junk.pyc"), b"junk").unwrap();
-        // 干净工作树：提交是空操作，不报错，也不产生空提交。
-        commit(&path, "hub: 无改动", &["feat.txt".to_string()]).unwrap();
-        assert!(git_ok(&exe, &path, &["diff", "--quiet", "HEAD"]));
-        assert!(std::fs::metadata(path.join("__pycache__/junk.pyc")).is_ok());
-
-        std::fs::write(path.join("feat.txt"), "x\n").unwrap();
-        commit(&path, "hub: task-d", &["feat.txt".to_string()]).unwrap();
-        merge(&repo, "hub/task-d").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repo.join("feat.txt")).unwrap(),
-            "x\n"
-        );
-        // 未授权产物没有被提交、也没有被合并进主分支。
-        assert!(!repo.join("__pycache__/junk.pyc").exists());
-
-        remove(&repo, &path).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
     #[test]
     fn nested_directory_inside_a_repo_is_not_a_project_repo() {
@@ -1324,7 +709,7 @@ mod tests {
         let base = temp_base();
         std::fs::create_dir_all(&base).unwrap();
         assert!(!is_repo(&base));
-        let error = create(&base, &base.join("wt"), "task", "hub/task").unwrap_err();
+        let error = add(&base, &base.join("wt"), "task", "hub/task").unwrap_err();
         assert!(error.contains("不是 git 仓库"));
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1358,65 +743,13 @@ mod tests {
         let first_head = git(&base, &["rev-parse", "HEAD"]).unwrap();
         initialize_safe_repository(&base).unwrap();
         assert_eq!(git(&base, &["rev-parse", "HEAD"]).unwrap(), first_head);
-        let worktree = create(&base, &base.join("worktrees"), "task", "hub/task").unwrap();
+        let worktree = add(&base, &base.join("worktrees"), "task", "hub/task").unwrap();
         assert!(worktree.join("src/main.rs").is_file());
         remove(&base, &worktree).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    #[test]
-    fn dirty_repository_is_rejected() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        assert!(init_repo(&exe, &repo));
-        std::fs::write(repo.join("base.txt"), "changed\n").unwrap();
-        let error = create(&repo, &base.join("wt"), "task-b", "hub/task-b").unwrap_err();
-        assert!(error.contains("未提交"));
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
-    #[test]
-    fn generated_python_bytecode_does_not_block_the_next_task_but_source_does() {
-        let Some(exe) = git_exe() else { return };
-        let base = temp_base();
-        let repo = base.join("repo");
-        assert!(init_repo(&exe, &repo));
-        std::fs::create_dir_all(repo.join("__pycache__")).unwrap();
-        std::fs::write(repo.join("__pycache__/calc.cpython-313.pyc"), "cache").unwrap();
-        let tree = create(&repo, &base.join("wt"), "cache-ok", "hub/cache-ok").unwrap();
-        remove(&repo, &tree).unwrap();
-        std::fs::write(repo.join("__pycache__/important.py"), "source").unwrap();
-        assert!(create(
-            &repo,
-            &base.join("wt"),
-            "source-denied",
-            "hub/source-denied"
-        )
-        .unwrap_err()
-        .contains("未提交"));
-        std::fs::remove_file(repo.join("__pycache__/important.py")).unwrap();
-        assert!(git_ok(
-            &exe,
-            &repo,
-            &["add", "-f", "__pycache__/calc.cpython-313.pyc"]
-        ));
-        assert!(git_ok(
-            &exe,
-            &repo,
-            &["commit", "-q", "-m", "tracked cache"]
-        ));
-        std::fs::write(repo.join("__pycache__/calc.cpython-313.pyc"), "changed").unwrap();
-        assert!(create(
-            &repo,
-            &base.join("wt"),
-            "tracked-denied",
-            "hub/tracked-denied"
-        )
-        .unwrap_err()
-        .contains("未提交"));
-        let _ = std::fs::remove_dir_all(base);
-    }
 
     #[test]
     fn merge_conflict_stops_and_keeps_the_scene() {
@@ -1426,7 +759,7 @@ mod tests {
         let worktree_root = base.join("wt");
         assert!(init_repo(&exe, &repo));
 
-        let path = create(&repo, &worktree_root, "task-c", "hub/task-c").unwrap();
+        let path = add(&repo, &worktree_root, "task-c", "hub/task-c").unwrap();
         std::fs::write(path.join("base.txt"), "from-task\n").unwrap();
         assert!(git_ok(&exe, &path, &["commit", "-q", "-am", "task change"]));
         std::fs::write(repo.join("base.txt"), "from-main\n").unwrap();
@@ -1451,7 +784,7 @@ mod tests {
         let worktree_root = base.join("wt");
         assert!(init_repo(&exe, &repo));
 
-        let path = create(&repo, &worktree_root, "task-d", "hub/task-d").unwrap();
+        let path = add(&repo, &worktree_root, "task-d", "hub/task-d").unwrap();
         std::fs::write(path.join("base.txt"), "same\n").unwrap();
         assert!(git_ok(&exe, &path, &["commit", "-q", "-am", "task change"]));
         std::fs::write(repo.join("base.txt"), "same\n").unwrap();
@@ -1460,7 +793,7 @@ mod tests {
         assert!(git(&repo, &["status", "--porcelain"]).unwrap().is_empty());
         assert!(git(&repo, &["stash", "list"]).unwrap().is_empty());
 
-        let path = create(&repo, &worktree_root, "task-e", "hub/task-e").unwrap();
+        let path = add(&repo, &worktree_root, "task-e", "hub/task-e").unwrap();
         std::fs::write(path.join("base.txt"), "task\n").unwrap();
         assert!(git_ok(&exe, &path, &["commit", "-q", "-am", "task change"]));
         std::fs::write(repo.join("base.txt"), "mine\n").unwrap();

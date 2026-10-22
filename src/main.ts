@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, CapabilityRow, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus, Workflow } from './types';
-import { bindingDialog, projectTeamMessageHtml, projectTeamMessages, workflowBusy } from './project_ui';
+import type { Agent, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
+import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
 import { plainThought, steerIds, thoughtFlow, type FlowPart } from './thought_flow';
@@ -12,7 +12,6 @@ import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
 import { installMessageMenu } from './message_menu';
-import { projectProgressPage, progressContent, type QuotaEntry } from './project_progress';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
@@ -101,31 +100,13 @@ const lastFinalSeeded = new Set<string>();
 const projectChatRefreshStamp: Record<string, string> = {};
 let eventSubscribed = false;
 let latestDiscussion: Discussion | null = null;
-const projectJobs = new Map<string, Workflow>();
-const removedProjectJobs = new Set<string>();
 const projectAgentChatDetails = new Map<string, ConversationDetail>();
 const projectRoomsByGroup = new Map<string, ConversationDetail['project_agent_chats']>();
-const refreshingRooms = new Set<string>();
-async function refreshProjectRooms(groupId: string) {
-  if (refreshingRooms.has(groupId)) return;
-  refreshingRooms.add(groupId);
-  try {
-    const fresh = await invoke<ConversationDetail>('get_conversation', { id: groupId });
-    projectRoomsByGroup.set(groupId, fresh.project_agent_chats || []);
-    if (detail?.conversation.id === groupId) detail.project_agent_chats = fresh.project_agent_chats;
-    renderList();
-  } finally { refreshingRooms.delete(groupId); }
-}
 let activeProjectModule = 'team';
 let expandedProjectGroup = '';
-let projectRevision = 0;
-let pendingProject: { conversationId: string; messageId: string; content: string } | null = null;
 let pendingSummary: { projectId: string; enabled: boolean } | null = null;
-const roomProjects = () => [...new Map([...(detail?.workflows || []), ...projectJobs.values()].filter(job => job.conversation_id === selectedId).map(job => [job.id, job])).values()].sort((a, b) => b.created_at - a.created_at);
-const currentWorkflow = () => roomProjects()[0] || null;
-// 任务开工前（建工作树、起会话）和做完后（合并结果）还没有在跑的执行记录，任务在进行就算忙。
-const projectAgentBusy = (id: string) => [...projectJobs.values()].some(job => workflowBusy(job) && (job.attempts.some(attempt => attempt.agent_id === id && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)) || job.tasks.some(task => task.agent_id === id && task.status === 'running')));
-const busyAgents = () => [...new Set([...projectJobs.values()].flatMap(job => [...job.attempts.map(attempt => attempt.agent_id), ...job.tasks.map(task => task.agent_id)]))].filter(projectAgentBusy).sort().join(',');
+// 项目成员专属会话里正在跑的运行（主脑派的活也跑在这里）：侧栏亮灯用。
+const busyProjectChats = () => [...projectRoomsByGroup.values()].flat().filter(chat => busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id)).map(chat => chat.conversation_id).sort().join(',');
 // 协作问答：各项目群没答的问题数（侧栏角标），当前项目群的问题列表。
 const openInquiries = new Map<string, number>();
 let inquiryItems: Inquiry[] = [];
@@ -145,7 +126,7 @@ async function refreshInquiries(groupId: string) {
     if (stamp !== before && screen === 'chat' && detail?.project && activeProjectModule === 'inquiries') renderProjectInquiries();
   } catch { /* 读不到就保持原样 */ }
 }
-/// 协作有动静时（调度可能挂了新问题）稍后刷新一次问答，几条事件合成一次。
+/// 主脑有动静时（可能挂了新问题）稍后刷新一次问答，几条事件合成一次。
 function scheduleInquiryRefresh(groupId: string) {
   window.clearTimeout(inquiryTimer);
   inquiryTimer = window.setTimeout(() => void refreshInquiries(groupId), 800);
@@ -170,7 +151,7 @@ function renderProjectInquiries() {
       try {
         await invoke('answer_project_inquiry', { conversationId: selectedId, inquiryId: id, answer });
         box.value = '';
-        toast('已回答，调度下一回合会按你的回答调整');
+        toast('已回答，主脑会收到你的回答');
       } catch (error) {
         toast(errorText(error), true);
         form.querySelector('button')!.disabled = false;
@@ -180,17 +161,6 @@ function renderProjectInquiries() {
   });
 }
 
-function adoptProject(job: Workflow, event = false) {
-  if (removedProjectJobs.has(job.id)) return;
-  const old = projectJobs.get(job.id);
-  if (!event && old && (old.updated_at > job.updated_at || old.attempts.length > job.attempts.length || (!workflowBusy(old) && workflowBusy(job)) || (old.status === 'cancelling' && workflowBusy(job) && job.status !== 'cancelling'))) return;
-  const before = busyAgents();
-  projectJobs.set(job.id, job);
-  if (event) scheduleInquiryRefresh(job.conversation_id);
-  // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
-  if (busyAgents() !== before && document.querySelector('#conversation-list')) renderList();
-  updateProjectControls();
-}
 let discussionRevision = 0;
 let groupConnecting = false;
 let pendingDiscussion: { conversationId: string; messageId: string; content: string; participants: string[]; rounds: number } | null = null;
@@ -217,7 +187,10 @@ const connectionLabel = () => currentRuntime().connection === 'connected' ? '接
 function adoptRuntime(snapshot: RuntimeSnapshot, agentId = currentAgentId()) {
   const old = runtimes[agentId];
   if (old && snapshot.revision < old.revision) return false;
+  const before = busyProjectChats();
   runtimes[agentId] = snapshot;
+  // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
+  if (busyProjectChats() !== before && document.querySelector('#conversation-list')) renderList();
   return true;
 }
 
@@ -293,8 +266,7 @@ const modal = document.querySelector<HTMLDialogElement>('#modal')!;
 }
 installMessageMenu(main, () => selectedId, async target => {
   try {
-    const removed = await invoke<{ workflow_id: string | null }>('remove_conversation_item', { conversationId: target.conversationId, kind: target.kind, id: target.id });
-    if (removed.workflow_id) { removedProjectJobs.add(removed.workflow_id); projectJobs.delete(removed.workflow_id); }
+    await invoke('remove_conversation_item', { conversationId: target.conversationId, kind: target.kind, id: target.id });
     projectAgentChatDetails.delete(target.conversationId);
     await refreshList();
     if (selectedId) await selectConversation(selectedId);
@@ -467,7 +439,7 @@ function renderList() {
       ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${chat.opened_by_coordinator ? '<span class="seat-origin" title="调度为协作新开的会话">调度</span>' : ''}${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':projectAgentBusy(chat.agent_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.kind!=='coordination'&&q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
@@ -660,9 +632,8 @@ async function selectConversation(id: string) {
     detail = result;
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
-    activeProjectModule = (savedModule === 'team' || savedModule === 'progress' || savedModule === 'inquiries' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
+    activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
     expandedProjectGroup = result.project ? id : '';
-    for (const job of result.workflows || []) adoptProject(job);
     if (result.project) { inquiryItems = []; void refreshInquiries(id); }
     renderList();
     renderChat();
@@ -683,7 +654,7 @@ async function selectConversation(id: string) {
 async function selectProjectModule(groupId: string, moduleId: string) {
   if (selectedId !== groupId) await selectConversation(groupId);
   if (!detail || detail.conversation.id !== groupId || !detail.project) return;
-  if (moduleId !== 'team' && moduleId !== 'progress' && moduleId !== 'inquiries' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
+  if (moduleId !== 'team' && moduleId !== 'inquiries' && !detail.project_agent_chats.some(chat => chat.agent_id === moduleId)) return;
   activeProjectModule = moduleId;
   expandedProjectGroup = groupId;
   localStorage.setItem(`hub.project-module.${groupId}`, moduleId);
@@ -794,15 +765,6 @@ function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string)
       .catch(error => { target.disabled = false; toast(errorText(error), true); });
   });
   host.addEventListener('click', event => {
-    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-stop-project-agent]');
-    const workflowId = target?.dataset.stopProjectWorkflow;
-    if (!target || !workflowId) return;
-    target.disabled = true;
-    void invoke<Workflow>('cancel_project_agent', { workflowId, agentId })
-      .then(adoptProject)
-      .catch(error => { target.disabled = false; toast(errorText(error), true); });
-  });
-  host.addEventListener('click', event => {
     if ((event.target as HTMLElement).closest('[data-open-cli]')) void openInCli(agentId, chatId);
   });
   host.addEventListener('click', event => {
@@ -829,23 +791,21 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
     disposeProjectTranscript();
     projectTranscript = new AgentTranscript(viewport, { escape, name: id => member(id).name, empty: agentEmpty(member(agentId).name, escape) });
   }
-  projectTranscript!.update(agentTimeline(agentId, chat, roomProjects(), runtimes[agentId]));
+  projectTranscript!.update(agentTimeline(agentId, chat, runtimes[agentId]));
   syncChatQuestions();
   const stop = host.querySelector<HTMLButtonElement>('[data-stop-project-chat-run]');
   if (busyIn(runtimes[agentId], chat.conversation.id)) {
     if (!stop) host.querySelector('.project-agent-chat-heading')?.insertAdjacentHTML('beforeend', '<button type="button" class="text-button stop-reply" data-stop-project-chat-run title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>');
   } else stop?.remove();
-  // 本会话自己的回复进行中时不锁输入框，Enter 即插话；其他会话或项目任务占用成员时才锁。
+  // 本会话自己的回复进行中时不锁输入框，Enter 即插话；其他会话占用成员时才锁。
   const steering = liveReply(agentId, chat.conversation.id);
   const cli = handedOff(agentId, chat.conversation.id);
-  // 这个席位正在专属会话里做项目任务：输入框照常可用，发的话作为插话交给这项任务。
-  const tasked = seatTasked(agentId);
-  const blocked = cli || (!steering && !tasked && busyIn(runtimes[agentId], chat.conversation.id)) || runtimes[agentId]?.connection !== 'connected';
+  const blocked = cli || (!steering && busyIn(runtimes[agentId], chat.conversation.id)) || runtimes[agentId]?.connection !== 'connected';
   const cliButton = host.querySelector<HTMLButtonElement>('[data-open-cli]');
   if (cliButton) cliButton.textContent = cli ? '收回到同席' : '在 CLI 中打开';
   const input = host.querySelector<HTMLTextAreaElement>('[data-project-agent-chat-input]');
   const send = host.querySelector<HTMLButtonElement>('[data-project-agent-chat-send]');
-  if (input) { input.dataset.placeholder ??= input.placeholder; input.disabled = blocked; input.placeholder = tasked ? '正在这条会话里做项目任务，发的话会作为插话交给它' : input.dataset.placeholder; }
+  if (input) input.disabled = blocked;
   if (send) send.disabled = blocked;
 }
 
@@ -898,9 +858,8 @@ async function sendProjectAgentChat(host: HTMLElement, agentId: string, chatId: 
   const text = composeMessage(chatId,input?.value||'');
   if (!text || !detail) return;
   if (runtimes[agentId]?.connection !== 'connected') { toast(`请先连接${member(agentId).name}`, true); return; }
-  const tasked = seatTasked(agentId);
-  if (input && (tasked || liveReply(agentId, chatId))) {
-    const outcome = await steerReply(agentId, chatId, input, tasked);
+  if (input && liveReply(agentId, chatId)) {
+    const outcome = await steerReply(agentId, chatId, input);
     if (outcome === 'resend') return sendProjectAgentChat(host, agentId, chatId);
     if (outcome) {
       const saved = await invoke<ConversationDetail>('get_conversation', { id: chatId });
@@ -937,7 +896,6 @@ function updateMemberCount() {
 
 function updateRuntimeControls() {
   updateMemberCount();
-  if (detail?.project && activeProjectModule === 'progress') { updateProjectProgress(); return; }
   if (detail?.project && activeProjectModule === 'inquiries') return;
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
   const projectAgentId = activeProjectAgent();
@@ -1023,22 +981,19 @@ const liveReply = (agentId: string, conversationId: string) => {
 /// 其他成员先停止当前回复，等确认停止后返回 'resend'，由调用方按普通消息发送。
 /// 等成员说完再自动发出的会话（没有原生插话的成员）。
 const waitingSends = new Set<string>();
-/// 这个席位正在自己的专属会话里做项目任务（不含调度）。
-const seatTasked = (agentId: string) => roomProjects().some(job => job.attempts.some(attempt => attempt.agent_id === agentId && attempt.activity !== 'coordinate' && ['starting', 'running', 'cancelling'].includes(attempt.status)));
 
-async function steerReply(agentId: string, conversationId: string, input: HTMLTextAreaElement, projectTask = false): Promise<Message | 'resend' | null> {
+async function steerReply(agentId: string, conversationId: string, input: HTMLTextAreaElement): Promise<Message | 'resend' | null> {
   if (attachmentsBusy(conversationId)) { toast('附件正在保存，请稍后发送', true); return null; }
   const content = composeMessage(conversationId, input.value);
   if (!content) { input.focus(); return null; }
   const native = NATIVE_STEER.has(baseAgent(agentId));
-  // 项目任务里所有成员都能插话：Codex、Claude 立即送达，Hermes、DSH 等它这一步说完在同一会话里接着交给它。
-  if (native || projectTask) {
+  if (native) {
     try {
       const message = await invoke<Message>('steer_agent_message', { agentId: baseAgent(agentId), conversationId, messageId: crypto.randomUUID(), content });
       submittedAttachments(conversationId, content);
       if (input.value.trim() === attachmentText(content)) { input.value = ''; resizeComposer(input); }
       if (readDraft(conversationId).trim() === attachmentText(content)) localStorage.removeItem(draftKey(conversationId));
-      toast(native ? `已插话，${member(agentId).name} 会在下一步采纳` : `已记下，${member(agentId).name} 这一步说完就交给它`);
+      toast(`已插话，${member(agentId).name} 会在下一步采纳`);
       return message;
     } catch (error) { toast(errorText(error), true); return null; }
   }
@@ -1153,22 +1108,21 @@ function updateDiscussionControls() {
     if (host) host.hidden = true;
     const members = detail.conversation.members.filter(agent => agent !== 'albion-wsl');
     const connected = members.every(agent => runtimes[agent]?.connection === 'connected');
-    const activeWorkflow = workflowBusy(currentWorkflow());
     const available = members.length > 0;
     if (groupSend) {
-      groupSend.textContent = detail.project_questions?.some(question=>question.status==='pending') ? '提交回答' : '发送';
+      groupSend.textContent = '发送';
       groupSend.disabled = !available || discussionBusy(currentDiscussion()) || discussionBusy(latestDiscussion) || sending || groupConnecting || settingsPending > 0 || detail.conversation.archived;
     }
     const projectInput = main.querySelector<HTMLTextAreaElement>('#message-input');
-    if (projectInput) projectInput.placeholder = activeWorkflow ? '给团队追加消息、补充角色或调整任务方向…' : '描述目标与分工；管家按你的原话协调，未指定模型沿用项目配置…';
+    if (projectInput) projectInput.placeholder = '说要做什么；主脑接下来想清楚、派给成员、收口…';
     const composerHint = main.querySelector('.composer-bottom > span');
-    if (composerHint) composerHint.textContent = activeWorkflow ? 'Enter 发到团队 · Shift + Enter 换行' : 'Enter 发送需求并自动协作 · Shift + Enter 换行';
+    if (composerHint) composerHint.textContent = 'Enter 交给主脑 · Shift + Enter 换行';
     const save = main.querySelector<HTMLButtonElement>('#save-message');
-    if (save) save.disabled = detail.conversation.archived || sending || activeWorkflow;
+    if (save) save.disabled = detail.conversation.archived || sending;
     const note = main.querySelector('#runtime-note');
-    if (note) note.textContent = activeWorkflow ? '团队会话进行中 · 新消息会发给当前团队，Agent 的推理与工具过程在各自模块。' : available ? '项目群聊 · 发送需求后 Agent 会自动讨论、分工并执行。' : '发送需求后，管家会连接需要工作的项目成员。';
+    if (note) note.textContent = available ? '项目群聊 · 你的话交给主脑，这里只看主脑和成员的进展摘要；细节在各自的会话里。' : '项目里还没有成员。';
     const badge = main.querySelector('.connection-badge');
-    if (badge) badge.innerHTML = `<span class="status-dot ${connected ? '' : 'muted'}"></span>${activeWorkflow ? '项目协作中' : connected ? '项目组已连接' : '请连接项目成员'}`;
+    if (badge) badge.innerHTML = `<span class="status-dot ${connected ? '' : 'muted'}"></span>${connected ? '项目组已连接' : '请连接项目成员'}`;
     return;
   }
   if (host) host.hidden = false;
@@ -1177,7 +1131,7 @@ function updateDiscussionControls() {
   const options = groupOptions();
   const allReady = options.participants.length >= 2 && options.participants.every(id => runtimes[id]?.connection === 'connected' && !busyIn(runtimes[id], selectedId));
   const anotherBusy = discussionBusy(latestDiscussion) && latestDiscussion?.conversation_id !== selectedId;
-  const locked = busy || workflowBusy(currentWorkflow()) || sending || groupConnecting || detail.conversation.archived;
+  const locked = busy || sending || groupConnecting || detail.conversation.archived;
   main.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-discussion-member], #discussion-rounds').forEach(input => { input.disabled = locked; });
   const connect = main.querySelector<HTMLButtonElement>('#connect-discussion');
   if (connect) { connect.disabled = locked || options.participants.length < 2; connect.textContent = groupConnecting ? '正在连接…' : allReady ? '参与成员已连接' : '连接参与成员'; }
@@ -1206,7 +1160,7 @@ async function connectDiscussion() {
 }
 
 async function connectProjectMembers() {
-  if (!detail || !detail.project || groupConnecting || workflowBusy(currentWorkflow())) return;
+  if (!detail || !detail.project || groupConnecting) return;
   groupConnecting = true; updateRuntimeControls();
   try {
     for (const id of detail.conversation.members.filter(agent => agent !== 'albion-wsl')) {
@@ -1222,12 +1176,6 @@ async function sendGroupMessage() {
   if(attachmentsBusy(id)){toast('附件正在保存，请稍后发送',true);return;}
   const content = composeMessage(id,main.querySelector<HTMLTextAreaElement>('#message-input')!.value);
   if (!content) return;
-  const question=detail.project_questions?.find(question=>question.status==='pending');
-  if(question){
-    try { await invoke('answer_project_question',{conversationId:detail.conversation.id,questionId:question.id,messageId:crypto.randomUUID(),content});
-      submittedAttachments(id,content);localStorage.removeItem(draftKey(detail.conversation.id));await selectConversation(detail.conversation.id);
-    } catch(error){toast(errorText(error),true);}return;
-  }
   if (detail.project) {
     // 项目群里说的话直接交给主脑；群里只看主脑和成员的进展摘要。
     const brain = detail.project_agent_chats.find(chat => isBrain(chat.agent_id));
@@ -1246,36 +1194,6 @@ async function sendGroupMessage() {
       if (input && input.value.trim() === content) { input.value = ''; resizeComposer(input); }
       if (readDraft(id).trim() === content) localStorage.removeItem(draftKey(id));
       await selectProjectModule(id, brain.agent_id);
-    } catch (error) { toast(errorText(error), true); }
-    finally { sending = false; updateRuntimeControls(); }
-    return;
-  }
-  if (detail.project) {
-    const activeWorkflow = currentWorkflow();
-    if (workflowBusy(activeWorkflow)) {
-      sending = true; updateRuntimeControls();
-      try {
-        await invoke('post_project_team_message', { conversationId: id, content });
-        const refreshed = await invoke<ConversationDetail>('get_conversation', { id });
-        submittedAttachments(id,content);
-        if (selectedId === id) detail = refreshed;
-        // 这条路径不重绘整页，发出后要自己清空输入框（用户若已接着输入新内容则保留）。
-        const input = main.querySelector<HTMLTextAreaElement>('#message-input');
-        if (input && input.value.trim() === attachmentText(content)) { input.value = ''; resizeComposer(input); }
-        if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
-      } catch (error) { toast(errorText(error), true); }
-      finally { sending = false; updateRuntimeControls(); }
-      return;
-    }
-    if (!pendingProject || pendingProject.conversationId !== id || pendingProject.content !== content) pendingProject = { conversationId: id, messageId: crypto.randomUUID(), content };
-    sending = true; updateRuntimeControls();
-    try {
-      adoptProject(await invoke<Workflow>('start_project', { conversationId: id, messageId: pendingProject.messageId, content }));
-      pendingProject = null;
-      submittedAttachments(id,content);
-      if (readDraft(id).trim() === attachmentText(content)) localStorage.removeItem(draftKey(id));
-      await refreshList();
-      if (screen === 'chat' && selectedId === id) await selectConversation(id);
     } catch (error) { toast(errorText(error), true); }
     finally { sending = false; updateRuntimeControls(); }
     return;
@@ -1310,18 +1228,15 @@ function syncProjectTeamTimeline() {
   const previousTop = host.scrollTop;
   // 恢复协作时补充的需求同时存为聊天消息和团队消息（source_message_id 指向前者），聊天里已显示就不再重复画。
   const shown = new Set(detail.messages.map(message => message.id));
-  for (const message of projectTeamMessages(selectedId, detail.project_team_messages || [], roomProjects())) {
+  for (const message of projectTeamMessages(selectedId, detail.project_team_messages || [])) {
     if (message.kind === 'user' && message.source_message_id && shown.has(message.source_message_id)) continue;
     const old = host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`);
-    const question=detail.project_questions?.find(question=>question.id===message.id);
-    const paint=message.content+':'+(question?.status||'');
+    const paint = message.content;
     if (old?.dataset.content === paint) continue;
-    let html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
-    if(question?.status==='pending')html=html.replace('</div></article>',`<button type="button" class="project-question-answer secondary" data-answer-project-question="${escape(question.id)}">回答 ${escape(member(question.agent_id).name)}</button></div></article>`);
+    const html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
     host.querySelector('.welcome')?.remove();
     if (old) old.outerHTML = html; else host.insertAdjacentHTML('beforeend', html);
     host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`)!.dataset.content = paint;
-    host.querySelector(`[data-answer-project-question="${question?.id}"]`)?.addEventListener('click',()=>void answerProjectQuestion(question!.id));
   }
   const entries = [...host.children].filter((node): node is HTMLElement => node instanceof HTMLElement && !!node.dataset.timelineAt);
   const ordered = [...entries].sort((a, b) => Number(a.dataset.timelineAt) - Number(b.dataset.timelineAt) || Number(a.dataset.timelineOrder) - Number(b.dataset.timelineOrder));
@@ -1331,16 +1246,13 @@ function syncProjectTeamTimeline() {
 
 function updateProjectControls() {
   if (screen !== 'chat' || !detail || detail.conversation.id !== selectedId) return;
-  if (activeProjectModule === 'progress' && detail.project) { updateProjectProgress(); return; }
   if (activeProjectModule === 'inquiries' && detail.project) return;
   if (activeProjectAgent()) { updateRuntimeControls(); return; }
-  const job = currentWorkflow();
-  const busy = workflowBusy(job);
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
   const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'].includes(agent));
   // 一位成员也能做项目：同一成员多开的会话就是多位成员。
   const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 1;
-  if (bind) { bind.disabled = !eligible || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
+  if (bind) { bind.disabled = !eligible || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
   const sessions = main.querySelector<HTMLButtonElement>('[data-project-sessions]');
   if (sessions) { sessions.hidden = !detail.project; sessions.disabled = detail.conversation.archived; }
   const connect = main.querySelector<HTMLButtonElement>('#connect-project-members');
@@ -1348,7 +1260,7 @@ function updateProjectControls() {
     const members = detail.conversation.members.filter(agent => agent !== 'albion-wsl');
     const ready = members.length > 0 && members.every(agent => runtimes[agent]?.connection === 'connected');
     connect.hidden = !detail.project;
-    connect.disabled = !detail.project || groupConnecting || busy || discussionBusy(currentDiscussion()) || detail.conversation.archived || ready;
+    connect.disabled = !detail.project || groupConnecting || discussionBusy(currentDiscussion()) || detail.conversation.archived || ready;
     connect.textContent = groupConnecting ? '正在连接成员…' : ready ? '项目成员已连接' : '连接项目成员';
   }
   const title = main.querySelector('#project-title');
@@ -1360,7 +1272,7 @@ function updateProjectControls() {
     share.hidden = !project;
     share.textContent = enabled ? '开发摘要：已共享' : '开发摘要：未共享';
     share.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-    // 任意项目有共享请求在途时都禁用：跨项目点击会覆盖 pending 对象，无法安全回滚。协作运行中仍可撤销。
+    // 任意项目有共享请求在途时都禁用：跨项目点击会覆盖 pending 对象，无法安全回滚。
     share.disabled = !!pendingSummary;
     const companion = member('albion-wsl').name;
     share.title = enabled ? `停止把该项目的开发摘要共享给${companion}（只影响该项目）` : `把该项目的开发摘要共享给${companion}（只影响该项目，从之后的消息开始生效）`;
@@ -1376,46 +1288,11 @@ async function showProjectBinding() {
   catch (error) { toast(errorText(error), true); }
 }
 
-const pickerHost = { escape, name: (id: string) => member(id).name, avatar: (id: string) => avatar(member(id)), connect: (id: string) => connectAgent(id), globalName: (id: string) => globalMember(id).name, plainAvatar: (id: string) => avatar(globalMember(id), '', false) };
+const pickerHost = { escape, name: (id: string) => member(id).name, avatar: (id: string) => avatar(member(id)), connect: (id: string) => connectAgent(id), globalName: (id: string) => globalMember(id).name };
 async function showProjectSessions() {
   if (!detail?.project) return;
-  try { await projectSessionsDialog(detail, { ...pickerHost, modal, open: openModal, saved: async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); toast('会话绑定已更新，下一轮任务生效'); } }); }
+  try { await projectSessionsDialog(detail, { ...pickerHost, modal, open: openModal, saved: async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); toast('会话绑定已更新，下一轮生效'); } }); }
   catch (error) { toast(errorText(error), true); }
-}
-
-async function cancelProject(id: string) {
-  try { adoptProject(await invoke<Workflow>('cancel_project', { id })); updateRuntimeControls(); }
-  catch (error) { toast(errorText(error), true); }
-}
-
-/// 修复后重新部署时带 `--resume-workflow` 启动：成员接入后自动继续那次协作；成员还没连上就隔几秒再试。
-async function resumeAfterLaunch(id: string) {
-  // 管家和成员（尤其 Claude）启动连接可能要一两分钟：连接类错误最多等 3 分钟。
-  const attempts = 36;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      adoptProject(await invoke<Workflow>('continue_project', { workflowId: id, autoExecute: true }));
-      updateRuntimeControls();
-      toast('已自动继续上次中断的协作');
-      return;
-    } catch (error) {
-      if (attempt === attempts - 1 || !/连接|接入|offline|未连接/.test(errorText(error))) { toast(`自动继续协作失败：${errorText(error)}；可在项目进度页点「继续协作」`, true); return; }
-      await new Promise(resolve => setTimeout(resolve, 5000));
-    }
-  }
-}
-
-async function continueProject(id: string) {
-  const button = main.querySelector<HTMLButtonElement>(`[data-continue-project="${CSS.escape(id)}"]`);
-  if (button) { button.disabled = true; button.textContent = '正在恢复原方案…'; }
-  try {
-    adoptProject(await invoke<Workflow>('continue_project', { workflowId: id, autoExecute: true }));
-    updateRuntimeControls();
-    toast('已复用原方案，继续未完成任务');
-  } catch (error) {
-    toast(errorText(error), true);
-    if (button?.isConnected) { button.disabled = false; button.textContent = '继续协作（复用原方案）'; }
-  }
 }
 
 // 共享开关按项目范围生效：同一个项目在其他房间显示同一标记，不同项目之间互不覆盖。
@@ -1444,7 +1321,6 @@ async function toggleProjectSummary() {
 function renderChat() {
   disposeProjectTranscript();
   enterView(`chat|${selectedId}|${activeProjectModule}`);
-  if (detail?.project && activeProjectModule === 'progress') { renderProjectProgress(); return; }
   if (detail?.project && activeProjectModule === 'inquiries') { renderProjectInquiries(); void refreshInquiries(selectedId); return; }
   const agentId = activeProjectAgent();
   if (agentId) {
@@ -1457,13 +1333,12 @@ function renderChat() {
 function currentChatQuestions():ChatQuestion[] {
   const agent=activeProjectAgent();
   const privateQuestions=agent ? projectAgentChatDetails.get(projectChatFor(agent)?.conversation_id||'')?.chat_questions || [] : detail?.conversation.kind==='direct' ? detail.chat_questions || [] : [];
-  const publicQuestions:ChatQuestion[]=agent ? (detail?.project_questions||[]).filter(q=>q.agent_id===agent&&!roomProjects().some(job=>job.attempts.some(a=>a.id===q.attempt_id&&a.activity==='coordinate'))).map(q=>({id:q.id,conversation_id:q.conversation_id,run_id:'',message_id:q.attempt_id||'',agent_id:q.agent_id,prompt:q.prompt,options:q.options,status:q.status,mode:'project',answer:q.answer,delivery:'sent',error:null})) : [];
-  return [...privateQuestions,...publicQuestions];
+  return privateQuestions;
 }
 function syncChatQuestions() {
   const questions=currentChatQuestions();
   for(const question of questions) {
-    const row=main.querySelector<HTMLElement>(question.mode==='project'?`[data-attempt-id="${question.message_id}"]`:`[data-message-id="${question.message_id}"]`);
+    const row=main.querySelector<HTMLElement>(`[data-message-id="${question.message_id}"]`);
     if(!row)continue;
     let slot=row.querySelector<HTMLElement>('.chat-question-slot');
     if(!slot){slot=document.createElement('div');slot.className='chat-question-slot';row.append(slot);}
@@ -1482,7 +1357,6 @@ main.addEventListener('click',event=>{
   const id=button.dataset.answerChatQuestion||button.dataset.cancelChatQuestion!;
   const question=currentChatQuestions().find(q=>q.id===id);if(!question)return;
   if(button.dataset.cancelChatQuestion){void invoke('cancel_chat_question',{conversationId:question.conversation_id,questionId:id}).then(()=>refreshQuestionState()).catch(error=>toast(errorText(error),true));return;}
-  if(question.mode==='project'){void answerProjectQuestion(question.id);return;}
   void answerDialog(question,{modal,escape,open:openModal,name:id=>member(id).name,saved:refreshQuestionState});
 });
 let questionRefreshBusy=false;
@@ -1508,56 +1382,10 @@ async function refreshQuestionState() {
 }
 setInterval(()=>void refreshQuestionState(),1000);
 
-async function answerProjectQuestion(id:string) {
-  const question=detail?.project_questions?.find(question=>question.id===id&&question.status==='pending');
-  if(!question||!detail)return;
-  openModal(`${member(question.agent_id).name} 的问题`,question.prompt,`<form id="project-answer-form">${question.options.length?`<label class="field">选择<select id="project-answer-option"><option value="">自行输入回答</option>${question.options.map(option=>`<option value="${escape(option)}">${escape(option)}</option>`).join('')}</select></label>`:''}<label class="field">回答<textarea id="project-answer-text" rows="3" required></textarea></label><p class="form-error"></p><div class="modal-footer"><button class="primary">提交回答并继续</button></div></form>`);
-  const form=modal.querySelector<HTMLFormElement>('#project-answer-form')!;
-  form.querySelector<HTMLSelectElement>('#project-answer-option')?.addEventListener('change',event=>{form.querySelector<HTMLTextAreaElement>('#project-answer-text')!.value=(event.target as HTMLSelectElement).value;});
-  form.addEventListener('submit',async event=>{event.preventDefault();try{await invoke('answer_project_question',{conversationId:question.conversation_id,questionId:id,messageId:crypto.randomUUID(),content:form.querySelector<HTMLTextAreaElement>('#project-answer-text')!.value});modal.close();await selectConversation(question.conversation_id);}catch(error){form.querySelector('.form-error')!.textContent=errorText(error);}});
-}
-
-let projectRefreshBusy=false;
-setInterval(()=>{
-  if(projectRefreshBusy||screen!=='chat'||!detail?.project||!roomProjects().some(workflowBusy))return;
-  const group=selectedId;projectRefreshBusy=true;
-  void invoke<ConversationDetail>('get_conversation',{id:group}).then(fresh=>{if(selectedId===group&&screen==='chat'){detail=fresh;updateRuntimeControls();syncProjectTeamTimeline();}}).catch(()=>{}).finally(()=>{projectRefreshBusy=false;});
-},1000);
-
 async function configureProjectMembers() {
   if (!detail?.project) return;
-  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},busy:roomProjects().some(workflowBusy)||discussionBusy(currentDiscussion()),toast,avatar:id=>avatar(globalMember(id),'',false),renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
+  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},busy:discussionBusy(currentDiscussion()),toast,avatar:id=>avatar(globalMember(id),'',false),renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
   catch(error){toast(errorText(error),true);}
-}
-
-function renderProjectProgress() {
-  if (!detail?.project) return;
-  main.innerHTML = projectProgressPage(detail.project.name, '', escape);
-  main.querySelector('[data-project-return-team]')?.addEventListener('click',()=>void selectProjectModule(selectedId,'team'));
-  main.querySelector('[data-project-configure]')?.addEventListener('click',()=>void configureProjectMembers());
-  main.querySelector('[data-project-sessions]')?.addEventListener('click',()=>void showProjectSessions());
-  updateProjectProgress();
-}
-
-// 历史表现表：一分钟内复用，展开的区块重绘后保持展开。
-let capabilityRows: CapabilityRow[] = [], capabilityAt = 0, quotaRows: Record<string, QuotaEntry> = {};
-const openProgressSections = new Set<string>();
-function updateProjectProgress() {
-  if (!detail?.project || activeProjectModule !== 'progress') return;
-  const content = main.querySelector<HTMLElement>('.project-progress-content');
-  if (!content) return;
-  if (Date.now() - capabilityAt > 60_000) {
-    capabilityAt = Date.now();
-    void invoke<CapabilityRow[]>('project_capability').then(rows => { capabilityRows = rows; delete content.dataset.paint; updateProjectProgress(); }).catch(() => {});
-    void invoke<Record<string, QuotaEntry>>('project_quota').then(rows => { quotaRows = rows; delete content.dataset.paint; updateProjectProgress(); }).catch(() => {});
-  }
-  const jobs=roomProjects(), stamp=JSON.stringify([detail.project_questions,capabilityRows.length,capabilityAt,Object.keys(quotaRows).length,jobs.map(job=>[job.id,job.status,job.coordination,job.tasks.map(task=>[task.status,task.title,task.agent_id]),job.attempts.map(attempt=>[attempt.agent_id,attempt.status,attempt.stage,attempt.activity,attempt.usage]),job.error])]);
-  if (content.dataset.paint===stamp) return;
-  content.innerHTML=progressContent(jobs,detail.project_agent_chats,escape,id=>member(id).name,id=>avatar(member(id)),detail.project_questions||[],capabilityRows,quotaRows);content.dataset.paint=stamp;
-  content.querySelectorAll<HTMLDetailsElement>('details[data-keep]').forEach(section=>{section.open=openProgressSections.has(section.dataset.keep!);section.addEventListener('toggle',()=>{if(section.open)openProgressSections.add(section.dataset.keep!);else openProgressSections.delete(section.dataset.keep!);});});
-  content.querySelectorAll<HTMLButtonElement>('[data-progress-agent]').forEach(button=>button.addEventListener('click',()=>void selectProjectModule(selectedId,button.dataset.progressAgent!)));
-  content.querySelectorAll<HTMLButtonElement>('[data-stop-project]').forEach(button=>button.addEventListener('click',()=>void cancelProject(button.dataset.stopProject!)));
-  content.querySelectorAll<HTMLButtonElement>('[data-continue-project]').forEach(button=>button.addEventListener('click',()=>void continueProject(button.dataset.continueProject!)));
 }
 
 function renderProjectAgentRoom(agentId: string) {
@@ -2519,22 +2347,13 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       });
       // 主脑派活、成员交回：项目群的进展摘要跟着刷新。
       await listen<string>('brain-state', event => {
+        scheduleInquiryRefresh(event.payload);
         if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
-      });
-      await listen<{ revision: number; workflow: Workflow }>('project-state', event => {
-        if (event.payload.revision < projectRevision) return;
-        projectRevision = event.payload.revision;
-        adoptProject(event.payload.workflow, true); updateRuntimeControls();
-        // 调度新开了会话：马上出现在项目的会话列表里，和用户建的一样。
-        const rooms = projectRoomsByGroup.get(event.payload.workflow.conversation_id);
-        if (rooms && event.payload.workflow.tasks.some(task => isSeat(task.agent_id) && !rooms.some(chat => chat.agent_id === task.agent_id))) void refreshProjectRooms(event.payload.workflow.conversation_id).catch(error => toast(errorText(error), true));
-        if (!workflowBusy(event.payload.workflow)) void refreshList().catch(error => toast(errorText(error), true));
       });
       eventSubscribed = true;
     }
     for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'albion-wsl']) adoptRuntime(await invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`), agentId);
     latestDiscussion = await invoke<Discussion | null>('discussion_status');
-    for (const job of await invoke<Workflow[]>('project_status')) adoptProject(job);
     [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
     document.querySelector('#app-version')!.textContent = info.version;
     updateMemberCount();
@@ -2549,7 +2368,6 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       let onboarded = false;
       try { onboarded = localStorage.getItem('hub.onboarded') === '1'; localStorage.setItem('hub.onboarded', '1'); } catch { /* 没有存储就每次都不打扰 */ onboarded = true; }
       if (!onboarded && scanned().length && !scanned().some(env => env.installed)) { renderServices(); toast('还没在本机找到任何 agent：在「接入成员」里一键安装'); }
-      if (info?.resume_workflow) void resumeAfterLaunch(info.resume_workflow);
     });
   } catch (error) {
     main.innerHTML = `<div class="no-selection"><h1>本地工作空间未能打开。</h1><p>${escape(errorText(error))}</p><button id="retry-boot" class="primary">重试</button></div>`;
