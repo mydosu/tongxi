@@ -67,6 +67,10 @@ export interface Discussion {
 export interface Project { id: string; name: string; root: string; summary_enabled: boolean; created_at: number; }
 export type RoleChoice = { agent: string; model: string | null; effort: string | null };
 /** 协作问答：主脑挂在项目问答面板上的问题。 */
+/** 主脑派出去的一件活。status：pending 排队、running 在做、done 做完、failed 失败或被停下（run_status 为 interrupted）。worktree 为空而 branch 还在，表示工作树已合并或丢弃。 */
+export interface BrainJob { id: string; seat: string; name: string; chat: string; content: string; model: string | null; effort: string | null; worktree: string | null; branch: string | null; status: 'pending' | 'running' | 'done' | 'failed'; error: string | null; run_status: string | null; result: string | null; created_at: number; finished_at: number | null; }
+/** 派活页：主脑席位和会话、还没送进主脑的消息数、全部派活（最新的在前）。 */
+export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; }
 export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }
 
 export interface ServiceInfo {
