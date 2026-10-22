@@ -2748,3 +2748,13 @@ fn routes_store_category_hold_merge_and_feed_capability_history() {
     let rows = crate::capability::profiles(&samples, crate::store::now(), 10);
     assert_eq!((rows[0]["agent"].as_str(), rows[0]["category"].as_str()), (Some("dsh-win"), Some("bugfix")));
 }
+
+#[test]
+fn context_ids_naming_a_sibling_route_become_dependencies() {
+    let raw = r#"{"action":"delegate","routes":[
+      {"key":"s5","purpose":"implementation","agent_id":"claude-win","source_id":"u1","quote":"做2"},
+      {"key":"s7","purpose":"implementation","agent_id":"claude-win","source_id":"u1","quote":"做2","context_ids":["s5","r1"],"depends_on":[]}]}"#;
+    let decision = crate::coordinator_policy::parse(raw).unwrap();
+    assert_eq!(decision.routes[1].context_ids, ["r1"]);
+    assert_eq!(decision.routes[1].depends_on, ["s5"]);
+}
