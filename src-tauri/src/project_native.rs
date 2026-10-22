@@ -801,7 +801,7 @@ impl Runner {
             params["sandbox"] = json!("read-only");
             params["approvalPolicy"] = json!("untrusted");
             params["ephemeral"] = json!(true);
-            params["developerInstructions"] = json!(crate::coordinator_policy::MANAGER_INSTRUCTION);
+            params["developerInstructions"] = json!(crate::coordinator_policy::manager_instruction());
             params["dynamicTools"] = json!([]);
         }
         let loaded = previous

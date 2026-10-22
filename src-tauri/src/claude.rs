@@ -148,7 +148,13 @@ impl Runtime {
             .env("AGENT_HUB_COORDINATOR_MODE", "1")
             .env(
                 "AGENT_HUB_COORDINATOR_INSTRUCTION",
-                crate::coordinator_policy::MANAGER_INSTRUCTION,
+                crate::coordinator_policy::manager_instruction(),
+            )
+            // 每回合按这个顺序重读外置说明，改了不用重启管家。
+            .env(
+                "AGENT_HUB_COORDINATOR_INSTRUCTION_FILES",
+                std::env::join_paths(crate::coordinator_policy::prompt_files("manager.md"))
+                    .unwrap_or_default(),
             );
         let client = Client::spawn_command(command, |_| {}, || {})?;
         client.rpc("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"tongxi-coordinator","version":env!("CARGO_PKG_VERSION")}}))?;

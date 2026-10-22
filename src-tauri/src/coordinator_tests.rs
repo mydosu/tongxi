@@ -246,8 +246,8 @@ fn coordinator_decides_tradeoffs_itself_instead_of_blocking_on_the_user() {
     assert!(coordinator_policy::parse(blocking).is_err(), "能自己定的先推进，不和提问混在一起");
     let empty = r#"{"action":"finish","decisions":[{"question":"","choice":"保留"}]}"#;
     assert!(coordinator_policy::parse(empty).is_err());
-    assert!(coordinator_policy::MANAGER_INSTRUCTION.contains("【自主推进】"));
-    assert!(coordinator_policy::MANAGER_INSTRUCTION.contains("decisions?:[{question:string,choice:string,reason?:string}]"));
+    assert!(coordinator_policy::manager_instruction().contains("【自主推进】"));
+    assert!(coordinator_policy::manager_instruction().contains("decisions?:[{question:string,choice:string,reason?:string}]"));
 }
 
 #[test]
@@ -2766,4 +2766,11 @@ fn grants_decide_whether_merged_work_is_pushed() {
     assert!(grants_push("允许提交并推送 main，不 force push"));
     assert!(!grants_push("可以提交，不要 push"));
     assert!(!grants_push("可以改动生产文件"));
+}
+
+#[test]
+fn instructions_load_from_external_prompt_files() {
+    assert!(coordinator_policy::manager_instruction().starts_with("你是本项目的调度主脑"));
+    let member = coordinator_policy::member_prompt("a", "implementation", "", "", vec![], None, false);
+    assert!(member["instruction"].as_str().unwrap().starts_with("按用户原话"));
 }
