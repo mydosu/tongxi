@@ -94,15 +94,15 @@ function readCatalog() {
   });
 }
 
-// Claude Code 走 magpie 这类本地网关时（settings.json 的 env 设了 ANTHROPIC_BASE_URL），模型目录以网关为准：
-// CLI 自己的目录只给 sonnet、opus 这类别名，别名还可能被映射成别的型号；网关的 /v1/models 给真实型号和强度等级。
+// Claude Code 走本地网关时（settings.json 的 env 设了 ANTHROPIC_BASE_URL），网关的 /v1/models 另给真实型号和强度等级；
+// CLI 自己的目录只给 sonnet、opus 这类别名，别名还可能被网关映射成别的型号。两份合起来用，见 mergeCatalogs。
 function gateway() {
   let settings = {};
   try { settings = JSON.parse(readFileSync(join(configRoot, 'settings.json'), 'utf8')) || {}; } catch {}
   const env = settings.env || {};
   const base = process.env.ANTHROPIC_BASE_URL || env.ANTHROPIC_BASE_URL;
   const token = process.env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
-  return base ? { base: String(base).replace(/\/+$/, ''), token, model: settings.model } : null;
+  return base ? { base: String(base).replace(/\/+$/, ''), token, model: settings.model, env: { ...env, ...process.env } } : null;
 }
 
 async function readGatewayCatalog() {
@@ -119,6 +119,23 @@ async function readGatewayCatalog() {
   // 不指定模型时用 Claude Code 设置里的那个；写明是哪个型号，调度才知道「默认」是什么。
   const preset = entries.find(entry => entry.value === String(route.model || '').replace(/\[1m\]$/i, ''));
   return [{ value: 'default', name: preset ? `默认 · ${preset.name}` : '默认', efforts: preset?.efforts || [] }, ...entries];
+}
+
+// CLI 目录和网关目录合起来：已经存下的别名（opus、default 等）照常能选，网关的真实型号也都在；哪份读不到就只用另一份。
+// 别名被网关映射成别的型号时（如 sonnet 实际跑 Opus），名字里写明实际跑的是哪个，调度才不会选错。
+function mergeCatalogs(cli, routed) {
+  if (!cli?.length) return routed;
+  if (!routed?.length) return cli;
+  const env = gateway()?.env || {};
+  const real = new Map(routed.map(entry => [entry.value, entry]));
+  const aliases = cli.map(entry => {
+    const target = entry.value === 'default' ? routed.find(item => item.value === 'default')
+      : real.get(String(env[`ANTHROPIC_DEFAULT_${entry.value.toUpperCase()}_MODEL`] || '').replace(/\[1m\]$/i, ''));
+    const actual = target && (entry.value === 'default' ? target.name.replace(/^默认 · /, '') : target.name);
+    return actual && !entry.name.includes(actual.replace(/^Claude /, '')) ? { ...entry, name: `${entry.name} → ${actual}` } : entry;
+  });
+  const known = new Set(aliases.map(entry => entry.value));
+  return [...aliases, ...routed.filter(entry => !known.has(entry.value))];
 }
 
 function withVersion(name, description) {
@@ -491,7 +508,10 @@ async function handle(message) {
   const { id, method, params } = message;
   switch (method) {
     case 'initialize':
-      [version, catalog] = await Promise.all([readVersion(), readGatewayCatalog().catch(() => null).then(list => list || readCatalog())]);
+      const [cli, routed] = await Promise.all([readCatalog().catch(() => null), readGatewayCatalog().catch(() => null),
+        readVersion().then(value => { version = value; })]);
+      catalog = mergeCatalogs(cli, routed);
+      if (!catalog?.length) throw new Error('Claude 模型目录读取失败');
       return { protocolVersion: 1, agentInfo: { name: 'claude-code', title: 'Claude Code', version },
         agentCapabilities: { loadSession: true, promptCapabilities: { image: true, embeddedContext: true } }, authMethods: [] };
     case 'session/new':
