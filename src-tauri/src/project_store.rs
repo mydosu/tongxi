@@ -106,14 +106,6 @@ pub struct TeamMessage {
     pub created_at: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct RoomAgentMessage {
-    pub id: String,
-    pub sender_agent: String,
-    pub recipient_agent: String,
-    pub content: String,
-    pub created_at: i64,
-}
 
 
 
@@ -255,21 +247,36 @@ pub(crate) fn migrate_coordination(tx: &Transaction<'_>) -> Result<()> {
     add_column(tx, "coordination_routes", "clear_context", "INTEGER NOT NULL DEFAULT 0")?;
     add_column(tx, "coordination_routes", "category", "TEXT")?;
     add_column(tx, "coordination_routes", "complexity", "TEXT")?;
-    add_column(tx, "coordination_routes", "hold_merge", "INTEGER NOT NULL DEFAULT 0")?;
     add_column(tx, "coordination_routes", "merge_state", "TEXT")?;
-    add_column(tx, "coordination_routes", "budget_tokens", "INTEGER")?;
-    add_column(tx, "coordination_routes", "advisor_calls", "INTEGER")?;
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS advisor_requests (
-      id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL,task_id TEXT NOT NULL,attempt_id TEXT NOT NULL,question TEXT NOT NULL,context TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL,answer TEXT,created_at INTEGER NOT NULL,answered_at INTEGER);
-      CREATE INDEX IF NOT EXISTS advisor_request_task ON advisor_requests(task_id,status);")
-        .map_err(|_| "请教记录结构迁移失败")?;
-    crate::project_inquiries::migrate(tx)?;
-    add_column(tx, "coordination_runs", "ledger", "TEXT")
+    // 旧调度的请教、软预算、账本已删，老库里留下的表和列一并清掉。
+    tx.execute_batch("DROP TABLE IF EXISTS advisor_requests;")
+        .map_err(|e| e.to_string())?;
+    for (table, column) in [
+        ("coordination_routes", "hold_merge"),
+        ("coordination_routes", "budget_tokens"),
+        ("coordination_routes", "advisor_calls"),
+        ("coordination_runs", "ledger"),
+    ] {
+        if has_column(tx, table, column)? {
+            tx.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    crate::project_inquiries::migrate(tx)
 }
 
 /// 幂等加列：列已存在就跳过，老库补列、新库不重复加。
 pub(crate) fn add_column(tx: &Transaction<'_>, table: &str, column: &str, definition: &str) -> Result<()> {
+    if !has_column(tx, table, column)? {
+        tx.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+        ))
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn has_column(tx: &Transaction<'_>, table: &str, column: &str) -> Result<bool> {
     let mut statement = tx
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|e| e.to_string())?;
@@ -278,14 +285,7 @@ pub(crate) fn add_column(tx: &Transaction<'_>, table: &str, column: &str, defini
         .map_err(|e| e.to_string())?
         .filter_map(std::result::Result::ok)
         .any(|name| name == column);
-    drop(statement);
-    if !exists {
-        tx.execute_batch(&format!(
-            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-        ))
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    Ok(exists)
 }
 
 fn overlaps(left: &str, right: &str) -> bool {
@@ -667,28 +667,6 @@ impl Store {
             chat.name = self.seat_name(group_id, &chat.agent_id);
         }
         Ok(chats)
-    }
-
-    pub fn project_chat_messages(&self, conversation_id: &str) -> Result<Vec<RoomAgentMessage>> {
-        let Some((project, group, agent)) = self.project_agent_chat_context(conversation_id)?
-        else {
-            return Ok(Vec::new());
-        };
-        let mut query = self.connection.prepare("SELECT id,sender_agent,recipient_agent,content,created_at FROM project_team_messages WHERE project_id=?1 AND conversation_id=?2 AND recipient_agent IS NOT NULL AND (sender_agent=?3 OR recipient_agent=?3) ORDER BY created_at,id").map_err(|_| "成员直发消息不可用")?;
-        let rows = query
-            .query_map(params![project, group, agent], |row| {
-                Ok(RoomAgentMessage {
-                    id: row.get(0)?,
-                    sender_agent: row.get(1)?,
-                    recipient_agent: row.get(2)?,
-                    content: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })
-            .map_err(|_| "成员直发消息读取失败")?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| "成员直发消息读取失败".into());
-        rows
     }
 
     pub fn project_agent_chat_context(

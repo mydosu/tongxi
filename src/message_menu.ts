@@ -1,15 +1,14 @@
-export interface MessageTarget { conversationId: string; kind: 'message' | 'team_message' | 'peer_message'; id: string; }
+export interface MessageTarget { conversationId: string; kind: 'message' | 'team_message'; id: string; }
 
 export function installMessageMenu(root: HTMLElement, conversation: () => string, remove: (target: MessageTarget) => Promise<void>) {
   let menu: HTMLElement | null = null;
   const close = () => { menu?.remove(); menu = null; };
   root.addEventListener('contextmenu', event => {
     const origin = event.target instanceof Element ? event.target : null;
-    const row = origin?.closest<HTMLElement>('[data-team-message-id], [data-message-id], [data-agent-direct-message-id]');
+    const row = origin?.closest<HTMLElement>('[data-team-message-id], [data-message-id]');
     if (!row) return;
     event.preventDefault(); close();
     const target: MessageTarget = row.dataset.teamMessageId ? { conversationId: conversation(), kind: 'team_message', id: row.dataset.teamMessageId }
-      : row.dataset.agentDirectMessageId ? { conversationId: conversation(), kind: 'peer_message', id: row.dataset.agentDirectMessageId }
       : { conversationId: row.closest<HTMLElement>('[data-project-chat-id]')?.dataset.projectChatId || conversation(), kind: 'message', id: row.dataset.messageId! };
     menu = document.createElement('div');
     menu.className = 'message-context-menu'; menu.setAttribute('role', 'menu');

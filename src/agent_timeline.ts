@@ -5,8 +5,7 @@ import type { ConversationDetail, RunToolEvent, RuntimeSnapshot } from './types'
 export interface AgentEntry {
   id: string;
   at: number;
-  kind: 'user' | 'agent' | 'peer';
-  source: 'private' | 'peer';
+  kind: 'user' | 'agent';
   author: string;
   body: string;
   thought: string;
@@ -30,7 +29,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
   for (const message of chat.messages) {
     rows.set(`message:${message.id}`, {
       id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
-      source: 'private', author: message.sender_id, body: message.content, thought: message.thought || '',
+      author: message.sender_id, body: message.content, thought: message.thought || '',
       tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
   }
@@ -42,7 +41,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
     const saved = rows.get(key);
     rows.set(key, {
       id: key, at: saved?.at || chat.messages.find(message => message.id === active.user_message_id)?.created_at || chat.conversation.updated_at,
-      kind: 'agent', source: 'private', author: agent, body: active.text, thought: active.thought || '',
+      kind: 'agent', author: agent, body: active.text, thought: active.thought || '',
       tools: toolActivity(active.tool_events || []), status: active.status, error: active.error, model: active.model, effort: active.reasoning_effort,
       messageId: active.assistant_message_id,
     });
@@ -57,9 +56,5 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
       rows.delete(said.id);
     }
   }
-  for (const message of chat.project_agent_inbox || []) rows.set(`peer:${message.id}`, {
-    id: `peer:${message.id}`, at: message.created_at, kind: 'peer', source: 'peer', author: message.sender_agent,
-    body: message.content, thought: '', tools: [], status: 'completed', error: null,
-  });
   return [...rows.values()].sort((a, b) => a.at - b.at || Number(b.kind === 'user') - Number(a.kind === 'user') || a.id.localeCompare(b.id));
 }

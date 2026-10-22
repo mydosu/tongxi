@@ -5,26 +5,11 @@ import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, statSync, openSync, readSync, closeSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 // 同席以 `node -e` 内嵌启动（参数从 argv[1] 起）；单独调试时也可 `node claude_bridge.mjs`。
 const [exe, data] = process.argv.slice(process.argv[1]?.endsWith('.mjs') ? 2 : 1);
-const coordinatorMode = process.env.AGENT_HUB_COORDINATOR_MODE === '1';
-// 管家指令整体替换 Claude Code 的默认系统提示：否则模型仍以编码 Agent 身份尝试调用已禁用的工具。
-const coordinatorInstruction = process.env.AGENT_HUB_COORDINATOR_INSTRUCTION || '';
-const coordinatorInstructionFiles = (process.env.AGENT_HUB_COORDINATOR_INSTRUCTION_FILES || '')
-  .split(delimiter).filter(Boolean);
-// 外置说明每回合重读：同席改了说明文件，下一回合就用新的；都读不到再用启动时带进来的那份。
-function currentCoordinatorInstruction() {
-  for (const file of coordinatorInstructionFiles) {
-    try {
-      const text = readFileSync(file, 'utf8').trim();
-      if (text) return text;
-    } catch {}
-  }
-  return coordinatorInstruction;
-}
 // Windows 上 PowerShell 往原生程序的管道里送文本会补 CRLF，`… | wsl bash -s` 的末行只剩回车符，
 // bash 报 command not found 并以 127 退出（前面的命令其实都跑完了）。提前告诉成员换种写法。
 const windowsHint = process.platform === 'win32'
@@ -277,18 +262,6 @@ function resultText(content) {
   return content == null ? '' : JSON.stringify(content);
 }
 
-// 调度回合的输入是「参考资料（…）：\n{…}\n\n本回合状态（JSON）：\n{…}」：拆出参考资料，其余照常作为用户消息。
-const REFERENCE_HEAD = '参考资料（JSON，几回合内基本不变）：\n';
-const STATE_HEAD = '\n\n本回合状态（JSON）：\n';
-function splitReference(prompt) {
-  const blocks = Array.isArray(prompt) ? prompt : [];
-  const first = blocks.find(block => block?.type === 'text');
-  if (!first || !String(first.text).startsWith(REFERENCE_HEAD)) return [null, prompt];
-  const at = first.text.indexOf(STATE_HEAD);
-  if (at < 0) return [null, prompt];
-  return [first.text.slice(0, at), blocks.map(block => block === first ? { ...block, text: first.text.slice(at + 2) } : block)];
-}
-
 // 回合用量按 ACP PromptResponse.usage 回报：inputTokens 含缓存读写，费用放 _meta。
 // modelUsage 按模型分列、连子 agent（Task）用的模型一起算，有就用它的合计（子 agent 的消耗记在这位成员身上）；
 // 没有再退回主线程的 usage。
@@ -346,27 +319,10 @@ function prompt(id, params) {
   if (session.effort) args.push('--effort', session.effort);
   const resumed = Boolean(session.started || transcript(params.sessionId));
   args.push(resumed ? '--resume' : '--session-id', params.sessionId);
-  if (coordinatorMode) {
-    // 管家只调度：不给任何内置工具，也不加载用户或插件的 MCP。
-    args.push('--tools', '', '--strict-mcp-config', '--permission-mode', 'default', '--permission-prompts', 'none',
-      '--setting-sources', 'local');
-    // 「参考资料」（模型目录、价格表等）几回合内不变：拼到系统提示后面。Claude 的提示缓存只在断点处命中，
-    // 系统提示末尾就是一个断点，放这里每回合都能命中；留在消息里的话每回合都要重写一遍缓存。
-    const [reference, prompt] = splitReference(params.prompt);
-    params.prompt = prompt;
-    const system = [currentCoordinatorInstruction(), reference].filter(Boolean).join('\n\n');
-    // 说明加参考资料有十几万字，超过 Windows 命令行约 3.2 万字符的上限，走文件传。
-    if (system) {
-      const file = join(data, 'coordinator-system.txt');
-      writeFileSync(file, system);
-      args.push('--system-prompt-file', file);
-    }
-  } else {
-    args.push('--permission-mode', 'bypassPermissions');
-    args.push('--append-system-prompt', memberHint);
-    const mcp = mcpConfig(session.mcpServers);
-    if (mcp) args.push('--mcp-config', mcp);
-  }
+  args.push('--permission-mode', 'bypassPermissions');
+  args.push('--append-system-prompt', memberHint);
+  const mcp = mcpConfig(session.mcpServers);
+  if (mcp) args.push('--mcp-config', mcp);
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv() });
   session.child = child;
   session.cancelled = false;

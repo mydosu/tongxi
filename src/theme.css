@@ -236,7 +236,6 @@ html:not([data-hud]) .main.view-enter > :nth-child(2) { animation-delay: .05s; }
 .session-bind-list { display: grid; gap: 8px; max-height: 340px; overflow: auto; }
 .session-bind-row { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border: 1px solid rgb(255 255 255 / .9); border-radius: 12px; background: rgb(255 255 255 / .66); }
 .session-bind-row.busy { opacity: .7; }
-.session-bind-row[data-bind-target="coordinator"] { background: linear-gradient(135deg, rgb(236 232 252 / .8), rgb(228 238 251 / .8)); }
 .session-bind-who { display: grid; gap: 3px; width: 108px; flex: none; }
 .session-bind-who strong { font-size: 12px; font-weight: 600; color: #444c66; }
 .session-bind-who small { font-size: 10px; color: #8a90ad; }

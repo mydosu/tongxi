@@ -131,9 +131,7 @@ impl Runtime {
                 include_str!("claude_bridge.mjs"),
             ])
             .arg(executable)
-            .arg(data)
-            .env_remove("AGENT_HUB_COORDINATOR_MODE")
-            .env_remove("AGENT_HUB_COORDINATOR_INSTRUCTION");
+            .arg(data);
         for name in nested_session_markers() {
             command.env_remove(name);
         }
@@ -707,10 +705,8 @@ mod tests {
     }
 
     #[test]
-    fn bridge_keeps_manager_without_tools_and_members_with_full_cli() {
+    fn bridge_gives_members_the_full_cli() {
         let bridge = include_str!("claude_bridge.mjs");
-        assert!(bridge.contains("'--tools', '', '--strict-mcp-config'"));
-        assert!(bridge.contains("args.push('--system-prompt-file', file)"));
         assert!(bridge.contains("'--permission-mode', 'bypassPermissions'"));
         assert!(bridge.contains("'--disallowedTools', 'AskUserQuestion'"));
         // 宿主 Claude Code 的会话标记不能泄进成员子进程。

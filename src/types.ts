@@ -25,12 +25,10 @@ export interface ConversationDetail {
   project_grants?: string;
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
-  project_agent_inbox?: ProjectRoomAgentMessage[];
   chat_questions?: ChatQuestion[];
   sessions: { agent_id: string; session_key: string; native_session_id: string | null; model: string | null; reasoning_effort: string | null }[];
 }
 export interface ProjectAgentChat { group_conversation_id: string; agent_id: string; conversation_id: string; label?: string | null; /** 后端算好的显示名：起过名就是它，否则成员名（多个会话时带编号）。 */ name?: string; }
-export interface ProjectRoomAgentMessage { id: string; sender_agent: string; recipient_agent: string; content: string; created_at: number; }
 export interface ProjectTeamMessage { id: string; project_id: string; conversation_id: string; workflow_id: string | null; attempt_id: string | null; source_message_id: string | null; sender_agent: string | null; kind: 'agent' | 'system' | 'user'; content: string; created_at: number; }
 export interface AppInfo {
   version: string; milestone: number; database_path: string; hud_shortcut: boolean; autoconnect?: boolean;
@@ -70,7 +68,8 @@ export type RoleChoice = { agent: string; model: string | null; effort: string |
 /** 主脑派出去的一件活。status：pending 排队、running 在做、done 做完、failed 失败或被停下（run_status 为 interrupted）。worktree 为空而 branch 还在，表示工作树已合并或丢弃。 */
 export interface BrainJob { id: string; seat: string; name: string; chat: string; content: string; model: string | null; effort: string | null; worktree: string | null; branch: string | null; status: 'pending' | 'running' | 'done' | 'failed'; error: string | null; run_status: string | null; result: string | null; created_at: number; finished_at: number | null; }
 /** 派活页：主脑席位和会话、还没送进主脑的消息数、全部派活（最新的在前）。 */
-export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; }
+export interface PlanDoc { name: string; brief: boolean; text: string; modified: number; }
+export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; plans: PlanDoc[]; }
 export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }
 
 export interface ServiceInfo {

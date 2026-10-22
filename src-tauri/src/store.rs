@@ -211,7 +211,6 @@ pub struct ConversationDetail {
     pub project_grants: String,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
-    pub project_agent_inbox: Vec<crate::project_store::RoomAgentMessage>,
     pub chat_questions: Vec<crate::chat_questions::Question>,
 }
 
@@ -793,7 +792,6 @@ impl Store {
             project_grants: self.project_grants(id),
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
-            project_agent_inbox: self.project_chat_messages(id)?,
             chat_questions: self.chat_questions(id)?,
         })
     }

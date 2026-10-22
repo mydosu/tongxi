@@ -91,7 +91,7 @@ export class AgentTranscript {
   private create(entry: AgentEntry) {
     const node = document.createElement('article');
     node.dataset.entryId = entry.id;
-    node.className = `agent-transcript-entry ${entry.kind === 'user' ? 'agent-user-entry' : entry.kind === 'peer' ? 'agent-peer-entry' : 'agent-output-entry'}`;
+    node.className = `agent-transcript-entry ${entry.kind === 'user' ? 'agent-user-entry' : 'agent-output-entry'}`;
     node.innerHTML = '<header class="agent-turn-meta"><span data-entry-label></span><time></time><span data-entry-live></span><span data-entry-control></span></header><details class="thought agent-turn-thought"><summary></summary><div class="thought-body"></div></details><div class="agent-turn-tools"></div><div class="agent-turn-flow" hidden></div><div class="agent-turn-text"></div><details class="agent-protocol" hidden><summary></summary><pre></pre></details><p class="agent-turn-error" hidden></p><div class="agent-turn-actions"></div>';
     const thought = node.querySelector<HTMLDetailsElement>('.thought')!;
     remember(thought, () => `${node.dataset.entryId}:plain`);
@@ -102,8 +102,7 @@ export class AgentTranscript {
     const { escape, name } = this.format;
     const busy = entryBusy(entry.status);
     if (entry.messageId) node.dataset.messageId = entry.messageId;
-    if (entry.kind === 'peer') node.dataset.agentDirectMessageId = entry.id.slice(5);
-    const label = entry.kind === 'user' ? '你' : entry.kind === 'peer' ? `${name(entry.author)} · 成员直发` : name(entry.author);
+    const label = entry.kind === 'user' ? '你' : name(entry.author);
     node.querySelector('[data-entry-label]')!.textContent = label;
     node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(entry.at);
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
@@ -156,7 +155,7 @@ export class AgentTranscript {
       tools.dataset.paint = signature;
     }
     const actions = node.querySelector<HTMLElement>('.agent-turn-actions')!;
-    const action = entry.source === 'private' && entry.kind === 'agent' && entry.status === 'completed' && entry.messageId ? `<button type="button" class="agent-chat-share" data-project-agent-chat-share="${escape(entry.messageId)}">分享到团队</button>` : '';
+    const action = entry.kind === 'agent' && entry.status === 'completed' && entry.messageId ? `<button type="button" class="agent-chat-share" data-project-agent-chat-share="${escape(entry.messageId)}">分享到团队</button>` : '';
     if (actions.innerHTML !== action) actions.innerHTML = action;
   }
 
