@@ -779,12 +779,20 @@ async function selectProjectModule(groupId: string, moduleId: string) {
   renderChat();
 }
 
-/// 滚到底。布局稳定前算出来的 scrollHeight 会偏小（打开会话时实测差 52px），
-/// 所以这一帧滚一次、下一帧再补一次。
+/// 滚到底。屏幕外的消息先按估计高度占位（content-visibility），滚过去才排出真实高度，
+/// 所以每帧补滚一次，直到高度连续三帧不变（真实高度在 rAF 之后的渲染里才排出来，要隔一帧才读得到）；
+/// 用户往上翻了（listPaused）或换了页就停。
 function pinToBottom(box: Element | null) {
   if (!box) return;
-  box.scrollTop = box.scrollHeight;
-  requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+  let last = -1, steady = 0, frames = 0;
+  const pin = () => {
+    if (!box.isConnected || listPaused) return;
+    box.scrollTop = box.scrollHeight;
+    steady = box.scrollHeight === last ? steady + 1 : 0;
+    last = box.scrollHeight;
+    if (steady < 3 && ++frames < 40) requestAnimationFrame(pin);
+  };
+  pin();
 }
 
 /// 输入框从一行起随内容长高（主窗口最多 200px、HUD 里 96px），和 Hermes 的输入栏一样。
@@ -1601,7 +1609,8 @@ function renderConversationChat() {
   const conversation = detail.conversation;
   // 同一会话重画（例如回复结束后重新载入）时，翻到上面在看的就留在原处，不拉回底部。
   const previous = main.querySelector<HTMLElement>('#messages');
-  const keepTop = previous && shownConversation === conversation.id && (listPaused || previous.scrollHeight - previous.scrollTop - previous.clientHeight > 120) ? previous.scrollTop : null;
+  // 只认用户自己往上翻过（listPaused）：消息高度还在按估计值排时，「离底部远」不代表人在看上面。
+  const keepTop = previous && shownConversation === conversation.id && listPaused ? previous.scrollTop : null;
   const roster = conversation.members.map(member);
   const isGroup = conversation.kind === 'group';
   const directAgent = conversation.kind === 'direct' ? roster[0] : null;

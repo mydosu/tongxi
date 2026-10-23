@@ -140,6 +140,8 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .chat-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 20px 27px 0; }
 .milestone-note { display: flex; gap: 10px; align-items: center; border: 1px solid #e1e3e6; background: #f1f2f3; border-radius: 8px; font-size: 10px; line-height: 1.65; color: #7f8997; padding: 10px 12px; }
 .messages { flex: 1; overflow-y: auto; padding: 17px 6px; min-height: 0; }
+/* 屏幕外的消息不排版：切到长会话时滚到底要读 scrollHeight，不然几千个节点整列排一遍，换页动画会冻住一两百毫秒。 */
+.messages > [data-message-id] { content-visibility: auto; contain-intrinsic-size: auto 160px; }
 .discussion-controls { flex-shrink: 0; border-bottom: 1px solid #dde0e4; padding: 8px 0 10px; }
 .discussion-options { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: 11px; color: #5e6672; }
 .discussion-options label { display: flex; align-items: center; gap: 5px; cursor: pointer; }

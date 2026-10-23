@@ -61,9 +61,11 @@ export function glide(list: HTMLElement, before: (Box | null)[]) {
     Object.assign(glider.style, { left: `${to.x}px`, top: `${to.y}px`, width: `${to.w}px`, height: `${to.h}px` });
     list.append(glider);
     target.classList.add('gliding');
+    // 只动 transform（大小差用缩放补），交给合成线程：切到长会话时主线程卡一下，滑块也不会停在半路。
+    glider.style.transformOrigin = '0 0';
     const animation = glider.animate([
-      { transform: `translate(${from.x - to.x}px, ${from.y - to.y}px)`, width: `${from.w}px`, height: `${from.h}px` },
-      { transform: 'none', width: `${to.w}px`, height: `${to.h}px` },
+      { transform: `translate(${from.x - to.x}px, ${from.y - to.y}px) scale(${from.w / to.w}, ${from.h / to.h})` },
+      { transform: 'none' },
     ], { duration: Math.min(460, 260 + Math.abs(from.y - to.y) / 4), easing: EASE });
     gliders.set(level, { glider, animation, target });
     // 被半路接管时 cancel 会让 finished 失败：那边已经收拾过了，这里什么都不做。
