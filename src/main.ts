@@ -5,7 +5,7 @@ import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, 
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
-import { patchMessage } from './live_patch';
+import { morphChildren, patchMessage } from './live_patch';
 import { plainThought, steerIds, thoughtFlow, type FlowPart } from './thought_flow';
 import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
@@ -525,7 +525,8 @@ function renderList() {
   const visible = conversations.filter(conversation => filter === 'all' || conversation.kind === filter);
   const list = document.querySelector<HTMLDivElement>('#conversation-list')!;
   const before = measure(list);
-  list.innerHTML = visible.length ? visible.map(conversation => {
+  const next = document.createElement('template');
+  next.innerHTML = visible.length ? visible.map(conversation => {
     const agent = conversation.kind === 'direct' ? globalMember(conversation.members[0]) : null;
     const rooms = conversation.kind === 'group' ? projectRoomsByGroup.get(conversation.id) || [] : [];
     const expanded = conversation.id === expandedProjectGroup && rooms.length > 0;
@@ -539,14 +540,23 @@ function renderList() {
     const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>主脑任务</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 项任务进行中">${liveBrainJobs.get(conversation.id)} 进行中</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
-  list.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => button.addEventListener('click', () => {
-    const id = button.dataset.conversation!;
-    if ((projectRoomsByGroup.get(id)?.length || 0) > 0 && selectedId === id && screen === 'chat') {
-      expandedProjectGroup = expandedProjectGroup === id ? '' : id;
-      renderList();
-    } else void selectConversation(id);
-  }));
-  list.querySelectorAll<HTMLButtonElement>('[data-project-module]').forEach(button => button.addEventListener('click', () => void selectProjectModule(button.dataset.groupId || '', button.dataset.projectModule || 'team')));
+  // 就地合并而不是整列重建：切会话时没变的卡片、头像、展开的子栏原样留着，不会整列闪一下。
+  morphChildren(list, next.content, '.nav-glider');
+  // 卡片会被就地复用，点击用委托、只绑一次。
+  if (!list.dataset.clickBound) {
+    list.dataset.clickBound = '1';
+    list.addEventListener('click', event => {
+      const target = event.target as HTMLElement;
+      const module = target.closest<HTMLButtonElement>('[data-project-module]');
+      if (module) { void selectProjectModule(module.dataset.groupId || '', module.dataset.projectModule || 'team'); return; }
+      const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
+      if (!id) return;
+      if ((projectRoomsByGroup.get(id)?.length || 0) > 0 && selectedId === id && screen === 'chat') {
+        expandedProjectGroup = expandedProjectGroup === id ? '' : id;
+        renderList();
+      } else void selectConversation(id);
+    });
+  }
   bindConversationDrag(list, visible.map(conversation => conversation.id));
   glide(list, before);
 }
@@ -640,12 +650,11 @@ let suppressConversationClick = false;
 function bindConversationDrag(list: HTMLElement, visibleIds: string[]) {
   const clear = () => list.querySelectorAll('.drop-before, .drop-after, .dragging').forEach(item => item.classList.remove('drop-before', 'drop-after', 'dragging'));
   const finish = () => { conversationDrag = null; document.body.classList.remove('conversation-dragging'); clear(); };
-  list.querySelectorAll<HTMLElement>('[data-order-id]').forEach(item => {
-    item.addEventListener('pointerdown', event => {
-      if (event.button !== 0 || !(event.target as HTMLElement).closest('.conversation')) return;
-      conversationDrag = { id: item.dataset.orderId!, startY: event.clientY, pointer: event.pointerId, active: false };
-    });
-  });
+  list.onpointerdown = event => {
+    const item = (event.target as HTMLElement).closest<HTMLElement>('[data-order-id]');
+    if (event.button !== 0 || !item || !(event.target as HTMLElement).closest('.conversation')) return;
+    conversationDrag = { id: item.dataset.orderId!, startY: event.clientY, pointer: event.pointerId, active: false };
+  };
   list.onpointermove = event => {
     const drag = conversationDrag;
     if (!drag || event.pointerId !== drag.pointer) return;
@@ -722,7 +731,10 @@ async function selectConversation(id: string) {
   const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
-  activeProjectModule = 'team';
+  // 先按已知的席位把要展开的项目、上次看的板块定下来，免得第一次重画时旧项目还开着、等详情回来才收起，侧栏跳两下。
+  const knownProject = (projectRoomsByGroup.get(id)?.length || 0) > 0;
+  expandedProjectGroup = knownProject ? id : '';
+  activeProjectModule = knownProject ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
   localStorage.setItem('hub.selected', id);
   renderList();
   // 换到另一个会话（例如新建的排到了最上面）时，侧栏把它滚进视野；同一会话重新载入不动侧栏。

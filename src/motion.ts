@@ -3,6 +3,9 @@
 
 export const still = () => document.documentElement.dataset.hud === '1';
 const EASE = 'cubic-bezier(.2, .8, .2, 1)';
+// 只记真滚过的元素，换页时不用把整页逐个读 scrollTop：读到 content-visibility 收起的消息会逼它整段排版，几千个节点能卡好几秒。
+const scrolledNodes = new Set<HTMLElement>();
+document.addEventListener('scroll', event => { if (event.target instanceof HTMLElement) scrolledNodes.add(event.target); }, { capture: true, passive: true });
 
 /// 换页前调用：把 main 里的旧内容整块挪进一层盖在原位的「雾」，它自己淡出后移除。
 /// 雾层挂在 body 上而不是 main 里：新页面紧接着的几次重绘（innerHTML）冲不掉它。
@@ -11,7 +14,7 @@ export function fogOut(main: HTMLElement) {
   if (still() || !main.firstChild) return;
   const box = main.getBoundingClientRect();
   // 节点挪走会丢滚动位置，先记下来，挪完再还回去。
-  const scrolled = [...main.querySelectorAll<HTMLElement>('*')].filter(node => node.scrollTop > 0).map(node => [node, node.scrollTop] as const);
+  const scrolled = [...scrolledNodes].filter(node => (node.isConnected || !scrolledNodes.delete(node)) && main.contains(node) && node.scrollTop > 0).map(node => [node, node.scrollTop] as const);
   const ghost = document.createElement('div');
   ghost.className = 'view-ghost';
   ghost.inert = true;

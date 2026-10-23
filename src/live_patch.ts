@@ -32,3 +32,27 @@ function patchThought(current: HTMLDetailsElement, next: HTMLDetailsElement) {
   body.textContent = text;
   if (follow) body.scrollTop = body.scrollHeight;
 }
+
+/** 把 next 的子节点就地合进 parent：一样的节点原样留着（图片不重载、动画不重播、悬停不丢），只改变了的属性、文字，增删多出少掉的节点。
+ *  keep 匹配的子元素（比如滑动的高亮块）不参与比较、原样保留。新出现的节点不带监听，调用方要用事件委托。 */
+export function morphChildren(parent: Element, next: ParentNode, keep = '') {
+  const current = [...parent.childNodes].filter(node => !(keep && node instanceof Element && node.matches(keep)));
+  const fresh = [...next.childNodes];
+  const anchor = keep ? parent.querySelector(`:scope > ${keep}`) : null;
+  fresh.forEach((node, index) => {
+    const have = current[index];
+    if (!have) parent.insertBefore(node, anchor);
+    else morph(have, node);
+  });
+  current.slice(fresh.length).forEach(node => node.remove());
+}
+
+function morph(old: ChildNode, next: ChildNode) {
+  if (old.isEqualNode(next)) return;
+  if (old.nodeType !== next.nodeType || old.nodeName !== next.nodeName) { old.replaceWith(next); return; }
+  if (!(old instanceof Element)) { old.nodeValue = next.nodeValue; return; }
+  const to = next as Element;
+  for (const { name } of [...old.attributes]) if (!to.hasAttribute(name)) old.removeAttribute(name);
+  for (const { name, value } of [...to.attributes]) if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+  morphChildren(old, to);
+}

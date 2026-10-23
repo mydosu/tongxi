@@ -205,8 +205,9 @@ html:not([data-hud]) ::-webkit-scrollbar-thumb:hover { background: rgb(150 146 1
 @keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes fold-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 /* 换页：旧页面（motion.ts 挪进 .view-ghost）化成雾散开，新页面从雾里清晰起来——磨砂玻璃上起雾、再擦亮。 */
-@keyframes fog-out { to { opacity: 0; filter: blur(10px); transform: scale(.985); } }
-@keyframes fog-in { from { opacity: 0; filter: blur(10px); transform: translateY(8px) scale(1.006); } }
+/* 只给退场的旧页面一层轻雾：给整页新内容做 blur 动画每帧都要重画，实测掉一半帧。 */
+@keyframes fog-out { to { opacity: 0; filter: blur(4px); transform: scale(.985); } }
+@keyframes fog-in { from { opacity: 0; transform: translateY(8px) scale(1.006); } }
 .view-ghost { position: fixed; z-index: 3; display: flex; flex-direction: column; overflow: hidden; border-radius: 19px; pointer-events: none; transform-origin: 50% 40%;
   animation: fog-out .3s var(--ease) forwards; }
 html:not([data-hud]) .main.view-enter > * { animation: fog-in .46s var(--ease) both; }
