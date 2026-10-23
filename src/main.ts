@@ -534,11 +534,13 @@ function renderList() {
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
       ${agent ? avatar(agent) : groupFace(conversation.id)}
       <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(attachmentText(visibleQuestionReply(conversation.preview,true)) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
-      ${rooms.length ? `<span class="project-chevron" aria-hidden="true">${expanded ? '⌄' : '›'}</span>` : ''}<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
+<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
     const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>主脑任务</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 项任务进行中">${liveBrainJobs.get(conversation.id)} 进行中</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
-    return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}">${row}<div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
+    // 展开钮在卡片外面（按钮不能套按钮）：点卡片只选中，点它才展开、收起子栏。
+    const toggle = `<button class="project-expand" data-project-expand="${escape(conversation.id)}" aria-expanded="${expanded}" aria-controls="project-subnav-${escape(conversation.id)}" aria-label="${expanded ? '收起' : '展开'}${escape(conversation.title)}" title="${expanded ? '收起' : '展开'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>`;
+    return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}"><div class="conversation-branch-row">${row}${toggle}</div><div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
   }).join('') : `<div class="list-empty">这里还没有会话</div>`;
   // 就地合并而不是整列重建：切会话时没变的卡片、头像、展开的子栏原样留着，不会整列闪一下。
   morphChildren(list, next.content, '.nav-glider');
@@ -549,12 +551,10 @@ function renderList() {
       const target = event.target as HTMLElement;
       const module = target.closest<HTMLButtonElement>('[data-project-module]');
       if (module) { void selectProjectModule(module.dataset.groupId || '', module.dataset.projectModule || 'team'); return; }
+      const toggle = target.closest<HTMLButtonElement>('[data-project-expand]')?.dataset.projectExpand;
+      if (toggle !== undefined) { expandedProjectGroup = expandedProjectGroup === toggle ? '' : toggle; renderList(); return; }
       const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
-      if (!id) return;
-      if ((projectRoomsByGroup.get(id)?.length || 0) > 0 && selectedId === id && screen === 'chat') {
-        expandedProjectGroup = expandedProjectGroup === id ? '' : id;
-        renderList();
-      } else void selectConversation(id);
+      if (id) void selectConversation(id);
     });
   }
   bindConversationDrag(list, visible.map(conversation => conversation.id));
@@ -731,9 +731,8 @@ async function selectConversation(id: string) {
   const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
-  // 先按已知的席位把要展开的项目、上次看的板块定下来，免得第一次重画时旧项目还开着、等详情回来才收起，侧栏跳两下。
+  // 先按已知的席位把上次看的板块定下来，免得等详情回来才换高亮、侧栏跳两下。展开与否只听展开钮的。
   const knownProject = (projectRoomsByGroup.get(id)?.length || 0) > 0;
-  expandedProjectGroup = knownProject ? id : '';
   activeProjectModule = knownProject ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
   localStorage.setItem('hub.selected', id);
   renderList();
@@ -752,7 +751,6 @@ async function selectConversation(id: string) {
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
     activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || savedModule === 'brain-jobs' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
-    expandedProjectGroup = result.project ? id : '';
     if (result.project) { inquiryItems = []; brainOverview = null; void refreshInquiries(id); void refreshBrainJobs(id); }
     renderList();
     renderChat();

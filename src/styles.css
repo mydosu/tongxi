@@ -2,7 +2,6 @@
 :root { font-family: 'Noto Sans SC', 'MiSans', HubSans, 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; color: #303844; background: #f8f9fb; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; font-size: 14px; --accent: #33383e; --line: #e3e5e8; --muted: #848990; }
 * { box-sizing: border-box; }
 body { margin: 0; }
-.project-chevron { color: #8a95a5; margin-left: auto; flex-shrink: 0; font-size: 13px; }
 .project-progress-content { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px; }
 @keyframes member-pulse { 50% { box-shadow: 0 0 0 5px #e3f4ec; opacity: .75; } }
 .project-member-settings-row { display: flex; gap: 12px; border: 0; border-bottom: 1px solid #e8ecf2; padding: 16px 0 20px; margin: 8px 0 18px; flex-wrap: wrap; }
@@ -90,8 +89,11 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .conversation-item.drop-before::before, .conversation-item.drop-after::after { content: ''; position: absolute; left: 8px; right: 8px; height: 2px; border-radius: 2px; background: #545b66; pointer-events: none; }
 .conversation-item.drop-before::before { top: -3px; }
 .conversation-item.drop-after::after { bottom: 1px; }
-.conversation-branch-row { display: flex; align-items: center; gap: 2px; }
-.conversation-branch-row > .conversation { flex: 1; min-width: 0; margin: 0; }
+.conversation-branch-row { position: relative; }
+.conversation-branch-row > .conversation { padding-right: 40px; }
+.project-expand { position: absolute; right: 7px; top: 50%; width: 24px; height: 24px; margin-top: -12px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #8a95a5; cursor: pointer; }
+.project-expand svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: transform .22s; }
+.project-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
 .project-subnav { display: grid; gap: 2px; margin: 3px 0 4px 32px; padding-left: 9px; border-left: 1px solid #d3d7dc; }
 .project-subnav[hidden] { display: none; }
 .project-module-row { width: 100%; min-height: 33px; display: flex; align-items: center; gap: 7px; padding: 5px 7px; border-radius: 7px; text-align: left; color: #687587; font-size: 12px; }
