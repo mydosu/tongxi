@@ -1254,6 +1254,8 @@ fn key_points(reply: &str) -> String {
 
 // ---------- 主程序这一侧：投递线程 ----------
 
+const WRAP_UP: &str = "【同席】用户要中断这轮协作（点了停止，或正在关闭同席）。不要再派活，也不要接着做手上的事：现在就把 .tongxi/交接.md 整份覆盖写好。这轮没做完也写：在做哪件事、做到哪、还在外面没交回的任务（编号、交给谁、做什么）、下一步，并注明是被用户中断的，恢复后先看用户在群里说了什么再接着做。写完就结束这一回合，不用发进度报告。";
+
 pub struct Courier {
     app: tauri::AppHandle,
     store: Arc<Mutex<Store>>,
@@ -1284,9 +1286,10 @@ impl Courier {
         hermes: Arc<crate::hermes::Runtime>,
         dsh: Arc<crate::dsh::Runtime>,
         claude: Arc<crate::claude::Runtime>,
-    ) {
+    ) -> Arc<Self> {
         let courier = Arc::new(Self { app, store, codex, hermes, dsh, claude });
         let watcher = courier.clone();
+        let handle = courier.clone();
         std::thread::spawn(move || {
             let mut tick: u64 = 0;
             loop {
@@ -1310,6 +1313,7 @@ impl Courier {
             );
             std::thread::sleep(Duration::from_secs(600));
         });
+        handle
     }
 
     fn snapshot(&self, agent: &str) -> Option<RuntimeSnapshot> {
@@ -1386,6 +1390,62 @@ impl Courier {
             _ => return Err("未知成员".into()),
         }
         .map(|_| ())
+    }
+
+    /// 要中断正在回复的主脑前先让它写交接：能插话的插话，不能的先停掉、下一轮投递作为新消息发（缓存还热）。
+    /// 主脑没在回复就不用写，返回 false。
+    pub fn wrap_up(&self, chat: &str) -> bool {
+        let Ok((room, seat)) = self.store.lock().unwrap().connection.query_row(
+            "SELECT group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
+            [chat],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) else {
+            return false;
+        };
+        let agent = base_agent(&seat);
+        if !is_brain(&seat) || !self.live(agent, chat) {
+            return false;
+        }
+        self.inbox(&room, WRAP_UP, "hub");
+        if !matches!(agent, "codex-win" | "claude-win") {
+            let _ = self.cancel(agent, chat);
+        }
+        true
+    }
+
+    /// 关同席前：让每个正在回复的主脑写交接，返回这些主脑会话。
+    pub fn wrap_up_all(&self) -> Vec<String> {
+        let chats: Vec<String> = self
+            .store
+            .lock()
+            .unwrap()
+            .connection
+            .prepare("SELECT conversation_id FROM project_agent_chats WHERE agent_id LIKE '%-brain'")
+            .and_then(|mut query| query.query_map([], |row| row.get(0))?.collect())
+            .unwrap_or_default();
+        chats.into_iter().filter(|chat| self.wrap_up(chat)).collect()
+    }
+
+    /// 还在收尾：交接提醒还没送出去，或主脑还在回复。
+    pub fn wrapping(&self, chats: &[String]) -> bool {
+        let queued: bool = self
+            .store
+            .lock()
+            .unwrap()
+            .connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM brain_inbox WHERE content=?1 AND delivered=0)", [WRAP_UP], |row| row.get(0))
+            .unwrap_or(false);
+        queued
+            || chats.iter().any(|chat| {
+                let seat: Option<String> = self
+                    .store
+                    .lock()
+                    .unwrap()
+                    .connection
+                    .query_row("SELECT agent_id FROM project_agent_chats WHERE conversation_id=?1", [chat], |row| row.get(0))
+                    .ok();
+                seat.is_some_and(|seat| self.live(base_agent(&seat), chat))
+            })
     }
 
     fn execute(&self, sql: &str, values: impl rusqlite::Params) {

@@ -392,6 +392,38 @@ fn send_claude_message(
 ) -> Result<store::RunRecord, String> {
     runtime.send(&conversation_id, &message_id, &content)
 }
+/// 停主脑前先让它写交接；它没在回复就返回 false，由前端直接停。
+#[tauri::command]
+fn brain_wrap_up(courier: State<'_, Arc<project_brain::Courier>>, conversation_id: String) -> bool {
+    courier.wrap_up(&conversation_id)
+}
+
+/// 关同席：有主脑正在回复就先让它写交接，写完（最多两分钟）再退出；等的时候再关一次直接退出。
+fn quit(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri::Emitter;
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    if WAITING.swap(true, Ordering::SeqCst) {
+        app.exit(0);
+        return;
+    }
+    let courier = app.state::<Arc<project_brain::Courier>>().inner().clone();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let chats = courier.wrap_up_all();
+        if !chats.is_empty() {
+            let _ = app.emit("brain-wrap-up", chats.len());
+            for _ in 0..120 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if !courier.wrapping(&chats) {
+                    break;
+                }
+            }
+        }
+        app.exit(0);
+    });
+}
+
 #[tauri::command]
 fn cancel_claude_run(
     runtime: State<'_, Arc<claude::Runtime>>,
@@ -1260,14 +1292,14 @@ fn main() {
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
                 app.state::<albion::Runtime>().0.clone(),
             ));
-            project_brain::Courier::start(
+            app.manage(project_brain::Courier::start(
                 app.handle().clone(),
                 store.clone(),
                 app.state::<Arc<codex::Runtime>>().inner().clone(),
                 app.state::<Arc<hermes::Runtime>>().inner().clone(),
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
-            );
+            ));
             app.manage(services::MaintenanceLock::default());
             app.manage(AppState {
                 store,
@@ -1287,7 +1319,7 @@ fn main() {
             window.on_window_event(move |event| match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    handle.exit(0);
+                    quit(&handle);
                 }
                 tauri::WindowEvent::Resized(_) => {
                     let window = hidden.clone();
@@ -1327,7 +1359,7 @@ fn main() {
                             let _ = close_hud(&app).await;
                         });
                     }
-                    "quit" => app.exit(0),
+                    "quit" => quit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1347,6 +1379,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            brain_wrap_up,
             list_agents,
             list_conversations,
             set_conversation_order,

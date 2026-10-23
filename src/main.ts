@@ -880,13 +880,26 @@ function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string)
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-stop-project-chat-run]');
     if (!target) return;
     target.disabled = true;
-    void invoke<RuntimeSnapshot>(`cancel_${harnessKey(agentId)}_run`, { conversationId: chatId })
-      .then(snapshot => adoptRuntime(snapshot, agentId))
+    const stop = () => invoke<RuntimeSnapshot>(`cancel_${harnessKey(agentId)}_run`, { conversationId: chatId }).then(snapshot => adoptRuntime(snapshot, agentId));
+    // 主脑第一次点停止先写交接（它写完自己收尾），两分钟还没停或再点一次就直接停。
+    const wrap = agentId.endsWith('-brain') && !wrappingBrains.has(chatId)
+      ? invoke<boolean>('brain_wrap_up', { conversationId: chatId })
+      : Promise.resolve(false);
+    void wrap
+      .then(wrapping => {
+        if (!wrapping) { wrappingBrains.delete(chatId); return stop(); }
+        wrappingBrains.add(chatId);
+        target.disabled = false;
+        toast('主脑先写交接再停，最多等两分钟；要立即停再点一次停止');
+        window.setTimeout(() => { if (wrappingBrains.delete(chatId)) void stop().catch(() => {}); }, 120_000);
+      })
       .catch(error => { target.disabled = false; toast(errorText(error), true); });
   });
 }
 
 let projectTranscript: AgentTranscript | null = null;
+// 点过一次停止、正在写交接的主脑会话。
+const wrappingBrains = new Set<string>();
 
 function disposeProjectTranscript() {
   projectTranscript?.dispose();
@@ -2526,6 +2539,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         }
       });
       // 主脑派活、成员交回：项目群的进展摘要跟着刷新。
+      await listen<number>('brain-wrap-up', () => toast('主脑正在写交接，写完自动退出（最多两分钟）；要立即退出再关一次'));
       await listen<string>('brain-state', event => {
         scheduleInquiryRefresh(event.payload);
         scheduleBrainJobsRefresh(event.payload);
