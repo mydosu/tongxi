@@ -593,7 +593,7 @@ fn optional_arg(args: &Value, name: &str) -> Option<String> {
 pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let definitions = [
-        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, and current subscription quota. Check this before delegating.", json!({}), vec![]),
+        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota. Check this before delegating.", json!({}), vec![]),
         ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"}}), vec!["member","task"]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
         ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Only works while the member is replying; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
@@ -636,7 +636,22 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 })
                 .collect();
             let parse = |key: &str| metadata(connection, key).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
-            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota")}))
+            // 额度是几个项目共用的：列出别的项目的主脑正交给哪些成员在做。
+            let elsewhere: Vec<Value> = connection
+                .prepare(
+                    "SELECT j.seat,j.model,(SELECT p.name FROM project_agent_chats c JOIN projects p ON p.id=c.project_id WHERE c.group_conversation_id=j.room LIMIT 1)
+                     FROM brain_jobs j WHERE j.room<>?1 AND j.kind='task' AND j.status IN ('pending','running') ORDER BY j.created_at",
+                )
+                .and_then(|mut query| {
+                    query
+                        .query_map([&ctx.room], |row| {
+                            // 席位 id 各项目自己编，跨项目会重名，只给成员（共用同一份额度）。
+                            Ok(json!({"project":row.get::<_,Option<String>>(2)?,"agent":base_agent(&row.get::<_,String>(0)?),"model":row.get::<_,Option<String>>(1)?}))
+                        })?
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota"),"other_projects":elsewhere}))
         }
         "hub_delegate" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -1523,6 +1538,37 @@ mod tests {
         super::rollover(&store.connection, &chat);
         assert_eq!(native(&store).as_deref(), Some("native-2"), "同一份交接只换一次");
         assert_eq!(super::preamble(&db, &chat), Some(None));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn hub_team_shows_what_other_projects_have_members_doing() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-team-{}", Uuid::new_v4()));
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let mut brain = |name: &str| {
+            let root = base.join(name);
+            std::fs::create_dir_all(&root).unwrap();
+            let room = store.create(name, "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+            let project = store.register_project(name, root.to_str().unwrap()).unwrap().id;
+            store.bind_project(&room, Some(&project)).unwrap();
+            let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id;
+            (room, chat)
+        };
+        let (room_a, chat_a) = brain("甲项目");
+        let (room_b, _) = brain("乙项目");
+        for (id, room, status) in [("job-a", &room_a, "running"), ("job-b", &room_b, "running"), ("job-old", &room_b, "done")] {
+            store
+                .connection
+                .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,model,status,created_at) VALUES(?1,?2,'codex-win-2','chat-x','task','做事','gpt-6-luna',?3,?4)", params![id, room, status, now()])
+                .unwrap();
+        }
+        let team = super::call(&store.connection, &chat_a, "hub_team", serde_json::Value::Null).unwrap();
+        let others = team["other_projects"].as_array().unwrap();
+        assert_eq!(others.len(), 1, "只列别的项目、还在做的活");
+        assert_eq!(others[0]["project"], "乙项目");
+        assert_eq!(others[0]["agent"], "codex-win");
+        assert_eq!(others[0]["model"], "gpt-6-luna");
+        drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
 
