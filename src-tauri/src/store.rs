@@ -589,7 +589,6 @@ impl Store {
         };
         store.cli_handoffs = store.saved_cli_handoffs()?.into_iter().map(|row| (row.0, row.1)).collect();
         store.recover_runs()?;
-        store.recover_projects()?;
         Ok(store)
     }
 

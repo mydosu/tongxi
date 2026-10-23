@@ -882,7 +882,7 @@ fn answer_chat_question(
                     }) {
                         return;
                     }
-                    store.connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling')) AND NOT EXISTS(SELECT 1 FROM project_attempts WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",[&queued.agent_id],|row|row.get::<_,bool>(0)).unwrap_or(false)
+                    store.connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE agent_id=?1 AND status IN ('starting','running','cancelling'))",[&queued.agent_id],|row|row.get::<_,bool>(0)).unwrap_or(false)
                 };
                 if ready {
                     break;

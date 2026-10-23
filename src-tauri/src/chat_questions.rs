@@ -119,7 +119,7 @@ impl Store {
         rows
     }
     pub fn pending_chat_questions(&self) -> Result<Vec<Pending>> {
-        let mut query=self.connection.prepare("SELECT q.id,q.conversation_id,q.agent_id,p.group_conversation_id,'chat' FROM chat_questions q LEFT JOIN project_agent_chats p ON p.conversation_id=q.conversation_id WHERE q.status='pending' UNION ALL SELECT q.id,q.conversation_id,q.agent_id,q.conversation_id,CASE WHEN a.activity='coordinate' THEN 'coordination' ELSE 'project' END FROM project_questions q LEFT JOIN project_attempts a ON a.id=q.attempt_id WHERE q.status='pending'").map_err(|_|"待答提示读取失败")?;
+        let mut query=self.connection.prepare("SELECT q.id,q.conversation_id,q.agent_id,p.group_conversation_id,'chat' FROM chat_questions q LEFT JOIN project_agent_chats p ON p.conversation_id=q.conversation_id WHERE q.status='pending'").map_err(|_|"待答提示读取失败")?;
         let rows = query
             .query_map([], |row| {
                 Ok(Pending {
