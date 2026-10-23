@@ -538,6 +538,9 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-status { display: flex; align-items: center; gap: 10px; padding: 4px 4px 6px; }
 .brain-status strong { color: var(--ink); font-size: 14px; font-weight: 600; }
 .brain-status small { color: var(--muted); font-size: 12.5px; }
+.brain-usage { display: grid; gap: 3px; margin: -2px 4px 4px 23px; color: var(--muted); font-size: 12px; }
+.brain-usage p { display: flex; gap: 10px; margin: 0; }
+.brain-usage strong { min-width: 70px; color: var(--ink); font-weight: 500; }
 .brain-status-dot { width: 9px; height: 9px; border-radius: 50%; background: #c6c9d8; box-shadow: 0 0 0 3px rgb(198 201 216 / .25); }
 .brain-status-dot.busy { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .18); animation: member-pulse 1.6s ease-in-out infinite; }
 .brain-job.running { --tone: var(--ok); }

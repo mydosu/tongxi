@@ -112,11 +112,24 @@ pub struct RuntimeSnapshot {
     pub default_effort: Option<String>,
 }
 
+/// 把 Codex 的累计用量换成这一回合的，按 ACP 回包的样子返回；base 记回合开始前的累计，回合里第一次报时定下。
+fn turn_usage(usage: &Value, base: &mut Option<[i64; 4]>) -> Value {
+    const KEYS: [&str; 4] = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens"];
+    let part = |name: &str| KEYS.map(|key| usage[name][key].as_i64().unwrap_or(0));
+    let (total, last) = (part("total"), part("last"));
+    let base = *base.get_or_insert(std::array::from_fn(|index| total[index] - last[index]));
+    let turn: [i64; 4] = std::array::from_fn(|index| total[index] - base[index]);
+    json!({"usage": {"inputTokens": turn[0], "cachedReadTokens": turn[1], "cachedWriteTokens": turn[2], "outputTokens": turn[3]},
+           "_meta": {"contextTokens": last[0] + last[3]}})
+}
+
 struct ActiveRun {
     snapshot: RunSnapshot,
     items: BTreeMap<String, String>,
     order: Vec<String>,
     last_checkpoint: Instant,
+    /// 这一回合开始前整个会话的累计用量（输入、缓存读、缓存写、输出），回合用量 = 现在的累计 - 它。
+    usage_base: Option<[i64; 4]>,
 }
 
 fn busy(status: &str) -> bool {
@@ -833,6 +846,7 @@ impl Runtime {
                 items: BTreeMap::new(),
                 order: Vec::new(),
                 last_checkpoint: Instant::now(),
+                usage_base: None,
             },
         );
         drop(inner);
@@ -929,6 +943,7 @@ impl Runtime {
                 items: BTreeMap::new(),
                 order: Vec::new(),
                 last_checkpoint: Instant::now(),
+                usage_base: None,
             },
         );
         drop(inner);
@@ -1295,6 +1310,11 @@ impl Runtime {
                     run.text(item, delta, false);
                 }
             }
+            // Codex 的用量按整个会话累计报（total），外加最近一次模型调用（last）。
+            "thread/tokenUsage/updated" => {
+                let usage = turn_usage(&params["tokenUsage"], &mut run.usage_base);
+                self.store.lock().unwrap().record_usage(&run.snapshot.record.id, &usage);
+            }
             "turn/completed" => {
                 run.snapshot.record.status = match params["turn"]["status"].as_str() {
                     Some("completed") => "completed",
@@ -1529,6 +1549,7 @@ mod tests {
             items: BTreeMap::new(),
             order: Vec::new(),
             last_checkpoint: Instant::now(),
+            usage_base: None,
         }
     }
     #[test]
@@ -1624,4 +1645,26 @@ pub(crate) fn failure_category(error: &Value) -> Option<String> {
         );
     }
     Some("其他原生错误".into())
+}
+
+#[cfg(test)]
+mod turn_usage_tests {
+    #[test]
+    fn turn_usage_counts_only_this_turn_out_of_the_session_totals() {
+        let report = |total: [i64; 4], last: [i64; 4]| {
+            let side = |n: [i64; 4]| serde_json::json!({"inputTokens": n[0], "cachedInputTokens": n[1], "cacheWriteInputTokens": n[2], "outputTokens": n[3]});
+            serde_json::json!({"total": side(total), "last": side(last)})
+        };
+        let mut base = None;
+        // 会话之前已经用了 50000 输入；这一回合第一次调用 12000 输入（10000 命中缓存）、300 输出。
+        let first = super::turn_usage(&report([62000, 40000, 0, 1300], [12000, 10000, 0, 300]), &mut base);
+        assert_eq!(first["usage"]["inputTokens"], 12000);
+        let second = super::turn_usage(&report([75000, 52000, 0, 1500], [13000, 12000, 0, 200]), &mut base);
+        assert_eq!(second["usage"]["inputTokens"], 25000);
+        assert_eq!(second["usage"]["cachedReadTokens"], 22000);
+        assert_eq!(second["usage"]["outputTokens"], 500);
+        assert_eq!(second["_meta"]["contextTokens"], 13200, "上下文取最近一次调用");
+        let again = super::turn_usage(&report([75000, 52000, 0, 1500], [13000, 12000, 0, 200]), &mut base);
+        assert_eq!(again, second, "同一个数报两遍不重复算");
+    }
 }

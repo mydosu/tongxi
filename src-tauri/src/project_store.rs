@@ -213,6 +213,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
             "TEXT NOT NULL DEFAULT 'deferred'",
         ),
         ("project_questions", "answered_at", "INTEGER"),
+        ("runs", "usage", "TEXT"),
     ] {
         add_column(tx, table, column, definition)?;
     }
