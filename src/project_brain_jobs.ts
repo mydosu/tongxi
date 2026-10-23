@@ -1,5 +1,6 @@
 import type { BrainJob, BrainOverview, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
+import dagre from '@dagrejs/dagre';
 
 type Escape = (value: string | number) => string;
 
@@ -92,32 +93,31 @@ const stepKind = (step: PlanStep) => step.status === 'waiting' && step.wait_key 
 function planFlow(steps: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string) {
   if (!steps.length) return '';
   const byId = new Map(steps.map(step => [step.id, step]));
-  const depth = new Map<number, number>();
-  const column = (step: PlanStep): number => {
-    if (!depth.has(step.id)) depth.set(step.id, Math.max(-1, ...step.depends.map(id => byId.has(id) ? column(byId.get(id)!) : -1)) + 1);
-    return depth.get(step.id)!;
-  };
-  // 一列一列排，同列里按上游所在的高度排，连线少交叉。
-  const at = new Map<number, [number, number]>(), row = new Map<number, number>();
-  const columns = Math.max(...steps.map(column)) + 1;
-  for (let x = 0; x < columns; x++) {
-    const height = (step: PlanStep) => step.depends.length ? step.depends.reduce((sum, id) => sum + (row.get(id) ?? 0), 0) / step.depends.length : step.id / 1000;
-    steps.filter(step => column(step) === x).sort((a, b) => height(a) - height(b) || a.id - b.id).forEach((step, y) => {
-      row.set(step.id, y);
-      at.set(step.id, [x * (NODE.w + NODE.gx), y * (NODE.h + NODE.gy)]);
-    });
-  }
+  // dagre 分层排版：跨列的长边经虚拟节点绕开卡片，逐层扫描减少交叉。
+  const graph = new dagre.graphlib.Graph();
+  graph.setGraph({ rankdir: 'LR', nodesep: NODE.gy, ranksep: NODE.gx, edgesep: 8 });
+  graph.setDefaultEdgeLabel(() => ({}));
+  for (const step of steps) graph.setNode(String(step.id), { width: NODE.w, height: NODE.h });
+  for (const step of steps) for (const id of step.depends) if (byId.has(id)) graph.setEdge(String(id), String(step.id));
+  dagre.layout(graph);
+  const at = new Map(steps.map(step => { const node = graph.node(String(step.id)); return [step.id, [node.x - NODE.w / 2, node.y - NODE.h / 2]] as const; }));
   // 「拖住 N 件」：后面还没做完的步骤，全都要等它。
   const blocked = (id: number, seen = new Set<number>()): Set<number> => {
     for (const next of steps) if (next.depends.includes(id) && next.status !== 'done' && !seen.has(next.id)) { seen.add(next.id); blocked(next.id, seen); }
     return seen;
   };
   const dim = (step: PlanStep) => filter && stepKind(step) !== filter ? ' dim' : '';
-  const width = Math.max(...[...at.values()].map(([x]) => x)) + NODE.w, height = Math.max(...[...at.values()].map(([, y]) => y)) + NODE.h;
+  const width = graph.graph().width!, height = graph.graph().height!;
+  // 连线从上游卡片右边中点出、进下游卡片左边中点，中间照 dagre 给的折点（列间空当）走，每段用水平切线的三次曲线连起来。
   const edges = steps.flatMap(step => step.depends.filter(id => at.has(id)).map(id => {
     const [x0, y0] = at.get(id)!, [x1, y1] = at.get(step.id)!;
-    const [ax, ay, bx, by] = [x0 + NODE.w, y0 + NODE.h / 2, x1 - 4, y1 + NODE.h / 2];
-    return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${dim(step) && dim(byId.get(id)!)}" d="M${ax} ${ay} C${ax + 24} ${ay} ${bx - 24} ${by} ${bx} ${by}" marker-end="url(#plan-arrow)"/>`;
+    const points = [{ x: x0 + NODE.w, y: y0 + NODE.h / 2 }, ...graph.edge(String(id), String(step.id)).points.slice(1, -1), { x: x1 - 1, y: y1 + NODE.h / 2 }];
+    const d = points.map((q, i) => {
+      if (!i) return `M${q.x} ${q.y}`;
+      const p = points[i - 1], half = (q.x - p.x) / 2;
+      return `C${p.x + half} ${p.y} ${q.x - half} ${q.y} ${q.x} ${q.y}`;
+    }).join(' ');
+    return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${dim(step) && dim(byId.get(id)!)}" d="${d}" marker-end="url(#plan-arrow)"/>`;
   })).join('');
   const nodes = steps.map(step => {
     const [x, y] = at.get(step.id)!, kind = stepKind(step), [icon, word] = STEP_LOOK[kind];

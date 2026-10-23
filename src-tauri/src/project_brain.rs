@@ -1075,12 +1075,16 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 reversible: args["reversible"].as_bool().unwrap_or(true),
             };
             crate::project_inquiries::check(std::slice::from_ref(&ask))?;
-            let asked = crate::project_inquiries::ask_on(connection, &ctx.room, None, &ctx.seat, &ask)?;
+            crate::project_inquiries::ask_on(connection, &ctx.room, None, &ctx.seat, &ask)?;
+            // 同一个 key 还挂着没答的，也算问上了（重建计划时把老问题挂到步骤上）。
+            let asked = connection
+                .query_row("SELECT status='open' FROM project_inquiries WHERE conversation_id=?1 AND key=?2", params![ctx.room, ask.key.trim()], |row| row.get::<_, bool>(0))
+                .map_err(|_| "问题读取失败")?;
             if let (true, Some(id)) = (asked, args["step"].as_i64()) {
                 connection
                     .execute(
                         "UPDATE brain_steps SET status='waiting',wait_key=?1,updated_at=?2 WHERE room=?3 AND id=?4",
-                        params![ask.key, now(), ctx.room, id],
+                        params![ask.key.trim(), now(), ctx.room, id],
                     )
                     .map_err(|_| "计划保存失败")?;
             }
@@ -2014,6 +2018,9 @@ mod tests {
         super::call(&store.connection, &brain, "hub_ask_user", serde_json::json!({"key":"b6-target","question":"B6 目标多少？","step":1})).unwrap();
         let step = &store.brain_overview(&room).unwrap().steps[0];
         assert_eq!((step.status.as_str(), step.wait_key.as_deref()), ("waiting", Some("b6-target")));
+        let again = super::call(&store.connection, &brain, "hub_ask_user", serde_json::json!({"key":"b6-target","question":"B6 目标多少？","step":2})).unwrap();
+        assert_eq!(again["asked"], true, "还挂着没答的老问题再问一次，照样挂到步骤上");
+        assert_eq!(store.brain_overview(&room).unwrap().steps[1].status, "waiting");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

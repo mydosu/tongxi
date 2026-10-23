@@ -1,6 +1,6 @@
 {
   "name": "local-agent-hub",
-  "version": "3.2.11",
+  "version": "3.2.12",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
@@ -11,6 +11,7 @@
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
     "@tauri-apps/api": "^2.0.0",
     "katex": "^0.16.11"
   },
