@@ -38,12 +38,41 @@
 
     <!-- 左侧：标识与标语 -->
     <g transform="translate(80 132)">
-      <rect width="92" height="92" rx="24" fill="#30354a" filter="url(#soft)"/>
-      <rect x="27" y="27" width="38" height="38" rx="3" fill="none" stroke="#d8dcea" stroke-width="3"/>
-      <circle cx="27" cy="27" r="9" fill="#a598d8"><animate attributeName="r" values="9;10.5;9" dur="3.2s" repeatCount="indefinite"/></circle>
-      <circle cx="65" cy="27" r="9" fill="#8db6de"><animate attributeName="r" values="9;10.5;9" dur="3.2s" begin=".8s" repeatCount="indefinite"/></circle>
-      <circle cx="65" cy="65" r="9" fill="#8fd3b6"><animate attributeName="r" values="9;10.5;9" dur="3.2s" begin="1.6s" repeatCount="indefinite"/></circle>
-      <circle cx="27" cy="65" r="9" fill="#f0b8a0"><animate attributeName="r" values="9;10.5;9" dur="3.2s" begin="2.4s" repeatCount="indefinite"/></circle>
+      <g transform="scale(0.3833) translate(-8 -8)" filter="url(#soft)">
+        <defs>
+        <linearGradient id="m-tile" x1="20" y1="10" x2="236" y2="246" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#a99be6"/>
+        <stop offset=".55" stop-color="#8a8fd8"/>
+        <stop offset="1" stop-color="#7fb2e3"/>
+        </linearGradient>
+        <linearGradient id="m-sheen" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff" stop-opacity=".42"/>
+        <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="m-gold" x1="90" y1="66" x2="214" y2="190" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#fff4d8"/>
+        <stop offset="1" stop-color="#f3d79a"/>
+        </linearGradient>
+        <filter id="m-lift" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#3f3a8a" flood-opacity=".28"/>
+        </filter>
+        <mask id="m-cut-top" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+        <rect width="256" height="256" fill="#fff"/>
+        <path d="M108 70 148 110" stroke="#000" stroke-width="37"/>
+        </mask>
+        <mask id="m-cut-bottom" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+        <rect width="256" height="256" fill="#fff"/>
+        <path d="M108 146 148 186" stroke="#000" stroke-width="37"/>
+        </mask>
+        </defs>
+        <rect x="8" y="8" width="240" height="240" rx="62" fill="url(#m-tile)"/>
+        <rect x="8" y="8" width="240" height="240" rx="62" fill="url(#m-sheen)"/>
+        <rect x="9.5" y="9.5" width="237" height="237" rx="60.5" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="3"/>
+        <g fill="none" stroke-width="23" stroke-linejoin="round" stroke-linecap="round" filter="url(#m-lift)">
+        <path d="M90 128 152 66 214 128 152 190Z" stroke="url(#m-gold)" mask="url(#m-cut-top)"/>
+        <path d="M42 128 104 66 166 128 104 190Z" stroke="#fff" mask="url(#m-cut-bottom)"/>
+        </g>
+      </g>
     </g>
     <text x="78" y="306" font-size="72" font-weight="700" fill="#394057" letter-spacing="4">同席</text>
     <text x="244" y="304" font-size="30" font-weight="500" fill="#8a90b0" letter-spacing="1">Agent Hub</text>
