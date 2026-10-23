@@ -756,16 +756,6 @@ impl Store {
     }
 
 
-    pub fn recover_projects(&mut self) -> Result<()> {
-        self.connection.execute("UPDATE project_questions SET status='cancelled',answered_at=?1 WHERE status='pending'", [now()]).map_err(|e| e.to_string())?;
-        self.connection.execute_batch("UPDATE project_attempts SET status='interrupted',error='上次项目运行因退出中断，不会自动重放' WHERE status IN ('starting','running','cancelling');
-          UPDATE project_tasks SET status='interrupted',error='上次任务因退出中断' WHERE status='running';
-          UPDATE messages SET status='failed' WHERE status='pending' AND id IN (SELECT user_message_id FROM workflows WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling'));
-          UPDATE workflows SET status='interrupted',error='上次协作因软件退出中断，不会自动重放' WHERE status IN ('queued','planning','running','verifying','reviewing','cancelling');
-          UPDATE coordination_runs SET status='paused' WHERE workflow_id IN (SELECT id FROM workflows WHERE status='interrupted');
-          DELETE FROM project_leases;")
-          .map_err(|e|e.to_string())
-    }
 
 
 
