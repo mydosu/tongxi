@@ -140,8 +140,73 @@ pub(crate) fn resolved_dsh_home() -> Option<PathBuf> {
         })
 }
 
+/// DSH 的 ACP 回包不带用量，只报上下文占用；但它的会话日志里每条 `assistant/message` 都记着这次模型调用的
+/// 真实用量（未命中缓存的输入、缓存读写、输出）。把 since（毫秒）之后的加起来，就是这一回合的用量，
+/// 按 ACP 回包的样子返回，和别家一样交给 record_usage。
+/// 日志在 `<DSH 家目录>/sessions/<目录>/<会话>/session.v4.jsonl[.zstd]`，zstd 版是一帧帧追加的。
+fn session_usage(session_id: &str, since: i64) -> Option<Value> {
+    let sessions = resolved_dsh_home()?.join("sessions");
+    let folder = std::fs::read_dir(&sessions)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(session_id))
+        .find(|path| path.is_dir())?;
+    let text = match std::fs::read(folder.join("session.v4.jsonl.zstd")) {
+        Ok(bytes) => decode_frames(&bytes),
+        Err(_) => std::fs::read_to_string(folder.join("session.v4.jsonl")).ok()?,
+    };
+    usage_since(&text, since)
+}
 
+/// 解开一帧帧追加的 zstd 数据；坏帧跳过。
+fn decode_frames(bytes: &[u8]) -> String {
+    use std::io::Read;
+    const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    let starts: Vec<usize> = bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, window)| *window == MAGIC)
+        .map(|(index, _)| index)
+        .collect();
+    let mut text = String::new();
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(bytes.len());
+        let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(&bytes[*start..end]) else {
+            continue;
+        };
+        let mut frame = Vec::new();
+        if decoder.read_to_end(&mut frame).is_ok() {
+            text.push_str(&String::from_utf8_lossy(&frame));
+        }
+    }
+    text
+}
 
+fn usage_since(text: &str, since: i64) -> Option<Value> {
+    let (mut input, mut read, mut write, mut output, mut context) = (0, 0, 0, 0, 0);
+    let mut found = false;
+    for event in text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+        if event["type"] != "assistant/message" || event["time"].as_i64().is_none_or(|time| time < since) {
+            continue;
+        }
+        let item = &event["data"]["usage"];
+        if item.is_null() {
+            continue;
+        }
+        let n = |key: &str| item[key].as_u64().unwrap_or(0);
+        found = true;
+        read += n("cacheReadTokens");
+        write += n("cacheWriteTokens");
+        input += n("inputTokens") + n("cacheReadTokens") + n("cacheWriteTokens");
+        output += n("outputTokens");
+        // 最后一次调用的总量就是这时的上下文大小。
+        context = n("totalTokens");
+    }
+    found.then(|| {
+        json!({"usage": {"inputTokens": input, "cachedReadTokens": read, "cachedWriteTokens": write, "outputTokens": output},
+               "_meta": {"contextTokens": context}})
+    })
+}
 
 /// 从 DSH 的会话投影缓存里取会话标题：优先会话已定下来的标题，
 /// 没有就用会话里第一句用户输入；都没有返回 None（不编、不猜）。
@@ -609,6 +674,7 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
+        let started = crate::store::now();
         let result = client.rpc_timeout(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
@@ -616,6 +682,9 @@ impl Runtime {
         );
         match result {
             Ok(value) => {
+                if let Some(usage) = session_usage(&session_id, started) {
+                    self.store.lock().unwrap().record_usage(run_id, &usage);
+                }
                 let (status, error) = completion_from_stop_reason(value["stopReason"].as_str());
                 self.finish(run_id, status, error.map(str::to_owned));
             }
@@ -782,6 +851,30 @@ fn completion_from_stop_reason(reason: Option<&str>) -> (&'static str, Option<&'
             Some("DSH 输出达到上游 token 上限，返回内容可能不完整"),
         ),
         _ => ("failed", Some("DSH 未返回正常完成状态")),
+    }
+}
+
+#[cfg(test)]
+mod session_usage_tests {
+    #[test]
+    fn sums_assistant_usage_after_the_turn_started() {
+        let log = [
+            r#"{"type":"session","version":4,"id":"s"}"#,
+            r#"{"type":"assistant/message","time":100,"data":{"usage":{"inputTokens":10184,"outputTokens":433,"totalTokens":10617}}}"#,
+            r#"{"type":"tool/result","time":150,"data":{}}"#,
+            r#"{"type":"assistant/message","time":200,"data":{"usage":{"inputTokens":713,"outputTokens":179,"totalTokens":11004,"cacheReadTokens":10112}}}"#,
+            r#"{"type":"assistant/message","time":300,"data":{"usage":{"inputTokens":50,"outputTokens":20,"totalTokens":11100,"cacheReadTokens":11000,"cacheWriteTokens":30}}}"#,
+        ]
+        .join("
+");
+        let usage = super::usage_since(&log, 150).unwrap();
+        // 只算这一回合（time ≥ 150）的两次调用；input 含缓存读写。
+        assert_eq!(usage["usage"]["inputTokens"], 713 + 10112 + 50 + 11000 + 30);
+        assert_eq!(usage["usage"]["cachedReadTokens"], 21112);
+        assert_eq!(usage["usage"]["cachedWriteTokens"], 30);
+        assert_eq!(usage["usage"]["outputTokens"], 199);
+        assert_eq!(usage["_meta"]["contextTokens"], 11100);
+        assert!(super::usage_since(&log, 1000).is_none());
     }
 }
 

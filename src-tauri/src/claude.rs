@@ -492,6 +492,7 @@ impl Runtime {
         );
         match result {
             Ok(value) => {
+                self.store.lock().unwrap().record_usage(run_id, &value);
                 let (status, error) = completion_from_stop_reason(value["stopReason"].as_str());
                 self.finish(run_id, status, error.map(str::to_owned));
             }

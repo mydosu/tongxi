@@ -1,4 +1,4 @@
-import type { BrainJob, BrainOverview, PlanDoc } from './types';
+import type { BrainJob, BrainOverview, PlanDoc, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 
 type Escape = (value: string | number) => string;
@@ -14,6 +14,20 @@ function span(from: number, to: number) {
 
 function when(at: number) {
   return new Date(at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/// 「8.6 万」：token 数按万显示。
+const tokens = (count: number) => count < 10000 ? `${count}` : `${(count / 10000).toFixed(1)} 万`;
+
+/// 一段用量拆成新写入、缓存写、缓存读、输出：缓存读几乎不花钱，新写入和缓存写才是大头。
+function usageText(sum: UsageSum) {
+  const fresh = Math.max(0, sum.input - sum.cache_read - sum.cache_write);
+  return `新写入 ${tokens(fresh)} · 缓存写 ${tokens(sum.cache_write)} · 缓存读 ${tokens(sum.cache_read)} · 输出 ${tokens(sum.output)}`;
+}
+
+function usageSection(usage: BrainOverview['usage']) {
+  const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)}` : '还没有记录'}</span></p>`;
+  return `<section class="brain-usage">${row('主脑今天', usage.brain_today)}${row('主脑累计', usage.brain_total)}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（最近一回合结束时）</span></p>` : ''}</section>`;
 }
 
 export const jobLive = (job: BrainJob) => job.status === 'pending' || job.status === 'running';
@@ -80,5 +94,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '现在没有在做的活。' : '主脑还没派过活。在团队对话里说要做的事，主脑会把活派给成员，派出去的都列在这里。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

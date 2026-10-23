@@ -7,6 +7,7 @@ use crate::project_store::{base_agent, is_brain, RoleChoice, BRAIN_SLOT, EXECUTO
 use crate::store::{now, RunRecord, Store};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
+use sha2::Digest;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -199,7 +200,23 @@ impl Store {
             .optional()
             .map_err(|_| "项目目录读取失败")?;
         let plans = root.map(|root| plan_docs(Path::new(&root))).unwrap_or_default();
-        Ok(BrainOverview { seat, chat, waiting, jobs, plans })
+        let brain_runs = "FROM runs r JOIN messages m ON m.id=r.assistant_message_id WHERE r.conversation_id=?1";
+        let target = chat.clone().unwrap_or_default();
+        let usage = UsageStats {
+            brain_today: usage_sum(&self.connection, brain_runs, &target, true)?,
+            brain_total: usage_sum(&self.connection, brain_runs, &target, false)?,
+            context: self
+                .connection
+                .query_row(
+                    &format!("SELECT json_extract(r.usage,'$.context') {brain_runs} AND r.usage IS NOT NULL ORDER BY m.created_at DESC LIMIT 1"),
+                    [&target],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| "主脑用量读取失败")?
+                .flatten(),
+        };
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans, usage })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -262,6 +279,43 @@ pub struct BrainJob {
     finished_at: Option<i64>,
 }
 
+/// 一段时间里的 token 合计：输入含缓存读写，新写入 = input - cache_read - cache_write。
+#[derive(serde::Serialize, Default, Debug, PartialEq)]
+pub struct UsageSum {
+    turns: i64,
+    input: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct UsageStats {
+    brain_today: UsageSum,
+    brain_total: UsageSum,
+    /// 主脑最近一回合结束时的上下文大小。
+    context: Option<i64>,
+}
+
+/// 主脑按回合报的用量加起来；today 只算本地时间今天的。
+fn usage_sum(connection: &Connection, runs: &str, target: &str, today: bool) -> Result<UsageSum> {
+    let day = if today { " AND date(m.created_at/1000,'unixepoch','localtime')=date('now','localtime')" } else { "" };
+    connection
+        .query_row(
+            &format!(
+                "SELECT count(r.usage),
+                        COALESCE(sum(json_extract(r.usage,'$.usage.inputTokens')),0),
+                        COALESCE(sum(json_extract(r.usage,'$.usage.cachedReadTokens')),0),
+                        COALESCE(sum(json_extract(r.usage,'$.usage.cachedWriteTokens')),0),
+                        COALESCE(sum(json_extract(r.usage,'$.usage.outputTokens')),0)
+                 {runs} AND r.usage IS NOT NULL{day}"
+            ),
+            [target],
+            |row| Ok(UsageSum { turns: row.get(0)?, input: row.get(1)?, cache_read: row.get(2)?, cache_write: row.get(3)?, output: row.get(4)? }),
+        )
+        .map_err(|_| "用量统计读取失败".into())
+}
+
 #[derive(serde::Serialize)]
 pub struct BrainOverview {
     seat: String,
@@ -270,6 +324,7 @@ pub struct BrainOverview {
     waiting: i64,
     jobs: Vec<BrainJob>,
     plans: Vec<PlanDoc>,
+    usage: UsageStats,
 }
 
 #[derive(serde::Serialize)]
@@ -610,8 +665,20 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             } else {
                 (None, None)
             };
+            // 没指定的沿用席位上次的设置（上次派活指定过的模型会留在席位上），告诉主脑实际用哪个，连同这家现在的额度。
+            let agent = base_agent(&seat);
+            let (seat_model, seat_effort): (Option<String>, Option<String>) = connection
+                .query_row("SELECT model,reasoning_effort FROM sessions WHERE conversation_id=?1 AND agent_id=?2", params![chat, agent], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap_or((None, None));
+            let runs_with = json!({"model": model.clone().or(seat_model), "effort": effort.clone().or(seat_effort)});
+            let quota: serde_json::Map<String, Value> = metadata(connection, "brain_quota")
+                .and_then(|text| serde_json::from_str::<serde_json::Map<String, Value>>(&text).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(key, _)| key == agent || key.starts_with(&format!("{agent}:")))
+                .collect();
             let job = insert_job(connection, &ctx, &seat, &chat, "task", &task, (model, effort, worktree.clone(), branch.clone()))?;
-            Ok(json!({"job":short(&job),"member":seat,"worktree":worktree,"branch":branch,"note":"已交给成员，它做完后结果会作为新消息发给你；不用等也不用查"}))
+            Ok(json!({"job":short(&job),"member":seat,"runs_with":runs_with,"quota":quota,"worktree":worktree,"branch":branch,"note":"已交给成员，它做完后结果会作为新消息发给你；不用等也不用查"}))
         }
         "hub_member" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -717,7 +784,8 @@ fn tail(text: &str, limit: usize) -> String {
 
 // ---------- 主程序这一侧：开场说明 ----------
 
-/// 主脑会话每开一条新的原生会话，第一条消息前面带上主脑说明、模型档案和项目信息；之后的消息不再重复。
+/// 主脑会话每开一条新的原生会话，第一条消息前面带上主脑说明、模型档案和项目信息；之后的消息不再重复，
+/// 除非这段内容变了（改了说明文件或项目授权），那就在下一条消息前重新带一次。
 /// 不是主脑会话返回 None；是主脑会话但已经带过说明返回 Some(None)。
 pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
     let connection = Connection::open(db).ok()?;
@@ -739,23 +807,36 @@ pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
             |row| row.get(0),
         )
         .ok()?;
-    let key = format!("brain_primed:{conversation_id}");
-    if !native.is_empty() && metadata(&connection, &key).as_deref() == Some(native.as_str()) {
-        return Some(None);
-    }
-    connection
-        .execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2", params![key, native])
-        .ok()?;
     let (name, root): (String, String) = connection
         .query_row("SELECT name,root FROM projects WHERE id=?1", [&project], |row| Ok((row.get(0)?, row.get(1)?)))
         .ok()?;
     let grants = metadata(&connection, &format!("project_grants:{room}")).filter(|text| !text.trim().is_empty());
-    Some(Some(format!(
-        "{}\n\n## 模型档案\n{}\n\n## 本项目\n项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/。\n项目长期授权：{}\n\n---\n以下是用户的消息：",
+    let text = format!(
+        "{}
+
+## 模型档案
+{}
+
+## 本项目
+项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/。
+项目长期授权：{}
+
+---
+以下是用户的消息：",
         crate::prompts::brain(),
         crate::prompts::models(),
         grants.as_deref().unwrap_or("（没有）"),
-    )))
+    );
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    let primed = format!("{native}:{:x}", digest);
+    let key = format!("brain_primed:{conversation_id}");
+    if !native.is_empty() && metadata(&connection, &key).as_deref() == Some(primed.as_str()) {
+        return Some(None);
+    }
+    connection
+        .execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2", params![key, primed])
+        .ok()?;
+    Some(Some(text))
 }
 
 // ---------- 主程序这一侧：投递线程 ----------
@@ -1271,6 +1352,73 @@ mod tests {
         assert_eq!(overview.jobs[0].error.as_deref(), Some("你在派活页取消了"));
         assert_eq!(overview.waiting, 1, "主脑会收到一条说明");
         assert!(store.stop_brain_job(&room, "job-old").is_err(), "已经结束的活不能再停");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn brain_preamble_is_sent_once_and_again_after_it_changes() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-preamble-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = base.join("data").join("hub.db");
+        let mut store = Store::open(&db).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store
+            .ensure_project_agent_chats(&room)
+            .unwrap()
+            .into_iter()
+            .find(|chat| chat.agent_id == "claude-win-brain")
+            .unwrap()
+            .conversation_id;
+        store.connection.execute("UPDATE sessions SET native_session_id='native-1' WHERE conversation_id=?1", [&chat]).unwrap();
+
+        assert!(matches!(super::preamble(&db, &chat), Some(Some(_))), "第一条带说明");
+        assert_eq!(super::preamble(&db, &chat), Some(None), "说明没变就不再带");
+        store
+            .connection
+            .execute("INSERT INTO metadata(key,value) VALUES(?1,'可以推送')", [format!("project_grants:{room}")])
+            .unwrap();
+        let again = super::preamble(&db, &chat).unwrap().expect("授权改了要重新带说明");
+        assert!(again.contains("可以推送"));
+        assert_eq!(super::preamble(&db, &chat), Some(None));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn overview_adds_up_the_usage_the_brain_reported() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-usage-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store
+            .ensure_project_agent_chats(&room)
+            .unwrap()
+            .into_iter()
+            .find(|chat| chat.agent_id == "claude-win-brain")
+            .unwrap()
+            .conversation_id;
+        for (read, context) in [(9000, 12000), (11000, 15000)] {
+            let mut run = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "claude-win").unwrap();
+            run.status = "completed".into();
+            store.checkpoint(&run, "好了", "").unwrap();
+            let response = serde_json::json!({"stopReason": "end_turn",
+                "usage": {"inputTokens": read + 1500, "cachedReadTokens": read, "cachedWriteTokens": 1000, "outputTokens": 300},
+                "_meta": {"contextTokens": context}});
+            store.record_usage(&run.id, &response);
+        }
+        let silent = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "不报用量", "claude-win").unwrap();
+        store.record_usage(&silent.id, &serde_json::json!({"stopReason": "end_turn"}));
+
+        let usage = store.brain_overview(&room).unwrap().usage;
+        let expected = super::UsageSum { turns: 2, input: 23000, cache_read: 20000, cache_write: 2000, output: 600 };
+        assert_eq!(usage.brain_today, expected, "不报用量的回合不算");
+        assert_eq!(usage.brain_total, expected);
+        assert_eq!(usage.context, Some(15000), "上下文取最近一回合");
         let _ = std::fs::remove_dir_all(base);
     }
 }

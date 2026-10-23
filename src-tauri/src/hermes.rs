@@ -511,6 +511,7 @@ impl Runtime {
         );
         match result {
             Ok(value) => {
+                self.store.lock().unwrap().record_usage(run_id, &value);
                 let status = match value["stopReason"].as_str() {
                     Some("cancelled") => "interrupted",
                     Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => {
