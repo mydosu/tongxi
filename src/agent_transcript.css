@@ -71,4 +71,3 @@
 .project-chat-composer-bottom .primary .icon { width: 15px; height: 15px; }
 @media(max-width:1100px) { .project-agent-room-body { padding: 14px 22px 18px; } .project-agent-room-header { padding-left: 22px; padding-right: 22px; } .project-agent-chat-settings { gap: 10px; } }
 @media(max-width:850px) { .project-agent-chat-settings { flex-wrap: wrap; } .project-agent-chat-settings .project-chat-model-field { flex-basis: 200px; } .project-agent-chat-settings .project-chat-effort-field { flex-basis: 90px; } .project-agent-room-header h1 { font-size: 17px; } .agent-turn-text { font-size: 14px; } }
-@media(prefers-reduced-motion:reduce) { .project-agent-chat-messages * { animation: none !important; } }

@@ -231,10 +231,6 @@ html:not([data-hud]) { interpolate-size: allow-keywords; }
 html:not([data-hud]) details::details-content { block-size: 0; overflow: clip; transition: block-size .3s var(--ease), content-visibility .3s allow-discrete; }
 html:not([data-hud]) details[open]::details-content { block-size: auto; }
 html:not([data-hud]) details.instant::details-content { transition: none; }
-@media (prefers-reduced-motion: reduce) {
-  .bg-layer, .members-panel, html:not([data-hud]) details::details-content, html:not([data-hud]) .modal, html:not([data-hud]) .modal::backdrop { transition: none !important; }
-  html:not([data-hud]) .main.view-enter > *, .view-ghost, html:not([data-hud]) .arrive, html:not([data-hud]) .project-subnav:not([hidden]), .albion-hero { animation: none !important; }
-}
 
 /* ---------- 阿尔比恩 ---------- */
 .avatar.albion-portrait { background-position: center; background-size: cover; background-repeat: no-repeat; color: transparent;
@@ -624,7 +620,6 @@ html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { conte
 html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) {
   box-shadow: 0 12px 34px rgb(90 96 160 / .13), 0 0 0 4px rgb(165 152 216 / .1), 0 10px 36px rgb(120 136 224 / .24); }
 html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer)::after { opacity: 1; animation-play-state: running; }
-@media (prefers-reduced-motion: reduce) { html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { animation: none; } }
 
 /* ---------- 滚动区上沿：内容滑到标题行下面时渐隐，不是一刀切 ---------- */
 html:not([data-hud]) :is(.messages, .project-agent-chat-messages, .services-content, .inquiry-content, .brain-jobs-content, .project-progress-content) { mask-image: linear-gradient(transparent, #000 22px); }
@@ -678,9 +673,12 @@ html:not([data-hud]) :is(.sidebar, .main)::after { content: ''; position: absolu
 .plan-node { gap: 0; align-content: space-between; padding: 10px 12px 9px; overflow: visible; text-align: left; cursor: pointer;
   border: 1px solid rgb(255 255 255 / .95); border-radius: 14px;
   background: linear-gradient(160deg, color-mix(in srgb, var(--tone) 11%, #fff), rgb(255 255 255 / .9) 58%);
-  box-shadow: 0 4px 14px rgb(96 100 160 / .09), inset 0 1px 0 #fff;
-  transition: opacity .35s ease, transform .25s var(--ease), box-shadow .25s var(--ease); }
+  box-shadow: 0 4px 14px rgb(96 100 160 / .09), inset 0 1px 0 #fff; }
+/* 卡片是按钮：要压过全局 button 的过渡才生效。 */
+html:not([data-hud]) .plan-canvas .plan-node { transition: opacity .35s ease, transform .25s var(--ease), box-shadow .25s var(--ease); }
 .plan-node:hover, .plan-node:focus-visible { transform: translateY(-2px); box-shadow: 0 10px 26px rgb(96 100 160 / .17), inset 0 1px 0 #fff; }
+/* 指上去停一下才浮起，快速扫过不一张张弹；移开立刻落下。 */
+html:not([data-hud]) .plan-canvas .plan-node:hover:not(:focus-visible) { transition-delay: 0s, .14s, .14s; }
 .plan-node:focus-visible { outline: 2px solid var(--lilac); outline-offset: 2px; }
 .plan-node.picked { box-shadow: 0 0 0 2px var(--lilac), 0 10px 26px rgb(96 100 160 / .17); }
 .plan-node.done { background: rgb(255 255 255 / .5); box-shadow: inset 0 1px 0 rgb(255 255 255 / .8); }
@@ -719,7 +717,3 @@ html:not([data-hud]) :is(.sidebar, .main)::after { content: ''; position: absolu
 .plan-ref:hover { background: rgb(165 152 216 / .26); }
 .brain-job.flash { animation: job-flash 1.6s var(--ease); }
 @keyframes job-flash { 20% { box-shadow: 0 0 0 3px rgb(165 152 216 / .55), 0 10px 30px rgb(110 100 190 / .2); } }
-@media (prefers-reduced-motion: reduce) {
-  .plan-node.doing::after, .plan-node.you, .plan-canvas svg > path.flow, .plan-canvas svg > path.lit, .brain-job.flash, .plan-detail, .plan-tip { animation: none; }
-  .plan-node:hover, .plan-node:focus-visible { transform: none; }
-}

@@ -1,7 +1,7 @@
 /// 动效：换页时旧内容化雾淡出、新内容从雾里清晰；侧栏选中的底色滑到新位置；新到的消息浮上来。
-/// 都只在主窗口里做（HUD 是透明浮窗），系统开了「减少动态效果」就全部跳过。
+/// 都只在主窗口里做（HUD 是透明浮窗）。不跟随系统的「减少动态效果」：Windows 关了「动画效果」也照常播放。
 
-export const still = () => document.documentElement.dataset.hud === '1' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+export const still = () => document.documentElement.dataset.hud === '1';
 const EASE = 'cubic-bezier(.2, .8, .2, 1)';
 
 /// 换页前调用：把 main 里的旧内容整块挪进一层盖在原位的「雾」，它自己淡出后移除。
