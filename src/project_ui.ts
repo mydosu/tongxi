@@ -17,8 +17,8 @@ function relayHtml(message: ProjectTeamMessage, escape: Escape) {
   const text = attachmentText(message.content).trim();
   const handoff = text.match(/^主脑 → (.+?)：([\s\S]*)$/);
   const back = handoff ? null : text.match(/^(.+?) 交回任务 (\S+)：(.+)$/);
-  const head = handoff ? `<strong>主脑</strong><span class="relay-arrow" aria-label="派给">→</span><strong>${escape(handoff[1])}</strong>`
-    : back ? `<strong>${escape(back[1])}</strong><span>交回</span><span class="relay-tag ${returnTone(back[3])}">${escape(back[3])}</span><small>任务 ${escape(back[2])}</small>`
+  const head = handoff ? `<strong>主脑</strong><span class="relay-arrow" aria-label="分配给">→</span><strong>${escape(handoff[1])}</strong>`
+    : back ? `<strong>${escape(back[1])}</strong><span>提交</span><span class="relay-tag ${returnTone(back[3])}">${escape(back[3])}</span><small>任务 ${escape(back[2])}</small>`
     : '<strong>同席</strong>';
   const body = handoff ? `<p class="relay-text">${escape(handoff[2].trim())}</p>` : back ? '' : `<div class="relay-text markdown">${agentMarkdown(text, escape)}</div>`;
   const kind = handoff ? 'handoff' : back ? `return ${returnTone(back[3])}` : 'note';

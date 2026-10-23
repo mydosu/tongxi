@@ -28,17 +28,17 @@ function usageText(sum: UsageSum) {
 }
 
 function usageSection(usage: BrainOverview['usage']) {
-  const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)}` : '还没有记录'}</span></p>`;
-  return `<section class="brain-usage">${row('主脑今天', usage.brain_today)}${row('主脑累计', usage.brain_total)}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（最近一回合结束时）</span></p>` : ''}</section>`;
+  const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)}` : '暂无记录'}</span></p>`;
+  return `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`;
 }
 
 export const jobLive = (job: BrainJob) => job.status === 'pending' || job.status === 'running';
 
 function state(job: BrainJob): [string, string] {
-  if (job.status === 'pending') return ['排队', 'pending'];
-  if (job.status === 'running') return ['在做', 'running'];
-  if (job.status === 'done') return ['做完了', 'done'];
-  if (job.run_status === 'interrupted' || job.error === '你在派活页取消了') return ['被停下了', 'stopped'];
+  if (job.status === 'pending') return ['排队中', 'pending'];
+  if (job.status === 'running') return ['进行中', 'running'];
+  if (job.status === 'done') return ['已完成', 'done'];
+  if (job.run_status === 'interrupted' || job.error === '你在派活页取消了') return ['已停止', 'stopped'];
   return ['失败', 'failed'];
 }
 
@@ -53,8 +53,8 @@ function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, o
   const [label, tone] = state(job);
   const title = job.content.trim().split('\n')[0].slice(0, 120);
   const long = job.content.trim() !== title;
-  const timing = jobLive(job) ? `${when(job.created_at)} 派出 · 已 ${span(job.created_at, Date.now())}` : `${when(job.created_at)} 派出 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`;
-  const tree = job.branch ? `<span title="${escape(job.worktree || '')}">工作树 ${escape(job.branch)}${job.worktree ? '' : '（已合并或丢弃）'}</span>` : '<span>在项目目录里做</span>';
+  const timing = jobLive(job) ? `${when(job.created_at)} 派发 · 已进行 ${span(job.created_at, Date.now())}` : `${when(job.created_at)} 派发 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`;
+  const tree = job.branch ? `<span title="${escape(job.worktree || '')}">工作树 ${escape(job.branch)}${job.worktree ? '' : '（已合并或丢弃）'}</span>` : '<span>在项目目录中执行</span>';
   // 任务原文照原样显示；交回的结果是成员的回复，按 Markdown 排版。
   const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary><div class="brain-job-text${key === 'result' ? ' markdown' : ''}">${key === 'result' ? agentMarkdown(body, escape) : escape(body)}</div></details>`;
   return `<article class="brain-job ${tone}" data-job-id="${escape(job.id)}">
@@ -63,7 +63,7 @@ function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, o
     ${long ? fold('task', '任务全文', job.content.trim()) : ''}
     <p class="brain-job-meta"><span>${escape(modelText(job.model))}${job.effort ? ` · ${escape(job.effort)}` : ''}</span>${tree}<span>任务 ${escape(job.id.slice(0, 8))}</span></p>
     ${job.error && job.error !== '你在派活页取消了' ? `<p class="brain-job-error">${escape(job.error)}</p>` : ''}
-    ${job.result ? fold('result', '交回的结果', job.result) : ''}
+    ${job.result ? fold('result', '提交的结果', job.result) : ''}
     <div class="brain-job-actions">${jobLive(job) ? `<button type="button" class="secondary" data-stop-job="${escape(job.id)}">${job.status === 'pending' ? '取消' : '停止'}</button>` : ''}<button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>
   </article>`;
 }
@@ -82,13 +82,13 @@ function planDoc(doc: PlanDoc, escape: Escape, open: Set<string>) {
 
 function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
   const body = plans.length ? plans.map(doc => planDoc(doc, escape, open)).join('')
-    : '<p class="inquiry-empty">主脑还没写计划。长或难的活它会先在 .tongxi/任务书/ 写任务书、边做边勾，要长期记住的写进 .tongxi/计划.md，都会显示在这里。</p>';
+    : '<p class="inquiry-empty">主脑尚未制定计划。较长或较复杂的任务，主脑会先在 .tongxi/任务书/ 中编写任务书并随进度勾选，需要长期保留的内容写入 .tongxi/计划.md，均显示在此处。</p>';
   return `<section class="brain-plans"><h2>计划与任务书</h2>${body}</section>`;
 }
 
 /// 计划流程图：列按先后（前面还连着几步），卡片颜色是状态，箭头是依赖。
 const NODE = { w: 170, h: 84, gx: 40, gy: 14 };
-const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '在做'], review: ['◐', '待审'], you: ['⏸', '等你'], waiting: ['⏸', '在等'], todo: ['○', '没做'], done: ['✓', '做完'] };
+const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '进行中'], review: ['◐', '待审核'], you: ['⏸', '待你处理'], waiting: ['⏸', '等待中'], todo: ['○', '未开始'], done: ['✓', '已完成'] };
 /// 等用户答问题、或负责人就是用户（手测这类）的等待，都算「等你」。
 const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key || step.owner === '你') ? 'you' : step.status;
 
@@ -131,21 +131,21 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
     const job = jobs.find(item => item.id === step.job);
     const who = step.name || step.owner || '';
     const line = kind === 'doing' ? `${who}${job ? ` · ${span(job.created_at, Date.now())}` : ''}`
-      : kind === 'review' ? `${who} 交回了，主脑在审`
-      : kind === 'you' ? (step.wait_key ? `等你在问答面板回答${step.note ? `：${step.note}` : ''}` : `等你：${step.note || '—'}`)
-      : kind === 'waiting' ? `等：${step.note || '—'}`
+      : kind === 'review' ? `${who} 已提交，主脑审核中`
+      : kind === 'you' ? (step.wait_key ? `待你在协作问答中回答${step.note ? `：${step.note}` : ''}` : `待你处理：${step.note || '—'}`)
+      : kind === 'waiting' ? `等待：${step.note || '—'}`
       : step.note || who;
     const held = step.status === 'done' ? 0 : blocked(step.id).size;
     return `<button type="button" class="plan-node ${kind}${dim(step)}${pick === step.id ? ' picked' : ''}" data-plan-pick="${step.id}" aria-pressed="${pick === step.id}" style="left:${x}px;top:${y}px;width:${NODE.w}px;height:${NODE.h}px" aria-label="${escape(`#${step.id} ${step.title}，${word}`)}">
       <strong><span class="plan-icon" aria-hidden="true">${icon}</span><span class="plan-name">${escape(step.title)}</span></strong>
-      <span class="plan-foot"><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</span></button>`;
+      <span class="plan-foot"><small>${escape(line)}</small>${held ? `<em>阻塞 ${held} 项</em>` : ''}</span></button>`;
   }).join('');
   const picked = all.find(step => step.id === pick);
   const counts = Object.keys(STEP_LOOK).map(kind => [kind, all.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
   // 「全部」排第一个，每一步都摆出来；其余按状态只亮那一类。再点一次亮着的回到默认（收起做完又不卡别的）。
   const bar = [['all', all.length] as const, ...counts].map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}" aria-pressed="${filter === kind}">${kind === 'all' ? '全部' : STEP_LOOK[kind][1]} ${count}</button>`).join('');
-  const hint = folded.length ? `<button type="button" class="plan-folded" data-plan-filter="all">收起了 ${folded.length} 步做完、不卡别的 ▸</button>` : '';
-  const zoom = `<div class="plan-zoom" role="group" aria-label="缩放"><button type="button" data-zoom="out" aria-label="缩小" title="缩小（在图上滚轮也行）">−</button><button type="button" class="plan-zoom-level" data-zoom="reset" title="回到 100%">100%</button><button type="button" data-zoom="in" aria-label="放大" title="放大（在图上滚轮也行）">+</button><button type="button" data-zoom="fit" aria-label="适应窗口" title="适应窗口（双击空白处也行）"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 5V1.5H5M9 1.5h3.5V5m0 4v3.5H9m-4 0H1.5V9"/></svg></button></div>`;
+  const hint = folded.length ? `<button type="button" class="plan-folded" data-plan-filter="all">已折叠 ${folded.length} 个不影响后续的已完成步骤 ▸</button>` : '';
+  const zoom = `<div class="plan-zoom" role="group" aria-label="缩放"><button type="button" data-zoom="out" aria-label="缩小" title="缩小（也可在图上滚动滚轮）">−</button><button type="button" class="plan-zoom-level" data-zoom="reset" title="恢复为 100%">100%</button><button type="button" data-zoom="in" aria-label="放大" title="放大（也可在图上滚动滚轮）">+</button><button type="button" data-zoom="fit" aria-label="适应窗口" title="适应窗口（也可双击空白处）"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 5V1.5H5M9 1.5h3.5V5m0 4v3.5H9m-4 0H1.5V9"/></svg></button></div>`;
   return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${hint}${zoom}</div>
     <div class="plan-stage"><div class="plan-flow"><div class="plan-canvas" data-w="${width}" data-h="${height}" style="width:${width}px;height:${height}px">
       <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div><div class="plan-tip" hidden></div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}</section>`;
@@ -157,11 +157,11 @@ function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: E
   const job = jobs.find(item => item.id === step.job);
   const title = (id: number) => all.find(item => item.id === id)?.title || '';
   const rows = [
-    step.name || step.owner ? `<p><strong>负责</strong><span>${escape(step.name || step.owner!)}</span></p>` : '',
-    step.depends.length ? `<p><strong>先做完</strong><span>${step.depends.map(id => `<button type="button" class="plan-ref" data-plan-pick="${id}">#${id} ${escape(title(id))}</button>`).join('')}</span></p>` : '',
-    held ? `<p><strong>卡住</strong><span>后面 ${held} 件没做完的都在等它</span></p>` : '',
+    step.name || step.owner ? `<p><strong>负责人</strong><span>${escape(step.name || step.owner!)}</span></p>` : '',
+    step.depends.length ? `<p><strong>前置步骤</strong><span>${step.depends.map(id => `<button type="button" class="plan-ref" data-plan-pick="${id}">#${id} ${escape(title(id))}</button>`).join('')}</span></p>` : '',
+    held ? `<p><strong>阻塞</strong><span>${held} 个未完成的后续步骤依赖此步骤</span></p>` : '',
   ].join('');
-  const actions = job ? `<div class="brain-job-actions"><button type="button" class="secondary" data-show-job="${escape(job.id)}">看这件活</button><button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>` : '';
+  const actions = job ? `<div class="brain-job-actions"><button type="button" class="secondary" data-show-job="${escape(job.id)}">查看任务</button><button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>` : '';
   return `<article class="plan-detail ${kind}"><header><span class="plan-chip"><span aria-hidden="true">${icon}</span>${word}</span><strong>#${step.id} ${escape(step.title)}</strong><button type="button" class="icon-button" data-plan-pick="${step.id}" aria-label="收起">×</button></header>
     ${step.note ? `<p class="plan-detail-note">${escape(step.note)}</p>` : ''}${rows ? `<div class="plan-detail-rows">${rows}</div>` : ''}${actions}</article>`;
 }
@@ -276,17 +276,20 @@ export function bindPlanFlow(root: ParentNode, key: string) {
     canvas.querySelectorAll<HTMLElement>('.plan-node').forEach(item => item.classList.toggle('lit', !!lit?.nodes.has(item.dataset.planPick!)));
     for (const edge of edges) edge.classList.toggle('lit', !!lit?.paths.has(edge));
   };
-  let hovered: HTMLElement | null = null;
+  // 扫过去不亮：在一张卡片上停一下才亮出它的链；移到别的卡片、路过卡片间的空当时原来那条先留着，免得整张图一路明暗闪。
+  let hovered: HTMLElement | null = null, traceTimer = 0;
+  const settle = (node: HTMLElement | null, wait: number) => { clearTimeout(traceTimer); traceTimer = window.setTimeout(() => trace(node), wait); };
   canvas.addEventListener('pointerover', event => {
     const node = (event.target as Element).closest<HTMLElement>('.plan-node');
     if (node === hovered) return;
-    hovered = node; trace(node); hideTip();
+    hovered = node; hideTip();
+    settle(node, node ? 160 : 240);
     if (node) tipTimer = window.setTimeout(() => showTip(node), 350);
   });
-  canvas.addEventListener('pointerleave', () => { hovered = null; trace(null); hideTip(); });
+  canvas.addEventListener('pointerleave', () => { hovered = null; settle(null, 120); hideTip(); });
   canvas.addEventListener('focusin', event => {
     const node = (event.target as Element).closest<HTMLElement>('.plan-node');
-    trace(node);
+    clearTimeout(traceTimer); trace(node);
     if (node?.matches(':focus-visible')) showTip(node);
   });
   canvas.addEventListener('focusout', () => { trace(null); hideTip(); });
@@ -348,13 +351,13 @@ export function bindPlanFlow(root: ParentNode, key: string) {
 
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
 export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter = '', planPick: number | null = null) {
-  const head = `<header class="chat-header"><div><h1>主脑派活</h1><p>${escape(project)} · 主脑的计划、交给成员的每件活</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
+  const head = `<header class="chat-header"><div><h1>主脑任务</h1><p>${escape(project)} · 主脑的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
-  const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>主脑${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 件活在外面` : '没有在外面的活'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答等着送进主脑` : ''}</small></section>`;
+  const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>主脑${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 项任务进行中` : '暂无进行中的任务'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答待送达主脑` : ''}</small></section>`;
   const body = live.length
     ? live.map(job => card(job, escape, avatar, open)).join('')
-    : `<p class="inquiry-empty">${ended.length ? '现在没有在做的活。' : '主脑还没派过活。在团队对话里说要做的事，主脑会把活派给成员，派出去的都列在这里。'}</p>`;
+    : `<p class="inquiry-empty">${ended.length ? '暂无进行中的任务。' : '主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
   return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

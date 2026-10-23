@@ -10,7 +10,7 @@ export interface BindingChoice { agentId: string; target: 'member' | 'seat'; nat
 interface Row { agent: string; target: 'member' | 'seat'; current: string | null; busy: boolean; key?: string; }
 export interface PickerHost { escape: Escape; name: (id: string) => string; avatar: (id: string) => string; connect: (id: string) => Promise<void>; }
 
-const roleText = (row: Row) => isBrain(row.agent) ? '主脑 · 接你的话、给成员派活' : row.target === 'seat' ? '同一成员的另一个会话' : '项目成员';
+const roleText = (row: Row) => isBrain(row.agent) ? '主脑 · 接收你的需求，向成员分配任务' : row.target === 'seat' ? '同一成员的另一个会话' : '项目成员';
 const short = (id: string) => id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
 const when = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '时间未知';
 

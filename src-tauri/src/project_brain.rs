@@ -225,7 +225,7 @@ impl Store {
                 [room],
                 |row| row.get(0),
             )
-            .map_err(|_| "主脑派活状态读取失败")?;
+            .map_err(|_| "主脑任务状态读取失败")?;
         if busy {
             return Err("主脑派的活还没交回，先停掉或等成员交回".into());
         }
@@ -267,7 +267,7 @@ impl Store {
                  FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id
                  WHERE j.room=?1 AND j.kind='task' ORDER BY j.created_at DESC",
             )
-            .map_err(|_| "派活记录读取失败")?;
+            .map_err(|_| "任务记录读取失败")?;
         let jobs = query
             .query_map([room], |row| {
                 let seat: String = row.get(1)?;
@@ -292,9 +292,9 @@ impl Store {
                     finished_at: row.get(13)?,
                 })
             })
-            .map_err(|_| "派活记录读取失败")?
+            .map_err(|_| "任务记录读取失败")?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| "派活记录读取失败")?;
+            .map_err(|_| "任务记录读取失败")?;
         let root: Option<String> = self
             .connection
             .query_row(
