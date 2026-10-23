@@ -1,4 +1,4 @@
-import type { BrainJob, BrainOverview, PlanDoc, UsageSum } from './types';
+import type { BrainJob, BrainOverview, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 
 type Escape = (value: string | number) => string;
@@ -84,8 +84,65 @@ function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
   return `<section class="brain-plans"><h2>计划与任务书</h2>${body}</section>`;
 }
 
+/// 计划流程图：列按先后（前面还连着几步），卡片颜色是状态，箭头是依赖。
+const NODE = { w: 172, h: 64, gx: 40, gy: 10 };
+const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '在做'], review: ['◐', '待审'], you: ['⏸', '等你'], waiting: ['⏸', '在等'], todo: ['○', '没做'], done: ['✓', '做完'] };
+const stepKind = (step: PlanStep) => step.status === 'waiting' && step.wait_key ? 'you' : step.status;
+
+function planFlow(steps: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string) {
+  if (!steps.length) return '';
+  const byId = new Map(steps.map(step => [step.id, step]));
+  const depth = new Map<number, number>();
+  const column = (step: PlanStep): number => {
+    if (!depth.has(step.id)) depth.set(step.id, Math.max(-1, ...step.depends.map(id => byId.has(id) ? column(byId.get(id)!) : -1)) + 1);
+    return depth.get(step.id)!;
+  };
+  // 一列一列排，同列里按上游所在的高度排，连线少交叉。
+  const at = new Map<number, [number, number]>(), row = new Map<number, number>();
+  const columns = Math.max(...steps.map(column)) + 1;
+  for (let x = 0; x < columns; x++) {
+    const height = (step: PlanStep) => step.depends.length ? step.depends.reduce((sum, id) => sum + (row.get(id) ?? 0), 0) / step.depends.length : step.id / 1000;
+    steps.filter(step => column(step) === x).sort((a, b) => height(a) - height(b) || a.id - b.id).forEach((step, y) => {
+      row.set(step.id, y);
+      at.set(step.id, [x * (NODE.w + NODE.gx), y * (NODE.h + NODE.gy)]);
+    });
+  }
+  // 「拖住 N 件」：后面还没做完的步骤，全都要等它。
+  const blocked = (id: number, seen = new Set<number>()): Set<number> => {
+    for (const next of steps) if (next.depends.includes(id) && next.status !== 'done' && !seen.has(next.id)) { seen.add(next.id); blocked(next.id, seen); }
+    return seen;
+  };
+  const dim = (step: PlanStep) => filter && stepKind(step) !== filter ? ' dim' : '';
+  const width = Math.max(...[...at.values()].map(([x]) => x)) + NODE.w, height = Math.max(...[...at.values()].map(([, y]) => y)) + NODE.h;
+  const edges = steps.flatMap(step => step.depends.filter(id => at.has(id)).map(id => {
+    const [x0, y0] = at.get(id)!, [x1, y1] = at.get(step.id)!;
+    const [ax, ay, bx, by] = [x0 + NODE.w, y0 + NODE.h / 2, x1 - 4, y1 + NODE.h / 2];
+    return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${dim(step) && dim(byId.get(id)!)}" d="M${ax} ${ay} C${ax + 24} ${ay} ${bx - 24} ${by} ${bx} ${by}" marker-end="url(#plan-arrow)"/>`;
+  })).join('');
+  const nodes = steps.map(step => {
+    const [x, y] = at.get(step.id)!, kind = stepKind(step), [icon, word] = STEP_LOOK[kind];
+    const job = jobs.find(item => item.id === step.job);
+    const who = step.name || step.owner || '';
+    const line = kind === 'doing' ? `${who}${job ? ` · ${span(job.created_at, Date.now())}` : ''}`
+      : kind === 'review' ? `${who} 交回了，主脑在审`
+      : kind === 'you' ? `等你在问答面板回答${step.note ? `：${step.note}` : ''}`
+      : kind === 'waiting' ? `等：${step.note || '—'}`
+      : step.note || who;
+    const held = step.status === 'done' ? 0 : blocked(step.id).size;
+    const tip = [`#${step.id} ${step.title}`, `${word}${who ? ` · ${who}` : ''}`, step.note || '', step.depends.length ? `先做完：${step.depends.map(id => `#${id}`).join(' ')}` : ''].filter(Boolean).join('\n');
+    return `<div class="plan-node ${kind}${dim(step)}" style="left:${x}px;top:${y}px;width:${NODE.w}px;height:${NODE.h}px" title="${escape(tip)}">
+      <strong><span class="plan-icon">${icon}</span>${escape(step.title)}</strong>
+      <p><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</p></div>`;
+  }).join('');
+  const counts = Object.keys(STEP_LOOK).map(kind => [kind, steps.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
+  const bar = counts.map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}">${STEP_LOOK[kind][1]} ${count}</button>`).join('');
+  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${filter ? '<button type="button" class="text-button" data-plan-filter="">看全部</button>' : ''}</div>
+    <div class="plan-flow"><div class="plan-canvas" style="width:${width}px;height:${height}px">
+      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker></defs>${edges}</svg>${nodes}</div></div></section>`;
+}
+
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
-export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>) {
+export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter = '') {
   const head = `<header class="chat-header"><div><h1>主脑派活</h1><p>${escape(project)} · 主脑的计划、交给成员的每件活</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
@@ -94,5 +151,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '现在没有在做的活。' : '主脑还没派过活。在团队对话里说要做的事，主脑会把活派给成员，派出去的都列在这里。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter)}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

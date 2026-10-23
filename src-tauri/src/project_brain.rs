@@ -33,7 +33,11 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
          CREATE INDEX IF NOT EXISTS brain_job_status ON brain_jobs(status);
          CREATE TABLE IF NOT EXISTS brain_inbox (
            id TEXT PRIMARY KEY,room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           content TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);",
+           content TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS brain_steps (
+           room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,id INTEGER NOT NULL,
+           title TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,depends TEXT NOT NULL DEFAULT '[]',
+           note TEXT,wait_key TEXT,job TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(room,id));",
     )
     .map_err(|_| "主脑结构迁移失败")?;
     crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
@@ -317,7 +321,8 @@ impl Store {
                 .map_err(|_| "主脑用量读取失败")?
                 .flatten(),
         };
-        Ok(BrainOverview { seat, chat, waiting, jobs, plans, usage })
+        let steps = load_steps(&self.connection, room);
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, usage })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -425,7 +430,151 @@ pub struct BrainOverview {
     waiting: i64,
     jobs: Vec<BrainJob>,
     plans: Vec<PlanDoc>,
+    steps: Vec<PlanStep>,
     usage: UsageStats,
+}
+
+/// 计划的一步：主脑用 hub_plan 写，派活、交回、问答自动推着状态走。
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct PlanStep {
+    id: i64,
+    title: String,
+    /// todo 没做、doing 在做、review 交回待审、waiting 在等（wait_key 有值是等用户答）、done 做完。
+    status: String,
+    owner: Option<String>,
+    /// 负责人显示名，成员席位换成群里的称呼。
+    name: Option<String>,
+    depends: Vec<i64>,
+    note: Option<String>,
+    wait_key: Option<String>,
+    job: Option<String>,
+}
+
+const STEP_STATES: [&str; 5] = ["todo", "doing", "review", "waiting", "done"];
+
+fn load_steps(connection: &Connection, room: &str) -> Vec<PlanStep> {
+    connection
+        .prepare("SELECT id,title,status,owner,depends,note,wait_key,job FROM brain_steps WHERE room=?1 ORDER BY id")
+        .and_then(|mut query| {
+            query
+                .query_map([room], |row| {
+                    let owner: Option<String> = row.get(3)?;
+                    Ok(PlanStep {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        status: row.get(2)?,
+                        name: owner.as_deref().map(|seat| label(connection, room, seat)),
+                        owner,
+                        depends: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                        note: row.get(5)?,
+                        wait_key: row.get(6)?,
+                        job: row.get(7)?,
+                    })
+                })?
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_steps(connection: &Connection, room: &str, steps: &[PlanStep]) -> Result<()> {
+    let tx = connection.unchecked_transaction().map_err(|_| "计划保存失败")?;
+    tx.execute("DELETE FROM brain_steps WHERE room=?1", [room]).map_err(|_| "计划保存失败")?;
+    for step in steps {
+        tx.execute(
+            "INSERT INTO brain_steps(room,id,title,status,owner,depends,note,wait_key,job,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![room, step.id, step.title, step.status, step.owner, json!(step.depends).to_string(), step.note, step.wait_key, step.job, now()],
+        )
+        .map_err(|_| "计划保存失败")?;
+    }
+    tx.commit().map_err(|_| "计划保存失败".into())
+}
+
+/// 依赖能排出先后（没有环）。
+fn acyclic(steps: &[PlanStep]) -> bool {
+    let mut placed: Vec<i64> = Vec::new();
+    let mut left: Vec<&PlanStep> = steps.iter().collect();
+    while !left.is_empty() {
+        let before = left.len();
+        left.retain(|step| {
+            let ready = step.depends.iter().all(|id| placed.contains(id));
+            if ready {
+                placed.push(step.id);
+            }
+            !ready
+        });
+        if left.len() == before {
+            return false;
+        }
+    }
+    true
+}
+
+/// hub_plan：按 id 增改步骤（只改给了的字段），remove 删步骤，clear 清空重来。
+fn update_plan(connection: &Connection, ctx: &Context, args: &Value) -> Result<Vec<PlanStep>> {
+    let mut steps = if args["clear"].as_bool() == Some(true) { Vec::new() } else { load_steps(connection, &ctx.room) };
+    let removed: Vec<i64> = args["remove"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+    steps.retain(|step| !removed.contains(&step.id));
+    for step in &mut steps {
+        step.depends.retain(|id| !removed.contains(id));
+    }
+    for item in args["steps"].as_array().into_iter().flatten() {
+        let id = item["id"].as_i64().filter(|id| *id > 0).ok_or("每一步要有正整数 id")?;
+        let index = steps.iter().position(|step| step.id == id).unwrap_or_else(|| {
+            steps.push(PlanStep { id, title: String::new(), status: "todo".into(), owner: None, name: None, depends: Vec::new(), note: None, wait_key: None, job: None });
+            steps.len() - 1
+        });
+        let step = &mut steps[index];
+        if let Some(title) = optional_arg(item, "title") {
+            step.title = title.chars().take(80).collect();
+        }
+        if let Some(status) = optional_arg(item, "status") {
+            if !STEP_STATES.contains(&status.as_str()) {
+                return Err(format!("status 只能是 {}", STEP_STATES.join(" / ")));
+            }
+            if status != "waiting" {
+                step.wait_key = None;
+            }
+            step.status = status;
+        }
+        if let Some(owner) = optional_arg(item, "owner") {
+            step.owner = Some(find_member(connection, ctx, &owner).map_or(owner, |(seat, _)| seat));
+        }
+        if let Some(depends) = item["depends"].as_array() {
+            step.depends = depends.iter().filter_map(Value::as_i64).collect();
+        }
+        if !item["note"].is_null() {
+            step.note = optional_arg(item, "note").map(|note| note.chars().take(300).collect());
+        }
+    }
+    steps.sort_by_key(|step| step.id);
+    for step in &steps {
+        if step.title.is_empty() {
+            return Err(format!("第 {} 步没有 title", step.id));
+        }
+        if let Some(id) = step.depends.iter().find(|id| **id == step.id || !steps.iter().any(|other| other.id == **id)) {
+            return Err(format!("第 {} 步依赖的第 {id} 步不存在", step.id));
+        }
+    }
+    if !acyclic(&steps) {
+        return Err("依赖成环了，排不出先后".into());
+    }
+    save_steps(connection, &ctx.room, &steps)?;
+    Ok(load_steps(connection, &ctx.room))
+}
+
+/// 派活挂在某一步上时，任务开头带上这一步和上游步骤的结论，成员不用再去翻。
+fn step_brief(steps: &[PlanStep], step: &PlanStep) -> String {
+    let mut brief = format!("【所在步骤】#{} {}\n", step.id, step.title);
+    let upstream: Vec<String> = step
+        .depends
+        .iter()
+        .filter_map(|id| steps.iter().find(|other| other.id == *id))
+        .filter_map(|other| other.note.as_ref().map(|note| format!("- #{} {}：{note}", other.id, other.title)))
+        .collect();
+    if !upstream.is_empty() {
+        brief.push_str(&format!("上游结论：\n{}\n", upstream.join("\n")));
+    }
+    brief
 }
 
 #[derive(serde::Serialize)]
@@ -722,12 +871,13 @@ pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let definitions = [
         ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Each member also has context (tokens in its current session after its last turn; 0 = fresh, null = unknown) and idle_minutes (since its last job came back). Check this before delegating.", json!({}), vec![]),
-        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it. fresh=true starts the member in a new session (it forgets earlier jobs; write all the background it needs into task); default continues its current session.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string,"fresh":{"type":"boolean"}}), vec!["member","task"]),
+        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it. fresh=true starts the member in a new session (it forgets earlier jobs; write all the background it needs into task); default continues its current session. step: the hub_plan step this job does; the step turns doing with this member as owner, turns review when the job comes back, and the task gets the step and its upstream steps' notes prepended.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string,"fresh":{"type":"boolean"},"step":{"type":"integer"}}), vec!["member","task"]),
+        ("hub_plan", "The project plan the user sees as a flow chart on the delegation page: numbered steps with dependencies. steps upserts by id (only the fields given change): title (short), status (todo / doing / review / waiting / done), owner (member seat or a word like 你 / 主脑), depends (ids of steps that must finish first), note (one line: the conclusion and commit when done, or what it waits for when waiting). remove deletes steps by id; clear=true starts a new plan. Delegating or asking the user with step moves status by itself; you mark review steps done (or back to todo) after checking. Call with no arguments to read the plan. Returns the whole plan.", json!({"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":string,"status":{"type":"string","enum":STEP_STATES},"owner":string,"depends":{"type":"array","items":{"type":"integer"}},"note":string},"required":["id"],"additionalProperties":false}},"remove":{"type":"array","items":{"type":"integer"}},"clear":{"type":"boolean"}}), vec![]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
         ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Only works while the member is replying; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
         ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
         ("hub_finish_worktree", "Close out a finished job that had a worktree: action=merge merges its branch into the project's current branch and removes the worktree; action=discard throws the work away. On merge conflicts the merge is left in the project directory for you to resolve.", json!({"job":string,"action":{"type":"string","enum":["merge","discard"]}}), vec!["job","action"]),
-        ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"}}), vec!["question"]),
+        ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message. step: the hub_plan step that can't go on until the user answers; it shows as waiting on the user and turns back to todo when answered.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"},"step":{"type":"integer"}}), vec!["question"]),
         ("hub_broadcast", "Post one short progress line to the project group the user watches (started what, delegated to whom, finished what, needs the user to decide what). Do not flood it. When a round of work is done, also post the progress report here: done, not done and why, next step, what the user must decide.", json!({"content":string}), vec!["content"]),
     ];
     let mut specs: Vec<Value> = definitions
@@ -787,7 +937,13 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             if let Some(job) = busy(connection, &seat, &chat) {
                 return Err(format!("{seat} 手上还有活（{}），等它交回，或用 hub_tell_member / hub_stop_member", short(&job)));
             }
-            let task = text_arg(&args, "task", 20000)?;
+            let mut task = text_arg(&args, "task", 20000)?;
+            let step = args["step"].as_i64();
+            if let Some(id) = step {
+                let steps = load_steps(connection, &ctx.room);
+                let found = steps.iter().find(|item| item.id == id).ok_or_else(|| format!("计划里没有第 {id} 步（先用 hub_plan 加）"))?;
+                task = format!("{}\n{task}", step_brief(&steps, found));
+            }
             if args["fresh"].as_bool() == Some(true) {
                 let live: bool = connection
                     .query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND status IN ('starting','running','cancelling'))", [&chat], |row| row.get(0))
@@ -837,6 +993,14 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 connection
                     .execute("UPDATE brain_jobs SET category=?1 WHERE id=?2", params![category.chars().take(20).collect::<String>(), job])
                     .map_err(|_| "任务保存失败")?;
+            }
+            if let Some(id) = step {
+                connection
+                    .execute(
+                        "UPDATE brain_steps SET status='doing',owner=?1,job=?2,wait_key=NULL,updated_at=?3 WHERE room=?4 AND id=?5",
+                        params![seat, job, now(), ctx.room, id],
+                    )
+                    .map_err(|_| "计划保存失败")?;
             }
             Ok(json!({"job":short(&job),"member":seat,"runs_with":runs_with,"quota":quota,"worktree":worktree,"branch":branch,"note":"已交给成员，它做完后结果会作为新消息发给你；不用等也不用查"}))
         }
@@ -912,8 +1076,17 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             };
             crate::project_inquiries::check(std::slice::from_ref(&ask))?;
             let asked = crate::project_inquiries::ask_on(connection, &ctx.room, None, &ctx.seat, &ask)?;
+            if let (true, Some(id)) = (asked, args["step"].as_i64()) {
+                connection
+                    .execute(
+                        "UPDATE brain_steps SET status='waiting',wait_key=?1,updated_at=?2 WHERE room=?3 AND id=?4",
+                        params![ask.key, now(), ctx.room, id],
+                    )
+                    .map_err(|_| "计划保存失败")?;
+            }
             Ok(json!({"asked":asked,"note":if asked {"已挂到问答面板，用户答了会作为新消息发给你"} else {"这个 key 用户已经答过了，看之前的回答"}}))
         }
+        "hub_plan" => Ok(json!({"steps":update_plan(connection, &ctx, &args)?})),
         "hub_broadcast" => {
             let content = text_arg(&args, "content", 4000)?;
             team_message(connection, &ctx.project, &ctx.room, Some(&ctx.seat), &content)?;
@@ -1390,6 +1563,11 @@ impl Courier {
                 "UPDATE brain_jobs SET status=?1,error=?2,finished_at=?3,run_id=COALESCE(?4,run_id) WHERE id=?5",
                 params![job_status, error, now(), run_id, id],
             );
+            // 挂在计划上的活：做完等主脑审，失败退回没做。
+            self.execute(
+                "UPDATE brain_steps SET status=?1,updated_at=?2 WHERE job=?3 AND status='doing'",
+                params![if job_status == "done" { "review" } else { "todo" }, now(), id],
+            );
             self.post(&room, &format!("{name} 交回任务 {}：{state}", short(&id)));
             rooms.push(room);
         }
@@ -1417,22 +1595,26 @@ impl Courier {
 
     /// 用户在问答面板答了主脑的问题：送进主脑。旧调度（coordinator）问过、用户后来才答的也归主脑接手。
     fn collect_answers(&self) -> Vec<String> {
-        let rows: Vec<(String, String, String, String)> = {
+        let rows: Vec<(String, String, String, String, String)> = {
             let store = self.store.lock().unwrap();
             let Ok(mut query) = store.connection.prepare(&format!(
-                "SELECT id,conversation_id,question,COALESCE(answer,'') FROM project_inquiries WHERE status='answered' AND seen=0 AND (asked_by LIKE '%-{BRAIN_SLOT}' OR asked_by='coordinator')"
+                "SELECT id,conversation_id,question,COALESCE(answer,''),key FROM project_inquiries WHERE status='answered' AND seen=0 AND (asked_by LIKE '%-{BRAIN_SLOT}' OR asked_by='coordinator')"
             )) else {
                 return Vec::new();
             };
             query
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
                 .map(|rows| rows.flatten().collect())
                 .unwrap_or_default()
         };
         let mut rooms = Vec::new();
-        for (id, room, question, answer) in rows {
+        for (id, room, question, answer, key) in rows {
             self.inbox(&room, &format!("【用户回答】问：{question}\n答：{answer}"), "user");
             self.execute("UPDATE project_inquiries SET seen=1 WHERE id=?1", [&id]);
+            self.execute(
+                "UPDATE brain_steps SET status='todo',wait_key=NULL,updated_at=?1 WHERE room=?2 AND wait_key=?3 AND status='waiting'",
+                params![now(), room, key],
+            );
             rooms.push(room);
         }
         rooms
@@ -1800,6 +1982,38 @@ mod tests {
         let native: Option<String> = store.connection.query_row("SELECT native_session_id FROM sessions WHERE conversation_id=?1 AND agent_id='codex-win'", [&member], |row| row.get(0)).unwrap();
         assert_eq!(native, None, "fresh 清掉原生会话，运行时会开新的");
         assert_eq!(codex(&store)["context"], 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn plan_steps_follow_delegation_and_questions_and_refuse_bad_dependencies() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-plan-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("计划项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let brain = chats.iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id.clone();
+        let plan = |args: serde_json::Value| super::call(&store.connection, &brain, "hub_plan", args);
+        plan(serde_json::json!({"steps":[{"id":1,"title":"切回 DeepSeek","status":"done","note":"已切，提交 abc123"},{"id":2,"title":"重量 B6","depends":[1]},{"id":3,"title":"措辞","depends":[2]}]})).unwrap();
+        assert!(plan(serde_json::json!({"steps":[{"id":1,"depends":[3]}]})).unwrap_err().contains("成环"));
+        assert!(plan(serde_json::json!({"steps":[{"id":4,"title":"x","depends":[9]}]})).unwrap_err().contains("不存在"));
+        let steps = plan(serde_json::json!({"remove":[3]})).unwrap()["steps"].clone();
+        assert_eq!(steps.as_array().unwrap().len(), 2, "删掉的步骤不留，坏的改动不落库");
+
+        super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"codex-win","task":"测重量","step":2})).unwrap();
+        let task: String = store.connection.query_row("SELECT content FROM brain_jobs WHERE kind='task'", [], |row| row.get(0)).unwrap();
+        assert!(task.starts_with("【所在步骤】#2 重量 B6\n上游结论：\n- #1 切回 DeepSeek：已切，提交 abc123\n"), "{task}");
+        let step = &store.brain_overview(&room).unwrap().steps[1];
+        assert_eq!((step.status.as_str(), step.owner.as_deref()), ("doing", Some("codex-win")));
+        assert!(super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"codex-win","task":"x","step":7})).is_err());
+
+        super::call(&store.connection, &brain, "hub_ask_user", serde_json::json!({"key":"b6-target","question":"B6 目标多少？","step":1})).unwrap();
+        let step = &store.brain_overview(&room).unwrap().steps[0];
+        assert_eq!((step.status.as_str(), step.wait_key.as_deref()), ("waiting", Some("b6-target")));
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

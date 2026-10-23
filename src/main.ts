@@ -143,6 +143,7 @@ const liveBrainJobs = new Map<string, number>();
 let brainOverview: BrainOverview | null = null;
 let brainJobsTimer = 0;
 const openJobFolds = new Set<string>();
+let planFilter = '';
 let brainJobsPaint = '';
 async function refreshBrainJobs(groupId: string) {
   try {
@@ -171,7 +172,7 @@ function renderBrainJobs(force = false) {
   const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
   // 展开的计划、结果框自己也能滚，重绘后按折叠键放回原处。
   const inner = new Map([...main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text')].map(box => [box.parentElement!.dataset.jobFold!, box.scrollTop]));
-  main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds);
+  main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds, planFilter);
   const content = main.querySelector<HTMLElement>('.brain-jobs-content');
   if (content) content.scrollTop = scroll;
   main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text').forEach(box => { box.scrollTop = inner.get(box.parentElement!.dataset.jobFold!) || 0; });
@@ -180,6 +181,10 @@ function renderBrainJobs(force = false) {
   main.querySelectorAll<HTMLDetailsElement>('details[data-job-fold]').forEach(fold => fold.addEventListener('toggle', event => {
     if (event.target !== fold) return;
     if (fold.open) openJobFolds.add(fold.dataset.jobFold!); else openJobFolds.delete(fold.dataset.jobFold!);
+  }));
+  main.querySelectorAll<HTMLButtonElement>('[data-plan-filter]').forEach(button => button.addEventListener('click', () => {
+    planFilter = planFilter === button.dataset.planFilter ? '' : button.dataset.planFilter!;
+    renderBrainJobs(true);
   }));
   main.querySelectorAll<HTMLButtonElement>('[data-stop-job]').forEach(button => button.addEventListener('click', async () => {
     // 点两下才停：成员做到一半的活停了就没了。

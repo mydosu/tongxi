@@ -584,6 +584,31 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-plan summary small { margin-left: auto; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
 .brain-plan-progress { padding: 1px 9px; border-radius: 999px; background: rgb(108 134 182 / .13); color: var(--queue); font-size: 11.5px; }
 .brain-plan-progress.done { background: rgb(74 159 123 / .13); color: var(--ok); }
+.plan-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.plan-filter { --tone: var(--muted); padding: 2px 10px; border: 1px solid transparent; border-radius: 999px; background: rgb(198 201 216 / .22); color: var(--tone); font-size: 11.5px; cursor: pointer; }
+.plan-filter.on { border-color: var(--tone); background: #fff; }
+.plan-flow { overflow: auto; max-height: 460px; padding: 4px 2px 6px; }
+.plan-canvas { position: relative; }
+.plan-canvas svg { position: absolute; inset: 0; overflow: visible; }
+.plan-canvas svg path { fill: none; stroke: #c4c8d4; stroke-width: 1.4; transition: opacity .15s; }
+.plan-canvas svg path.done { stroke: rgb(165 152 216 / .55); }
+.plan-canvas svg path.dim { opacity: .25; }
+.plan-canvas marker path { fill: #b4b9c6; stroke: none; }
+.plan-node, .plan-filter { --tone: var(--muted); }
+.plan-node { position: absolute; box-sizing: border-box; display: grid; align-content: start; gap: 3px; padding: 8px 11px; border: 1px solid rgb(205 205 228 / .7); border-left: 3px solid var(--tone); border-radius: 10px; background: rgb(255 255 255 / .85); overflow: hidden; transition: opacity .15s; }
+.plan-node strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink); font-size: 12.5px; font-weight: 500; line-height: 1.45; }
+.plan-node small { overflow: hidden; color: var(--muted); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
+.plan-node p { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; }
+.plan-node em { flex: none; margin-left: auto; padding: 0 7px; border-radius: 999px; background: rgb(176 99 79 / .1); color: var(--err); font-size: 10.5px; font-style: normal; }
+.plan-icon { margin-right: 5px; color: var(--tone); }
+.plan-node.dim { opacity: .3; }
+.plan-node.done { background: rgb(255 255 255 / .5); }
+.plan-node.done strong { color: var(--muted); }
+.plan-node.doing, .plan-filter.doing { --tone: var(--ok); }
+.plan-node.review, .plan-filter.review { --tone: var(--queue); }
+.plan-node.you, .plan-filter.you { --tone: var(--warn); }
+.plan-node.waiting, .plan-filter.waiting { --tone: var(--faint); }
+.plan-node.done, .plan-filter.done { --tone: var(--accent-2); }
 @media (prefers-reduced-motion: reduce) { .brain-status-dot.busy { animation: none; } }
 @media (max-width: 640px) { .inquiry-answer { flex-direction: column; align-items: stretch; } .inquiry-card header { flex-direction: column; gap: 4px; } }
 .brain-job-text.markdown { white-space: normal; }
