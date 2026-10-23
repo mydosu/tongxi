@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="20" y1="10" x2="236" y2="246" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a99be6"/>
+      <stop offset=".55" stop-color="#8a8fd8"/>
+      <stop offset="1" stop-color="#7fb2e3"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".42"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="90" y1="66" x2="214" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff4d8"/>
+      <stop offset="1" stop-color="#f3d79a"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#3f3a8a" flood-opacity=".28"/>
+    </filter>
+    <!-- 交织：每只菱形在一个交点被切开一道，让另一只从上面压过去 -->
+    <mask id="cut-top" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <path d="M108 70 148 110" stroke="#000" stroke-width="37"/>
+    </mask>
+    <mask id="cut-bottom" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <path d="M108 146 148 186" stroke="#000" stroke-width="37"/>
+    </mask>
+  </defs>
+  <!-- 底板：淡紫到冰蓝，上半截一层受光的亮面 -->
+  <rect x="8" y="8" width="240" height="240" rx="62" fill="url(#tile)"/>
+  <rect x="8" y="8" width="240" height="240" rx="62" fill="url(#sheen)"/>
+  <rect x="9.5" y="9.5" width="237" height="237" rx="60.5" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="3"/>
+  <!-- 方胜：两个菱形相套、一上一下交织，取「同心」 -->
+  <g fill="none" stroke-width="23" stroke-linejoin="round" stroke-linecap="round" filter="url(#lift)">
+    <path d="M90 128 152 66 214 128 152 190Z" stroke="url(#gold)" mask="url(#cut-top)"/>
+    <path d="M42 128 104 66 166 128 104 190Z" stroke="#fff" mask="url(#cut-bottom)"/>
+  </g>
+</svg>

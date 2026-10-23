@@ -1,42 +1,53 @@
-"""Generate the application's own geometric icon using only Python stdlib."""
+"""将品牌 SVG 渲染为透明 PNG 和多尺寸 ICO。"""
 from pathlib import Path
-import math
 import struct
-import zlib
+
+from playwright.sync_api import sync_playwright
+
 
 root = Path(__file__).resolve().parents[1]
-size = 64
-pixels = bytearray()
-nodes = [(21, 21, (231, 202, 135)), (43, 21, (226, 239, 229)),
-         (43, 43, (151, 188, 224)), (21, 43, (229, 184, 181))]
-# 银白主题：底板用银灰竖向渐变，十字用近白，四个成员点保持原色。
-top = (124, 133, 144)
-bottom = (74, 81, 88)
-for y in range(size):
-    pixels.append(0)
-    ratio = y / (size - 1)
-    tile = tuple(round(top[i] + (bottom[i] - top[i]) * ratio) for i in range(3))
-    for x in range(size):
-        inset_x = max(12 - x, 0, x - 51)
-        inset_y = max(12 - y, 0, y - 51)
-        inside = inset_x * inset_x + inset_y * inset_y <= 144
-        color = (*tile, 255 if inside else 0)
-        if inside and (((20 <= x <= 22 or 42 <= x <= 44) and 21 <= y <= 43) or
-                       ((20 <= y <= 22 or 42 <= y <= 44) and 21 <= x <= 43)):
-            color = (240, 243, 246, 255)
-        for cx, cy, fill in nodes:
-            if math.hypot(x - cx, y - cy) <= 4.5:
-                color = (*fill, 255)
-        pixels.extend(color)
+sizes = (16, 24, 32, 48, 64, 128, 256)
+svg = (root / 'src' / 'assets' / 'brand.svg').read_text(encoding='utf-8')
+pngs = {}
 
-def chunk(kind, data):
-    return struct.pack('!I', len(data)) + kind + data + struct.pack('!I', zlib.crc32(kind + data) & 0xffffffff)
+with sync_playwright() as playwright:
+    browser = playwright.chromium.launch(headless=True)
+    for size in sizes:
+        # 各尺寸独立栅格化，保留小图的抗锯齿细节。
+        page = browser.new_page(
+            viewport={'width': size, 'height': size}, device_scale_factor=1,
+        )
+        # 去掉默认边距，避免视口裁切图标。
+        page.set_content('<style>html,body{margin:0;overflow:hidden}svg{display:block}</style>' + svg)
+        page.locator('svg').evaluate('''(svg, size) => {
+            svg.setAttribute('width', size);
+            svg.setAttribute('height', size);
+        }''', size)
+        pngs[size] = page.screenshot(omit_background=True)
+        page.close()
+    browser.close()
 
-png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', size, size, 8, 6, 0, 0, 0))
-png += chunk(b'IDAT', zlib.compress(bytes(pixels))) + chunk(b'IEND', b'')
 directory = root / 'src-tauri' / 'icons'
 directory.mkdir(parents=True, exist_ok=True)
-(directory / 'icon.png').write_bytes(png)
-ico = struct.pack('<HHH', 0, 1, 1) + struct.pack('<BBBBHHII', size, size, 0, 0, 1, 32, len(png), 22) + png
-(directory / 'icon.ico').write_bytes(ico)
-print(f'Generated icon: {len(ico)} bytes')
+(directory / 'icon.png').write_bytes(pngs[256])
+
+entries = []
+offset = 6 + 16 * len(sizes)
+for size in sizes:
+    png = pngs[size]
+    # ICO 用零表示 256 像素，PNG 原样嵌入以保留透明度。
+    dimension = 0 if size == 256 else size
+    entries.append(struct.pack('<BBBBHHII', dimension, dimension, 0, 0, 1, 32, len(png), offset))
+    offset += len(png)
+ico = struct.pack('<HHH', 0, 1, len(sizes)) + b''.join(entries) + b''.join(pngs.values())
+icon_path = directory / 'icon.ico'
+icon_path.write_bytes(ico)
+
+# 读回文件，确认目录和 PNG 偏移实际写入正确。
+saved = icon_path.read_bytes()
+assert struct.unpack_from('<HHH', saved) == (0, 1, 7)
+for index in range(7):
+    entry = struct.unpack_from('<BBBBHHII', saved, 6 + 16 * index)
+    assert saved[entry[7]:entry[7] + 8] == b'\x89PNG\r\n\x1a\n'
+
+print(f"Generated icons: {', '.join(f'{size}px={len(pngs[size])} bytes' for size in sizes)}; ICO={len(ico)} bytes")
