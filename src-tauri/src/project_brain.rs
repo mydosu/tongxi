@@ -38,7 +38,54 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     .map_err(|_| "主脑结构迁移失败".into())
 }
 
+pub(crate) struct FinishedJob {
+    id: String,
+    room: String,
+    seat: String,
+    worktree: Option<String>,
+    branch: Option<String>,
+    status: Option<String>,
+    error: Option<String>,
+    reply: Option<String>,
+    run_id: Option<String>,
+    resumed: bool,
+}
+
 impl Store {
+    /// 跑完了、该交回主脑的派活。撞额度失败的 Codex 派活会被同席到点自动续跑（在成员会话里补一回合），
+    /// 那一回合跑完也算这件活的交回；成员会话之后又被派了新活就不认。
+    pub(crate) fn finished_brain_jobs(&self) -> Vec<FinishedJob> {
+        let Ok(mut query) = self.connection.prepare(
+            "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed' FROM brain_jobs j
+             LEFT JOIN runs r ON r.id=CASE WHEN j.status='running' THEN j.run_id
+               ELSE (SELECT n.id FROM runs n WHERE n.conversation_id=j.chat ORDER BY n.rowid DESC LIMIT 1) END
+             LEFT JOIN messages m ON m.id=r.assistant_message_id
+             WHERE (j.status='running' AND (r.id IS NULL OR r.status IN ('completed','interrupted','failed')))
+                OR (j.status='failed' AND j.kind='task' AND j.error LIKE '%自动继续%' AND r.id<>j.run_id
+                    AND r.status IN ('completed','interrupted','failed')
+                    AND NOT EXISTS(SELECT 1 FROM brain_jobs k WHERE k.chat=j.chat AND k.created_at>j.created_at))",
+        ) else {
+            return Vec::new();
+        };
+        query
+            .query_map([], |row| {
+                Ok(FinishedJob {
+                    id: row.get(0)?,
+                    room: row.get(1)?,
+                    seat: row.get(2)?,
+                    worktree: row.get(3)?,
+                    branch: row.get(4)?,
+                    status: row.get(5)?,
+                    error: row.get(6)?,
+                    reply: row.get(7)?,
+                    run_id: row.get(8)?,
+                    resumed: row.get(9)?,
+                })
+            })
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
     pub fn project_coordinator(&self, room: &str) -> Result<Option<RoleChoice>> {
         let value: Option<String> = self
             .connection
@@ -1209,23 +1256,12 @@ impl Courier {
 
     /// 成员的回复结束了：把结果整理成一条消息放进主脑收件箱。
     fn collect_finished(&self) -> Vec<String> {
-        type Row = (String, String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
-        let rows: Vec<Row> = {
-            let store = self.store.lock().unwrap();
-            let Ok(mut query) = store.connection.prepare(
-                "SELECT j.id,j.room,j.seat,j.chat,j.worktree,j.branch,r.status,r.error,m.content FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id WHERE j.status='running' AND (r.id IS NULL OR r.status IN ('completed','interrupted','failed'))",
-            ) else {
-                return Vec::new();
-            };
-            query
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)))
-                .map(|rows| rows.flatten().collect())
-                .unwrap_or_default()
-        };
+        let rows = self.store.lock().unwrap().finished_brain_jobs();
         let mut rooms = Vec::new();
-        for (id, room, seat, _chat, worktree, branch, status, error, reply) in rows {
+        for FinishedJob { id, room, seat, worktree, branch, status, error, reply, run_id, resumed } in rows {
             let status = status.unwrap_or_else(|| "failed".into());
             let state = match status.as_str() {
+                "completed" if resumed => "额度恢复后接着做完了".to_owned(),
                 "completed" => "做完了".to_owned(),
                 "interrupted" => "被停下了".to_owned(),
                 _ => format!("失败：{}", error.clone().unwrap_or_else(|| "运行记录丢失".into())),
@@ -1240,8 +1276,8 @@ impl Courier {
             self.inbox(&room, &report);
             let job_status = if status == "completed" { "done" } else { "failed" };
             self.execute(
-                "UPDATE brain_jobs SET status=?1,error=?2,finished_at=?3 WHERE id=?4",
-                params![job_status, error, now(), id],
+                "UPDATE brain_jobs SET status=?1,error=?2,finished_at=?3,run_id=COALESCE(?4,run_id) WHERE id=?5",
+                params![job_status, error, now(), run_id, id],
             );
             self.post(&room, &format!("{name} 交回任务 {}：{state}", short(&id)));
             rooms.push(room);
@@ -1568,6 +1604,43 @@ mod tests {
         assert_eq!(others[0]["project"], "乙项目");
         assert_eq!(others[0]["agent"], "codex-win");
         assert_eq!(others[0]["model"], "gpt-6-luna");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_job_failed_on_quota_comes_back_when_the_auto_resume_finishes() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-resume-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["codex-win".into()]).unwrap().id;
+        let project = store.register_project("续跑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "codex-win").unwrap().conversation_id;
+        let mut failed = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做 B6", "codex-win").unwrap();
+        failed.status = "failed".into();
+        failed.error = Some("Codex 额度限制，额度恢复后同席会自动继续".into());
+        store.checkpoint(&failed, "", "").unwrap();
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,run_id,error,created_at) VALUES('job-b6',?1,'codex-win',?2,'task','做 B6','failed',?3,?4,?5)", params![room, chat, failed.id, failed.error, now()])
+            .unwrap();
+        assert!(store.finished_brain_jobs().is_empty(), "失败已经交回过，续跑前不再送");
+
+        let mut resumed = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "继续", "codex-win").unwrap();
+        assert!(store.finished_brain_jobs().is_empty(), "续跑还没做完");
+        resumed.status = "completed".into();
+        store.checkpoint(&resumed, "## 交回
+B6 做完了", "").unwrap();
+        let jobs = store.finished_brain_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].resumed && jobs[0].run_id.as_deref() == Some(resumed.id.as_str()));
+        assert_eq!(jobs[0].reply.as_deref(), Some("## 交回
+B6 做完了"));
+
+        store.connection.execute("UPDATE brain_jobs SET status='done',run_id=?1 WHERE id='job-b6'", [&resumed.id]).unwrap();
+        assert!(store.finished_brain_jobs().is_empty(), "交回一次就够");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
