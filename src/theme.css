@@ -5,7 +5,8 @@
   --glass: rgb(255 255 255 / .56);
   --glass-edge: rgb(255 255 255 / .78);
   --glass-line: rgb(118 126 172 / .14);
-  --glass-shadow: 0 14px 44px rgb(86 92 150 / .12);
+  /* 外投影 + 上沿一道受光的亮边、下沿一道回光：玻璃有了厚度。 */
+  --glass-shadow: 0 14px 44px rgb(86 92 150 / .12), inset 0 1px 0 rgb(255 255 255 / .9), inset 0 -1px 0 rgb(255 255 255 / .3);
   --lilac: #a598d8;
   --ice: #8db6de;
   --ink: #394057;
@@ -93,6 +94,7 @@ html:not([data-hud]) .sidebar-bottom { margin: 0 -12px; padding: 10px 12px 12px;
 .sidebar-actions { display: flex; align-items: center; gap: 6px; }
 .sidebar-actions #service-link { flex: 1; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 12px; font-size: 12px; }
 .sidebar-actions #service-link:hover, .sidebar-actions #theme-link:hover { background: rgb(255 255 255 / .6); }
+.sidebar-actions #service-link.active { background: rgb(255 255 255 / .86); box-shadow: 0 2px 10px rgb(96 100 160 / .1); }
 .sidebar-actions #theme-link { width: 38px; height: 38px; border-radius: 12px; color: #6c6aa8; }
 html:not([data-hud]) .local-indicator { margin: 8px 10px 0; font-size: 10px; }
 html:not([data-hud]) .local-indicator .status-dot { background: #8fc3a9; box-shadow: 0 0 0 3px rgb(143 195 169 / .2); }
@@ -120,7 +122,7 @@ html:not([data-hud]) .milestone-note .secondary { padding: 5px 12px; border-radi
 html:not([data-hud]) .project-controls { background: rgb(255 255 255 / .5); border-color: rgb(255 255 255 / .8); border-radius: 14px; padding: 9px 12px; }
 html:not([data-hud]) .project-entry-actions > button { padding: 6px 11px; border-radius: 9px; }
 html:not([data-hud]) .live-settings { padding: 8px 0 4px; }
-html:not([data-hud]) .live-settings label { font-size: 11px; }
+html:not([data-hud]) .live-settings label { font-size: 11px; white-space: nowrap; }
 html:not([data-hud]) .live-settings select, html:not([data-hud]) .live-settings input, html:not([data-hud]) .discussion-options select { background: rgb(255 255 255 / .7); border-color: rgb(255 255 255 / .9); border-radius: 8px; }
 html:not([data-hud]) .discussion-controls { border-bottom-color: var(--glass-line); }
 html:not([data-hud]) .messages { padding: 18px 8px; }
@@ -143,7 +145,7 @@ html:not([data-hud]) .bubble.markdown code, html:not([data-hud]) .bubble.markdow
 html:not([data-hud]) .suggestions button { background: rgb(255 255 255 / .55); border-color: rgb(255 255 255 / .85); border-radius: 11px; font-size: 12px; transition: background .15s, transform .18s var(--ease); }
 html:not([data-hud]) .suggestions button:hover { background: rgb(255 255 255 / .9); color: #4a5175; transform: translateX(3px); }
 html:not([data-hud]) .seat-illustration > div { background: rgb(255 255 255 / .7); border-color: rgb(255 255 255 / .9); }
-html:not([data-hud]) .welcome p { font-size: 13px; }
+html:not([data-hud]) .welcome p { font-size: 13px; text-wrap: balance; }
 
 /* ---------- 成员栏：默认收起，标题行的头像堆点一下展开 ---------- */
 html:not([data-hud]) .members-panel { width: 0; padding: 22px 0; opacity: 0; overflow: hidden; border-left: 1px solid transparent; background: rgb(255 255 255 / .16);
@@ -179,28 +181,59 @@ html:not([data-hud]) .services-content { padding: 26px 30px; }
 /* ---------- 弹窗、提示 ---------- */
 html:not([data-hud]) .modal { background: rgb(251 251 255 / .84); border: 1px solid rgb(255 255 255 / .92); border-radius: 22px; box-shadow: 0 24px 80px rgb(70 74 130 / .22);
   backdrop-filter: blur(30px) saturate(1.4); -webkit-backdrop-filter: blur(30px) saturate(1.4); }
-html:not([data-hud]) .modal[open] { animation: modal-in .28s var(--ease); }
-html:not([data-hud]) .modal::backdrop { background: rgb(64 62 100 / .2); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
-html:not([data-hud]) .modal[open]::backdrop { animation: fade-in .22s ease; }
+/* 弹窗进出都有过渡：display / overlay 走 allow-discrete，关闭时等动画播完才真正隐藏。 */
+html:not([data-hud]) .modal { opacity: 0; translate: 0 8px; scale: .97;
+  transition: opacity .16s ease, translate .2s var(--ease), scale .2s var(--ease), overlay .2s allow-discrete, display .2s allow-discrete; }
+html:not([data-hud]) .modal[open] { opacity: 1; translate: 0; scale: 1; transition-duration: .22s, .36s, .36s, .36s, .36s; }
+@starting-style { html:not([data-hud]) .modal[open] { opacity: 0; translate: 0 16px; scale: .97; } }
+html:not([data-hud]) .modal::backdrop { background: rgb(64 62 100 / .2); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+  opacity: 0; transition: opacity .2s ease, overlay .2s allow-discrete, display .2s allow-discrete; }
+html:not([data-hud]) .modal[open]::backdrop { opacity: 1; }
+@starting-style { html:not([data-hud]) .modal[open]::backdrop { opacity: 0; } }
 html:not([data-hud]) .modal-heading p { font-size: 12px; }
 html:not([data-hud]) .kind-switch { background: rgb(255 255 255 / .5); }
 html:not([data-hud]) .field input, html:not([data-hud]) .field select, html:not([data-hud]) .project-member-settings-row select, html:not([data-hud]) .project-grant-settings textarea { background: rgb(255 255 255 / .82); border-color: rgb(205 205 228 / .8); border-radius: 10px; }
-html:not([data-hud]) .toast { left: calc(50% + 131px); background: rgb(255 255 255 / .84); border-color: rgb(255 255 255 / .92); border-radius: 12px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 12px 34px rgb(80 86 140 / .16); }
+html:not([data-hud]) .toast { left: calc(50% + 131px); background: rgb(255 255 255 / .84); border-color: rgb(255 255 255 / .92); border-radius: 12px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 12px 34px rgb(80 86 140 / .16), inset 0 1px 0 #fff;
+  transform: translate(-50%, 14px) scale(.96); transition: opacity .2s ease, transform .42s cubic-bezier(.34, 1.4, .64, 1); }
+html:not([data-hud]) .toast.visible { transform: translate(-50%, 0); }
 html:not([data-hud]) .toast.error { background: rgb(255 243 240 / .92); }
 html:not([data-hud]) .message-context-menu { background: rgb(255 255 255 / .88); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-color: rgb(255 255 255 / .92); border-radius: 12px; }
 html:not([data-hud]) ::-webkit-scrollbar-thumb { background: rgb(150 146 196 / .35); }
 html:not([data-hud]) ::-webkit-scrollbar-thumb:hover { background: rgb(150 146 196 / .55); }
 
 /* ---------- 动效 ---------- */
-@keyframes view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fold-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-html:not([data-hud]) .main.view-enter > * { animation: view-in .34s var(--ease) both; }
+/* 换页：旧页面（motion.ts 挪进 .view-ghost）化成雾散开，新页面从雾里清晰起来——磨砂玻璃上起雾、再擦亮。 */
+@keyframes fog-out { to { opacity: 0; filter: blur(10px); transform: scale(.985); } }
+@keyframes fog-in { from { opacity: 0; filter: blur(10px); transform: translateY(8px) scale(1.006); } }
+.view-ghost { position: fixed; z-index: 3; display: flex; flex-direction: column; overflow: hidden; border-radius: 19px; pointer-events: none; transform-origin: 50% 40%;
+  animation: fog-out .3s var(--ease) forwards; }
+html:not([data-hud]) .main.view-enter > * { animation: fog-in .46s var(--ease) both; }
 html:not([data-hud]) .main.view-enter > :nth-child(2) { animation-delay: .05s; }
+/* 新到的消息：从下面浮上来、由虚到实。自己发的从右下角长出来，回复从左上角。 */
+@keyframes arrive { from { opacity: 0; transform: translateY(14px) scale(.97); filter: blur(4px); } }
+html:not([data-hud]) .arrive { animation: arrive .5s var(--ease) both; transform-origin: 0 0; }
+html:not([data-hud]) .message.own.arrive, html:not([data-hud]) .project-team-message.own.arrive { transform-origin: 100% 100%; }
+/* 侧栏选中：一块和选中卡片一模一样的滑块从旧位置滑到新位置（motion.ts 的 glide），滑行时卡片自己的底色先藏起来。 */
+.conversation-list { position: relative; }
+html:not([data-hud]) .conversation-item, html:not([data-hud]) .project-module-row { position: relative; z-index: 1; }
+.nav-glider { position: absolute; z-index: 0; pointer-events: none; box-sizing: border-box; }
+.nav-glider.card { border-radius: 13px; background: rgb(255 255 255 / .86); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 6px 20px rgb(98 96 168 / .13), inset 0 1px 0 #fff; }
+.nav-glider.card::before { content: ''; position: absolute; left: -1px; top: 12px; bottom: 12px; width: 3px; border-radius: 3px; background: linear-gradient(var(--lilac), var(--ice)); }
+.nav-glider.module { border-radius: 9px; background: rgb(255 255 255 / .88); box-shadow: 0 2px 10px rgb(96 100 160 / .1); }
+/* 选中态不渐变底色：滑块一停，卡片的底色要当场接上，渐变会让它闪一下。 */
+html:not([data-hud]) .conversation.active, html:not([data-hud]) .project-module-row.active { transition: transform .18s var(--ease); }
+html:not([data-hud]) .conversation.active.gliding, html:not([data-hud]) .project-module-row.active.gliding { background: transparent; border-color: transparent; box-shadow: none; }
+html:not([data-hud]) .conversation.active.gliding::before { opacity: 0; }
+/* 折叠块（思考、工具记录、计划……）展开收起都顺滑：高度在 0 和 auto 之间过渡。 */
+html:not([data-hud]) { interpolate-size: allow-keywords; }
+html:not([data-hud]) details::details-content { block-size: 0; overflow: clip; transition: block-size .3s var(--ease), content-visibility .3s allow-discrete; }
+html:not([data-hud]) details[open]::details-content { block-size: auto; }
+html:not([data-hud]) details.instant::details-content { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  .bg-layer, .members-panel { transition: none !important; }
-  html:not([data-hud]) .main.view-enter > *, html:not([data-hud]) .modal[open], html:not([data-hud]) .project-subnav:not([hidden]), .albion-hero { animation: none !important; }
+  .bg-layer, .members-panel, html:not([data-hud]) details::details-content, html:not([data-hud]) .modal, html:not([data-hud]) .modal::backdrop { transition: none !important; }
+  html:not([data-hud]) .main.view-enter > *, .view-ghost, html:not([data-hud]) .arrive, html:not([data-hud]) .project-subnav:not([hidden]), .albion-hero { animation: none !important; }
 }
 
 /* ---------- 阿尔比恩 ---------- */
@@ -333,10 +366,14 @@ html:not([data-hud]) .chat-heading { flex: 1; }
 .tool-chip .chip-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-chip .chip-caret { font-size: 11px; color: #8a90ad; transition: transform .18s; }
 .tool-chip[aria-expanded="true"] .chip-caret { transform: rotate(180deg); }
-.tool-pop { display: none !important; }
-.tool-pop.open:not([hidden]) { display: flex !important; position: absolute; top: calc(100% + 6px); left: 0; width: min(720px, 100%); padding: 14px 16px; border-radius: 16px;
-  flex-wrap: wrap; gap: 10px 12px; align-items: center; background: rgb(251 251 255 / .94); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 18px 50px rgb(70 74 130 / .2);
-  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); animation: modal-in .22s var(--ease); }
+/* 浮层的位置和外观开着关着都在（关的时候本来就 display:none），收起时才能就地淡出而不是先掉回文档流。 */
+.tool-pop { display: none !important; opacity: 0; translate: 0 -6px; scale: .98; transform-origin: 0 0;
+  transition: opacity .14s ease, translate .18s var(--ease), scale .18s var(--ease), display .18s allow-discrete; }
+.chat-tools > .tool-pop:not([hidden]) { position: absolute; top: calc(100% + 6px); left: 0; width: min(720px, 100%); padding: 14px 16px; border-radius: 16px;
+  flex-wrap: wrap; gap: 10px 12px; align-items: center; background: rgb(251 251 255 / .94); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 18px 50px rgb(70 74 130 / .2), inset 0 1px 0 #fff;
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+.tool-pop.open:not([hidden]) { display: flex !important; opacity: 1; translate: 0; scale: 1; transition-duration: .2s, .3s, .3s, .3s; }
+@starting-style { .tool-pop.open:not([hidden]) { opacity: 0; translate: 0 -6px; scale: .98; } }
 .discussion-controls.tool-pop.open:not([hidden]) { display: block !important; border-bottom: 1px solid rgb(255 255 255 / .95); }
 .tool-pop .discussion-status, .tool-pop #live-setting-status { flex-basis: 100%; }
 html[data-hud] .chat-tools { display: none; }
@@ -381,7 +418,10 @@ html:not([data-hud]) .service-card > button { width: auto; }
 .service-more.open > button span { transform: rotate(180deg); }
 .service-menu { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 170px; padding: 6px; border-radius: 12px;
   background: rgb(251 251 255 / .96); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 16px 40px rgb(70 74 130 / .2); backdrop-filter: blur(20px); }
-.service-more.open .service-menu { display: grid; gap: 2px; animation: modal-in .2s var(--ease); }
+.service-menu, .avatar-picker { opacity: 0; translate: 0 6px; transition: opacity .14s ease, translate .18s var(--ease), display .18s allow-discrete; }
+.avatar-picker { translate: 0 -6px; }
+.service-more.open .service-menu { display: grid; gap: 2px; opacity: 1; translate: 0; transition-duration: .2s, .3s, .3s; }
+@starting-style { .service-more.open .service-menu { opacity: 0; translate: 0 6px; } }
 .service-menu > button, .service-menu > a { display: block; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; font-size: 12px; color: #4f5878; text-decoration: none; cursor: pointer; }
 .service-menu > button:hover:not(:disabled), .service-menu > a:hover { background: rgb(236 232 252 / .8); }
 .service-menu > button[hidden] { display: none; }
@@ -433,7 +473,8 @@ html:not([data-hud]) .fact-row > .status-dot.muted { background: #c6c9d8; box-sh
 .avatar-edit-button:hover .avatar-edit-hint, .avatar-edit.open .avatar-edit-hint { opacity: 1; transform: none; }
 .avatar-picker { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 25; width: 214px; padding: 10px; border-radius: 14px;
   background: rgb(251 251 255 / .97); border: 1px solid rgb(255 255 255 / .95); box-shadow: 0 16px 40px rgb(70 74 130 / .22); backdrop-filter: blur(20px); }
-.avatar-edit.open .avatar-picker { display: grid; gap: 4px; animation: modal-in .2s var(--ease); }
+.avatar-edit.open .avatar-picker { display: grid; gap: 4px; opacity: 1; translate: 0; transition-duration: .2s, .3s, .3s; }
+@starting-style { .avatar-edit.open .avatar-picker { opacity: 0; translate: 0 -6px; } }
 .avatar-swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 2px 2px 8px; border-bottom: 1px solid var(--glass-line); margin-bottom: 4px; }
 .avatar-swatch { aspect-ratio: 1; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .35); }
 .avatar-swatch:hover { transform: scale(1.08); box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgb(165 152 216 / .5); }
@@ -571,3 +612,25 @@ html:not([data-hud]) #registered-project-info:not(:empty) { padding: 6px 11px; b
 html:not([data-hud]) .model-setting-note { color: var(--muted); font-size: 12px; }
 html:not([data-hud]) .session-bind-choice select { padding-right: 28px; text-overflow: ellipsis; }
 html:not([data-hud]) .session-bind-who small, html:not([data-hud]) .session-bind-note { font-size: 11px; color: var(--faint); }
+
+/* ---------- 有人在回复：输入框沿着边缘流过一圈淡紫到冰蓝的光 ---------- */
+@property --spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes spin { to { --spin: 360deg; } }
+html:not([data-hud]) .composer, html:not([data-hud]) .project-agent-chat-composer { position: relative; }
+html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { content: ''; position: absolute; inset: -1px; padding: 2px; border-radius: inherit; pointer-events: none; opacity: 0;
+  background: conic-gradient(from var(--spin), transparent 0 8%, #9384e2 22%, #6fa7e6 38%, transparent 52% 58%, #e3a2cc 72%, transparent 86%);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  transition: opacity .5s ease; animation: spin 3.6s linear infinite paused; }
+html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) {
+  box-shadow: 0 12px 34px rgb(90 96 160 / .13), 0 0 0 4px rgb(165 152 216 / .1), 0 10px 36px rgb(120 136 224 / .24); }
+html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer)::after { opacity: 1; animation-play-state: running; }
+@media (prefers-reduced-motion: reduce) { html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { animation: none; } }
+
+/* ---------- 滚动区上沿：内容滑到标题行下面时渐隐，不是一刀切 ---------- */
+html:not([data-hud]) :is(.messages, .project-agent-chat-messages, .services-content, .inquiry-content, .brain-jobs-content, .project-progress-content) { mask-image: linear-gradient(transparent, #000 22px); }
+html:not([data-hud]) .conversation-list { padding-top: 4px; mask-image: linear-gradient(transparent, #000 10px, #000 calc(100% - 20px), transparent); }
+
+/* ---------- 磨砂的颗粒：两块玻璃面板上铺一层极淡的噪点，摸上去像真的毛玻璃 ---------- */
+html:not([data-hud]) .sidebar { position: relative; }
+html:not([data-hud]) :is(.sidebar, .main)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; opacity: .4; mix-blend-mode: soft-light;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }

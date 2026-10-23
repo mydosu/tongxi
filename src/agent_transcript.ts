@@ -25,6 +25,8 @@ export class AgentTranscript {
   private observer: ResizeObserver;
   private jump: HTMLButtonElement;
   private frame = 0;
+  // 第一批是打开页面时已有的记录，不播入场；之后新建的条目才浮上来。
+  private seeded = false;
   private scroll = () => {
     if (this.viewport.scrollHeight - this.viewport.scrollTop - this.viewport.clientHeight < 64) this.following = true;
     this.jump.hidden = this.following;
@@ -79,10 +81,12 @@ export class AgentTranscript {
     let cursor = this.list.firstElementChild;
     for (const entry of entries) {
       const node = nodes.get(entry.id) || this.create(entry);
+      if (this.seeded && !nodes.has(entry.id)) node.classList.add('arrive');
       this.patch(node, entry);
       if (node !== cursor) this.list.insertBefore(node, cursor);
       cursor = node.nextElementSibling;
     }
+    this.seeded = true;
     if (!entries.length) this.list.innerHTML = this.format.empty;
     if (anchor && anchor.isConnected) this.viewport.scrollTop += anchor.getBoundingClientRect().top - offset;
     this.follow();

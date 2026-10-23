@@ -22,6 +22,7 @@ import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, sca
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
+import { fogOut, glide, measure, watchArrivals } from './motion';
 import './styles.css';
 import './agent_transcript.css';
 import './theme.css';
@@ -311,16 +312,19 @@ function wireToolChips() {
   paintToolChips();
 }
 
-/// 换会话、换页面时整块轻轻滑入；同一页面里的重绘不再播放，免得刷新时闪。
+/// 换会话、换页面时旧页面化雾淡出、新页面从雾里清晰；同一页面里的重绘不再播放，免得刷新时闪。
 let enterTimer: ReturnType<typeof setTimeout>;
 function enterView(view: string) {
   if (main.dataset.view === view) return;
   main.dataset.view = view;
+  document.querySelector('#service-link')?.classList.toggle('active', view === 'services');
+  fogOut(main);
   main.classList.remove('view-enter'); void main.offsetWidth; main.classList.add('view-enter');
   clearTimeout(enterTimer); enterTimer = setTimeout(() => main.classList.remove('view-enter'), 520);
 }
 let membersOpen = localStorage.getItem('hub.membersPanel') === '1';
 new MutationObserver(()=>hydrateAttachments(main)).observe(main,{childList:true,subtree:true});
+watchArrivals(main, () => main.dataset.view);
 let pendingQuestions:PendingChatQuestion[]=[];
 const noticedQuestions=new Set<string>();
 main.addEventListener('focusout', () => { setTimeout(() => renderLiveSettings(), 0); });
@@ -500,6 +504,7 @@ function renderList() {
   document.querySelector('#archive-filter')!.classList.toggle('active', archived);
   const visible = conversations.filter(conversation => filter === 'all' || conversation.kind === filter);
   const list = document.querySelector<HTMLDivElement>('#conversation-list')!;
+  const before = measure(list);
   list.innerHTML = visible.length ? visible.map(conversation => {
     const agent = conversation.kind === 'direct' ? globalMember(conversation.members[0]) : null;
     const rooms = conversation.kind === 'group' ? projectRoomsByGroup.get(conversation.id) || [] : [];
@@ -523,6 +528,7 @@ function renderList() {
   }));
   list.querySelectorAll<HTMLButtonElement>('[data-project-module]').forEach(button => button.addEventListener('click', () => void selectProjectModule(button.dataset.groupId || '', button.dataset.projectModule || 'team')));
   bindConversationDrag(list, visible.map(conversation => conversation.id));
+  glide(list, before);
 }
 
 /// 就地改名：把标题元素换成输入框，Enter 或失焦保存，Esc 取消。侧栏卡片右键与聊天页标题双击共用。
@@ -1071,7 +1077,9 @@ function detailsKey(details: HTMLDetailsElement) {
 function restoreOpenedDetails(root: ParentNode) {
   for (const details of root.querySelectorAll<HTMLDetailsElement>('details')) {
     const chosen = openedDetails.get(detailsKey(details));
-    if (chosen !== undefined && details.open !== chosen) details.open = chosen;
+    if (chosen === undefined || details.open === chosen) continue;
+    // 重绘后还原用户选的开合不播展开动画，不然每次刷新都抖一下。
+    details.classList.add('instant'); details.open = chosen; void details.offsetHeight; details.classList.remove('instant');
   }
 }
 /// 消息列表跟不跟到底：用户往上翻就停，自己翻回底部再跟（理由同思考框，见 thought_scroll）。
