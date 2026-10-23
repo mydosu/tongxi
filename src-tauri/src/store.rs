@@ -1085,6 +1085,7 @@ impl Store {
     ) -> Result<RunRecord> {
         self.guard_service_maintenance(agent_id)?;
         self.guard_cli_handoff(conversation_id, agent_id)?;
+        crate::project_brain::rollover(&self.connection, conversation_id);
         // 项目任务与私聊走各自的原生会话，可以同时进行，不再互相等待。
         let settings = self
             .detail(conversation_id)?
