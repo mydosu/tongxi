@@ -86,12 +86,12 @@ function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
 }
 
 /// 计划流程图：列按先后（前面还连着几步），卡片颜色是状态，箭头是依赖。
-const NODE = { w: 176, h: 80, gx: 40, gy: 10 };
+const NODE = { w: 170, h: 84, gx: 40, gy: 14 };
 const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '在做'], review: ['◐', '待审'], you: ['⏸', '等你'], waiting: ['⏸', '在等'], todo: ['○', '没做'], done: ['✓', '做完'] };
 /// 等用户答问题、或负责人就是用户（手测这类）的等待，都算「等你」。
 const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key || step.owner === '你') ? 'you' : step.status;
 
-function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string) {
+function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string, pick: number | null) {
   if (!all.length) return '';
   // 做完又不卡任何没做完步骤的收起来，点「做完」再展开；全做完了就都显示。
   const feeds = (step: PlanStep) => all.some(next => next.depends.includes(step.id) && next.status !== 'done');
@@ -122,7 +122,8 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
       const p = points[i - 1], half = (q.x - p.x) / 2;
       return `C${p.x + half} ${p.y} ${q.x - half} ${q.y} ${q.x} ${q.y}`;
     }).join(' ');
-    return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${dim(step) && dim(byId.get(id)!)}" d="${d}" marker-end="url(#plan-arrow)"/>`;
+    // 通向在做那一步的线流动起来：活正往那儿走。
+    return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${stepKind(step) === 'doing' ? ' flow' : ''}${dim(step) && dim(byId.get(id)!)}" data-from="${id}" data-to="${step.id}" d="${d}" marker-end="url(#plan-arrow)"/>`;
   })).join('');
   const nodes = steps.map(step => {
     const [x, y] = at.get(step.id)!, kind = stepKind(step), [icon, word] = STEP_LOOK[kind];
@@ -134,21 +135,80 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
       : kind === 'waiting' ? `等：${step.note || '—'}`
       : step.note || who;
     const held = step.status === 'done' ? 0 : blocked(step.id).size;
-    const tip = [`#${step.id} ${step.title}`, `${word}${who ? ` · ${who}` : ''}`, step.note || '', step.depends.length ? `先做完：${step.depends.map(id => `#${id}`).join(' ')}` : ''].filter(Boolean).join('\n');
-    return `<div class="plan-node ${kind}${dim(step)}" style="left:${x}px;top:${y}px;width:${NODE.w}px;height:${NODE.h}px" title="${escape(tip)}">
-      <strong><span class="plan-icon">${icon}</span>${escape(step.title)}</strong>
-      <p><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</p></div>`;
+    return `<button type="button" class="plan-node ${kind}${dim(step)}${pick === step.id ? ' picked' : ''}" data-plan-pick="${step.id}" aria-pressed="${pick === step.id}" style="left:${x}px;top:${y}px;width:${NODE.w}px;height:${NODE.h}px" aria-label="${escape(`#${step.id} ${step.title}，${word}`)}">
+      <strong><span class="plan-icon" aria-hidden="true">${icon}</span>${escape(step.title)}</strong>
+      <span class="plan-foot"><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</span></button>`;
   }).join('');
+  const picked = all.find(step => step.id === pick);
   const counts = Object.keys(STEP_LOOK).map(kind => [kind, all.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
   const bar = counts.map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}">${STEP_LOOK[kind][1]} ${count}</button>`).join('');
   const hint = folded.length ? `<small class="plan-folded">${folded.length} 步做完、不卡别的，已收起，点「做完」展开</small>` : '';
   return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${filter ? '<button type="button" class="text-button" data-plan-filter="">看全部</button>' : ''}${hint}</div>
     <div class="plan-flow"><div class="plan-canvas" style="width:${width}px;height:${height}px">
-      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker></defs>${edges}</svg>${nodes}</div></div></section>`;
+      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}</section>`;
+}
+
+/// 点开的一步：全文、谁负责、先要等哪几步、卡住几件；有派出去的活就能跳过去看、打开那位成员的会话。
+function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: Escape, held: number) {
+  const kind = stepKind(step), [icon, word] = STEP_LOOK[kind];
+  const job = jobs.find(item => item.id === step.job);
+  const title = (id: number) => all.find(item => item.id === id)?.title || '';
+  const rows = [
+    step.name || step.owner ? `<p><strong>负责</strong><span>${escape(step.name || step.owner!)}</span></p>` : '',
+    step.depends.length ? `<p><strong>先做完</strong><span>${step.depends.map(id => `<button type="button" class="plan-ref" data-plan-pick="${id}">#${id} ${escape(title(id))}</button>`).join('')}</span></p>` : '',
+    held ? `<p><strong>卡住</strong><span>后面 ${held} 件没做完的都在等它</span></p>` : '',
+  ].join('');
+  const actions = job ? `<div class="brain-job-actions"><button type="button" class="secondary" data-show-job="${escape(job.id)}">看这件活</button><button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>` : '';
+  return `<article class="plan-detail ${kind}"><header><span class="plan-chip"><span aria-hidden="true">${icon}</span>${word}</span><strong>#${step.id} ${escape(step.title)}</strong><button type="button" class="icon-button" data-plan-pick="${step.id}" aria-label="收起">×</button></header>
+    ${step.note ? `<p class="plan-detail-note">${escape(step.note)}</p>` : ''}${rows ? `<div class="plan-detail-rows">${rows}</div>` : ''}${actions}</article>`;
+}
+
+/// 指到一步就亮出它前面要等的、后面被它卡住的整条链，其余淡下去；空白处按住能拖着看。
+export function bindPlanFlow(root: ParentNode) {
+  const flow = root.querySelector<HTMLElement>('.plan-flow'), canvas = flow?.querySelector<HTMLElement>('.plan-canvas');
+  if (!flow || !canvas) return;
+  const edges = [...canvas.querySelectorAll<SVGPathElement>('path[data-from]')];
+  const chain = (start: string) => {
+    const nodes = new Set([start]), paths = new Set<SVGPathElement>();
+    for (const up of [true, false]) for (const queue = [start]; queue.length;) {
+      const id = queue.pop()!;
+      for (const edge of edges) if ((up ? edge.dataset.to : edge.dataset.from) === id) {
+        const next = up ? edge.dataset.from! : edge.dataset.to!;
+        paths.add(edge);
+        if (!nodes.has(next)) { nodes.add(next); queue.push(next); }
+      }
+    }
+    return { nodes, paths };
+  };
+  let traced = '';
+  const trace = (node: HTMLElement | null) => {
+    const id = node?.dataset.planPick || '';
+    if (id === traced) return;
+    traced = id;
+    const lit = id ? chain(id) : null;
+    canvas.classList.toggle('tracing', !!lit);
+    canvas.querySelectorAll<HTMLElement>('.plan-node').forEach(item => item.classList.toggle('lit', !!lit?.nodes.has(item.dataset.planPick!)));
+    for (const edge of edges) edge.classList.toggle('lit', !!lit?.paths.has(edge));
+  };
+  canvas.addEventListener('pointerover', event => trace((event.target as Element).closest<HTMLElement>('.plan-node')));
+  canvas.addEventListener('pointerleave', () => trace(null));
+  canvas.addEventListener('focusin', event => trace((event.target as Element).closest<HTMLElement>('.plan-node')));
+  canvas.addEventListener('focusout', () => trace(null));
+  flow.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || (event.target as Element).closest('.plan-node')) return;
+    const from = { x: event.clientX, y: event.clientY, left: flow.scrollLeft, top: flow.scrollTop };
+    flow.setPointerCapture(event.pointerId);
+    flow.classList.add('panning');
+    const move = (next: PointerEvent) => { flow.scrollLeft = from.left - (next.clientX - from.x); flow.scrollTop = from.top - (next.clientY - from.y); };
+    const stop = () => { flow.classList.remove('panning'); flow.removeEventListener('pointermove', move); };
+    flow.addEventListener('pointermove', move);
+    flow.addEventListener('pointerup', stop, { once: true });
+    flow.addEventListener('pointercancel', stop, { once: true });
+  });
 }
 
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
-export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter = '') {
+export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter = '', planPick: number | null = null) {
   const head = `<header class="chat-header"><div><h1>主脑派活</h1><p>${escape(project)} · 主脑的计划、交给成员的每件活</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
@@ -157,5 +217,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '现在没有在做的活。' : '主脑还没派过活。在团队对话里说要做的事，主脑会把活派给成员，派出去的都列在这里。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter)}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

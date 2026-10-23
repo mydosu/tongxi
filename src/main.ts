@@ -12,7 +12,7 @@ import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
-import { brainJobsPage, jobLive, modelText } from './project_brain_jobs';
+import { bindPlanFlow, brainJobsPage, jobLive, modelText } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
@@ -145,6 +145,7 @@ let brainOverview: BrainOverview | null = null;
 let brainJobsTimer = 0;
 const openJobFolds = new Set<string>();
 let planFilter = '';
+let planPick: number | null = null;
 let brainJobsPaint = '';
 async function refreshBrainJobs(groupId: string) {
   try {
@@ -173,9 +174,13 @@ function renderBrainJobs(force = false) {
   const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
   // 展开的计划、结果框自己也能滚，重绘后按折叠键放回原处。
   const inner = new Map([...main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text')].map(box => [box.parentElement!.dataset.jobFold!, box.scrollTop]));
-  main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds, planFilter);
+  const flow = main.querySelector('.plan-flow'), flowAt = [flow?.scrollLeft || 0, flow?.scrollTop || 0];
+  main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds, planFilter, planPick);
   const content = main.querySelector<HTMLElement>('.brain-jobs-content');
   if (content) content.scrollTop = scroll;
+  const newFlow = main.querySelector('.plan-flow');
+  if (newFlow) [newFlow.scrollLeft, newFlow.scrollTop] = flowAt;
+  bindPlanFlow(main);
   main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text').forEach(box => { box.scrollTop = inner.get(box.parentElement!.dataset.jobFold!) || 0; });
   main.querySelector('[data-project-return-team]')?.addEventListener('click', () => void selectProjectModule(selectedId, 'team'));
   main.querySelectorAll<HTMLButtonElement>('[data-open-seat]').forEach(button => button.addEventListener('click', () => void selectProjectModule(selectedId, button.dataset.openSeat!)));
@@ -186,6 +191,21 @@ function renderBrainJobs(force = false) {
   main.querySelectorAll<HTMLButtonElement>('[data-plan-filter]').forEach(button => button.addEventListener('click', () => {
     planFilter = planFilter === button.dataset.planFilter ? '' : button.dataset.planFilter!;
     renderBrainJobs(true);
+  }));
+  main.querySelectorAll<HTMLButtonElement>('[data-plan-pick]').forEach(button => button.addEventListener('click', () => {
+    const id = Number(button.dataset.planPick);
+    planPick = planPick === id ? null : id;
+    renderBrainJobs(true);
+    main.querySelector<HTMLElement>(`.plan-node[data-plan-pick="${id}"]`)?.focus({ preventScroll: true });
+  }));
+  // 从流程图跳到那件活：收在「已结束」里的先展开，滚过去闪一下。
+  main.querySelectorAll<HTMLButtonElement>('[data-show-job]').forEach(button => button.addEventListener('click', () => {
+    const card = main.querySelector<HTMLElement>(`.brain-job[data-job-id="${CSS.escape(button.dataset.showJob!)}"]`);
+    if (!card) return;
+    const fold = card.closest<HTMLDetailsElement>('details[data-job-fold]');
+    if (fold && !fold.open) openInstantly(fold, true);
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
   }));
   main.querySelectorAll<HTMLButtonElement>('[data-stop-job]').forEach(button => button.addEventListener('click', async () => {
     // 点两下才停：成员做到一半的活停了就没了。
@@ -1077,10 +1097,12 @@ function detailsKey(details: HTMLDetailsElement) {
 function restoreOpenedDetails(root: ParentNode) {
   for (const details of root.querySelectorAll<HTMLDetailsElement>('details')) {
     const chosen = openedDetails.get(detailsKey(details));
-    if (chosen === undefined || details.open === chosen) continue;
-    // 重绘后还原用户选的开合不播展开动画，不然每次刷新都抖一下。
-    details.classList.add('instant'); details.open = chosen; void details.offsetHeight; details.classList.remove('instant');
+    if (chosen !== undefined && details.open !== chosen) openInstantly(details, chosen);
   }
+}
+/// 程序改开合不播展开动画：重绘后还原用户选的开合（不然每次刷新都抖一下）、跳过去看一件活，都要立刻到位。
+function openInstantly(details: HTMLDetailsElement, open: boolean) {
+  details.classList.add('instant'); details.open = open; void details.offsetHeight; details.classList.remove('instant');
 }
 /// 消息列表跟不跟到底：用户往上翻就停，自己翻回底部再跟（理由同思考框，见 thought_scroll）。
 main.addEventListener('wheel', event => {
