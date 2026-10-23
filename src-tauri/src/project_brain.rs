@@ -35,7 +35,59 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            id TEXT PRIMARY KEY,room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
            content TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);",
     )
-    .map_err(|_| "主脑结构迁移失败".into())
+    .map_err(|_| "主脑结构迁移失败")?;
+    crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")
+}
+
+/// 近 30 天派出的活按「成员 × 模型 × 强度 × 类别」统计做完几件、失败几件、平均用时，给主脑挑人用。
+fn track_record(connection: &Connection) -> Vec<Value> {
+    #[derive(Default)]
+    struct Tally {
+        jobs: u32,
+        done: u32,
+        failed: u32,
+        quota: u32,
+        stopped: u32,
+        minutes: f64,
+    }
+    let since = now() - 30 * 24 * 3600 * 1000;
+    let mut tallies: std::collections::BTreeMap<(String, Option<String>, Option<String>, String), Tally> = Default::default();
+    let rows = connection
+        .prepare(
+            "SELECT j.seat,COALESCE(r.model,j.model),COALESCE(r.reasoning_effort,j.effort),COALESCE(j.category,'未分类'),j.status,r.status,COALESCE(j.error,''),j.created_at,j.finished_at
+             FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id WHERE j.kind='task' AND j.status IN ('done','failed') AND j.created_at>=?1",
+        )
+        .and_then(|mut query| {
+            query
+                .query_map([since], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+    for (seat, model, effort, category, status, run, error, created, finished) in rows {
+        let tally = tallies.entry((base_agent(&seat).to_owned(), model, effort, category)).or_default();
+        tally.jobs += 1;
+        if status == "done" {
+            tally.done += 1;
+            tally.minutes += finished.map_or(0.0, |at| (at - created) as f64 / 60000.0);
+        } else if error.contains("额度") || error.contains("频率") {
+            tally.quota += 1;
+        } else if run.as_deref() == Some("interrupted") {
+            tally.stopped += 1;
+        } else {
+            tally.failed += 1;
+        }
+    }
+    let mut record: Vec<(u32, Value)> = tallies
+        .into_iter()
+        .map(|((agent, model, effort, category), t)| {
+            let minutes = (t.done > 0).then(|| (t.minutes / t.done as f64 * 10.0).round() / 10.0);
+            (t.jobs, json!({"agent":agent,"model":model,"effort":effort,"category":category,"jobs":t.jobs,"done":t.done,"failed":t.failed,"quota_failed":t.quota,"stopped":t.stopped,"avg_minutes":minutes}))
+        })
+        .collect();
+    record.sort_by(|a, b| b.0.cmp(&a.0));
+    record.into_iter().take(40).map(|(_, row)| row).collect()
 }
 
 pub(crate) struct FinishedJob {
@@ -640,8 +692,8 @@ fn optional_arg(args: &Value, name: &str) -> Option<String> {
 pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let definitions = [
-        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota. Check this before delegating.", json!({}), vec![]),
-        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"}}), vec!["member","task"]),
+        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Check this before delegating.", json!({}), vec![]),
+        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string}), vec!["member","task"]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
         ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Only works while the member is replying; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
         ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
@@ -698,7 +750,7 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota"),"other_projects":elsewhere}))
+            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota"),"other_projects":elsewhere,"track_record":track_record(connection)}))
         }
         "hub_delegate" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -740,6 +792,11 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 .filter(|(key, _)| key == agent || key.starts_with(&format!("{agent}:")))
                 .collect();
             let job = insert_job(connection, &ctx, &seat, &chat, "task", &task, (model, effort, worktree.clone(), branch.clone()))?;
+            if let Some(category) = optional_arg(&args, "category") {
+                connection
+                    .execute("UPDATE brain_jobs SET category=?1 WHERE id=?2", params![category.chars().take(20).collect::<String>(), job])
+                    .map_err(|_| "任务保存失败")?;
+            }
             Ok(json!({"job":short(&job),"member":seat,"runs_with":runs_with,"quota":quota,"worktree":worktree,"branch":branch,"note":"已交给成员，它做完后结果会作为新消息发给你；不用等也不用查"}))
         }
         "hub_member" => {
@@ -1641,6 +1698,43 @@ B6 做完了"));
 
         store.connection.execute("UPDATE brain_jobs SET status='done',run_id=?1 WHERE id='job-b6'", [&resumed.id]).unwrap();
         assert!(store.finished_brain_jobs().is_empty(), "交回一次就够");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn hub_team_tallies_how_each_model_did_by_kind_of_work() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-record-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("统计项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let brain = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id;
+        let t = now();
+        for (id, seat, status, error, minutes) in [
+            ("a", "codex-win", "done", None, 10),
+            ("b", "codex-win-2", "done", None, 20),
+            ("c", "codex-win", "failed", Some("Codex 额度限制"), 0),
+            ("d", "codex-win", "failed", Some("编译不过"), 0),
+            ("e", "codex-win", "running", None, 0),
+        ] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO brain_jobs(id,room,seat,chat,kind,content,model,effort,category,status,error,created_at,finished_at) VALUES(?1,?2,?3,'chat-x','task','做事','gpt-6.1-sol','high','实现',?4,?5,?6,?7)",
+                    params![id, room, seat, status, error, t - minutes * 60000, t],
+                )
+                .unwrap();
+        }
+        let team = super::call(&store.connection, &brain, "hub_team", serde_json::Value::Null).unwrap();
+        let record = team["track_record"].as_array().unwrap();
+        assert_eq!(record.len(), 1, "两个席位同一成员同一模型合成一行，还在做的不算");
+        let row = &record[0];
+        assert_eq!((row["agent"].as_str(), row["category"].as_str()), (Some("codex-win"), Some("实现")));
+        assert_eq!((row["jobs"].as_u64(), row["done"].as_u64(), row["failed"].as_u64(), row["quota_failed"].as_u64()), (Some(4), Some(2), Some(1), Some(1)));
+        assert_eq!(row["avg_minutes"].as_f64(), Some(15.0));
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
