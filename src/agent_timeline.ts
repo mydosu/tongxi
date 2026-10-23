@@ -6,6 +6,7 @@ export interface AgentEntry {
   id: string;
   at: number;
   kind: 'user' | 'agent';
+  /** 'user' 是你；送进来的消息也可能是主脑派活（主脑席位）、成员交回（成员席位）、同席通知（hub）。 */
   author: string;
   body: string;
   thought: string;
@@ -18,7 +19,7 @@ export interface AgentEntry {
   attachmentRoom?: string;
   protocol?: { label: string; raw: string };
   /** 回复中途插进来的话（按消息 id），显示在回复里被打断的位置。 */
-  steers?: Record<string, { body: string; at: number }>;
+  steers?: Record<string, { body: string; at: number; author: string }>;
 }
 
 export const entryBusy = (status: string) => ['starting', 'running', 'cancelling', 'streaming'].includes(status);
@@ -28,7 +29,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
   const rows = new Map<string, AgentEntry>();
   for (const message of chat.messages) {
     rows.set(`message:${message.id}`, {
-      id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === 'user' ? 'user' : 'agent',
+      id: `message:${message.id}`, at: message.created_at, kind: message.sender_id === agent ? 'agent' : 'user',
       author: message.sender_id, body: message.content, thought: message.thought || '',
       tools: toolActivity(message.tool_events || []), status: message.status, error: null, messageId: message.id, attachmentRoom: chat.conversation.id,
     });
@@ -52,7 +53,7 @@ export function agentTimeline(agent: string, chat: ConversationDetail, runtime: 
     for (const id of steerIds(row.thought)) {
       const said = rows.get(`message:${id}`);
       if (said?.kind !== 'user') continue;
-      (row.steers ??= {})[id] = { body: said.body, at: said.at };
+      (row.steers ??= {})[id] = { body: said.body, at: said.at, author: said.author };
       rows.delete(said.id);
     }
   }

@@ -220,11 +220,28 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     migrate_coordination(tx)?;
     crate::project_sessions::migrate(tx)?;
     // 旧版本把席位会话里的回复记在成员名下（claude-win），这里改记成席位（claude-win-2、claude-win-brain）。
-    // 只动发送者正好是该席位底层成员的回复，重复跑不会再改。
+    // 只动发送者正好是该席位底层成员的回复，重复跑不会再改；成员交回主脑的消息也记在成员名下，不是回复，不能动。
     tx.execute_batch("UPDATE messages SET sender_id=(SELECT p.agent_id FROM project_agent_chats p WHERE p.conversation_id=messages.conversation_id)
-        WHERE sender_id<>'user' AND EXISTS(SELECT 1 FROM project_agent_chats p WHERE p.conversation_id=messages.conversation_id
+        WHERE sender_id<>'user' AND status NOT IN ('local_only','pending','delivered')
+          AND id NOT IN (SELECT user_message_id FROM runs)
+          AND EXISTS(SELECT 1 FROM project_agent_chats p WHERE p.conversation_id=messages.conversation_id
           AND substr(p.agent_id,1,length(messages.sender_id)+1)=messages.sender_id||'-');")
         .map_err(|e| e.to_string())?;
+    // 旧版本把主脑派活、成员交回、同席通知都记成用户发的，按开头改记到真正的发送者名下；改过就不再是 user，重复跑不会再改。
+    tx.execute_batch(&format!(
+        "UPDATE messages SET sender_id=COALESCE((SELECT b.agent_id FROM project_agent_chats p JOIN project_agent_chats b ON b.group_conversation_id=p.group_conversation_id
+            WHERE p.conversation_id=messages.conversation_id AND b.agent_id LIKE '%-{BRAIN_SLOT}' LIMIT 1),'hub')
+          WHERE sender_id='user' AND (content LIKE '【主脑派活】%' OR content LIKE '【主脑插话】%')
+            AND conversation_id IN (SELECT conversation_id FROM project_agent_chats WHERE agent_id NOT LIKE '%-{BRAIN_SLOT}');
+         UPDATE messages SET sender_id=CASE
+            WHEN length(content)-length(replace(content,'【成员交回】',''))=6 AND content NOT LIKE '%【同席】%' AND content NOT LIKE '%【用户回答】%'
+            THEN COALESCE((SELECT agent_id FROM project_agent_chats WHERE agent_id=substr(content,instr(content,'（')+1,instr(content,'）')-instr(content,'（')-1) LIMIT 1),'hub')
+            ELSE 'hub' END
+          WHERE sender_id='user' AND (content LIKE '【成员交回】%' OR content LIKE '【同席】%' OR content LIKE '【用户回答】%')
+            AND NOT (content LIKE '【用户回答】%' AND content NOT LIKE '%【成员交回】%' AND content NOT LIKE '%【同席】%')
+            AND conversation_id IN (SELECT conversation_id FROM project_agent_chats WHERE agent_id LIKE '%-{BRAIN_SLOT}');"
+    ))
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

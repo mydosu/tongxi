@@ -102,7 +102,7 @@ export class AgentTranscript {
     const { escape, name } = this.format;
     const busy = entryBusy(entry.status);
     if (entry.messageId) node.dataset.messageId = entry.messageId;
-    const label = entry.kind === 'user' ? '你' : name(entry.author);
+    const label = entry.author === 'user' ? '你' : name(entry.author);
     node.querySelector('[data-entry-label]')!.textContent = label;
     node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(entry.at);
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
@@ -200,7 +200,9 @@ export class AgentTranscript {
           if (follow) body.scrollTop = body.scrollHeight;
         }
       } else if (part.kind === 'steer') {
+        const { name } = this.format;
         const said = steers![part.text];
+        node.querySelector('.agent-turn-meta > span')!.textContent = said.author === 'user' ? '插话' : name(said.author);
         node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(said.at);
         node.querySelector('.agent-turn-text')!.textContent = attachmentText(said.body);
       } else {

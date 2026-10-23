@@ -1300,6 +1300,17 @@ impl Store {
         message_id: &str,
         content: &str,
     ) -> Result<Message> {
+        self.save_message_from(conversation_id, message_id, content, "user")
+    }
+
+    /// 同席替别人送进会话的消息（主脑派活、成员交回）记在真正的发送者名下；之后运行时再按同一 id 保存时原样返回，不会改回用户。
+    pub fn save_message_from(
+        &mut self,
+        conversation_id: &str,
+        message_id: &str,
+        content: &str,
+        sender: &str,
+    ) -> Result<Message> {
         if Uuid::parse_str(message_id).is_err() {
             return Err("消息 ID 无效".into());
         }
@@ -1322,7 +1333,7 @@ impl Store {
         let message = Message {
             id: message_id.into(),
             conversation_id: conversation_id.into(),
-            sender_id: "user".into(),
+            sender_id: sender.into(),
             content: content.into(),
             thought: String::new(),
             tool_events: Vec::new(),
@@ -1347,7 +1358,17 @@ impl Store {
         message_id: &str,
         content: &str,
     ) -> Result<Message> {
-        let mut message = self.save_message(conversation_id, message_id, content)?;
+        self.save_delivered_message_from(conversation_id, message_id, content, "user")
+    }
+
+    pub fn save_delivered_message_from(
+        &mut self,
+        conversation_id: &str,
+        message_id: &str,
+        content: &str,
+        sender: &str,
+    ) -> Result<Message> {
+        let mut message = self.save_message_from(conversation_id, message_id, content, sender)?;
         self.connection
             .execute(
                 "UPDATE messages SET status='delivered' WHERE id=?1",

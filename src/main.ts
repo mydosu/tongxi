@@ -867,7 +867,7 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
   if (!viewport || !host.isConnected) return;
   if (projectTranscript?.viewport !== viewport) {
     disposeProjectTranscript();
-    projectTranscript = new AgentTranscript(viewport, { escape, name: id => member(id).name, empty: agentEmpty(member(agentId).name, escape) });
+    projectTranscript = new AgentTranscript(viewport, { escape, name: id => id === 'hub' ? '同席' : member(id).name, empty: agentEmpty(member(agentId).name, escape) });
   }
   projectTranscript!.update(agentTimeline(agentId, chat, runtimes[agentId]));
   syncChatQuestions();

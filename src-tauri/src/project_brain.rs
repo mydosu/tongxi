@@ -36,7 +36,9 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            content TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);",
     )
     .map_err(|_| "主脑结构迁移失败")?;
-    crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")
+    crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
+    // 谁送来的（成员席位 / user / hub），送进主脑会话时记在他名下，不混成用户的话。
+    crate::project_store::add_column(tx, "brain_inbox", "sender", "TEXT")
 }
 
 /// 近 30 天派出的活按「成员 × 模型 × 强度 × 类别」统计做完几件、失败几件、平均用时，给主脑挑人用。
@@ -349,7 +351,7 @@ impl Store {
         };
         self.connection
             .execute(
-                "INSERT INTO brain_inbox(id,room,content,created_at) VALUES(?1,?2,?3,?4)",
+                "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
                 params![Uuid::new_v4().to_string(), room, note, now()],
             )
             .map_err(|_| "主脑消息保存失败")?;
@@ -689,17 +691,44 @@ fn optional_arg(args: &Value, name: &str) -> Option<String> {
     args[name].as_str().map(str::trim).filter(|text| !text.is_empty()).map(String::from)
 }
 
+/// 成员会话现在多大、上件活交回到现在几分钟，给主脑权衡续用还是新开。
+/// 上下文取同一原生会话最后一回合报的数；会话刚清掉算 0；报不出来的成员是 null。
+fn session_state(connection: &Connection, seat: &str, chat: &str) -> (Option<i64>, Option<i64>) {
+    let native: Option<String> = connection
+        .query_row("SELECT native_session_id FROM sessions WHERE conversation_id=?1 AND agent_id=?2", params![chat, base_agent(seat)], |row| row.get(0))
+        .ok()
+        .flatten();
+    let context = match native {
+        None => Some(0),
+        Some(native) => connection
+            .query_row(
+                "SELECT usage FROM runs WHERE conversation_id=?1 AND native_thread_id=?2 AND usage IS NOT NULL ORDER BY rowid DESC LIMIT 1",
+                params![chat, native],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|usage| serde_json::from_str::<Value>(&usage).ok())
+            .and_then(|usage| usage["context"].as_i64()),
+    };
+    let idle = connection
+        .query_row("SELECT MAX(finished_at) FROM brain_jobs WHERE seat=?1 AND chat=?2 AND kind='task'", params![seat, chat], |row| row.get::<_, Option<i64>>(0))
+        .ok()
+        .flatten()
+        .map(|at| (now() - at).max(0) / 60_000);
+    (context, idle)
+}
+
 pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let definitions = [
-        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Check this before delegating.", json!({}), vec![]),
-        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string}), vec!["member","task"]),
+        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Each member also has context (tokens in its current session after its last turn; 0 = fresh, null = unknown) and idle_minutes (since its last job came back). Check this before delegating.", json!({}), vec![]),
+        ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it. fresh=true starts the member in a new session (it forgets earlier jobs; write all the background it needs into task); default continues its current session.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string,"fresh":{"type":"boolean"}}), vec!["member","task"]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
         ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Only works while the member is replying; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
         ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
         ("hub_finish_worktree", "Close out a finished job that had a worktree: action=merge merges its branch into the project's current branch and removes the worktree; action=discard throws the work away. On merge conflicts the merge is left in the project directory for you to resolve.", json!({"job":string,"action":{"type":"string","enum":["merge","discard"]}}), vec!["job","action"]),
         ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"}}), vec!["question"]),
-        ("hub_broadcast", "Post one short progress line to the project group the user watches (started what, delegated to whom, finished what, needs the user to decide what). Do not flood it.", json!({"content":string}), vec!["content"]),
+        ("hub_broadcast", "Post one short progress line to the project group the user watches (started what, delegated to whom, finished what, needs the user to decide what). Do not flood it. When a round of work is done, also post the progress report here: done, not done and why, next step, what the user must decide.", json!({"content":string}), vec!["content"]),
     ];
     let mut specs: Vec<Value> = definitions
         .into_iter()
@@ -731,7 +760,8 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                     let (model, effort): (Option<String>, Option<String>) = connection
                         .query_row("SELECT model,reasoning_effort FROM sessions WHERE conversation_id=?1 AND agent_id=?2", params![chat, base_agent(&seat)], |row| Ok((row.get(0)?, row.get(1)?)))
                         .unwrap_or((None, None));
-                    json!({"seat":seat,"name":label(connection,&ctx.room,&seat),"agent":base_agent(&seat),"busy":busy(connection,&seat,&chat),"model":model,"effort":effort})
+                    let (context, idle_minutes) = session_state(connection, &seat, &chat);
+                    json!({"seat":seat,"name":label(connection,&ctx.room,&seat),"agent":base_agent(&seat),"busy":busy(connection,&seat,&chat),"model":model,"effort":effort,"context":context,"idle_minutes":idle_minutes})
                 })
                 .collect();
             let parse = |key: &str| metadata(connection, key).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
@@ -758,6 +788,17 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 return Err(format!("{seat} 手上还有活（{}），等它交回，或用 hub_tell_member / hub_stop_member", short(&job)));
             }
             let task = text_arg(&args, "task", 20000)?;
+            if args["fresh"].as_bool() == Some(true) {
+                let live: bool = connection
+                    .query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND status IN ('starting','running','cancelling'))", [&chat], |row| row.get(0))
+                    .unwrap_or(true);
+                if live {
+                    return Err(format!("{seat} 正在回复，不能新开会话；等它停下再派"));
+                }
+                connection
+                    .execute("UPDATE sessions SET native_session_id=NULL WHERE conversation_id=?1 AND agent_id=?2", params![chat, base_agent(&seat)])
+                    .map_err(|_| "新开会话失败")?;
+            }
             let model = optional_arg(&args, "model");
             let effort = optional_arg(&args, "effort");
             if let Some(model) = &model {
@@ -1131,25 +1172,31 @@ impl Courier {
         })
     }
 
-    fn send(&self, agent: &str, chat: &str, content: &str) -> Result<RunRecord> {
+    /// 先按真正的发送者存好消息，运行时再按同一 id 保存时沿用它；没发出去就删掉，免得重试时攒下一串没发的。
+    fn send(&self, agent: &str, chat: &str, content: &str, sender: &str) -> Result<RunRecord> {
         let message = Uuid::new_v4().to_string();
-        match agent {
+        self.store.lock().unwrap().save_message_from(chat, &message, content, sender)?;
+        let sent = match agent {
             "codex-win" => self.codex.send(chat, &message, content),
             "claude-win" => self.claude.send(chat, &message, content),
             "hermes-win" => self.hermes.send(chat, &message, content),
             "dsh-win" => self.dsh.send(chat, &message, content),
             _ => Err("未知成员".into()),
+        };
+        if sent.is_err() {
+            self.execute("DELETE FROM messages WHERE id=?1 AND status='local_only'", [&message]);
         }
+        sent
     }
 
-    fn steer(&self, agent: &str, chat: &str, content: &str) -> Result<()> {
+    fn steer(&self, agent: &str, chat: &str, content: &str, sender: &str) -> Result<()> {
         let message = Uuid::new_v4().to_string();
         match agent {
             "codex-win" => self.codex.steer(chat, content, &message),
             "claude-win" => self.claude.steer(chat, content, &message),
             _ => return Err("这位成员不支持回复中插话，可以先 hub_stop_member 再重新派活".into()),
         }?;
-        self.store.lock().unwrap().save_delivered_message(chat, &message, content)?;
+        self.store.lock().unwrap().save_delivered_message_from(chat, &message, content, sender)?;
         Ok(())
     }
 
@@ -1168,15 +1215,20 @@ impl Courier {
         let _ = self.store.lock().unwrap().connection.execute(sql, values);
     }
 
-    fn inbox(&self, room: &str, content: &str) {
+    fn inbox(&self, room: &str, content: &str, sender: &str) {
         self.execute(
-            "INSERT INTO brain_inbox(id,room,content,created_at) VALUES(?1,?2,?3,?4)",
-            params![Uuid::new_v4().to_string(), room, content, now()],
+            "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,?5)",
+            params![Uuid::new_v4().to_string(), room, content, now(), sender],
         );
     }
 
     fn name(&self, room: &str, seat: &str) -> String {
         self.store.lock().unwrap().seat_name(room, seat)
+    }
+
+    /// 派活、插话记在主脑席位名下。
+    fn brain(&self, room: &str) -> String {
+        brain_seat(&self.store.lock().unwrap(), room).unwrap_or_else(|_| "hub".into())
     }
 
     fn post(&self, room: &str, content: &str) {
@@ -1196,7 +1248,7 @@ impl Courier {
             "stop" => "停止",
             _ => "派活",
         };
-        self.inbox(&job.room, &format!("【同席】给 {} 的{what}（任务 {}）没成：{error}", self.name(&job.room, &job.seat), short(&job.id)));
+        self.inbox(&job.room, &format!("【同席】给 {} 的{what}（任务 {}）没成：{error}", self.name(&job.room, &job.seat), short(&job.id)), "hub");
     }
 
     /// 一轮：发出待发的活、收回做完的活、把回答和结果送进主脑。返回有变化的项目群。
@@ -1248,7 +1300,7 @@ impl Courier {
             "steer" => {
                 if !self.live(&agent, &job.chat) {
                     self.fail(job, "成员现在没在回复；要它接着做就用 hub_delegate 再交代一次（同一个会话，它记得做过什么）");
-                } else if let Err(error) = self.steer(&agent, &job.chat, &format!("【主脑插话】{}", job.content)) {
+                } else if let Err(error) = self.steer(&agent, &job.chat, &format!("【主脑插话】{}", job.content), &self.brain(&job.room)) {
                     self.fail(job, &error);
                 } else {
                     self.execute("UPDATE brain_jobs SET status='done',finished_at=?1 WHERE id=?2", params![now(), job.id]);
@@ -1296,7 +1348,7 @@ impl Courier {
                     content.push_str(&format!("项目长期授权：{}\n", grants.trim()));
                 }
                 content.push_str(&format!("\n{}\n\n---\n{}", job.content, crate::prompts::member()));
-                match self.send(&agent, &job.chat, &content) {
+                match self.send(&agent, &job.chat, &content, &self.brain(&job.room)) {
                     Ok(record) => {
                         self.execute(
                             "UPDATE brain_jobs SET status='running',run_id=?1 WHERE id=?2",
@@ -1332,7 +1384,7 @@ impl Courier {
             }
             report.push_str("\n");
             report.push_str(&key_points(reply.as_deref().unwrap_or("（没有回复内容）")));
-            self.inbox(&room, &report);
+            self.inbox(&room, &report, &seat);
             let job_status = if status == "completed" { "done" } else { "failed" };
             self.execute(
                 "UPDATE brain_jobs SET status=?1,error=?2,finished_at=?3,run_id=COALESCE(?4,run_id) WHERE id=?5",
@@ -1363,12 +1415,12 @@ impl Courier {
         )
     }
 
-    /// 用户在问答面板答了主脑的问题：送进主脑。
+    /// 用户在问答面板答了主脑的问题：送进主脑。旧调度（coordinator）问过、用户后来才答的也归主脑接手。
     fn collect_answers(&self) -> Vec<String> {
         let rows: Vec<(String, String, String, String)> = {
             let store = self.store.lock().unwrap();
             let Ok(mut query) = store.connection.prepare(&format!(
-                "SELECT id,conversation_id,question,COALESCE(answer,'') FROM project_inquiries WHERE status='answered' AND seen=0 AND asked_by LIKE '%-{BRAIN_SLOT}'"
+                "SELECT id,conversation_id,question,COALESCE(answer,'') FROM project_inquiries WHERE status='answered' AND seen=0 AND (asked_by LIKE '%-{BRAIN_SLOT}' OR asked_by='coordinator')"
             )) else {
                 return Vec::new();
             };
@@ -1379,7 +1431,7 @@ impl Courier {
         };
         let mut rooms = Vec::new();
         for (id, room, question, answer) in rows {
-            self.inbox(&room, &format!("【用户回答】问：{question}\n答：{answer}"));
+            self.inbox(&room, &format!("【用户回答】问：{question}\n答：{answer}"), "user");
             self.execute("UPDATE project_inquiries SET seen=1 WHERE id=?1", [&id]);
             rooms.push(room);
         }
@@ -1423,10 +1475,10 @@ impl Courier {
                         }
                     }
                 };
-                let items: Vec<(String, String)> = store
+                let items: Vec<(String, String, String)> = store
                     .connection
-                    .prepare("SELECT id,content FROM brain_inbox WHERE room=?1 AND delivered=0 ORDER BY created_at,rowid")
-                    .and_then(|mut query| query.query_map([&room], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+                    .prepare("SELECT id,content,COALESCE(sender,'hub') FROM brain_inbox WHERE room=?1 AND delivered=0 ORDER BY created_at,rowid")
+                    .and_then(|mut query| query.query_map([&room], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect())
                     .unwrap_or_default();
                 // 还有成员在做时，交回的先攒着，收件箱静下来 30 秒再一起送，少唤醒主脑几次。
                 let hold: bool = store
@@ -1447,16 +1499,18 @@ impl Courier {
             if !matches!(self.ready(&agent), Ok(true)) {
                 continue;
             }
-            let content = items.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join("\n\n");
+            let content = items.iter().map(|(_, text, _)| text.as_str()).collect::<Vec<_>>().join("\n\n");
+            // 攒在一起的来自不同人时，记成同席转来的。
+            let sender = if items.iter().all(|(_, _, from)| *from == items[0].2) { items[0].2.as_str() } else { "hub" };
             let sent = if self.live(&agent, &chat) {
-                matches!(agent.as_str(), "codex-win" | "claude-win") && self.steer(&agent, &chat, &content).is_ok()
+                matches!(agent.as_str(), "codex-win" | "claude-win") && self.steer(&agent, &chat, &content, sender).is_ok()
             } else if hold {
                 false
             } else {
-                self.send(&agent, &chat, &content).is_ok()
+                self.send(&agent, &chat, &content, sender).is_ok()
             };
             if sent {
-                for (id, _) in &items {
+                for (id, _, _) in &items {
                     self.execute("UPDATE brain_inbox SET delivered=1 WHERE id=?1", [id]);
                 }
                 delivered.push(room);
@@ -1548,6 +1602,47 @@ mod tests {
         assert_eq!(overview.jobs[0].error.as_deref(), Some("你在派活页取消了"));
         assert_eq!(overview.waiting, 1, "主脑会收到一条说明");
         assert!(store.stop_brain_job(&room, "job-old").is_err(), "已经结束的活不能再停");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn relayed_messages_keep_their_real_sender_and_old_ones_are_relabelled() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-sender-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = base.join("data").join("hub.db");
+        let mut store = Store::open(&db).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        store.ensure_project_agent_chats(&room).unwrap();
+        let chat = |store: &Store, seat: &str| -> String {
+            store.connection.query_row("SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2", params![room, seat], |row| row.get(0)).unwrap()
+        };
+        let (brain, member) = (chat(&store, "claude-win-brain"), chat(&store, "claude-win"));
+        let say = |store: &mut Store, chat: &str, content: &str, sender: &str| -> String {
+            let id = Uuid::new_v4().to_string();
+            store.save_delivered_message_from(chat, &id, content, sender).unwrap();
+            id
+        };
+        // 运行时随后按同一 id 再存一次，发送者不能被改回用户。
+        let report = say(&mut store, &brain, "【成员交回】Claude（claude-win）· 任务 a · 做完了", "claude-win");
+        assert_eq!(store.save_message(&brain, &report, "【成员交回】Claude（claude-win）· 任务 a · 做完了").unwrap().sender_id, "claude-win");
+        let old_task = say(&mut store, &member, "【主脑派活】任务 b\n做事", "user");
+        let old_report = say(&mut store, &brain, "【成员交回】Codex（codex-win）· 任务 c · 做完了", "user");
+        let old_batch = say(&mut store, &brain, "【同席】给 Codex 的派活没成\n\n【成员交回】Codex（codex-win）· 任务 d", "user");
+        let old_answer = say(&mut store, &brain, "【用户回答】问：要不要发版\n答：发", "user");
+        let typed = say(&mut store, &brain, "帮我看看【主脑派活】这几个字", "user");
+        drop(store);
+
+        let store = Store::open(&db).unwrap();
+        let sender = |id: &str| -> String { store.connection.query_row("SELECT sender_id FROM messages WHERE id=?1", [id], |row| row.get(0)).unwrap() };
+        assert_eq!(sender(&report), "claude-win", "成员交回不是主脑的回复，启动迁移不能把它改到主脑名下");
+        assert_eq!(sender(&old_task), "claude-win-brain");
+        assert_eq!(sender(&old_report), "codex-win");
+        assert_eq!(sender(&old_batch), "hub", "攒在一起、来自不同人的记成同席");
+        assert_eq!(sender(&old_answer), "user", "问答面板的回答本来就是用户的话");
+        assert_eq!(sender(&typed), "user");
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -1663,6 +1758,48 @@ mod tests {
         assert_eq!(others[0]["project"], "乙项目");
         assert_eq!(others[0]["agent"], "codex-win");
         assert_eq!(others[0]["model"], "gpt-6-luna");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn hub_team_shows_member_context_and_fresh_delegation_starts_a_new_session() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-fresh-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let chat = |seat: &str| chats.iter().find(|chat| chat.agent_id == seat).unwrap().conversation_id.clone();
+        let (brain, member) = (chat("claude-win-brain"), chat("codex-win"));
+        let message = Uuid::new_v4().to_string();
+        store.save_message(&member, &message, "上一件活").unwrap();
+        let run = store.insert_run(&member, &message, "codex-win", None, None).unwrap().id;
+        store
+            .connection
+            .execute_batch(&format!(
+                "UPDATE sessions SET native_session_id='thread-1' WHERE conversation_id='{member}' AND agent_id='codex-win';
+                 UPDATE runs SET status='completed',native_thread_id='thread-1',usage='{{\"context\":91000}}' WHERE id='{run}';"
+            ))
+            .unwrap();
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at,finished_at) VALUES('job-1',?1,'codex-win',?2,'task','上一件活','done',?3,?4)", params![room, member, now(), now() - 30 * 60_000])
+            .unwrap();
+        let codex = |store: &Store| {
+            let team = super::call(&store.connection, &brain, "hub_team", serde_json::Value::Null).unwrap();
+            team["members"].as_array().unwrap().iter().find(|seat| seat["seat"] == "codex-win").unwrap().clone()
+        };
+        let before = codex(&store);
+        assert_eq!(before["context"], 91000, "上下文取同一原生会话最后一回合");
+        assert_eq!(before["idle_minutes"], 30);
+
+        super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"codex-win","task":"不相关的新活","fresh":true})).unwrap();
+        let native: Option<String> = store.connection.query_row("SELECT native_session_id FROM sessions WHERE conversation_id=?1 AND agent_id='codex-win'", [&member], |row| row.get(0)).unwrap();
+        assert_eq!(native, None, "fresh 清掉原生会话，运行时会开新的");
+        assert_eq!(codex(&store)["context"], 0);
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
