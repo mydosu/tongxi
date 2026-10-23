@@ -116,8 +116,12 @@ fn native_question_waits_for_actual_answer_instead_of_returning_empty_answers() 
 #[test]
 fn ordinary_private_mcp_question_works_for_three_technical_members() {
     let (mut store, root) = fixture();
+    let mut servers = std::collections::HashSet::new();
     for agent in ["codex-win", "hermes-win", "dsh-win"] {
         let room = store.create("私聊", "direct", &[agent.into()]).unwrap();
+        // 每个会话的工具服务器各起各的名字，Hermes 不会把它们当成同一个复用。
+        let server = crate::project_tools::project_chat_mcp_server(&store.path, &room.id).unwrap().unwrap();
+        assert!(servers.insert(server["name"].as_str().unwrap().to_owned()));
         let mut run = store
             .begin_agent_run(&room.id, &Uuid::new_v4().to_string(), "澄清目标", agent)
             .unwrap();

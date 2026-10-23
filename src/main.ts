@@ -2039,13 +2039,17 @@ async function checkServiceUpdate(agentId: string, card: HTMLElement) {
     const latest = result.latest_version ? `发行 v${escape(result.latest_version)}` : '发行版本未知';
     // Only a real backend verdict is shown: null means the remote comparison did not
     // complete, so the local detection is never presented as "up to date".
-    const verdict = result.update_available === true ? '发现新版本' : result.update_available === false ? '已与发行版本核对，无更新' : '未完成远程版本比较';
+    // Claude 不查发行版：true/false 是「磁盘上的版本和连接时不同 / 相同」。
+    const claude = agentId === 'claude-win';
+    const verdict = claude
+      ? (result.update_available === true ? '已自动更新，重启会话以应用' : result.update_available === false ? '运行的就是已安装的版本' : '未连接，无法比较版本')
+      : result.update_available === true ? '发现新版本' : result.update_available === false ? '已与发行版本核对，无更新' : '未完成远程版本比较';
     const planLine = agentId === 'dsh-win' || agentId === 'codex-win'
       ? '可准备隔离候选后再更新；当前检查没有更改安装'
       : agentId === 'hermes-win'
         ? '更新会交接给 Hermes 自己的更新通道：它会退出并重启'
         : agentId === 'claude-win'
-          ? 'Claude Code 自己负责更新：在终端运行 claude update，同席不覆盖安装'
+          ? 'Claude Code 会自己自动更新；检测到已更新时点「重启」，重连后用上新版本和新的模型目录'
         : result.update_available === null ? '仅本地版本检测，同席不代更新' : '由外部安装维护，同席不代你更新';
     // 这行字贴着按钮显示很格格不入：卡片上不再出现结论行，只留在 DOM 里供验收读取，
     // 细节挂到卡片悬停上，要看再hover。
@@ -2054,7 +2058,9 @@ async function checkServiceUpdate(agentId: string, card: HTMLElement) {
     // 结论存成状态再渲染，别只写一次 DOM：服务页会因 inventory / 运行时变化整页重绘，
     // 一次性的写入会被那次重绘冲掉（徽标退回「未检测」，看着像检查没生效）。
     serviceChecks[agentId] = {
-      badge: `更新：${result.update_available === true ? (result.latest_version ? `发现新版本 v${result.latest_version}` : '发现新版本') : result.update_available === false ? '已是最新' : '未检测'}`,
+      badge: claude
+        ? `更新：${result.update_available === true ? `已自动更新到 v${result.installed_version}，重启会话以应用` : result.update_available === false ? '无待应用的更新' : '未检测'}`
+        : `更新：${result.update_available === true ? (result.latest_version ? `发现新版本 v${result.latest_version}` : '发现新版本') : result.update_available === false ? '已是最新' : '未检测'}`,
       detail,
       tip,
       // 有新版时把按钮写清版本号，也是状态：重绘后不能退回「准备更新」。
@@ -2229,7 +2235,7 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
 function renderServices() {
   disposeProjectTranscript();
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 核对 npm 发行版、由 claude update 自行更新 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
+  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 会自己自动更新，检测到已更新就提示重启会话 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。

@@ -21,7 +21,6 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, String>;
 
 pub const AGENT_ID: &str = "claude-win";
-pub const PACKAGE: &str = "@anthropic-ai/claude-code";
 const NATIVE_EXE: &str = "node_modules/@anthropic-ai/claude-code/bin/claude.exe";
 
 struct Inner {

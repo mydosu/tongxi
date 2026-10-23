@@ -934,12 +934,14 @@ pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
         "{}
 
 ## 模型档案
+文件 {}，所有项目共用，由你调研维护。
 {}
 
 ## 本项目
 项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/，交接写在 .tongxi/交接.md。
 项目长期授权：{}",
         crate::prompts::brain(),
+        crate::prompts::prompt_files("models.md").first().map_or("（未设置数据目录）".into(), |path| path.display().to_string()),
         crate::prompts::models(),
         grants.as_deref().unwrap_or("（没有）"),
     );

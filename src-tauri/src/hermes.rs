@@ -44,6 +44,19 @@ fn busy(run: &RunSnapshot) -> bool {
         "starting" | "running" | "cancelling"
     )
 }
+/// Hermes 调模型失败时不报错，而是把失败说明当回复、照常 end_turn 结束；认出它自己的几种失败开头，
+/// 记成失败（额度类带「额度」二字，主脑的模型战绩据此算撞额度）。
+fn failure_reply(text: &str) -> Option<String> {
+    let text = text.trim_start();
+    let line: String = text.lines().next().unwrap_or("").chars().take(200).collect();
+    if text.starts_with("Billing or credits exhausted") || text.starts_with("Provider reported usage/credit exhaustion") {
+        Some(format!("Hermes 线路额度不足（额度限制）：{line}"))
+    } else if text.starts_with("API call failed after") {
+        Some(format!("Hermes 调用模型失败：{line}"))
+    } else {
+        None
+    }
+}
 fn provider_label(model: &Value) -> Option<String> {
     let description = model["description"].as_str()?;
     let label = description
@@ -512,18 +525,24 @@ impl Runtime {
         match result {
             Ok(value) => {
                 self.store.lock().unwrap().record_usage(run_id, &value);
-                let status = match value["stopReason"].as_str() {
+                let mut status = match value["stopReason"].as_str() {
                     Some("cancelled") => "interrupted",
                     Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => {
                         "completed"
                     }
                     _ => "failed",
                 };
-                self.finish(
-                    run_id,
-                    status,
-                    (status == "failed").then(|| "Hermes 未返回正常完成状态".into()),
-                );
+                let mut error = (status == "failed").then(|| "Hermes 未返回正常完成状态".to_string());
+                if status == "completed" {
+                    let text = run_ref(&self.inner.lock().unwrap().runs, run_id)
+                        .map(|run| run.text.clone())
+                        .unwrap_or_default();
+                    if let Some(reason) = failure_reply(&text) {
+                        status = "failed";
+                        error = Some(reason);
+                    }
+                }
+                self.finish(run_id, status, error);
             }
             Err(error) => {
                 self.finish(run_id, "failed", Some(error.clone()));
@@ -710,8 +729,16 @@ impl Runtime {
 
 #[cfg(test)]
 mod model_catalog_tests {
-    use super::models_from_response;
+    use super::{failure_reply, models_from_response};
     use serde_json::json;
+
+    #[test]
+    fn failure_text_hermes_returns_as_a_reply_counts_as_failed() {
+        let billing = failure_reply("Billing or credits exhausted: HTTP 400: You have insufficient credits.\n\nAdd credits").unwrap();
+        assert!(billing.contains("额度") && billing.contains("HTTP 400") && !billing.contains("Add credits"));
+        assert!(failure_reply("API call failed after 3 retries: HTTP 503").unwrap().contains("调用模型失败"));
+        assert_eq!(failure_reply("## 交回\n统计完了：Billing or credits exhausted 这句不在开头"), None);
+    }
 
     #[test]
     fn model_catalog_keeps_provider_routes_for_grouped_selection() {
