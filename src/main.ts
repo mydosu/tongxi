@@ -12,7 +12,7 @@ import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
-import { bindPlanFlow, brainJobsPage, jobLive, modelText } from './project_brain_jobs';
+import { bindPlanFlow, brainJobsPage, jobLive, modelText, revealPlanNode } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
 import { projectSessionsDialog } from './project_sessions';
@@ -146,6 +146,8 @@ let brainJobsTimer = 0;
 const openJobFolds = new Set<string>();
 let planFilter = '';
 let planPick: number | null = null;
+// 选的分类、点开的那步只属于当前项目：换了项目就清掉（步骤编号各项目各自从 1 数）。
+let planFor = '';
 let brainJobsPaint = '';
 async function refreshBrainJobs(groupId: string) {
   try {
@@ -174,13 +176,11 @@ function renderBrainJobs(force = false) {
   const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
   // 展开的计划、结果框自己也能滚，重绘后按折叠键放回原处。
   const inner = new Map([...main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text')].map(box => [box.parentElement!.dataset.jobFold!, box.scrollTop]));
-  const flow = main.querySelector('.plan-flow'), flowAt = [flow?.scrollLeft || 0, flow?.scrollTop || 0];
+  if (planFor !== selectedId) { planFor = selectedId; planFilter = ''; planPick = null; }
   main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds, planFilter, planPick);
   const content = main.querySelector<HTMLElement>('.brain-jobs-content');
   if (content) content.scrollTop = scroll;
-  const newFlow = main.querySelector('.plan-flow');
-  if (newFlow) [newFlow.scrollLeft, newFlow.scrollTop] = flowAt;
-  bindPlanFlow(main);
+  bindPlanFlow(main, selectedId);
   main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text').forEach(box => { box.scrollTop = inner.get(box.parentElement!.dataset.jobFold!) || 0; });
   main.querySelector('[data-project-return-team]')?.addEventListener('click', () => void selectProjectModule(selectedId, 'team'));
   main.querySelectorAll<HTMLButtonElement>('[data-open-seat]').forEach(button => button.addEventListener('click', () => void selectProjectModule(selectedId, button.dataset.openSeat!)));
@@ -196,7 +196,7 @@ function renderBrainJobs(force = false) {
     const id = Number(button.dataset.planPick);
     planPick = planPick === id ? null : id;
     renderBrainJobs(true);
-    main.querySelector<HTMLElement>(`.plan-node[data-plan-pick="${id}"]`)?.focus({ preventScroll: true });
+    revealPlanNode(main, id, planPick === id);
   }));
   // 从流程图跳到那件活：收在「已结束」里的先展开，滚过去闪一下。
   main.querySelectorAll<HTMLButtonElement>('[data-show-job]').forEach(button => button.addEventListener('click', () => {

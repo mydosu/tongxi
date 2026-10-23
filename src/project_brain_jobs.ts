@@ -1,6 +1,7 @@
 import type { BrainJob, BrainOverview, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 import dagre from '@dagrejs/dagre';
+import { still } from './motion';
 
 type Escape = (value: string | number) => string;
 
@@ -93,9 +94,9 @@ const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key
 
 function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string, pick: number | null) {
   if (!all.length) return '';
-  // 做完又不卡任何没做完步骤的收起来，点「做完」再展开；全做完了就都显示。
+  // 不选分类时，做完又不卡任何没做完步骤的收起来；点「全部」或「做完」都摆出来；全做完了就都显示。
   const feeds = (step: PlanStep) => all.some(next => next.depends.includes(step.id) && next.status !== 'done');
-  const folded = filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
+  const folded = filter === 'all' || filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
   const steps = all.filter(step => !folded.includes(step));
   const byId = new Map(steps.map(step => [step.id, step]));
   // dagre 分层排版：跨列的长边经虚拟节点绕开卡片，逐层扫描减少交叉。
@@ -111,7 +112,7 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
     for (const next of steps) if (next.depends.includes(id) && next.status !== 'done' && !seen.has(next.id)) { seen.add(next.id); blocked(next.id, seen); }
     return seen;
   };
-  const dim = (step: PlanStep) => filter && stepKind(step) !== filter ? ' dim' : '';
+  const dim = (step: PlanStep) => filter && filter !== 'all' && stepKind(step) !== filter ? ' dim' : '';
   const width = graph.graph().width!, height = graph.graph().height!;
   // 连线从上游卡片右边中点出、进下游卡片左边中点，中间照 dagre 给的折点（列间空当）走，每段用水平切线的三次曲线连起来。
   const edges = steps.flatMap(step => step.depends.filter(id => at.has(id)).map(id => {
@@ -136,16 +137,18 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
       : step.note || who;
     const held = step.status === 'done' ? 0 : blocked(step.id).size;
     return `<button type="button" class="plan-node ${kind}${dim(step)}${pick === step.id ? ' picked' : ''}" data-plan-pick="${step.id}" aria-pressed="${pick === step.id}" style="left:${x}px;top:${y}px;width:${NODE.w}px;height:${NODE.h}px" aria-label="${escape(`#${step.id} ${step.title}，${word}`)}">
-      <strong><span class="plan-icon" aria-hidden="true">${icon}</span>${escape(step.title)}</strong>
+      <strong><span class="plan-icon" aria-hidden="true">${icon}</span><span class="plan-name">${escape(step.title)}</span></strong>
       <span class="plan-foot"><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</span></button>`;
   }).join('');
   const picked = all.find(step => step.id === pick);
   const counts = Object.keys(STEP_LOOK).map(kind => [kind, all.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
-  const bar = counts.map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}">${STEP_LOOK[kind][1]} ${count}</button>`).join('');
-  const hint = folded.length ? `<small class="plan-folded">${folded.length} 步做完、不卡别的，已收起，点「做完」展开</small>` : '';
-  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${filter ? '<button type="button" class="text-button" data-plan-filter="">看全部</button>' : ''}${hint}</div>
-    <div class="plan-flow"><div class="plan-canvas" style="width:${width}px;height:${height}px">
-      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}</section>`;
+  // 「全部」排第一个，每一步都摆出来；其余按状态只亮那一类。再点一次亮着的回到默认（收起做完又不卡别的）。
+  const bar = [['all', all.length] as const, ...counts].map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}" aria-pressed="${filter === kind}">${kind === 'all' ? '全部' : STEP_LOOK[kind][1]} ${count}</button>`).join('');
+  const hint = folded.length ? `<button type="button" class="plan-folded" data-plan-filter="all">收起了 ${folded.length} 步做完、不卡别的 ▸</button>` : '';
+  const zoom = `<div class="plan-zoom" role="group" aria-label="缩放"><button type="button" data-zoom="out" aria-label="缩小" title="缩小（在图上滚轮也行）">−</button><button type="button" class="plan-zoom-level" data-zoom="reset" title="回到 100%">100%</button><button type="button" data-zoom="in" aria-label="放大" title="放大（在图上滚轮也行）">+</button><button type="button" data-zoom="fit" aria-label="适应窗口" title="适应窗口（双击空白处也行）"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 5V1.5H5M9 1.5h3.5V5m0 4v3.5H9m-4 0H1.5V9"/></svg></button></div>`;
+  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${hint}${zoom}</div>
+    <div class="plan-stage"><div class="plan-flow"><div class="plan-canvas" data-w="${width}" data-h="${height}" style="width:${width}px;height:${height}px">
+      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div><div class="plan-tip" hidden></div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}</section>`;
 }
 
 /// 点开的一步：全文、谁负责、先要等哪几步、卡住几件；有派出去的活就能跳过去看、打开那位成员的会话。
@@ -163,10 +166,93 @@ function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: E
     ${step.note ? `<p class="plan-detail-note">${escape(step.note)}</p>` : ''}${rows ? `<div class="plan-detail-rows">${rows}</div>` : ''}${actions}</article>`;
 }
 
-/// 指到一步就亮出它前面要等的、后面被它卡住的整条链，其余淡下去；空白处按住能拖着看。
-export function bindPlanFlow(root: ParentNode) {
-  const flow = root.querySelector<HTMLElement>('.plan-flow'), canvas = flow?.querySelector<HTMLElement>('.plan-canvas');
-  if (!flow || !canvas) return;
+/// 流程图的视野按项目记着：活一有变化整页就重画，缩放和拖到的位置都留着，换项目才重新摆。
+/// auto 跟着窗口宽度自己缩到放得下（最小 60%，再小字就挤了）；fit 是点了「适应窗口」；manual 是手动缩放过。
+const ZOOM_STEPS = [0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
+const MIN = ZOOM_STEPS[0], MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
+const view = { key: '', mode: 'auto' as 'auto' | 'fit' | 'manual', scale: 1, left: 0, top: 0 };
+let viewWatch: ResizeObserver | undefined, viewFrame = 0;
+
+/// 点开一步：它要是在画布视野外就把画布挪过去（只在点开时，重绘不乱挪）。
+export function revealPlanNode(root: ParentNode, id: number, scroll: boolean) {
+  const node = root.querySelector<HTMLElement>(`.plan-node[data-plan-pick="${id}"]`);
+  node?.focus({ preventScroll: true });
+  if (scroll) node?.scrollIntoView({ behavior: still() ? 'auto' : 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+/// 指到一步就亮出它前面要等的、后面被它卡住的整条链，其余淡下去；字被截掉的浮出全文。
+/// 按住拖着看（卡片上也能拖，挪过几像素才算拖，不然算点），滚轮或右上角按钮缩放，双击空白处适应窗口。
+export function bindPlanFlow(root: ParentNode, key: string) {
+  viewWatch?.disconnect(); cancelAnimationFrame(viewFrame);
+  const stage = root.querySelector<HTMLElement>('.plan-stage'), flow = stage?.querySelector<HTMLElement>('.plan-flow'), canvas = flow?.querySelector<HTMLElement>('.plan-canvas');
+  if (!stage || !flow || !canvas) return;
+  const tip = stage.querySelector<HTMLElement>('.plan-tip')!, tools = root.querySelector<HTMLElement>('.plan-zoom')!, level = tools.querySelector<HTMLButtonElement>('[data-zoom="reset"]')!;
+  const zoomOut = tools.querySelector<HTMLButtonElement>('[data-zoom="out"]')!, zoomIn = tools.querySelector<HTMLButtonElement>('[data-zoom="in"]')!;
+  const w = Number(canvas.dataset.w), h = Number(canvas.dataset.h), pad = 24, tall = 520;
+  const fits = () => Math.min(1, (flow.clientWidth - pad) / w, (tall - pad) / h);
+  const fitScale = () => Math.max(MIN, fits());
+  // 缩小了字会挤：卡片里的标题按比例反着放大，屏幕上看着差不多大；再小就只留标题，其余的指上去看。
+  const paint = (scale: number) => {
+    view.scale = scale;
+    stage.style.setProperty('--zoom', String(scale));
+    canvas.classList.toggle('far', scale < 0.85);
+    canvas.classList.toggle('tiny', scale < 0.6);
+    level.textContent = `${Math.round(scale * 100)}%`;
+    zoomOut.disabled = scale <= MIN + 1e-3; zoomIn.disabled = scale >= MAX - 1e-3;
+  };
+  // 没有滚动条了，四边还有内容的就淡出一截，看得出能往那边拖。
+  const edge = () => {
+    const x = flow.scrollWidth - flow.clientWidth, y = flow.scrollHeight - flow.clientHeight;
+    flow.style.setProperty('--fl', flow.scrollLeft > 1 ? '28px' : '0px');
+    flow.style.setProperty('--fr', flow.scrollLeft < x - 1 ? '28px' : '0px');
+    flow.style.setProperty('--ft', flow.scrollTop > 1 ? '24px' : '0px');
+    flow.style.setProperty('--fb', flow.scrollTop < y - 1 ? '24px' : '0px');
+  };
+  // 画布高度只跟 auto 的比例走：手动缩放时外框不跟着忽高忽低，页面下面的东西不跳。
+  const layout = () => {
+    const auto = Math.max(0.6, fits());
+    flow.style.height = `${Math.min(tall, Math.max(150, h * auto + pad))}px`;
+    paint(view.mode === 'auto' ? auto : view.mode === 'fit' ? fitScale() : view.scale);
+    edge();
+  };
+  // 缩放时鼠标底下那一点不动。
+  const zoomAt = (scale: number, x: number, y: number) => {
+    hideTip();
+    const before = canvas.getBoundingClientRect(), fx = (x - before.left) / before.width, fy = (y - before.top) / before.height;
+    paint(Math.min(MAX, Math.max(MIN, scale)));
+    const after = canvas.getBoundingClientRect();
+    flow.scrollLeft += after.left + fx * after.width - x;
+    flow.scrollTop += after.top + fy * after.height - y;
+    edge();
+  };
+  const glide = (to: number, mode: typeof view.mode = 'manual') => {
+    cancelAnimationFrame(viewFrame);
+    view.mode = mode;
+    const box = flow.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2, from = view.scale, start = performance.now();
+    if (still()) return zoomAt(to, x, y);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / 220);
+      zoomAt(from + (to - from) * (1 - (1 - t) ** 3), x, y);
+      if (t < 1) viewFrame = requestAnimationFrame(step);
+    };
+    viewFrame = requestAnimationFrame(step);
+  };
+
+  let tipTimer = 0;
+  const hideTip = () => { clearTimeout(tipTimer); tip.hidden = true; };
+  const showTip = (node: HTMLElement) => {
+    const title = node.querySelector('strong')!, line = node.querySelector('small')!;
+    if (!canvas.classList.contains('far') && title.scrollHeight <= title.clientHeight + 1 && line.scrollWidth <= line.clientWidth + 1) return;
+    const foot = [...node.querySelector('.plan-foot')!.children].map(item => item.textContent).filter(Boolean).join(' · ');
+    tip.replaceChildren(Object.assign(document.createElement('strong'), { textContent: `#${node.dataset.planPick} ${node.querySelector('.plan-name')!.textContent}` }),
+      ...(foot ? [Object.assign(document.createElement('small'), { textContent: foot })] : []));
+    tip.hidden = false;
+    const box = stage.getBoundingClientRect(), at = node.getBoundingClientRect();
+    const above = at.top - box.top - tip.offsetHeight - 8;
+    tip.style.left = `${Math.max(8, Math.min(at.left - box.left + at.width / 2 - tip.offsetWidth / 2, box.width - tip.offsetWidth - 8))}px`;
+    tip.style.top = `${above >= 4 ? above : at.bottom - box.top + 8}px`;
+  };
+
   const edges = [...canvas.querySelectorAll<SVGPathElement>('path[data-from]')];
   const chain = (start: string) => {
     const nodes = new Set([start]), paths = new Set<SVGPathElement>();
@@ -190,21 +276,74 @@ export function bindPlanFlow(root: ParentNode) {
     canvas.querySelectorAll<HTMLElement>('.plan-node').forEach(item => item.classList.toggle('lit', !!lit?.nodes.has(item.dataset.planPick!)));
     for (const edge of edges) edge.classList.toggle('lit', !!lit?.paths.has(edge));
   };
-  canvas.addEventListener('pointerover', event => trace((event.target as Element).closest<HTMLElement>('.plan-node')));
-  canvas.addEventListener('pointerleave', () => trace(null));
-  canvas.addEventListener('focusin', event => trace((event.target as Element).closest<HTMLElement>('.plan-node')));
-  canvas.addEventListener('focusout', () => trace(null));
-  flow.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || (event.target as Element).closest('.plan-node')) return;
-    const from = { x: event.clientX, y: event.clientY, left: flow.scrollLeft, top: flow.scrollTop };
-    flow.setPointerCapture(event.pointerId);
-    flow.classList.add('panning');
-    const move = (next: PointerEvent) => { flow.scrollLeft = from.left - (next.clientX - from.x); flow.scrollTop = from.top - (next.clientY - from.y); };
-    const stop = () => { flow.classList.remove('panning'); flow.removeEventListener('pointermove', move); };
-    flow.addEventListener('pointermove', move);
-    flow.addEventListener('pointerup', stop, { once: true });
-    flow.addEventListener('pointercancel', stop, { once: true });
+  let hovered: HTMLElement | null = null;
+  canvas.addEventListener('pointerover', event => {
+    const node = (event.target as Element).closest<HTMLElement>('.plan-node');
+    if (node === hovered) return;
+    hovered = node; trace(node); hideTip();
+    if (node) tipTimer = window.setTimeout(() => showTip(node), 350);
   });
+  canvas.addEventListener('pointerleave', () => { hovered = null; trace(null); hideTip(); });
+  canvas.addEventListener('focusin', event => {
+    const node = (event.target as Element).closest<HTMLElement>('.plan-node');
+    trace(node);
+    if (node?.matches(':focus-visible')) showTip(node);
+  });
+  canvas.addEventListener('focusout', () => { trace(null); hideTip(); });
+
+  flow.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    hideTip();
+    const from = { x: event.clientX, y: event.clientY, left: flow.scrollLeft, top: flow.scrollTop };
+    let panning = false;
+    const move = (next: PointerEvent) => {
+      const dx = next.clientX - from.x, dy = next.clientY - from.y;
+      if (!panning) {
+        if (Math.hypot(dx, dy) < 4) return;
+        panning = true;
+        flow.setPointerCapture(event.pointerId);
+        flow.classList.add('panning');
+      }
+      flow.scrollLeft = from.left - dx; flow.scrollTop = from.top - dy;
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop);
+      if (!panning) return;
+      flow.classList.remove('panning');
+      // 拖完松手不算点了卡片。
+      const swallow = (click: Event) => { click.stopPropagation(); click.preventDefault(); };
+      flow.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => flow.removeEventListener('click', swallow, { capture: true }));
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+  });
+  // 滚轮在画布上就是缩放（移动靠拖）；要翻页把鼠标挪出画布再滚。
+  flow.addEventListener('wheel', event => {
+    event.preventDefault();
+    cancelAnimationFrame(viewFrame);
+    view.mode = 'manual';
+    zoomAt(view.scale * Math.exp(-event.deltaY * (event.deltaMode ? 0.05 : 0.002)), event.clientX, event.clientY);
+  }, { passive: false });
+  flow.addEventListener('dblclick', event => { if (!(event.target as Element).closest('.plan-node')) glide(fitScale(), 'fit'); });
+  tools.addEventListener('click', event => {
+    const what = (event.target as Element).closest<HTMLElement>('[data-zoom]')?.dataset.zoom;
+    if (what === 'in') glide(ZOOM_STEPS.find(scale => scale > view.scale + 0.01) ?? MAX);
+    if (what === 'out') glide([...ZOOM_STEPS].reverse().find(scale => scale < view.scale - 0.01) ?? MIN);
+    if (what === 'reset') glide(1);
+    if (what === 'fit') glide(fitScale(), 'fit');
+  });
+
+  if (view.key !== key) Object.assign(view, { key, mode: 'auto', left: 0, top: 0 });
+  layout();
+  flow.scrollLeft = view.left; flow.scrollTop = view.top;
+  edge();
+  flow.addEventListener('scroll', () => { view.left = flow.scrollLeft; view.top = flow.scrollTop; edge(); hideTip(); }, { passive: true });
+  let width = flow.clientWidth;
+  viewWatch = new ResizeObserver(() => {
+    if (!flow.isConnected) return viewWatch?.disconnect();
+    if (flow.clientWidth !== width) { width = flow.clientWidth; layout(); }
+  });
+  viewWatch.observe(flow);
 }
 
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
