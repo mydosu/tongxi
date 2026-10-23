@@ -86,12 +86,17 @@ function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
 }
 
 /// 计划流程图：列按先后（前面还连着几步），卡片颜色是状态，箭头是依赖。
-const NODE = { w: 172, h: 64, gx: 40, gy: 10 };
+const NODE = { w: 176, h: 80, gx: 40, gy: 10 };
 const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '在做'], review: ['◐', '待审'], you: ['⏸', '等你'], waiting: ['⏸', '在等'], todo: ['○', '没做'], done: ['✓', '做完'] };
-const stepKind = (step: PlanStep) => step.status === 'waiting' && step.wait_key ? 'you' : step.status;
+/// 等用户答问题、或负责人就是用户（手测这类）的等待，都算「等你」。
+const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key || step.owner === '你') ? 'you' : step.status;
 
-function planFlow(steps: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string) {
-  if (!steps.length) return '';
+function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string) {
+  if (!all.length) return '';
+  // 做完又不卡任何没做完步骤的收起来，点「做完」再展开；全做完了就都显示。
+  const feeds = (step: PlanStep) => all.some(next => next.depends.includes(step.id) && next.status !== 'done');
+  const folded = filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
+  const steps = all.filter(step => !folded.includes(step));
   const byId = new Map(steps.map(step => [step.id, step]));
   // dagre 分层排版：跨列的长边经虚拟节点绕开卡片，逐层扫描减少交叉。
   const graph = new dagre.graphlib.Graph();
@@ -125,7 +130,7 @@ function planFlow(steps: PlanStep[], jobs: BrainJob[], escape: Escape, filter: s
     const who = step.name || step.owner || '';
     const line = kind === 'doing' ? `${who}${job ? ` · ${span(job.created_at, Date.now())}` : ''}`
       : kind === 'review' ? `${who} 交回了，主脑在审`
-      : kind === 'you' ? `等你在问答面板回答${step.note ? `：${step.note}` : ''}`
+      : kind === 'you' ? (step.wait_key ? `等你在问答面板回答${step.note ? `：${step.note}` : ''}` : `等你：${step.note || '—'}`)
       : kind === 'waiting' ? `等：${step.note || '—'}`
       : step.note || who;
     const held = step.status === 'done' ? 0 : blocked(step.id).size;
@@ -134,9 +139,10 @@ function planFlow(steps: PlanStep[], jobs: BrainJob[], escape: Escape, filter: s
       <strong><span class="plan-icon">${icon}</span>${escape(step.title)}</strong>
       <p><small>${escape(line)}</small>${held ? `<em>拖住 ${held} 件</em>` : ''}</p></div>`;
   }).join('');
-  const counts = Object.keys(STEP_LOOK).map(kind => [kind, steps.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
+  const counts = Object.keys(STEP_LOOK).map(kind => [kind, all.filter(step => stepKind(step) === kind).length] as const).filter(([, count]) => count);
   const bar = counts.map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}">${STEP_LOOK[kind][1]} ${count}</button>`).join('');
-  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${filter ? '<button type="button" class="text-button" data-plan-filter="">看全部</button>' : ''}</div>
+  const hint = folded.length ? `<small class="plan-folded">${folded.length} 步做完、不卡别的，已收起，点「做完」展开</small>` : '';
+  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${filter ? '<button type="button" class="text-button" data-plan-filter="">看全部</button>' : ''}${hint}</div>
     <div class="plan-flow"><div class="plan-canvas" style="width:${width}px;height:${height}px">
       <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker></defs>${edges}</svg>${nodes}</div></div></section>`;
 }
