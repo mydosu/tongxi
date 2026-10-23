@@ -458,13 +458,18 @@ fn update_blocker(service_id: &str) -> Result<&'static str, String> {
             "Hermes 由它自己的更新器管理：同席只做只读的远程核对，更新交接给它自己的通道。"
         }
         "claude-win" => {
-            "Claude Code 由它自己的更新通道（claude update 或原安装方式）管理：同席只核对 npm 发行版本，不覆盖安装。"
+            "Claude Code 会自己自动更新：同席只比较运行版本和已安装版本，更新了就提示重启会话。"
         }
         "albion-wsl" => {
             "Albion 位于 WSL 内并带有本地定制改动，直接覆盖会丢失定制，暂不支持自动更新。"
         }
         _ => return Err(format!("该服务暂不支持受管更新：{service_id}")),
     })
+}
+
+/// 磁盘上的 Claude 和连接时的不是同一版：自己更新过了。任一版本没测到就不下结论。
+fn claude_auto_updated(running: Option<&str>, installed: Option<&str>) -> Option<bool> {
+    Some(running? != installed?)
 }
 
 /// Re-detects one service while holding its maintenance lock, then asks the proper source
@@ -519,20 +524,20 @@ pub async fn check_service_update(
                         None,
                     )
                 }
+                // Claude Code 自己会自动更新（有会话占着 exe 时会等它们退出）。同席每回合都新起 claude 进程，
+                // 只有连接时读的版本和模型目录是旧的：磁盘上的版本和连接时不同，就提示重启会话。
                 "claude-win" => {
-                    let data = crate::service_updates::data_directory(&app)?;
-                    let (metadata, latest_is_newer) = crate::service_updates::check_release(
-                        &data,
-                        crate::claude::PACKAGE,
+                    let updated = claude_auto_updated(
+                        info.runtime_version.as_deref(),
                         info.installed_version.as_deref(),
-                    )?;
-                    (
-                        Some(metadata.version),
-                        latest_is_newer,
-                        "npm-registry",
-                        "已核对 npm 发行版本；更新请在终端运行 claude update".to_string(),
-                        None,
-                    )
+                    );
+                    let note = match (updated, &info.installed_version) {
+                        (Some(true), Some(installed)) => {
+                            format!("Claude Code 已自动更新到 v{installed}，重启会话以应用")
+                        }
+                        _ => "Claude Code 会自己自动更新，同席不代更新".to_string(),
+                    };
+                    (None, updated, "local", note, None)
                 }
                 "hermes-win" => match crate::service_updates::hermes_repo() {
                     Some(repo) => {
@@ -883,6 +888,13 @@ mod tests {
             default_model: None,
             default_effort: None,
         }
+    }
+
+    #[test]
+    fn claude_counts_as_updated_only_when_disk_and_connection_versions_differ() {
+        assert_eq!(claude_auto_updated(Some("2.1.296"), Some("2.1.301")), Some(true));
+        assert_eq!(claude_auto_updated(Some("2.1.301"), Some("2.1.301")), Some(false));
+        assert_eq!(claude_auto_updated(None, Some("2.1.301")), None);
     }
 
     #[test]

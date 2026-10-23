@@ -1,4 +1,6 @@
-各模型的能力和贵贱（用户可以直接改这份档案）。订阅线路（Claude、ChatGPT 账号）按额度算，用的是 5 小时和每周额度；API 线路按 token 算钱。hub_team 里有每个成员实际能选的模型 id 和当前额度。
+调研日期：未调研（这是出厂示例，先按「资源调研」查一遍再用）
+
+各模型的能力和贵贱（主脑调研维护，用户也可以直接改）。订阅线路（Claude、ChatGPT 账号）按额度算，用的是 5 小时和每周额度；API 线路按 token 算钱。hub_team 里有每个成员实际能选的模型 id 和当前额度。
 
 | 模型 | 能力 | 贵贱 | 适合 |
 |---|---|---|---|
@@ -10,7 +12,9 @@
 | GPT-6.1 Sol | 强 | 中 | 实现、排查、审查 |
 | GPT-6 Luna | 中 | 很便宜 | 体力活：测试、构建、批量改 |
 | DeepSeek V4.1 Flash | 中下 | 很便宜 | 简单改动、查找、整理 |
-| MiniMax M3.1 Flash（free） | 弱 | 免费 | 杂活、简单查询 |
+| Beam 1.0（reflection/beam:free） | 中下 | 免费 | 杂活、简单查询 |
 | Gemini 3.7 Flash | 中 | 便宜 | 简单实现、查找 |
+
+免费模型只认 id 里带 `:free` 或 `-free` 的，免费档随时会撤；按 token 算钱的线路（如 Command Code）额度里 `credits_left_usd` 见底时，那条线路只剩免费模型能用。
 
 思考强度（effort）也是一档：同一个模型，low/medium 便宜快，high 以上贵但更稳。体力活用 low 或 medium，难题用 high。

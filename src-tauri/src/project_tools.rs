@@ -50,8 +50,10 @@ pub fn project_chat_mcp_server(db: &Path, conversation_id: &str) -> Result<Optio
         }
     }
     let command = std::env::current_exe().map_err(|_| "项目消息工具程序不可用")?;
+    // 名字按会话区分：Hermes 一个进程里按名字只连一次，同名会让后开的会话（比如主脑）用上先开会话的工具和身份。
+    let name = format!("agent_hub_project_{}", conversation_id.chars().filter(char::is_ascii_alphanumeric).take(8).collect::<String>());
     Ok(Some(
-        json!({"name":"agent_hub_project","command":command,"args":["--project-chat-tools",db.to_string_lossy(),conversation_id],"env":[]}),
+        json!({"name":name,"command":command,"args":["--project-chat-tools",db.to_string_lossy(),conversation_id],"env":[]}),
     ))
 }
 
