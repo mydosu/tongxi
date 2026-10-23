@@ -701,7 +701,7 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 )
                 .optional()
                 .map_err(|_| "成员回复读取失败")?;
-            Ok(json!({"seat":seat,"busy":busy(connection,&seat,&chat),"jobs":jobs,"last_reply_tail":last.map(|text| tail(&text, 1500))}))
+            Ok(json!({"seat":seat,"busy":busy(connection,&seat,&chat),"jobs":jobs,"last_reply_tail":last.map(|text| tail(&text, REPORT_LIMIT))}))
         }
         "hub_tell_member" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -818,25 +818,99 @@ pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
 {}
 
 ## 本项目
-项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/。
-项目长期授权：{}
-
----
-以下是用户的消息：",
+项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/，交接写在 .tongxi/交接.md。
+项目长期授权：{}",
         crate::prompts::brain(),
         crate::prompts::models(),
         grants.as_deref().unwrap_or("（没有）"),
     );
-    let digest = sha2::Sha256::digest(text.as_bytes());
-    let primed = format!("{native}:{:x}", digest);
+    let digest = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
+    let primed = format!("{native}:{digest}");
     let key = format!("brain_primed:{conversation_id}");
-    if !native.is_empty() && metadata(&connection, &key).as_deref() == Some(primed.as_str()) {
+    let stored = metadata(&connection, &key);
+    // 原生会话还没建时记下的标记，属于随这条消息新建的那个会话。
+    if !native.is_empty() && (stored.as_deref() == Some(primed.as_str()) || stored == Some(format!(":{digest}"))) {
+        if stored.as_deref() != Some(primed.as_str()) {
+            let _ = connection.execute("UPDATE metadata SET value=?2 WHERE key=?1", params![key, primed]);
+        }
         return Some(None);
     }
     connection
         .execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2", params![key, primed])
         .ok()?;
-    Some(Some(text))
+    // 新会话带上上一轮的交接；交接不算进说明的指纹，主脑改交接不会让说明重发。
+    let handoff = native
+        .is_empty()
+        .then(|| std::fs::read_to_string(handoff_path(&root)).ok())
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| format!("
+
+## 上一轮的交接
+这是新会话。下面是你上一轮做完时写的交接，照着接上：
+
+{}", tail(text.trim(), RESULT_LIMIT)))
+        .unwrap_or_default();
+    Some(Some(format!("{text}{handoff}
+
+---
+以下是用户的消息：")))
+}
+
+fn handoff_path(root: &str) -> PathBuf {
+    Path::new(root).join(".tongxi").join("交接.md")
+}
+
+/// 主脑一轮做完写了新的交接（.tongxi/交接.md 比上次换会话时新），项目里也没有在等的活：
+/// 清掉主脑的原生会话，这条消息开新会话，开场说明里带上交接。没写交接就一直续旧会话。
+pub fn rollover(connection: &Connection, conversation_id: &str) {
+    let Ok((room, seat, root)) = connection.query_row(
+        "SELECT c.group_conversation_id,c.agent_id,p.root FROM project_agent_chats c JOIN projects p ON p.id=c.project_id WHERE c.conversation_id=?1",
+        [conversation_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+    ) else {
+        return;
+    };
+    if !is_brain(&seat) {
+        return;
+    }
+    let Some(written) = std::fs::metadata(handoff_path(&root))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|at| at.as_millis() as i64)
+    else {
+        return;
+    };
+    let key = format!("brain_handoff:{conversation_id}");
+    if metadata(connection, &key).and_then(|seen| seen.parse::<i64>().ok()).is_some_and(|seen| seen >= written) {
+        return;
+    }
+    let waiting: i64 = connection
+        .query_row("SELECT COUNT(*) FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running')", [&room], |row| row.get(0))
+        .unwrap_or(1);
+    if waiting > 0 {
+        return;
+    }
+    let _ = connection.execute(
+        "UPDATE sessions SET native_session_id=NULL WHERE conversation_id=?1 AND agent_id=?2",
+        params![conversation_id, base_agent(&seat)],
+    );
+    let _ = connection.execute(
+        "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+        params![key, written.to_string()],
+    );
+}
+
+/// 成员按说明把交回写在最后一段「## 交回」里，主脑只收这段；没写就收结尾一截。
+fn key_points(reply: &str) -> String {
+    let reply = reply.trim();
+    match reply.rfind("## 交回") {
+        Some(at) if at > 0 => format!("{}
+
+（只送了交回这段，过程要看用 hub_member）", tail(&reply[at..], REPORT_LIMIT)),
+        _ => tail(reply, REPORT_LIMIT),
+    }
 }
 
 // ---------- 主程序这一侧：投递线程 ----------
@@ -1147,7 +1221,7 @@ impl Courier {
                 report.push_str(&format!("工作树 {path}，分支 {branch}{}\n", self.branch_summary(&room, path, branch)));
             }
             report.push_str("\n");
-            report.push_str(&tail(reply.as_deref().unwrap_or("（没有回复内容）").trim(), REPORT_LIMIT));
+            report.push_str(&key_points(reply.as_deref().unwrap_or("（没有回复内容）")));
             self.inbox(&room, &report);
             let job_status = if status == "completed" { "done" } else { "failed" };
             self.execute(
@@ -1214,7 +1288,7 @@ impl Courier {
         };
         let mut delivered = Vec::new();
         for room in rooms {
-            let (seat, chat, items) = {
+            let (seat, chat, items, hold) = {
                 let mut store = self.store.lock().unwrap();
                 let Ok(seat) = brain_seat(&store, &room) else {
                     continue;
@@ -1244,7 +1318,17 @@ impl Courier {
                     .prepare("SELECT id,content FROM brain_inbox WHERE room=?1 AND delivered=0 ORDER BY created_at,rowid")
                     .and_then(|mut query| query.query_map([&room], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
                     .unwrap_or_default();
-                (seat, chat, items)
+                // 还有成员在做时，交回的先攒着，收件箱静下来 30 秒再一起送，少唤醒主脑几次。
+                let hold: bool = store
+                    .connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running'))
+                           AND EXISTS(SELECT 1 FROM brain_inbox WHERE room=?1 AND delivered=0 AND created_at>?2)",
+                        params![room, now() - 30_000],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+                (seat, chat, items, hold)
             };
             if items.is_empty() {
                 continue;
@@ -1256,6 +1340,8 @@ impl Courier {
             let content = items.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join("\n\n");
             let sent = if self.live(&agent, &chat) {
                 matches!(agent.as_str(), "codex-win" | "claude-win") && self.steer(&agent, &chat, &content).is_ok()
+            } else if hold {
+                false
             } else {
                 self.send(&agent, &chat, &content).is_ok()
             };
@@ -1384,6 +1470,75 @@ mod tests {
         assert!(again.contains("可以推送"));
         assert_eq!(super::preamble(&db, &chat), Some(None));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_new_handoff_starts_a_fresh_brain_session_that_carries_it() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-handoff-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(root.join(".tongxi")).unwrap();
+        let db = base.join("data").join("hub.db");
+        let mut store = Store::open(&db).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store
+            .ensure_project_agent_chats(&room)
+            .unwrap()
+            .into_iter()
+            .find(|chat| chat.agent_id == "claude-win-brain")
+            .unwrap()
+            .conversation_id;
+        let native = |store: &Store| -> Option<String> {
+            store.connection.query_row("SELECT native_session_id FROM sessions WHERE conversation_id=?1", [&chat], |row| row.get(0)).unwrap()
+        };
+        let set_native = |store: &Store, id: &str| {
+            store.connection.execute("UPDATE sessions SET native_session_id=?1 WHERE conversation_id=?2", params![id, chat]).unwrap();
+        };
+
+        // 新会话的第一条带说明；会话建好后不再重带。
+        assert!(matches!(super::preamble(&db, &chat), Some(Some(_))));
+        set_native(&store, "native-1");
+        assert_eq!(super::preamble(&db, &chat), Some(None), "随第一条消息建的会话已经带过说明");
+
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store).as_deref(), Some("native-1"), "没写交接就续旧会话");
+
+        std::fs::write(root.join(".tongxi/交接.md"), "B6 做到第二步").unwrap();
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('job-1',?1,'codex-win','chat-x','task','做事','running',?2)", params![room, now()])
+            .unwrap();
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store).as_deref(), Some("native-1"), "还有活没交回不换");
+
+        store.connection.execute("UPDATE brain_jobs SET status='done'", []).unwrap();
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store), None, "一轮做完写了交接就换新会话");
+        let opening = super::preamble(&db, &chat).unwrap().expect("新会话带说明");
+        assert!(opening.contains("B6 做到第二步"), "新会话带上交接");
+        assert!(opening.ends_with("以下是用户的消息："));
+
+        set_native(&store, "native-2");
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store).as_deref(), Some("native-2"), "同一份交接只换一次");
+        assert_eq!(super::preamble(&db, &chat), Some(None));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn member_reports_send_only_the_handback_section() {
+        let reply = "先看日志。
+
+改了三处。
+
+## 交回
+修好了 a.rs，测试通过。";
+        let points = super::key_points(reply);
+        assert!(points.starts_with("## 交回
+修好了 a.rs"));
+        assert!(!points.contains("先看日志"));
+        assert_eq!(super::key_points("没按格式写"), "没按格式写");
     }
 
     #[test]
