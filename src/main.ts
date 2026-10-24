@@ -84,7 +84,7 @@ let toastTimer: ReturnType<typeof setTimeout>;
 let pendingSave: { conversationId: string; messageId: string; content: string } | null = null;
 const emptyRuntime = (): RuntimeSnapshot => ({ revision: 0, connection: 'disconnected', executable: null, version: null, error: null, active: null, models: [], default_model: null, default_effort: null });
 // 席位（codex-win-2 …）和底层成员共用同一个原生连接，读写都落到底层成员上。
-const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, RuntimeSnapshot>>({ 'codex-win': emptyRuntime(), 'hermes-win': emptyRuntime(), 'dsh-win': emptyRuntime(), 'claude-win': emptyRuntime(), 'albion-wsl': emptyRuntime() }, {
+const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, RuntimeSnapshot>>({ 'codex-win': emptyRuntime(), 'hermes-win': emptyRuntime(), 'dsh-win': emptyRuntime(), 'claude-win': emptyRuntime(), 'opencode-win': emptyRuntime(), 'albion-wsl': emptyRuntime() }, {
   get: (target, key) => typeof key === 'string' ? target[baseAgent(key)] : undefined,
   set: (target, key, value) => { target[baseAgent(String(key))] = value; return true; },
 });
@@ -92,7 +92,7 @@ const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, Runti
 const currentAgentId = () => detail?.conversation.kind === 'direct' ? detail.conversation.members[0] : detail?.conversation.kind === 'group' && activeProjectModule !== 'team' ? activeProjectModule : 'codex-win';
 const activeProjectAgent = () => detail?.conversation.kind === 'group' && detail.project && activeProjectModule !== 'team' && detail.project_agent_chats.some(chat => chat.agent_id === activeProjectModule) ? activeProjectModule : null;
 const currentRuntime = () => runtimes[currentAgentId()] || emptyRuntime();
-const harnessKey = (agent = currentAgentId(), id = baseAgent(agent)) => id === 'hermes-win' ? 'hermes' : id === 'dsh-win' ? 'dsh' : id === 'claude-win' ? 'claude' : id === 'albion-wsl' ? 'albion' : 'codex';
+const harnessKey = (agent = currentAgentId(), id = baseAgent(agent)) => id === 'hermes-win' ? 'hermes' : id === 'dsh-win' ? 'dsh' : id === 'claude-win' ? 'claude' : id === 'opencode-win' ? 'opencode' : id === 'albion-wsl' ? 'albion' : 'codex';
 const busySnapshot = (snapshot: RuntimeSnapshot) => runsOf(snapshot).some(liveRun);
 type NativeRun = NonNullable<RuntimeSnapshot['active']>;
 /// 一个成员可以同时在多个会话里回复；旧快照只有 `active`。
@@ -272,7 +272,7 @@ function adoptDiscussion(job: Discussion) {
   updateRuntimeControls();
 }
 const runBusy = () => busyIn(currentRuntime(), selectedId);
-const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'albion-wsl'].includes(currentAgentId());
+const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'].includes(currentAgentId());
 const connectionLabel = () => currentRuntime().connection === 'connected' ? '接口已连接' : currentRuntime().connection === 'connecting' ? '正在连接' : '未连接';
 function adoptRuntime(snapshot: RuntimeSnapshot, agentId = currentAgentId()) {
   const old = runtimes[agentId];
@@ -1482,7 +1482,7 @@ function updateProjectControls() {
   if ((activeProjectModule === 'inquiries' || activeProjectModule === 'brain-jobs') && detail.project) return;
   if (activeProjectAgent()) { updateRuntimeControls(); return; }
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
-  const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'].includes(agent));
+  const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win'].includes(agent));
   // 一位成员也能做项目：同一成员多开的会话就是多位成员。
   const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 1;
   if (bind) { bind.disabled = !eligible || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
@@ -2094,7 +2094,7 @@ function confirmDeleteConversation(conversation: Conversation) {
 // `ServiceInfo` and the update-check result shapes live in `./types`.
 
 // Card order matches the four managed members rendered by `renderServices`.
-const serviceCardOrder = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win', 'albion-wsl'] as const;
+const serviceCardOrder = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'] as const;
 
 // Passes through only the backend's real data: a version comes from the runtime handshake
 // (or a later install manifest), otherwise "unknown" is shown. No update claim is made here.
@@ -2160,6 +2160,8 @@ async function checkServiceUpdate(agentId: string, card: HTMLElement) {
         ? '更新会交接给 Hermes 自己的更新通道：它会退出并重启'
         : agentId === 'claude-win'
           ? 'Claude Code 会自己自动更新；检测到已更新时点「重启」，重连后用上新版本和新的模型目录'
+        : agentId === 'opencode-win'
+          ? 'OpenCode 用它自己的 opencode upgrade 更新，更新后点「重启」'
         : result.update_available === null ? '仅本地版本检测，同席不代更新' : '由外部安装维护，同席不代你更新';
     // 这行字贴着按钮显示很格格不入：卡片上不再出现结论行，只留在 DOM 里供验收读取，
     // 细节挂到卡片悬停上，要看再hover。
@@ -2562,7 +2564,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   }
   try {
     if (!eventSubscribed) {
-      for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'albion-wsl']) {
+      for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) {
         await listen<RuntimeSnapshot>(`${harnessKey(agentId)}-state`, event => {
           const old = runtimes[agentId];
           if (!adoptRuntime(event.payload, agentId)) return;
@@ -2609,7 +2611,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       });
       eventSubscribed = true;
     }
-    for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'albion-wsl']) adoptRuntime(await invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`), agentId);
+    for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) adoptRuntime(await invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`), agentId);
     latestDiscussion = await invoke<Discussion | null>('discussion_status');
     [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
     document.querySelector('#app-version')!.textContent = info.version;

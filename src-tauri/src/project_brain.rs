@@ -19,7 +19,7 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, String>;
 
 /// 没指定主脑成员时按这个顺序挑。
-const BRAIN_PREFERENCE: [&str; 4] = ["claude-win", "codex-win", "hermes-win", "dsh-win"];
+const BRAIN_PREFERENCE: [&str; 5] = ["claude-win", "codex-win", "hermes-win", "dsh-win", "opencode-win"];
 const REPORT_LIMIT: usize = 6000;
 /// 派活页里每件活的结果最多带这么多字，全文去成员会话看。
 const RESULT_LIMIT: usize = 8000;
@@ -1551,6 +1551,7 @@ pub struct Courier {
     hermes: Arc<crate::hermes::Runtime>,
     dsh: Arc<crate::dsh::Runtime>,
     claude: Arc<crate::claude::Runtime>,
+    opencode: Arc<crate::hermes::Runtime>,
 }
 
 struct Pending {
@@ -1574,8 +1575,9 @@ impl Courier {
         hermes: Arc<crate::hermes::Runtime>,
         dsh: Arc<crate::dsh::Runtime>,
         claude: Arc<crate::claude::Runtime>,
+        opencode: Arc<crate::hermes::Runtime>,
     ) -> Arc<Self> {
-        let courier = Arc::new(Self { app, store, codex, hermes, dsh, claude });
+        let courier = Arc::new(Self { app, store, codex, hermes, dsh, claude, opencode });
         let watcher = courier.clone();
         let handle = courier.clone();
         std::thread::spawn(move || {
@@ -1610,6 +1612,7 @@ impl Courier {
             "claude-win" => self.claude.snapshot(),
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
+            "opencode-win" => self.opencode.snapshot(),
             _ => return None,
         })
     }
@@ -1625,6 +1628,7 @@ impl Courier {
                     "codex-win" => self.codex.connect(),
                     "claude-win" => self.claude.connect(),
                     "hermes-win" => self.hermes.connect(),
+                    "opencode-win" => self.opencode.connect(),
                     _ => self.dsh.connect(),
                 }?;
                 Ok(true)
@@ -1650,6 +1654,7 @@ impl Courier {
             "claude-win" => self.claude.send(chat, &message, content),
             "hermes-win" => self.hermes.send(chat, &message, content),
             "dsh-win" => self.dsh.send(chat, &message, content),
+            "opencode-win" => self.opencode.send(chat, &message, content),
             _ => Err("未知成员".into()),
         };
         if sent.is_err() {
@@ -1675,6 +1680,7 @@ impl Courier {
             "claude-win" => self.claude.cancel(chat),
             "hermes-win" => self.hermes.cancel(chat),
             "dsh-win" => self.dsh.cancel(chat),
+            "opencode-win" => self.opencode.cancel(chat),
             _ => return Err("未知成员".into()),
         }
         .map(|_| ())

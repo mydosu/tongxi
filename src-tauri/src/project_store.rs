@@ -30,7 +30,7 @@ pub struct RoleChoice {
 
 
 /// 可参与项目的 Windows 成员；阿尔比恩（WSL Pi）不加入项目工作流。
-pub const EXECUTOR_AGENTS: [&str; 4] = ["codex-win", "hermes-win", "dsh-win", "claude-win"];
+pub const EXECUTOR_AGENTS: [&str; 5] = ["codex-win", "hermes-win", "dsh-win", "claude-win", "opencode-win"];
 /// project_tasks.agent_id 的约束只允许 Codex/DSH/Claude（v18 起含 Claude），Hermes 用 assigned_agent 列存放。
 /// 同一成员在项目里的额外席位（`codex-win-2` 这类 id）：各有自己的专属会话与模型，
 /// 调度把它们当独立成员派活，执行时落回底层成员的原生连接。

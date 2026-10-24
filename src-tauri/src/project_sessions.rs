@@ -27,7 +27,7 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
          -- 额外席位没改过名时存空串，显示时按「成员名 N号」现算；早先写死的默认名转成空串。
          UPDATE project_seats SET label='' WHERE label = (CASE
            WHEN seat_id LIKE 'codex-win-%' THEN 'Codex' WHEN seat_id LIKE 'hermes-win-%' THEN 'Hermes'
-           WHEN seat_id LIKE 'dsh-win-%' THEN 'DSH' WHEN seat_id LIKE 'claude-win-%' THEN 'Claude' END)
+           WHEN seat_id LIKE 'dsh-win-%' THEN 'DSH' WHEN seat_id LIKE 'claude-win-%' THEN 'Claude' WHEN seat_id LIKE 'opencode-win-%' THEN 'OpenCode' END)
            || ' ' || substr(seat_id, -1) || '号';",
     )
     .map_err(|_| "调度会话绑定结构迁移失败")?;

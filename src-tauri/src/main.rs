@@ -30,6 +30,7 @@ mod discussion;
 mod dsh;
 mod group_store;
 mod hermes;
+mod opencode;
 mod models;
 mod process_scope;
 mod project_memory;
@@ -501,11 +502,12 @@ fn set_session_settings(
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "albion-wsl" => app.state::<albion::Runtime>().0.snapshot(),
+        "opencode-win" => app.state::<opencode::Runtime>().0.snapshot(),
         _ => app.state::<Arc<hermes::Runtime>>().snapshot(),
     };
     if matches!(
         agent_id.as_str(),
-        "codex-win" | "hermes-win" | "dsh-win" | "claude-win" | "albion-wsl"
+        "codex-win" | "hermes-win" | "dsh-win" | "claude-win" | "albion-wsl" | "opencode-win"
     ) && snapshot.connection == "connected"
     {
         models::validate_selection(
@@ -609,6 +611,7 @@ fn native_snapshot(app: &tauri::AppHandle, agent: &str) -> Result<codex::Runtime
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().snapshot(),
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().snapshot(),
+        "opencode-win" => app.state::<opencode::Runtime>().0.snapshot(),
         _ => return Err("陪伴通过它自己的服务对话，没有 CLI 可以打开".into()),
     })
 }
@@ -657,6 +660,7 @@ fn open_in_cli(
         "codex-win" => app.state::<Arc<codex::Runtime>>().release_native(&target.native),
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().release_native(&target.native),
         "claude-win" => app.state::<Arc<claude::Runtime>>().release_native(&target.native),
+        "opencode-win" => app.state::<opencode::Runtime>().0.release_native(&target.native),
         _ => app.state::<Arc<hermes::Runtime>>().release_native(&target.native),
     }
     let executable = match agent_id.as_str() {
@@ -718,12 +722,14 @@ fn restore_cli_handoffs(app: &tauri::AppHandle) {
 #[tauri::command]
 fn set_agent_default_model(
     hermes: State<'_, Arc<hermes::Runtime>>,
+    opencode: State<'_, opencode::Runtime>,
     agent_id: String,
     model: Option<String>,
 ) -> Result<(), String> {
     match agent_id.as_str() {
         "hermes-win" => hermes.set_default_model(model.as_deref()),
-        _ => Err("暂只支持为 Hermes 设置同席默认模型".into()),
+        "opencode-win" => opencode.0.set_default_model(model.as_deref()),
+        _ => Err("暂只支持为 Hermes、OpenCode 设置同席默认模型".into()),
     }
 }
 
@@ -902,6 +908,7 @@ fn answer_chat_question(
         let hermes = app.state::<Arc<hermes::Runtime>>().inner().clone();
         let dsh = app.state::<Arc<dsh::Runtime>>().inner().clone();
         let claude = app.state::<Arc<claude::Runtime>>().inner().clone();
+        let opencode = app.state::<opencode::Runtime>().0.clone();
         let queued = question.clone();
         std::thread::spawn(move || {
             loop {
@@ -939,6 +946,9 @@ fn answer_chat_question(
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 "claude-win" => claude
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                "opencode-win" => opencode
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 _ => Err("提问成员不可用".into()),
@@ -1007,6 +1017,7 @@ fn archive_conversation(
     claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
+    opencode: State<'_, opencode::Runtime>,
     id: String,
     archived: bool,
 ) -> Result<Conversation, String> {
@@ -1014,7 +1025,7 @@ fn archive_conversation(
         dsh.guard(&id, || {
             claude.guard(&id, || {
                 hermes.guard(&id, || {
-                    runtime.mutate(&id, |store| store.archive(&id, archived))
+                    opencode.0.guard(&id, || runtime.mutate(&id, |store| store.archive(&id, archived)))
                 })
             })
         })
@@ -1027,12 +1038,13 @@ fn delete_conversation(
     claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
+    opencode: State<'_, opencode::Runtime>,
     id: String,
 ) -> Result<(), String> {
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
             claude.guard(&id, || {
-                hermes.guard(&id, || runtime.mutate(&id, |store| store.delete(&id)))
+                hermes.guard(&id, || opencode.0.guard(&id, || runtime.mutate(&id, |store| store.delete(&id))))
             })
         })
     })
@@ -1044,6 +1056,7 @@ fn update_group_members(
     claude: State<'_, Arc<claude::Runtime>>,
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
+    opencode: State<'_, opencode::Runtime>,
     id: String,
     members: Vec<String>,
 ) -> Result<Conversation, String> {
@@ -1051,7 +1064,7 @@ fn update_group_members(
         dsh.guard(&id, || {
             claude.guard(&id, || {
                 hermes.guard(&id, || {
-                    runtime.mutate(&id, |store| store.replace_members(&id, &members))
+                    opencode.0.guard(&id, || runtime.mutate(&id, |store| store.replace_members(&id, &members)))
                 })
             })
         })
@@ -1118,6 +1131,7 @@ async fn native_sessions(
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().list_sessions()?,
         "claude-win" => app.state::<Arc<claude::Runtime>>().list_sessions()?,
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().list_sessions()?,
+        "opencode-win" => app.state::<opencode::Runtime>().0.list_sessions()?,
         "albion-wsl" => app.state::<albion::Runtime>().0.list_sessions()?,
         _ => return Err("成员不存在".into()),
     };
@@ -1285,6 +1299,11 @@ fn main() {
                 store.clone(),
                 directory.clone(),
             ));
+            app.manage(opencode::Runtime::new(
+                app.handle().clone(),
+                store.clone(),
+                directory.clone(),
+            ));
             app.manage(discussion::Runtime::new(
                 app.handle().clone(),
                 store.clone(),
@@ -1293,6 +1312,7 @@ fn main() {
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
                 app.state::<albion::Runtime>().0.clone(),
+                app.state::<opencode::Runtime>().0.clone(),
             ));
             app.manage(project_brain::Courier::start(
                 app.handle().clone(),
@@ -1301,6 +1321,7 @@ fn main() {
                 app.state::<Arc<hermes::Runtime>>().inner().clone(),
                 app.state::<Arc<dsh::Runtime>>().inner().clone(),
                 app.state::<Arc<claude::Runtime>>().inner().clone(),
+                app.state::<opencode::Runtime>().0.clone(),
             ));
             app.manage(services::MaintenanceLock::default());
             app.manage(AppState {
@@ -1435,6 +1456,11 @@ fn main() {
             albion::disconnect_albion,
             albion::send_albion_message,
             albion::cancel_albion_run,
+            opencode::opencode_status,
+            opencode::connect_opencode,
+            opencode::disconnect_opencode,
+            opencode::send_opencode_message,
+            opencode::cancel_opencode_run,
             discussion::discussion_status,
             discussion::start_discussion,
             discussion::cancel_discussion,
@@ -1491,6 +1517,7 @@ fn main() {
                 app.state::<Arc<dsh::Runtime>>().stop();
                 app.state::<Arc<claude::Runtime>>().stop();
                 app.state::<albion::Runtime>().0.stop();
+                app.state::<opencode::Runtime>().0.stop();
             }
         });
 }

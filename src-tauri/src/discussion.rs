@@ -22,6 +22,7 @@ pub struct Runtime {
     dsh: Arc<dsh::Runtime>,
     claude: Arc<claude::Runtime>,
     albion: Arc<crate::albion::Brain>,
+    opencode: Arc<hermes::Runtime>,
     shutting_down: AtomicBool,
     revision: AtomicU64,
 }
@@ -41,6 +42,7 @@ impl Runtime {
         dsh: Arc<dsh::Runtime>,
         claude: Arc<claude::Runtime>,
         albion: Arc<crate::albion::Brain>,
+        opencode: Arc<hermes::Runtime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             app,
@@ -50,6 +52,7 @@ impl Runtime {
             dsh,
             claude,
             albion,
+            opencode,
             shutting_down: AtomicBool::new(false),
             revision: AtomicU64::new(0),
         })
@@ -71,6 +74,7 @@ impl Runtime {
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
             "claude-win" => self.claude.snapshot(),
+            "opencode-win" => self.opencode.snapshot(),
             _ => self.albion.snapshot(),
         }
     }
@@ -81,6 +85,7 @@ impl Runtime {
             "dsh-win" => self.dsh.send_discussion(id, round),
             "claude-win" => self.claude.send_discussion(id, round),
             "albion-wsl" => self.albion.send_discussion(id, round),
+            "opencode-win" => self.opencode.send_discussion(id, round),
             _ => Err("成员不存在".into()),
         }
     }
@@ -90,6 +95,7 @@ impl Runtime {
             "hermes-win" => self.hermes.cancel_expected(room, Some(run)).map(|_| ()),
             "dsh-win" => self.dsh.cancel_expected(room, Some(run)).map(|_| ()),
             "claude-win" => self.claude.cancel_expected(room, Some(run)).map(|_| ()),
+            "opencode-win" => self.opencode.cancel_expected(room, Some(run)).map(|_| ()),
             _ => self.albion.cancel_expected(room, Some(run)).map(|_| ()),
         }
     }
@@ -99,6 +105,7 @@ impl Runtime {
             "hermes-win" => self.hermes.stop_expected(Some(run)),
             "dsh-win" => self.dsh.stop_expected(Some(run)),
             "claude-win" => self.claude.stop_expected(Some(run)),
+            "opencode-win" => self.opencode.stop_expected(Some(run)),
             _ => self.albion.stop_expected(Some(run)),
         }
     }

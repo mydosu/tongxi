@@ -3,7 +3,7 @@ import type { ConversationDetail, NativeSession } from './types';
 import { baseAgent, isBrain } from './seats';
 
 type Escape = (value: string | number) => string;
-export const PROJECT_AGENTS = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win'];
+export const PROJECT_AGENTS = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win'];
 export interface SessionBinding { agent_id: string; target: 'member'; native_session_id: string | null; native_cwd: string | null; busy: boolean; }
 /// target=seat：新建项目时给同一成员再开的席位（agentId 是底层成员，保存时先开席位再绑会话）。
 export interface BindingChoice { agentId: string; target: 'member' | 'seat'; nativeSessionId: string | null; nativeCwd: string | null; }
@@ -98,7 +98,7 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
   };
 }
 
-export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win'].find(id => members.includes(id)) || members[0];
+export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win', 'opencode-win'].find(id => members.includes(id)) || members[0];
 
 /// 项目进行中切换各成员（含额外席位）与主脑的原生会话：正在执行的那位锁住，其余下一轮生效。
 export async function projectSessionsDialog(detail: ConversationDetail, host: PickerHost & { modal: HTMLDialogElement; open: (title: string, note: string, body: string) => void; saved: () => Promise<void> }) {

@@ -35,7 +35,7 @@ struct Recipe {
 }
 
 /// 官方安装与初次配置命令。Node 包（Codex、DSH）缺 Node 时先用 winget 装 LTS。
-const RECIPES: [Recipe; 4] = [
+const RECIPES: [Recipe; 5] = [
     Recipe {
         id: "codex-win",
         name: "Codex",
@@ -67,6 +67,14 @@ const RECIPES: [Recipe; 4] = [
         setup: "dsh web",
         docs: "https://github.com/deepseek-ai/deepseek-harness",
         needs_node: Some((22, 19)),
+    },
+    Recipe {
+        id: "opencode-win",
+        name: "OpenCode",
+        install: "npm install -g opencode-ai",
+        setup: "opencode auth login",
+        docs: "https://opencode.ai/docs",
+        needs_node: Some((18, 0)),
     },
 ];
 
@@ -140,6 +148,7 @@ fn detect(recipe: &Recipe, data: Option<&std::path::Path>) -> (Option<PathBuf>, 
             (path, version)
         }
         "hermes-win" => (crate::acp_transport::Target::windows_python(), None),
+        "opencode-win" => (crate::acp_transport::Target::opencode_exe(), None),
         _ => {
             let package = data.and_then(|data| crate::service_install::dsh_path(data).ok());
             let package = package.filter(|path| path.join("package.json").is_file());

@@ -89,7 +89,14 @@ fn provider_label(model: &Value) -> Option<String> {
         .trim();
     (!label.is_empty()).then(|| label.to_owned())
 }
+/// 标准 ACP 的模型选项（configOptions 里 id=model，如 OpenCode）。
+fn standard_models(response: &Value) -> bool {
+    response["models"].is_null() && crate::dsh::current_option(response, "model").is_some()
+}
 fn models_from_response(response: &Value) -> Vec<ModelOption> {
+    if standard_models(response) {
+        return crate::dsh::models_from_response(response);
+    }
     response["models"]["availableModels"]
         .as_array()
         .into_iter()
@@ -141,7 +148,7 @@ impl Runtime {
             inner
                 .client
                 .clone()
-                .ok_or_else(|| "Hermes 未连接".to_string())?
+                .ok_or_else(|| format!("{} 未连接", self.target.name()))?
         };
         let response = client.rpc_timeout(
             "session/list",
@@ -246,21 +253,22 @@ impl Runtime {
                 .directory
                 .join(format!("{}-workspaces", self.target.key()))
                 .join("catalog");
-            std::fs::create_dir_all(&cwd).map_err(|_| "Hermes 目录创建失败")?;
+            std::fs::create_dir_all(&cwd).map_err(|_| format!("{} 目录创建失败", self.target.name()))?;
             let cwd = self.target.cwd(&cwd)?;
             let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation || inner.connection != "connecting" {
-                return Err("Hermes 连接已取消".into());
+                return Err(format!("{} 连接已取消", self.target.name()));
             }
             inner.version = initialized["agentInfo"]["version"]
                 .as_str()
                 .map(String::from);
             inner.models = models_from_response(&catalog);
-            crate::pricing::remember("hermes-win", &inner.models);
+            crate::pricing::remember(self.target.id(), &inner.models);
             inner.default_model = catalog["models"]["currentModelId"]
                 .as_str()
-                .map(String::from);
+                .map(String::from)
+                .or_else(|| crate::dsh::current_option(&catalog, "model"));
             // 同席自己定的默认模型优先（比如固定走某个提供商），目录里没有它才退回 harness 的默认。
             if let Some(preferred) = self
                 .store
@@ -284,7 +292,7 @@ impl Runtime {
         Ok(self.snapshot())
     }
     pub fn guard<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
-        let inner = self.inner.lock().map_err(|_| "Hermes 状态不可用")?;
+        let inner = self.inner.lock().map_err(|_| format!("{} 状态不可用", self.target.name()))?;
         if busy_in(&inner.runs, id) {
             return Err(format!(
                 "{} 正在回复，请完成或停止后再修改会话",
@@ -321,7 +329,7 @@ impl Runtime {
                 self.target.name()
             ));
         }
-        let client = inner.client.clone().ok_or("Hermes 接口不可用")?;
+        let client = inner.client.clone().ok_or_else(|| format!("{} 接口不可用", self.target.name()))?;
         let record = self.store.lock().unwrap().begin_agent_run(
             conversation_id,
             message_id,
@@ -409,7 +417,7 @@ impl Runtime {
             .sessions
             .into_iter()
             .find(|session| session.agent_id == self.target.id())
-            .ok_or("Hermes 会话不存在")?;
+            .ok_or_else(|| format!("{} 会话不存在", self.target.name()))?;
         {
             let inner = self.inner.lock().unwrap();
             let record = &run_ref(&inner.runs, run_id).ok_or("运行已结束")?.record;
@@ -430,7 +438,7 @@ impl Runtime {
                     .directory
                     .join(format!("{}-workspaces", self.target.key()))
                     .join(&conversation_id);
-                std::fs::create_dir_all(&local).map_err(|_| "Hermes 会话目录创建失败")?;
+                std::fs::create_dir_all(&local).map_err(|_| format!("{} 会话目录创建失败", self.target.name()))?;
                 self.target.cwd(&local)?
             }
         };
@@ -458,11 +466,12 @@ impl Runtime {
             .as_str()
             .map(String::from)
             .or_else(|| settings.native_session_id.clone())
-            .ok_or("Hermes 未返回原生会话 ID")?;
+            .ok_or_else(|| format!("{} 未返回原生会话 ID", self.target.name()))?;
+        let standard = standard_models(&response);
         let models = models_from_response(&response);
         {
             let mut inner = self.inner.lock().unwrap();
-            crate::pricing::remember("hermes-win", &models);
+            crate::pricing::remember(self.target.id(), &models);
             inner.models = models;
             let run = run_mut(&mut inner.runs, run_id)
                 .filter(|run| busy(run))
@@ -482,13 +491,25 @@ impl Runtime {
             .as_ref()
             .cloned()
             .or_else(|| self.inner.lock().unwrap().default_model.clone());
-        if let Some(model_id) = selected_model.as_ref() {
-            client.rpc(
-                "session/set_model",
-                json!({"sessionId":session_id,"modelId":model_id}),
-            )?;
-        }
-        let applied = client.rpc("session/set_config_option", json!({"sessionId":session_id,"configId":"reasoning_effort","value":settings.reasoning_effort.as_deref().unwrap_or("default")}))?;
+        let applied = if standard {
+            // 标准 ACP：模型走 configOptions；只读档切到它自带的 plan 模式（不许改文件），别的档回到默认 build。
+            if let Some(model_id) = selected_model.as_ref() {
+                client.rpc("session/set_config_option", json!({"sessionId":session_id,"configId":"model","value":model_id}))?;
+            }
+            if crate::dsh::current_option(&response, "mode").is_some() {
+                let read = crate::project_brain::access(&self.store.lock().unwrap().connection, &conversation_id).is_some_and(|(tier, _)| tier == "read");
+                client.rpc("session/set_config_option", json!({"sessionId":session_id,"configId":"mode","value":if read {"plan"} else {"build"}}))?;
+            }
+            Value::Null
+        } else {
+            if let Some(model_id) = selected_model.as_ref() {
+                client.rpc(
+                    "session/set_model",
+                    json!({"sessionId":session_id,"modelId":model_id}),
+                )?;
+            }
+            client.rpc("session/set_config_option", json!({"sessionId":session_id,"configId":"reasoning_effort","value":settings.reasoning_effort.as_deref().unwrap_or("default")}))?
+        };
         let applied = &applied["_meta"]["agentHub"];
         {
             let mut inner = self.inner.lock().unwrap();
@@ -541,7 +562,7 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
-        let before = session_tokens(&session_id);
+        let before = (self.target.id() == "hermes-win").then(|| session_tokens(&session_id)).flatten();
         let result = client.rpc_while_alive(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
@@ -562,7 +583,7 @@ impl Runtime {
                     }
                     _ => "failed",
                 };
-                let mut error = (status == "failed").then(|| "Hermes 未返回正常完成状态".to_string());
+                let mut error = (status == "failed").then(|| format!("{} 未返回正常完成状态", self.target.name()));
                 if status == "completed" {
                     let text = run_ref(&self.inner.lock().unwrap().runs, run_id)
                         .map(|run| run.text.clone())
@@ -702,7 +723,7 @@ impl Runtime {
     ) -> Result<RuntimeSnapshot> {
         let (client, session) = {
             let mut inner = self.inner.lock().unwrap();
-            let client = inner.client.clone().ok_or("Hermes 已断开")?;
+            let client = inner.client.clone().ok_or_else(|| format!("{} 已断开", self.target.name()))?;
             let run = live_in(&mut inner.runs, conversation_id)
                 .filter(|run| expected.is_none_or(|id| run.record.id == id))
                 .ok_or("这个会话没有正在进行的回复")?;
@@ -730,7 +751,7 @@ impl Runtime {
             busy_ids(&inner.runs)
         };
         for id in id {
-            self.finish(&id, "interrupted", Some("Hermes 原生连接已断开".into()));
+            self.finish(&id, "interrupted", Some(format!("{} 原生连接已断开", self.target.name())));
         }
         self.emit();
     }

@@ -41,6 +41,7 @@ pub(crate) fn resume_command(
         "codex-win" => format!("{} resume {session}", program("codex")),
         "claude-win" => format!("{} --resume {session}", program("claude")),
         "hermes-win" => format!("{} --resume {session}", program("hermes")),
+        "opencode-win" => format!("{} --session {session}", program("opencode")),
         // DSH 在这台机器上没有终端界面，只有网页版：开网页版，再从会话历史里选这条会话。
         "dsh-win" => format!(
             "Write-Host '在打开的 DSH 网页里，从会话历史中选择会话 {session}；关闭本窗口即回到同席。'; {} --profile web",

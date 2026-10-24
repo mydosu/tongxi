@@ -5,6 +5,8 @@ type Result<T> = std::result::Result<T, String>;
 
 pub enum Target {
     Windows(Option<PathBuf>),
+    /// OpenCode 自带标准 ACP（`opencode acp`），不用桥。
+    OpenCode,
     /// 旧 ACP 通路（WSL Hermes）。Hermes 已从 WSL 删除，同席现在走 `albion_openai`（见 albion.rs）；
     /// 这个变体暂时没人构造，留着只为回退时按 README 装回 WSL Hermes 再用。
     #[allow(dead_code, reason = "ACP 回退分支，MVP 已换 OpenAI 通路")]
@@ -47,6 +49,20 @@ pub(crate) fn native_root(directory: &Path, distro: &str, profile: &str) -> Resu
 }
 
 impl Target {
+    /// OpenCode 的程序：npm 装的 `opencode.cmd` 只是壳，真身在旁边的 `node_modules/opencode-ai/bin/opencode.exe`。
+    /// 每次连接都重新找，刚装好的不用重启同席。
+    pub fn opencode_exe() -> Option<PathBuf> {
+        std::env::var_os("AGENT_HUB_OPENCODE").map(PathBuf::from).filter(|path| path.is_file()).or_else(|| {
+            crate::service_install::on_path_find(&["opencode.cmd", "opencode.exe"], |shell| {
+                let beside = shell.parent()?.join("node_modules/opencode-ai/bin/opencode.exe");
+                if beside.is_file() {
+                    Some(beside)
+                } else {
+                    shell.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")).then_some(shell)
+                }
+            })
+        })
+    }
     pub fn windows() -> Self {
         Self::Windows(Self::windows_python())
     }
@@ -90,18 +106,21 @@ impl Target {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Windows(_) => "hermes-win",
+            Self::OpenCode => "opencode-win",
             Self::Albion { .. } => "albion-wsl",
         }
     }
     pub fn key(&self) -> &'static str {
         match self {
             Self::Windows(_) => "hermes",
+            Self::OpenCode => "opencode",
             Self::Albion { .. } => "albion",
         }
     }
     pub fn name(&self) -> &'static str {
         match self {
             Self::Windows(_) => "Hermes",
+            Self::OpenCode => "OpenCode",
             Self::Albion { .. } => "阿尔比恩",
         }
     }
@@ -111,6 +130,7 @@ impl Target {
                 .clone()
                 .or_else(Self::windows_python)
                 .map(|path| path.to_string_lossy().into()),
+            Self::OpenCode => Self::opencode_exe().map(|path| path.to_string_lossy().into()),
             Self::Albion {
                 launcher, python, ..
             } => Some(format!("{} → {python}", launcher.display())),
@@ -118,7 +138,7 @@ impl Target {
     }
     pub fn cwd(&self, path: &Path) -> Result<String> {
         match self {
-            Self::Windows(_) => Ok(path.to_string_lossy().into()),
+            Self::Windows(_) | Self::OpenCode => Ok(path.to_string_lossy().into()),
             Self::Albion {
                 distro, profile, ..
             } => {
@@ -140,6 +160,12 @@ impl Target {
     pub fn command(&self, directory: &Path) -> Result<Command> {
         let data = directory.join(format!("{}-native", self.key()));
         match self {
+            Self::OpenCode => {
+                let exe = Self::opencode_exe().ok_or("未找到 OpenCode，请先安装（npm i -g opencode-ai），或设置 AGENT_HUB_OPENCODE")?;
+                let mut command = Command::new(exe);
+                command.arg("acp");
+                Ok(command)
+            }
             Self::Windows(python) => {
                 let python = python.clone().or_else(Self::windows_python).ok_or(
                     "未找到 Windows Hermes，请在「成员与服务 → 接入成员」里一键安装，或设置 AGENT_HUB_HERMES_PYTHON",

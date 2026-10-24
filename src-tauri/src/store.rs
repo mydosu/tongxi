@@ -89,6 +89,7 @@ pub(crate) fn agent_name(id: &str) -> &str {
         "hermes-win" => "Hermes",
         "dsh-win" => "DSH",
         "claude-win" => "Claude",
+        "opencode-win" => "OpenCode",
         "albion-wsl" => "陪伴",
         other => other,
     }
@@ -127,6 +128,14 @@ pub fn agents() -> Vec<Agent> {
             "本机 Claude Code，使用它自己配置的模型、工具、MCP 与插件",
             "Windows",
             "orange",
+        ),
+        (
+            "opencode-win",
+            "OpenCode",
+            "OpenCode",
+            "本机 OpenCode，使用它自己配置的模型、工具、MCP 与 Key",
+            "Windows",
+            "teal",
         ),
         (
             "albion-wsl",
@@ -507,6 +516,7 @@ impl Store {
         if version < 18 {
             allow_agent_in_checks(&tx, "dsh-win", "claude-win")?;
         }
+        allow_agent_in_checks(&tx, "dsh-win", "opencode-win")?;
         // 项目额外席位（codex-win-2 …）：放宽成员白名单。幂等，已放宽的表会被跳过。
         for seat in crate::project_store::seat_ids() {
             allow_agent_in_checks(&tx, "dsh-win", &seat)?;
@@ -564,7 +574,8 @@ impl Store {
             Self::insert_conversation(&tx, "与 Claude 私聊", "direct", &["claude-win".into()])?;
         }
         if seeded.is_none() {
-            for agent in agents() {
+            // OpenCode 是可选接入的成员，不默认建私聊。
+            for agent in agents().into_iter().filter(|agent| agent.id != "opencode-win") {
                 Self::insert_conversation(
                     &tx,
                     &format!("与 {} 私聊", agent.name),

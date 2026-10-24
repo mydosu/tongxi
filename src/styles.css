@@ -120,6 +120,7 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .avatar.blue { background: #e0e9f2; color: #5b7c9f; }
 .avatar.rose { background: #f1e3e1; color: #a77979; }
 .avatar.orange { background: #f4e6dc; color: #b06d45; }
+.avatar.teal { background: #dfeceb; color: #4f8580; }
 .avatar.group-avatar { color: #636c79; background: #e2e5e8; }
 .avatar.group-avatar .icon { width: 20px; }
 .avatar.large { width: 45px; height: 45px; font-size: 23px; border-radius: 13px; }

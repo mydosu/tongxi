@@ -19,7 +19,8 @@ export async function scanAgents() { envs = await invoke<AgentEnv[]>('scan_agent
 export async function autoConnect(connected: (id: string) => boolean, connect: (id: string) => Promise<void>) {
   if (!autoConnectEnabled()) return;
   const found = await scanAgents().catch(() => []);
-  for (const env of found) if (env.installed && !connected(env.id)) await connect(env.id).catch(() => {});
+  // OpenCode 是可选成员：装了也不自动连，用时手动连或由主脑派活时连。
+  for (const env of found) if (env.installed && env.id !== 'opencode-win' && !connected(env.id)) await connect(env.id).catch(() => {});
   const companion = await invoke<CompanionView>('companion_config').catch(() => null);
   if (companion?.configured && !connected('albion-wsl')) await connect('albion-wsl').catch(() => {});
 }

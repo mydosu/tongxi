@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// Managed services, in the order the inventory reports them.
-const MANAGED: [(&str, &str); 5] = [
+const MANAGED: [(&str, &str); 6] = [
     ("codex-win", "Codex"),
     ("hermes-win", "Hermes"),
     ("dsh-win", "DSH"),
     ("claude-win", "Claude"),
+    ("opencode-win", "OpenCode"),
     ("albion-wsl", "Albion"),
 ];
 
@@ -322,6 +323,10 @@ pub fn detect(app: &tauri::AppHandle, service_id: &str) -> Result<ServiceInfo, S
             app.state::<Arc<crate::claude::Runtime>>().snapshot(),
             claude_installed(),
         ),
+        "opencode-win" => (
+            app.state::<crate::opencode::Runtime>().0.snapshot(),
+            (None, "unknown"),
+        ),
         "dsh-win" => {
             // 已激活槽也走这里：安装版本从本 app 的安装槽 manifest 读，读不到就受控地
             // 报 unknown，绝不回退到外部安装目录去猜。
@@ -363,6 +368,7 @@ fn runtime_busy(app: &tauri::AppHandle, service_id: &str) -> bool {
         "dsh-win" => snapshot_busy(&app.state::<Arc<crate::dsh::Runtime>>().snapshot()),
         "claude-win" => snapshot_busy(&app.state::<Arc<crate::claude::Runtime>>().snapshot()),
         "albion-wsl" => snapshot_busy(&app.state::<crate::albion::Runtime>().0.snapshot()),
+        "opencode-win" => snapshot_busy(&app.state::<crate::opencode::Runtime>().0.snapshot()),
         _ => false,
     }
 }
@@ -460,6 +466,7 @@ fn update_blocker(service_id: &str) -> Result<&'static str, String> {
         "claude-win" => {
             "Claude Code 会自己自动更新：同席只比较运行版本和已安装版本，更新了就提示重启会话。"
         }
+        "opencode-win" => "OpenCode 用它自己的 `opencode upgrade` 更新：同席不代更新，更新后重启会话即可。",
         "albion-wsl" => {
             "Albion 位于 WSL 内并带有本地定制改动，直接覆盖会丢失定制，暂不支持自动更新。"
         }
@@ -766,6 +773,12 @@ fn restart_blocking(
             runtime.stop();
             runtime.connect()?;
             runtime.snapshot()
+        }
+        "opencode-win" => {
+            let runtime = app.state::<crate::opencode::Runtime>();
+            runtime.0.stop();
+            runtime.0.connect()?;
+            runtime.0.snapshot()
         }
         // 未知 id 已被上面的 `acquire` 拒掉，这里只剩 albion：runtime 放在 `.0`。
         _ => {
