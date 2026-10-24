@@ -388,6 +388,8 @@ function prompt(id, params) {
           content: [{ type: 'content', content: { type: 'text', text: resultText(block.content).slice(0, 8000) } }] });
       }
     } else if (message.type === 'result') {
+      // 续会话时上一单没跑完的后台命令会先来一条通知，claude 为它出一个零轮的空结果，真正这一单还在后面。
+      if (message.num_turns === 0 && !message.is_error) return;
       result = message;
       child.stdin.end();
       // 回合已经结束，但 claude 偶尔迟迟不退出（子 agent 或 MCP 子进程还挂着）；再等 20 秒还不退就结束它，免得协作一直等下去。
