@@ -7,7 +7,7 @@ import json
 import re
 import sys
 
-AGENTS = ('codex-win', 'hermes-win', 'dsh-win', 'claude-win')
+AGENTS = ('codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win')
 NAME = re.compile(r'(?!\.)[\w.-]{1,80}')
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b')
 

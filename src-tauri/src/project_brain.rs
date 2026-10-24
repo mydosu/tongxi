@@ -1365,7 +1365,7 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             team_message(connection, &ctx.project, &ctx.room, Some(&ctx.seat), &content)?;
             Ok(json!({"sent":true}))
         }
-        name if name.starts_with("hub_memory_") => crate::project_memory::call(&ctx.project, base_agent(&ctx.seat), name, args),
+        name if name.starts_with("hub_memory_") => crate::project_memory::call(&ctx.project, &ctx.root, base_agent(&ctx.seat), name, args),
         _ => Err("主脑不支持这个工具".into()),
     }
 }

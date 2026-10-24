@@ -143,7 +143,12 @@ fn chat_tool(
     let (project, _, agent) = chat_context(connection, conversation_id)?;
     match name {
         "hub_memory_search" | "hub_memory_write" | "hub_memory_read" | "hub_memory_list"
-        | "hub_memory_share" => crate::project_memory::call(&project, base_agent(&agent), name, args),
+        | "hub_memory_share" => {
+            let root: String = connection
+                .query_row("SELECT root FROM projects WHERE id=?1", [&project], |row| row.get(0))
+                .map_err(|_| "项目目录读取失败")?;
+            crate::project_memory::call(&project, Path::new(&root), base_agent(&agent), name, args)
+        }
         "hub_broadcast" => {
             let arg: BroadcastArg = serde_json::from_value(args).map_err(|_| "团队消息参数无效")?;
             chat_broadcast(connection, conversation_id, &arg.content)
