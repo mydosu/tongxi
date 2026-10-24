@@ -32,6 +32,7 @@ mod group_store;
 mod hermes;
 mod opencode;
 mod updater;
+mod diagnostics;
 mod models;
 mod process_scope;
 mod project_memory;
@@ -1459,6 +1460,7 @@ fn main() {
             albion::send_albion_message,
             albion::cancel_albion_run,
             updater::check_app_update,
+            diagnostics::export_diagnostics,
             updater::apply_app_update,
             opencode::opencode_status,
             opencode::connect_opencode,

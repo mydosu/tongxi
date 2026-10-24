@@ -84,6 +84,8 @@ export interface ServiceInfo {
   id: string; name: string; connection: 'disconnected' | 'connecting' | 'connected';
   executable: string | null; runtime_version: string | null; installed_version: string | null;
   version_source: string; busy: boolean; update_state: string;
+  /** 版本在不在同席验证过的表里；null 是没测到版本。 */
+  verified: boolean | null;
 }
 export interface ServiceCheckResult {
   service_id: string; checked_at: string; runtime_version: string | null;

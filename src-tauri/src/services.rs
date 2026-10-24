@@ -30,6 +30,8 @@ pub struct ServiceInfo {
     pub version_source: String,
     pub busy: bool,
     pub update_state: String,
+    /// 版本在不在同席验证过的表里（diagnostics::VERIFIED）；None 是没测到版本。
+    pub verified: Option<bool>,
 }
 
 /// Result of an update check. The installed side is always read locally; DSH and
@@ -287,6 +289,7 @@ pub fn from_snapshot(
     } else {
         "unknown".to_string()
     };
+    let verified = crate::diagnostics::verified(id, snapshot.version.as_deref().or(installed_version.as_deref()));
 
     ServiceInfo {
         id: id.to_string(),
@@ -299,6 +302,7 @@ pub fn from_snapshot(
         busy,
         // Update checking is not implemented yet, so never claim a fake "latest".
         update_state: "unchecked".to_string(),
+        verified,
     }
 }
 

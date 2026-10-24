@@ -638,3 +638,4 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 html[data-hud] .md-table { background: transparent; border-color: rgb(255 255 255 / .25); }
 html[data-hud] .md-table th { background: rgb(255 255 255 / .12); color: inherit; }
 html[data-hud] .md-table tbody tr:nth-child(even) td { background: transparent; }
+.unverified-version { margin-left: 6px; font-size: 10.5px; color: #a06a2c; background: #f6ecdf; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
