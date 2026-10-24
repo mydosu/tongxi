@@ -470,7 +470,7 @@ if (isTauri()) {
   }
   app.addEventListener('mousedown', event => {
     const target = event.target as Element;
-    if (event.button !== 0 || modal.open || target.closest('button, input, textarea, select, a')) return;
+    if (event.button !== 0 || modal.open || target.closest('button, input, textarea, select, a, label, .avatar-picker')) return;
     if (target.closest('#window-drag-region, .chat-header, [data-hud-grip], html[data-hud] .composer, html[data-hud] .project-agent-chat-composer')) {
       event.preventDefault();
       action(() => event.detail === 2 ? window.toggleMaximize() : window.startDragging());
