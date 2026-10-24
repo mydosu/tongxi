@@ -291,7 +291,7 @@ app.innerHTML = `
   ${backdropHtml}
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand" id="window-drag-region" title="拖动窗口，双击最大化">${brand}<div><strong>同席</strong><span>AGENT HUB</span></div><span class="version" id="app-version">…</span></div>
+      <div class="brand" id="window-drag-region" title="拖动窗口，双击最大化">${brand}<div><strong>同席</strong><span>AGENT HUB</span></div><button type="button" class="version" id="app-version" title="检查更新">…</button></div>
       <div class="sidebar-top"><span class="eyebrow">你的协作空间</span><button id="new-conversation" class="icon-button filled" aria-label="新建会话" title="新建会话">${icon('plus')}</button></div>
       <label class="search">${icon('search')}<input id="search" placeholder="搜索会话或消息" aria-label="搜索会话或消息" maxlength="120"><kbd>Ctrl K</kbd></label>
       <div class="filters" aria-label="会话类型"><button data-filter="all" class="selected">全部</button><button data-filter="direct">私聊</button><button data-filter="group">群聊</button></div>
@@ -1839,6 +1839,36 @@ function openModal(title: string, subtitle: string, body: string) {
   modal.showModal();
 }
 
+type AppUpdate = { current: string; version: string; notes: string; url: string };
+let appUpdate: AppUpdate | null = null;
+
+/// 启动时悄悄查一次，有新版就点亮版本号；点版本号手动查、有新版弹窗确认更新。
+async function checkUpdate(quiet = false) {
+  const badge = document.querySelector<HTMLButtonElement>('#app-version')!;
+  try {
+    appUpdate = await invoke<AppUpdate | null>('check_app_update');
+  } catch (error) {
+    if (!quiet) toast(errorText(error), true);
+    return;
+  }
+  badge.classList.toggle('has-update', !!appUpdate);
+  badge.title = appUpdate ? `有新版 v${appUpdate.version}，点击更新` : '检查更新';
+  if (!appUpdate) { if (!quiet) toast('已是最新版本'); return; }
+  if (!quiet) openUpdate(appUpdate);
+}
+
+function openUpdate(update: AppUpdate) {
+  openModal(`更新到 v${update.version}`, `当前 v${update.current}。下载新版、核对校验值后替换并重启同席。`, `<pre class="update-notes">${escape(update.notes || '这一版没有写更新说明。')}</pre><p class="form-error" role="alert"></p><div class="modal-footer"><span>有成员在回复或主脑的活没结束时不会更新</span><button class="primary" id="apply-update">下载并重启${icon('arrow')}</button></div>`);
+  const button = modal.querySelector<HTMLButtonElement>('#apply-update')!;
+  button.addEventListener('click', async () => {
+    button.disabled = true; button.textContent = '正在下载…';
+    try { await invoke('apply_app_update', { update }); } catch (error) {
+      modal.querySelector('.form-error')!.textContent = errorText(error);
+      button.disabled = false; button.textContent = '重试';
+    }
+  });
+}
+
 function memberOptions(selected: string[], type: 'checkbox' | 'radio') {
   return agents.map(agent => `<label class="member-option"><input type="${type}" name="member" value="${escape(agent.id)}" ${selected.includes(agent.id) ? 'checked' : ''}>${avatar(agent)}<span><strong>${escape(agent.name)}</strong><small>${escape(agent.subtitle)} · ${escape(agent.location)}</small></span></label>`).join('');
 }
@@ -2615,6 +2645,8 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
     latestDiscussion = await invoke<Discussion | null>('discussion_status');
     [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
     document.querySelector('#app-version')!.textContent = info.version;
+    void checkUpdate(true);
+    document.querySelector('#app-version')!.addEventListener('click', () => appUpdate ? openUpdate(appUpdate) : void checkUpdate());
     updateMemberCount();
     adoptCliHandoffs(await invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'));
     await refreshList();

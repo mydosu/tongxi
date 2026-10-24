@@ -31,6 +31,7 @@ mod dsh;
 mod group_store;
 mod hermes;
 mod opencode;
+mod updater;
 mod models;
 mod process_scope;
 mod project_memory;
@@ -1271,6 +1272,7 @@ fn main() {
                 None => app.path().app_local_data_dir()?,
             };
             prompts::set_prompt_dir(directory.join("prompts"));
+            updater::clean_previous();
             pricing::init(&directory);
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
@@ -1456,6 +1458,8 @@ fn main() {
             albion::disconnect_albion,
             albion::send_albion_message,
             albion::cancel_albion_run,
+            updater::check_app_update,
+            updater::apply_app_update,
             opencode::opencode_status,
             opencode::connect_opencode,
             opencode::disconnect_opencode,
