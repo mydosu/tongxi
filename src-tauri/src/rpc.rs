@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 type Result<T> = std::result::Result<T, String>;
 type Pending = HashMap<u64, mpsc::Sender<Result<Value>>>;
 pub(crate) type RequestHandler = Arc<dyn Fn(&str, &Value) -> Option<Result<Value>> + Send + Sync>;
 type MessageListener = Arc<dyn Fn(Value) + Send + Sync>;
+/// 成员一回合里连续多久一行都不发才算卡住；跑长构建、长测试时工具一条命令可能十几分钟不出声。
+pub const QUIET_LIMIT: Duration = Duration::from_secs(30 * 60);
 
 fn native_error_summary(error: &Value) -> String {
     // Use only fixed categories. Native messages/data may contain credentials or configuration.
@@ -85,6 +87,8 @@ pub struct Client {
     next_id: AtomicU64,
     request_handler: Mutex<Option<RequestHandler>>,
     listeners: Mutex<HashMap<u64, MessageListener>>,
+    /// 每个会话最后一次出声的时间（按 params.sessionId 记），一个进程里几个会话互不掩盖。
+    heard: Mutex<HashMap<String, Instant>>,
     _scope: ProcessScope,
 }
 
@@ -138,6 +142,7 @@ impl Client {
             next_id: AtomicU64::new(1),
             request_handler: Mutex::new(None),
             listeners: Mutex::new(HashMap::new()),
+            heard: Mutex::new(HashMap::new()),
             _scope: scope,
         });
         let reader_client = client.clone();
@@ -150,6 +155,9 @@ impl Client {
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                if let Some(session) = value["params"]["sessionId"].as_str() {
+                    reader_client.heard.lock().unwrap().insert(session.to_string(), Instant::now());
+                }
                 if value.get("method").is_some() {
                     if let Some(id) = value.get("id") {
                         let handler = reader_client.request_handler.lock().unwrap().clone();
@@ -264,6 +272,39 @@ impl Client {
         timeout: Duration,
         on_sent: impl FnOnce(),
     ) -> Result<Value> {
+        let (id, receiver) = self.send(method, params)?;
+        on_sent();
+        let result = receiver
+            .recv_timeout(timeout)
+            .map_err(|_| format!("原生 agent {method} 超时，请断开后重新连接"));
+        self.pending.lock().unwrap().remove(&id);
+        result?.map_err(|error| format!("原生 agent {method} 请求失败：{error}"))
+    }
+
+    /// 长回合用：不限总时长，只有成员连续 `quiet` 这么久一行都没发（思考、工具、正文都算）才判卡住。
+    pub fn rpc_while_alive(&self, method: &str, params: Value, quiet: Duration) -> Result<Value> {
+        let session = params["sessionId"].as_str().unwrap_or_default().to_string();
+        // 从发出这一刻起算安静时长，免得上一回合很久以前就立刻判卡住。
+        self.heard.lock().unwrap().insert(session.clone(), Instant::now());
+        let (id, receiver) = self.send(method, params)?;
+        let quiet_for = || self.heard.lock().unwrap().get(&session).map_or(quiet, Instant::elapsed);
+        let result = loop {
+            match receiver.recv_timeout(quiet.min(Duration::from_secs(5))) {
+                Ok(result) => break Ok(result),
+                Err(mpsc::RecvTimeoutError::Timeout) if quiet_for() < quiet => {}
+                Err(_) => {
+                    break Err(format!(
+                        "原生 agent {method} 已 {} 分钟没有任何输出，判定卡住，请断开后重新连接",
+                        quiet.as_secs() / 60
+                    ))
+                }
+            }
+        };
+        self.pending.lock().unwrap().remove(&id);
+        result?.map_err(|error| format!("原生 agent {method} 请求失败：{error}"))
+    }
+
+    fn send(&self, method: &str, params: Value) -> Result<(u64, mpsc::Receiver<Result<Value>>)> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = mpsc::channel();
         self.pending.lock().unwrap().insert(id, sender);
@@ -271,12 +312,7 @@ impl Client {
             self.pending.lock().unwrap().remove(&id);
             return Err(error);
         }
-        on_sent();
-        let result = receiver
-            .recv_timeout(timeout)
-            .map_err(|_| format!("原生 agent {method} 超时，请断开后重新连接"));
-        self.pending.lock().unwrap().remove(&id);
-        result?.map_err(|error| format!("原生 agent {method} 请求失败：{error}"))
+        Ok((id, receiver))
     }
 
     fn fail_pending(&self, error: &str) {
@@ -349,6 +385,32 @@ for line in sys.stdin:
         let result = client.rpc_timeout("outer", json!({}), Duration::from_secs(5));
         client.stop();
         assert_eq!(result.unwrap(), json!({"nested":true}));
+    }
+    #[test]
+    fn a_long_turn_survives_while_its_session_talks_and_fails_when_only_another_session_does() {
+        let mut command = Command::new("python");
+        command.args([
+            "-u",
+            "-c",
+            r#"
+import json,sys,time
+for line in sys.stdin:
+    value=json.loads(line)
+    if value['method']=='talk':
+        for _ in range(6):
+            time.sleep(0.5); print(json.dumps({'method':'session/update','params':{'sessionId':'a'}}),flush=True)
+        print(json.dumps({'id':value['id'],'result':{'done':True}}),flush=True)
+    else:
+        for _ in range(8):
+            time.sleep(0.5); print(json.dumps({'method':'session/update','params':{'sessionId':'other'}}),flush=True)
+"#,
+        ]);
+        let client = Client::spawn_command(command, |_| {}, || {}).unwrap();
+        let quiet = Duration::from_millis(1500);
+        assert_eq!(client.rpc_while_alive("talk", json!({"sessionId":"a"}), quiet).unwrap(), json!({"done":true}));
+        let silent = client.rpc_while_alive("hang", json!({"sessionId":"b"}), quiet).unwrap_err();
+        client.stop();
+        assert!(silent.contains("没有任何输出"), "{silent}");
     }
 }
 

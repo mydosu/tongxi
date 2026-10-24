@@ -484,10 +484,10 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
-        let result = client.rpc_timeout(
+        let result = client.rpc_while_alive(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
-            Duration::from_secs(3600),
+            crate::rpc::QUIET_LIMIT,
         );
         match result {
             Ok(value) => {
