@@ -505,7 +505,7 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .bubble .katex, .agent-turn-text .katex { white-space: normal; font-size: 1.05em; }
 .bubble .katex-display, .agent-turn-text .katex-display { margin: 6px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 /* 协作问答、主脑派活：和其他面板同一种磨砂卡片；左边一道色条说明状态（颜色见 theme.css 的 --ok 等）。 */
-.inquiry-content, .brain-jobs-content { display: grid; gap: 12px; align-content: start; max-width: 880px; width: 100%; margin: 0 auto; }
+.inquiry-content, .brain-jobs-content { display: grid; grid-auto-rows: max-content; gap: 12px; align-content: start; max-width: 880px; width: 100%; margin: 0 auto; }
 .inquiry-card, .brain-job { position: relative; display: grid; gap: 9px; padding: 16px 20px 16px 22px; border: 1px solid rgb(255 255 255 / .9); border-radius: 16px; background: rgb(255 255 255 / .66); box-shadow: 0 6px 22px rgb(90 96 150 / .07); overflow: hidden; }
 .inquiry-card::before, .brain-job::before { content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--tone, #c6c9d8); }
 .inquiry-card { --tone: var(--ok); }

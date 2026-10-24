@@ -1,7 +1,7 @@
 import { entryBusy, type AgentEntry } from './agent_timeline';
 import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
-import { toolActivity, captureToolState, restoreToolState } from './tool_activity';
+import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { attachmentHtml, attachmentText } from './attachments';
 import { plainThought, thoughtFlow, type FlowPart } from './thought_flow';
 import { thoughtFollowing } from './thought_scroll';
@@ -112,7 +112,7 @@ export class AgentTranscript {
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
     node.querySelector('[data-entry-live]')!.textContent = busy ? entry.status === 'cancelling' ? '正在停止…' : '正在处理…' : entry.status === 'interrupted' ? '已中断' : '';
     // 思考与正文交替时按顺序穿插显示；带提问卡片的回复仍用“思考块 + 正文”。
-    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text' || (part.kind === 'steer' && !!entry.steers?.[part.text])) ?? null : null;
+    const flow = entry.kind === 'agent' && !entry.body.includes('```tongxi-question') ? thoughtFlow(entry.thought, entry.body)?.filter(part => part.kind === 'thought' || part.kind === 'text' || (part.kind === 'steer' && !!entry.steers?.[part.text]) || (part.kind === 'tool' && entry.tools.some(event => event.event_id === part.text))) ?? null : null;
     this.patchFlow(node.querySelector<HTMLElement>('.agent-turn-flow')!, flow, busy, entry);
     const plain = flow ? '' : plainThought(entry.thought);
     const thought = node.querySelector<HTMLDetailsElement>('.agent-turn-thought')!;
@@ -151,10 +151,13 @@ export class AgentTranscript {
     error.textContent = entry.error || (entry.status === 'failed' ? '本次运行失败，已有内容已保留。' : '');
     error.hidden = !error.textContent;
     const tools = node.querySelector<HTMLElement>('.agent-turn-tools')!;
-    const signature = JSON.stringify(entry.tools);
+    // 带位置标记的调用已穿插在 flow 里，这里只汇总没有标记的（旧消息）。
+    const placed = new Set(flow?.flatMap(part => part.kind === 'tool' ? [part.text] : []));
+    const loose = entry.tools.filter(event => !placed.has(event.event_id));
+    const signature = JSON.stringify(loose);
     if (tools.dataset.paint !== signature) {
       const disclosures = captureToolState(tools);
-      tools.innerHTML = toolActivity(entry.tools, escape);
+      tools.innerHTML = toolActivity(loose, escape);
       restoreToolState(tools, disclosures);
       tools.dataset.paint = signature;
     }
@@ -164,7 +167,7 @@ export class AgentTranscript {
   }
 
   /** 按片段逐个打补丁：已存在的段只更新文字，展开状态和滚动位置不被重绘打断。 */
-  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean, { id: entryId, steers }: AgentEntry) {
+  private patchFlow(host: HTMLElement, flow: FlowPart[] | null, busy: boolean, { id: entryId, steers, tools }: AgentEntry) {
     host.hidden = !flow?.length;
     const parts = flow || [];
     while (host.children.length > parts.length) host.lastElementChild!.remove();
@@ -182,6 +185,8 @@ export class AgentTranscript {
           node = document.createElement('div');
           node.className = 'agent-turn-steer agent-user-entry';
           node.innerHTML = '<header class="agent-turn-meta"><span>插话</span><time></time></header><div class="agent-turn-text"></div>';
+        } else if (part.kind === 'tool') {
+          node = document.createElement('div');
         } else {
           node = document.createElement('div');
           node.className = 'agent-turn-text';
@@ -209,6 +214,9 @@ export class AgentTranscript {
         node.querySelector('.agent-turn-meta > span')!.textContent = said.author === 'user' ? '插话' : name(said.author);
         node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(said.at);
         node.querySelector('.agent-turn-text')!.textContent = attachmentText(said.body);
+      } else if (part.kind === 'tool') {
+        const html = toolLine(tools.find(event => event.event_id === part.text)!, this.format.escape);
+        if (node.dataset.output !== html) { const open = captureToolState(node); node.innerHTML = html; restoreToolState(node, open); node.dataset.output = html; }
       } else {
         const output = attachmentText(part.text);
         if (node.dataset.output !== output) { node.innerHTML = agentMarkdown(output, this.format.escape); node.dataset.output = output; }
