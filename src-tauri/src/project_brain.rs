@@ -349,7 +349,8 @@ impl Store {
                 .flatten(),
         };
         let steps = load_steps(&self.connection, room);
-        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, usage })
+        let ledger = ledger(&self.connection, room)?;
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, usage, ledger })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -478,6 +479,60 @@ pub struct BrainOverview {
     plans: Vec<PlanDoc>,
     steps: Vec<PlanStep>,
     usage: UsageStats,
+    ledger: Vec<LedgerRow>,
+}
+
+/// 项目总账的一格：某天、某个席位、某个模型的回合合计，界面按天、按成员、按模型再加起来。
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct LedgerRow {
+    day: String,
+    name: String,
+    model: String,
+    turns: i64,
+    input: i64,
+    output: i64,
+    /// 有价回合折的美元；priced 是其中有价的回合数，少于 turns 说明有的型号价格未知。
+    cost: f64,
+    priced: i64,
+}
+
+/// 项目里主脑和各席位每回合的用量，按天、席位、模型归到一起。
+fn ledger(connection: &Connection, room: &str) -> Result<Vec<LedgerRow>> {
+    let mut query = connection
+        .prepare(
+            "SELECT date(m.created_at/1000,'unixepoch','localtime'),c.agent_id,r.agent_id,COALESCE(r.model,''),r.usage,m.created_at
+             FROM project_agent_chats c JOIN runs r ON r.conversation_id=c.conversation_id JOIN messages m ON m.id=r.assistant_message_id
+             WHERE c.group_conversation_id=?1 AND r.usage IS NOT NULL ORDER BY 1 DESC",
+        )
+        .map_err(|_| "项目总账读取失败")?;
+    let rows = query
+        .query_map([room], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?))
+        })
+        .map_err(|_| "项目总账读取失败")?;
+    let mut ledger: Vec<LedgerRow> = Vec::new();
+    for row in rows {
+        let (day, seat, agent, model, text, at) = row.map_err(|_| "项目总账读取失败")?;
+        let Ok(usage) = serde_json::from_str::<Value>(&text) else { continue };
+        let name = if is_brain(&seat) { "主脑".to_owned() } else { label(connection, room, &seat) };
+        let cost = run_cost(&usage, &agent, Some(&model), at);
+        let index = match ledger.iter().position(|cell| cell.day == day && cell.name == name && cell.model == model) {
+            Some(index) => index,
+            None => {
+                ledger.push(LedgerRow { day, name, model, turns: 0, input: 0, output: 0, cost: 0.0, priced: 0 });
+                ledger.len() - 1
+            }
+        };
+        let cell = &mut ledger[index];
+        cell.turns += 1;
+        cell.input += usage["usage"]["inputTokens"].as_i64().unwrap_or(0);
+        cell.output += usage["usage"]["outputTokens"].as_i64().unwrap_or(0);
+        if let Some(cost) = cost {
+            cell.cost += cost;
+            cell.priced += 1;
+        }
+    }
+    Ok(ledger)
 }
 
 /// 计划的一步：主脑用 hub_plan 写，派活、交回、问答自动推着状态走。
@@ -2291,6 +2346,8 @@ B6 做完了"));
         assert_eq!(usage.brain_today, expected, "不报用量的回合不算");
         assert_eq!(usage.brain_total, expected);
         assert_eq!(usage.context, Some(15000), "上下文取最近一回合");
+        let ledger = store.brain_overview(&room).unwrap().ledger;
+        assert_eq!((ledger.len(), ledger[0].turns, ledger[0].input, ledger[0].output, ledger[0].priced), (1, 2, 23000, 600, 0), "同一天同一席位同一模型归成一格");
         let _ = std::fs::remove_dir_all(base);
     }
 }

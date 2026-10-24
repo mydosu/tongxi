@@ -1,4 +1,4 @@
-import type { BrainJob, BrainOverview, JobUsage, PlanDoc, PlanStep, UsageSum } from './types';
+import type { BrainJob, BrainOverview, JobUsage, LedgerRow, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 import dagre from '@dagrejs/dagre';
 import { still } from './motion';
@@ -36,6 +36,25 @@ function jobBill(usage: JobUsage) {
   const u = usage.usage, sum = { turns: 1, input: u.inputTokens || 0, cache_read: u.cachedReadTokens || 0, cache_write: u.cachedWriteTokens || 0, output: u.outputTokens || 0, cost: usage.cost };
   const compare = usage.cost != null && usage.brain_cost != null ? `，主脑做 ≈ ${money(usage.brain_cost)}${usage.brain_cost > usage.cost ? `，省 ${money(usage.brain_cost - usage.cost)}` : ''}` : '';
   return `${usageText(sum)} · ${priced(usage.cost)}${compare}`;
+}
+
+/// 项目总账：主脑和各席位的回合按天、按成员、按模型各加一遍（按天只列最近 14 天）。
+function ledgerSection(rows: LedgerRow[], escape: Escape, open: Set<string>) {
+  if (!rows.length) return '';
+  // 按天按日期倒序（后端已排好），按成员、按模型花得多的在前。
+  const group = (key: (row: LedgerRow) => string, byDay = false) => {
+    const sums = new Map<string, LedgerRow>();
+    for (const row of rows) {
+      const sum = sums.get(key(row)) || { ...row, turns: 0, input: 0, output: 0, cost: 0, priced: 0 };
+      sums.set(key(row), { ...sum, turns: sum.turns + row.turns, input: sum.input + row.input, output: sum.output + row.output, cost: sum.cost + row.cost, priced: sum.priced + row.priced });
+    }
+    const list = byDay ? [...sums].slice(0, 14) : [...sums].sort((a, b) => b[1].cost - a[1].cost);
+    return list.map(([label, sum]) => `<p><strong>${escape(label)}</strong><span>${sum.turns} 回合 · 输入 ${tokens(sum.input)} · 输出 ${tokens(sum.output)} · ${sum.priced ? `≈ ${money(sum.cost)}${sum.priced < sum.turns ? `（${sum.turns - sum.priced} 回合价格未知）` : ''}` : '价格未知'}</span></p>`).join('');
+  };
+  const total = rows.reduce((sum, row) => sum + row.cost, 0);
+  const key = 'ledger|project';
+  return `<details class="brain-plan brain-ledger" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><strong>项目总账</strong><small>累计 ≈ ${money(total)}（按 API 价折算）</small></summary>
+    <div class="brain-usage"><h3>按天</h3>${group(row => row.day, true)}<h3>按成员</h3>${group(row => row.name)}<h3>按模型</h3>${group(row => modelText(row.model || null))}</div></details>`;
 }
 
 function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[]) {
@@ -376,5 +395,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '暂无进行中的任务。' : '主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage, overview.jobs)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage, overview.jobs)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

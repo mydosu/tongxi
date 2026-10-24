@@ -540,6 +540,9 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-usage { display: grid; gap: 3px; margin: -2px 4px 4px 23px; color: var(--muted); font-size: 12px; }
 .brain-usage p { display: flex; gap: 10px; margin: 0; }
 .brain-usage strong { min-width: 70px; color: var(--ink); font-weight: 500; }
+.brain-ledger .brain-usage { margin: 8px 0 2px 18px; }
+.brain-ledger h3 { margin: 6px 0 2px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.brain-ledger .brain-usage strong { flex: 0 0 170px; overflow-wrap: anywhere; }
 .brain-status-dot { width: 9px; height: 9px; border-radius: 50%; background: #c6c9d8; box-shadow: 0 0 0 3px rgb(198 201 216 / .25); }
 .brain-status-dot.busy { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .18); animation: member-pulse 1.6s ease-in-out infinite; }
 .brain-job.running { --tone: var(--ok); }
