@@ -57,6 +57,28 @@ fn failure_reply(text: &str) -> Option<String> {
         None
     }
 }
+/// Hermes 自己会话库里这个会话的累计用量（输入不含缓存、缓存读、缓存写、输出）。
+/// 有的线路不在 ACP 回包里报用量，回合前后各读一次相减补上。
+fn session_tokens(session_id: &str) -> Option<[i64; 4]> {
+    let home = std::env::var_os("HERMES_HOME")
+        .map(PathBuf::from)
+        .or_else(|| crate::service_updates::hermes_repo()?.parent().map(PathBuf::from))?;
+    let db = rusqlite::Connection::open_with_flags(home.join("state.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    db.busy_timeout(Duration::from_secs(2)).ok()?;
+    db.query_row(
+        "SELECT COALESCE(input_tokens,0),COALESCE(cache_read_tokens,0),COALESCE(cache_write_tokens,0),COALESCE(output_tokens,0) FROM sessions WHERE id=?1",
+        [session_id],
+        |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?]),
+    )
+    .ok()
+}
+/// 换成和 ACP 回包一样的口径：inputTokens 含缓存读写。
+fn turn_usage(before: [i64; 4], after: [i64; 4]) -> Option<Value> {
+    let [input, read, write, output]: [i64; 4] = std::array::from_fn(|index| (after[index] - before[index]).max(0));
+    (input + read + write + output > 0).then(|| {
+        json!({"inputTokens": input + read + write, "cachedReadTokens": read, "cachedWriteTokens": write, "outputTokens": output})
+    })
+}
 fn provider_label(model: &Value) -> Option<String> {
     let description = model["description"].as_str()?;
     let label = description
@@ -517,13 +539,19 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
+        let before = session_tokens(&session_id);
         let result = client.rpc_while_alive(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
             crate::rpc::QUIET_LIMIT,
         );
         match result {
-            Ok(value) => {
+            Ok(mut value) => {
+                if !value["usage"].is_object() {
+                    if let Some(usage) = before.zip(session_tokens(&session_id)).and_then(|(before, after)| turn_usage(before, after)) {
+                        value["usage"] = usage;
+                    }
+                }
                 self.store.lock().unwrap().record_usage(run_id, &value);
                 let mut status = match value["stopReason"].as_str() {
                     Some("cancelled") => "interrupted",
@@ -737,6 +765,11 @@ mod model_catalog_tests {
         let billing = failure_reply("Billing or credits exhausted: HTTP 400: You have insufficient credits.\n\nAdd credits").unwrap();
         assert!(billing.contains("额度") && billing.contains("HTTP 400") && !billing.contains("Add credits"));
         assert!(failure_reply("API call failed after 3 retries: HTTP 503").unwrap().contains("调用模型失败"));
+        assert_eq!(
+            super::turn_usage([100, 1000, 0, 5], [150, 3000, 10, 25]),
+            Some(json!({"inputTokens": 2060, "cachedReadTokens": 2000, "cachedWriteTokens": 10, "outputTokens": 20}))
+        );
+        assert_eq!(super::turn_usage([1, 2, 3, 4], [1, 2, 3, 4]), None);
         assert_eq!(failure_reply("## 交回\n统计完了：Billing or credits exhausted 这句不在开头"), None);
     }
 
