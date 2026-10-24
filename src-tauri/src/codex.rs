@@ -128,6 +128,8 @@ struct ActiveRun {
     items: BTreeMap<String, String>,
     order: Vec<String>,
     last_checkpoint: Instant,
+    /// 最后一次收到这一回合的通知；太久没动静就判卡住。
+    heard: Instant,
     /// 这一回合开始前整个会话的累计用量（输入、缓存读、缓存写、输出），回合用量 = 现在的累计 - 它。
     usage_base: Option<[i64; 4]>,
 }
@@ -846,6 +848,7 @@ impl Runtime {
                 items: BTreeMap::new(),
                 order: Vec::new(),
                 last_checkpoint: Instant::now(),
+                heard: Instant::now(),
                 usage_base: None,
             },
         );
@@ -874,8 +877,35 @@ impl Runtime {
                     return;
                 };
                 runtime.resume_after_quota(&mut last_connect);
+                runtime.abort_quiet_runs();
             }
         });
+    }
+
+    /// 回合连续 QUIET_LIMIT 没有任何通知就判卡住：先试着打断原生回合，再记失败，免得任务一直挂在「在做」。
+    fn abort_quiet_runs(&self) {
+        let (client, quiet) = {
+            let inner = self.inner.lock().unwrap();
+            let quiet = inner
+                .runs
+                .iter()
+                .filter(|run| run_busy(*run) && run.heard.elapsed() >= crate::rpc::QUIET_LIMIT)
+                .map(|run| {
+                    let record = &run.snapshot.record;
+                    (record.id.clone(), record.native_thread_id.clone(), record.native_turn_id.clone())
+                })
+                .collect::<Vec<_>>();
+            (inner.client.clone(), quiet)
+        };
+        for (run_id, thread_id, turn_id) in quiet {
+            if let (Some(client), Some(thread_id), Some(turn_id)) = (&client, thread_id, turn_id) {
+                let _ = client.rpc("turn/interrupt", json!({"threadId":thread_id,"turnId":turn_id}));
+            }
+            self.abort(
+                &run_id,
+                format!("Codex 已 {} 分钟没有任何输出，判定卡住", crate::rpc::QUIET_LIMIT.as_secs() / 60),
+            );
+        }
     }
 
     fn resume_after_quota(self: &Arc<Self>, last_connect: &mut Option<Instant>) {
@@ -943,6 +973,7 @@ impl Runtime {
                 items: BTreeMap::new(),
                 order: Vec::new(),
                 last_checkpoint: Instant::now(),
+                heard: Instant::now(),
                 usage_base: None,
             },
         );
@@ -1263,6 +1294,7 @@ impl Runtime {
             return;
         };
         let run = &mut inner.runs[index];
+        run.heard = Instant::now();
         let method = value["method"].as_str().unwrap_or("");
         if method != "turn/started" && run.snapshot.record.native_turn_id.is_none() {
             return;
@@ -1549,6 +1581,7 @@ mod tests {
             items: BTreeMap::new(),
             order: Vec::new(),
             last_checkpoint: Instant::now(),
+            heard: Instant::now(),
             usage_base: None,
         }
     }
