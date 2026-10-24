@@ -16,6 +16,7 @@ body { margin: 0; }
 .project-grant-settings small { color: #95a1b1; font-size: 11px; }
 .project-grant-settings label { display: flex; align-items: center; gap: 8px; color: #46566b; font-size: 12px; }
 .project-grant-settings label span { min-width: 72px; }
+.project-grant-settings input[type=radio] { width: auto; margin: 0; }
 .project-grant-settings input { width: 120px; box-sizing: border-box; border: 1px solid #dce3ec; border-radius: 7px; color: #46566b; padding: 6px 9px; background: #fff; font: inherit; font-size: 12px; }
 .project-coordinator-settings { display: grid; gap: 10px; border: 1px solid #dbe5ef; border-radius: 12px; padding: 12px 14px 16px; margin: 2px 0 18px; background: #f4f7fb; }
 .project-coordinator-settings legend { font-weight: 600; color: #4b657f; font-size: 14px; padding: 0 5px; }

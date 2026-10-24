@@ -211,6 +211,8 @@ pub struct ConversationDetail {
     pub project_grants: String,
     /// 项目里各成员每天的花费上限（成员 → 美元），没设的成员不在里面。
     pub spend_cap: std::collections::BTreeMap<String, f64>,
+    /// 项目权限档：read / write / full。
+    pub permission_tier: &'static str,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub chat_questions: Vec<crate::chat_questions::Question>,
@@ -792,6 +794,7 @@ impl Store {
             project_coordinator: self.project_coordinator(id)?,
             project_grants: self.project_grants(id),
             spend_cap: self.spend_cap(id),
+            permission_tier: self.permission_tier(id),
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
             chat_questions: self.chat_questions(id)?,

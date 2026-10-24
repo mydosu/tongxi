@@ -1028,8 +1028,14 @@ impl Runtime {
                 local
             }
         };
-        // 同席作为 CLI 外壳，不阻止 Codex 使用本机文件、命令、MCP、插件或网络工具。
-        let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access"});
+        // 私聊和全权档的项目不拦 Codex；只读、只改工作树档用它自己的沙箱（工作树在数据目录里，另外放开）。
+        let access = crate::project_brain::access(&self.store.lock().unwrap().connection, &conversation_id);
+        let (sandbox, sandbox_policy) = match access {
+            Some(("read", _)) => ("read-only", json!({"type":"readOnly"})),
+            Some(("write", worktree)) => ("workspace-write", json!({"type":"workspaceWrite","writableRoots":worktree.into_iter().collect::<Vec<_>>()})),
+            _ => ("danger-full-access", json!({"type":"dangerFullAccess"})),
+        };
+        let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":sandbox});
         let project_db = self.store.lock().unwrap().path.clone();
         let project_tools =
             crate::project_tools::project_chat_dynamic_tools(&project_db, &conversation_id)?;
@@ -1104,7 +1110,7 @@ impl Runtime {
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, true)?;
         let user_message = run_ref(&self.inner.lock().unwrap().runs, run_id)
             .map(|run| run.snapshot.record.user_message_id.clone());
-        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":user_message,"input":input,"model":model,"effort":effort,"summary":"auto","approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}))?;
+        let turn = client.rpc("turn/start", json!({"threadId":thread_id,"clientUserMessageId":user_message,"input":input,"model":model,"effort":effort,"summary":"auto","approvalPolicy":"never","sandboxPolicy":sandbox_policy}))?;
         let turn_id = turn["turn"]["id"]
             .as_str()
             .ok_or("Codex 未返回运行 ID")?

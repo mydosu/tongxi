@@ -1444,6 +1444,7 @@ fn main() {
             projects::set_project_coordinator,
             projects::set_project_grants,
             projects::set_project_spend_cap,
+            projects::set_project_permission,
             project_sessions::project_session_bindings,
             project_sessions::bind_project_sessions,
             project_sessions::add_project_seat,

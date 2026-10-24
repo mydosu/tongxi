@@ -76,6 +76,14 @@ pub fn set_project_coordinator(
     store.detail(&conversation_id)
 }
 
+/// 项目权限档：read 只读、write 只改工作树、full 全权；成员下一回合起按新档位跑。
+#[tauri::command]
+pub fn set_project_permission(state: State<'_, AppState>, conversation_id: String, tier: String) -> Result<ConversationDetail> {
+    let mut store = locked(&state)?;
+    store.set_permission_tier(&conversation_id, &tier)?;
+    store.detail(&conversation_id)
+}
+
 /// 项目里各成员每天的花费上限（成员 → 美元），没列的成员不限。
 #[tauri::command]
 pub fn set_project_spend_cap(state: State<'_, AppState>, conversation_id: String, caps: std::collections::BTreeMap<String, f64>) -> Result<ConversationDetail> {

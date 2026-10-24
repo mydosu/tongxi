@@ -485,9 +485,10 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
+        let tier = crate::project_brain::access(&self.store.lock().unwrap().connection, &conversation_id).map_or("full", |(tier, _)| tier);
         let result = client.rpc_while_alive(
             "session/prompt",
-            json!({"sessionId":session_id,"prompt":input}),
+            json!({"sessionId":session_id,"prompt":input,"tongxiTier":tier}),
             crate::rpc::QUIET_LIMIT,
         );
         match result {
@@ -708,8 +709,8 @@ mod tests {
     #[test]
     fn bridge_gives_members_the_full_cli() {
         let bridge = include_str!("claude_bridge.mjs");
-        assert!(bridge.contains("'--permission-mode', 'bypassPermissions'"));
-        assert!(bridge.contains("'--disallowedTools', 'AskUserQuestion'"));
+        assert!(bridge.contains("else args.push('--permission-mode', 'bypassPermissions')"));
+        assert!(bridge.contains("const denied = ['AskUserQuestion'"));
         // 宿主 Claude Code 的会话标记不能泄进成员子进程。
         assert!(bridge.contains("key === 'CLAUDECODE'"));
     }

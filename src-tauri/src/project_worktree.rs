@@ -368,6 +368,16 @@ pub fn add(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Resul
 }
 
 /// 在项目目录里跑一条 git 命令取输出（主脑工具查分支状态用）。
+/// 工作树里有没提交的改动就整个提交进它的分支（成员在沙箱里提交不了时，合并前由同席补上）。
+pub fn commit_all(worktree: &Path, message: &str) -> Result<()> {
+    if git(worktree, &["status", "--porcelain"])?.trim().is_empty() {
+        return Ok(());
+    }
+    git(worktree, &["add", "-A"])?;
+    git(worktree, &["-c", "user.name=agent-hub", "-c", "user.email=hub@local", "commit", "--no-verify", "-q", "-m", message])?;
+    Ok(())
+}
+
 pub fn git_output(root: &Path, args: &[&str]) -> Result<String> {
     git(root, args)
 }

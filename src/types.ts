@@ -24,6 +24,7 @@ export interface ConversationDetail {
   project_coordinator?: RoleChoice | null;
   project_grants?: string;
   spend_cap?: Record<string, number>;
+  permission_tier?: 'read' | 'write' | 'full';
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
   chat_questions?: ChatQuestion[];

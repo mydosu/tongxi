@@ -208,6 +208,25 @@ impl Store {
         .map_err(|_| "花费上限保存失败")?;
         Ok(())
     }
+    /// 项目权限档：read 只读、write 只改工作树、full 全权（默认）。
+    pub fn permission_tier(&self, room: &str) -> &'static str {
+        tier(&self.connection, room)
+    }
+    pub fn set_permission_tier(&mut self, room: &str, tier: &str) -> Result<()> {
+        if !TIERS.contains(&tier) {
+            return Err("权限档只能是只读、只改工作树或全权".into());
+        }
+        if self.conversation_project(room)?.is_none() {
+            return Err("请先绑定项目".into());
+        }
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("permission:{room}"), tier],
+            )
+            .map_err(|_| "权限档保存失败")?;
+        Ok(())
+    }
     pub fn set_project_grants(&mut self, room: &str, grants: &str) -> Result<()> {
         let grants = grants.trim();
         if grants.chars().count() > 500 {
@@ -903,6 +922,39 @@ fn subscription(quota: &Value, agent: &str) -> bool {
     ["five_hour", "weekly"].iter().any(|window| !quota[agent][*window].is_null())
 }
 
+const TIERS: [&str; 3] = ["read", "write", "full"];
+
+/// 告诉主脑和成员这一档能做什么（真正拦的是各成员自己的沙箱和权限设置）。
+fn tier_note(tier: &str) -> &'static str {
+    match tier {
+        "read" => "只读。成员只能读代码、跑不改东西的命令，改不了文件；派活只派调研、审查这类。",
+        "write" => "只改工作树。成员能改项目目录和自己的工作树，不能推送、发版、合 PR；Codex、DSH 在沙箱里提交不了 git、上不了网。合并工作树要用户在协作问答里看过 diff 点头。",
+        _ => "全权。同席不拦，按项目长期授权办。",
+    }
+}
+
+fn tier(connection: &Connection, room: &str) -> &'static str {
+    let saved = metadata(connection, &format!("permission:{room}"));
+    TIERS.into_iter().find(|tier| saved.as_deref() == Some(*tier)).unwrap_or("full")
+}
+
+/// 这个会话这一回合按哪一档跑：项目会话按项目档位，手上的活开了工作树就带上它（只改工作树档要放开它）。
+/// 不是项目会话（私聊）返回 None，照旧不限。
+pub fn access(connection: &Connection, chat: &str) -> Option<(&'static str, Option<String>)> {
+    let room: String = connection
+        .query_row("SELECT group_conversation_id FROM project_agent_chats WHERE conversation_id=?1", [chat], |row| row.get(0))
+        .ok()?;
+    let worktree = connection
+        .query_row(
+            "SELECT worktree FROM brain_jobs WHERE chat=?1 AND kind='task' AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
+            [chat],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    Some((tier(connection, &room), worktree))
+}
+
 fn spend_caps(connection: &Connection, room: &str) -> BTreeMap<String, f64> {
     metadata(connection, &format!("spend_cap:{room}")).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
@@ -955,6 +1007,36 @@ fn over_spend_cap(connection: &Connection, room: &str, brain: &str, agent: &str)
     };
     crate::project_inquiries::ask_on(connection, room, None, brain, &ask)?;
     Err(format!("{agent}（{name}）今天已花 ≈ ${spent:.2}，到了用户给它设的每日上限 ${cap:.2}：今天不再给它的会话派新活（已在协作问答里问用户要不要放开）。别的成员按各自的上限照常可派。"))
+}
+
+/// 全权档直接合并；其他档先把 diff 挂到协作问答，用户点了「合并」才合。
+fn merge_approved(connection: &Connection, ctx: &Context, job: &str, seat: &str, branch: &str) -> Result<()> {
+    if tier(connection, &ctx.room) == "full" {
+        return Ok(());
+    }
+    let key = format!("merge-{}", short(job));
+    let answer: Option<String> = connection
+        .query_row("SELECT answer FROM project_inquiries WHERE conversation_id=?1 AND key=?2 AND status='answered'", params![ctx.room, key], |row| row.get(0))
+        .optional()
+        .ok()
+        .flatten();
+    match answer.as_deref() {
+        Some("合并") => return Ok(()),
+        Some(other) => return Err(format!("用户没同意合并任务 {}（回答：{other}）。可以 discard 丢掉，或按用户的意思改了再交", short(job))),
+        None => {}
+    }
+    let stat = crate::project_worktree::git_output(&ctx.root, &["diff", "--stat", &format!("HEAD...{branch}")]).unwrap_or_default();
+    let ask = crate::project_inquiries::Ask {
+        key,
+        question: format!("{} 做完了任务 {}，要合并进项目当前分支吗？", label(connection, &ctx.room, seat), short(job)),
+        background: Some(format!("分支 {branch} 相对项目当前分支的改动：
+{}", tail(stat.trim(), 3000))),
+        options: vec!["合并".into(), "先不合并".into()],
+        default: None,
+        reversible: false,
+    };
+    crate::project_inquiries::ask_on(connection, &ctx.room, None, &ctx.seat, &ask)?;
+    Err(format!("项目权限档不是全权，合并要用户点头：已把任务 {} 的 diff 挂到协作问答。用户回答会作为新消息告诉你，答了「合并」再调一次 hub_finish_worktree", short(job)))
 }
 
 /// 成员手上有没有没交回的活，或者用户正在它的会话里聊。
@@ -1229,7 +1311,12 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             let branch = branch.ok_or("这项任务没开工作树")?;
             let mut outcome = String::new();
             if arg.action == "merge" {
+                // 沙箱里的成员写不了工作树外面的 .git，没提交的改动由同席替它提交进任务分支（不然分支没动、会被当成已合并删掉）。
+                if let Some(path) = &worktree {
+                    crate::project_worktree::commit_all(Path::new(path), &format!("任务 {}", short(&id)))?;
+                }
                 if !crate::project_worktree::merged(&ctx.root, &branch) {
+                    merge_approved(connection, &ctx, &id, &seat, &branch)?;
                     outcome = crate::project_worktree::merge(&ctx.root, &branch)?;
                 }
             } else if arg.action != "discard" {
@@ -1339,11 +1426,13 @@ pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
 
 ## 本项目
 项目「{name}」，目录 {root}。计划文件是 .tongxi/计划.md，任务书放在 .tongxi/任务书/，交接写在 .tongxi/交接.md。
-项目长期授权：{}",
+项目长期授权：{}
+项目权限档：{}",
         crate::prompts::brain(),
         crate::prompts::prompt_files("models.md").first().map_or("（未设置数据目录）".into(), |path| path.display().to_string()),
         crate::prompts::models(),
         grants.as_deref().unwrap_or("（没有）"),
+        tier_note(tier(&connection, &room)),
     );
     let digest = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
     let primed = format!("{native}:{digest}");
@@ -1763,7 +1852,7 @@ impl Courier {
                 if self.live(&agent, &job.chat) {
                     return false;
                 }
-                let (root, grants) = {
+                let (root, grants, tier) = {
                     let store = self.store.lock().unwrap();
                     if job.model.is_some() || job.effort.is_some() {
                         let _ = store.connection.execute(
@@ -1773,12 +1862,15 @@ impl Courier {
                     }
                     let root = store.conversation_project(&job.room).ok().flatten().map(|project| project.root).unwrap_or_default();
                     let grants = store.project_grants(&job.room);
-                    (root, grants)
+                    (root, grants, store.permission_tier(&job.room))
                 };
                 let cwd = job.worktree.clone().unwrap_or(root);
                 let mut content = format!("【主脑派活】任务 {}\n工作目录：{cwd}\n", short(&job.id));
                 if let Some(branch) = &job.branch {
-                    content.push_str(&format!("这是你自己的工作树，分支 {branch}（从项目当前 HEAD 开出），只在这里改、提交到这个分支。\n"));
+                    content.push_str(&format!("这是你自己的工作树，分支 {branch}（从项目当前 HEAD 开出），只在这里改、提交到这个分支（提交不了也没关系，合并时同席替你提交）。\n"));
+                }
+                if tier != "full" {
+                    content.push_str(&format!("项目权限档：{}\n", tier_note(tier)));
                 }
                 if !grants.trim().is_empty() {
                     content.push_str(&format!("项目长期授权：{}\n", grants.trim()));
@@ -2432,6 +2524,51 @@ B6 做完了"));
         store.set_spend_cap(&room, caps(&[("claude-win", 5.0)])).unwrap();
         assert!(check(&store).is_ok(), "没花到上限不拦");
         assert!(store.set_spend_cap(&room, caps(&[("claude-win", 0.0)])).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn worktree_merges_wait_for_the_user_below_full_access() {
+        let base = std::env::temp_dir().join(format!("tongxi-tier-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| assert!(std::process::Command::new("git").current_dir(dir).args(args).status().unwrap().success());
+        git(&root, &["init", "-q"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        git(&root, &["add", "base.txt"]);
+        git(&root, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["codex-win".into()]).unwrap().id;
+        let project = store.register_project("权限项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let chat = |seat: &str| chats.iter().find(|chat| chat.agent_id == seat).unwrap().conversation_id.clone();
+        let (brain, member) = (chat("codex-win-brain"), chat("codex-win"));
+        assert_eq!(super::access(&store.connection, &member), Some(("full", None)), "默认全权");
+        let direct = store.create("私聊", "direct", &["codex-win".into()]).unwrap().id;
+        assert_eq!(super::access(&store.connection, &direct), None, "私聊不受档位管");
+
+        let worktree = crate::project_worktree::add(&root, &base.join("worktrees"), "task-1", "hub/task-1").unwrap();
+        std::fs::write(worktree.join("done.txt"), "成员做的\n").unwrap();
+        store.connection.execute(
+            "INSERT INTO brain_jobs(id,room,seat,chat,kind,content,worktree,branch,status,created_at) VALUES('job-1',?1,'codex-win',?2,'task','改东西',?3,'hub/task-1','running',?4)",
+            params![room, member, worktree.to_string_lossy(), now()],
+        ).unwrap();
+        store.set_permission_tier(&room, "write").unwrap();
+        assert_eq!(super::access(&store.connection, &member), Some(("write", Some(worktree.to_string_lossy().into()))), "只改工作树档放开手上活的工作树");
+        assert!(store.set_permission_tier(&room, "root").is_err());
+        store.connection.execute("UPDATE brain_jobs SET status='done'", []).unwrap();
+
+        let finish = |store: &Store| super::call(&store.connection, &brain, "hub_finish_worktree", serde_json::json!({"job":"job-1","action":"merge"}));
+        let refused = finish(&store).unwrap_err();
+        assert!(refused.contains("协作问答"), "{refused}");
+        let inquiry = store.project_inquiries(&room).unwrap().into_iter().next().unwrap();
+        assert!(inquiry.background.contains("done.txt"), "问题里给看 diff：{}", inquiry.background);
+        assert!(!root.join("done.txt").exists());
+        store.answer_inquiry(&room, &inquiry.id, "合并").unwrap();
+        finish(&store).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("done.txt")).unwrap().trim_end(), "成员做的","成员没提交的改动由同席提交后合并");
+        drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
 

@@ -207,6 +207,18 @@ try {
   ctx = await boot('agent-hub-dsh', config, overrides, host => {
     host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment);
   }, pathToFileURL(join(installation, 'package.json')).href);
+  // 项目权限档：一个 DSH 进程跑所有会话，同席每回合把会话的档位写进 permissions.json，这里按表收紧该会话的沙箱。
+  const policy = ctx.get?.('sandboxPolicy') ?? ctx.sandboxPolicy;
+  if (policy) {
+    const own = policy.resolve.bind(policy);
+    const table = join(resolve(data), 'permissions.json');
+    policy.resolve = (request = {}) => {
+      const resolved = own(request);
+      let rule;
+      try { rule = JSON.parse(readFileSync(table, 'utf8'))[resolved.sessionId]; } catch {}
+      return rule ? { ...resolved, mode: rule.mode, ...(rule.root ? { workspaceRoot: resolve(rule.root) } : {}) } : resolved;
+    };
+  } else noteFailure(new Error('sandboxPolicy service missing: project permission tiers not enforced'));
   // Keep DSH's native tool/plugin surface. Project sessions additionally mount
   // the Agent Hub MCP server for direct messages between group members.
   process.stdin.on('end', () => {

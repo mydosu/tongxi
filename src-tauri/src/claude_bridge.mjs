@@ -218,6 +218,9 @@ function listSessions() {
 }
 
 // ACP 的 MCP 描述 → Claude --mcp-config。只接 stdio 形式，与同席注入的项目工具一致。
+const READ_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent'];
+const IRREVERSIBLE = ['git push', 'gh release', 'gh pr merge'];
+
 function mcpConfig(servers) {
   const mcpServers = {};
   for (const server of servers || []) {
@@ -313,13 +316,17 @@ function prompt(id, params) {
   const session = sessions.get(params.sessionId);
   if (!session) throw new Error('Claude 会话未加载');
   if (session.child) throw new Error('Claude 正在处理上一条消息');
+  // 项目权限档（同席每回合带来）：read 只放行读的工具，write 不让推送、发版、合 PR，full 和私聊不限。
+  const tier = params.tongxiTier;
+  const denied = ['AskUserQuestion', ...(tier === 'write' ? IRREVERSIBLE.flatMap(command => [`Bash(${command}:*)`, `PowerShell(${command}:*)`]) : [])];
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-    '--include-partial-messages', '--disallowedTools', 'AskUserQuestion'];
+    '--include-partial-messages', '--disallowedTools', ...denied];
   if (session.model && session.model !== 'default') args.push('--model', session.model);
   if (session.effort) args.push('--effort', session.effort);
   const resumed = Boolean(session.started || transcript(params.sessionId));
   args.push(resumed ? '--resume' : '--session-id', params.sessionId);
-  args.push('--permission-mode', 'bypassPermissions');
+  if (tier === 'read') args.push('--permission-mode', 'dontAsk', '--allowedTools', ...READ_TOOLS, ...session.mcpServers.map(server => `mcp__${server.name}`));
+  else args.push('--permission-mode', 'bypassPermissions');
   args.push('--append-system-prompt', memberHint);
   const mcp = mcpConfig(session.mcpServers);
   if (mcp) args.push('--mcp-config', mcp);

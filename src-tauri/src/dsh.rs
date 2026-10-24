@@ -549,6 +549,28 @@ impl Runtime {
         Ok(record)
     }
 
+    /// 桥按 dsh-native/permissions.json 收紧会话的沙箱：只读、只改工作树档写进去，全权和私聊不写（照旧不限）。
+    fn permit(&self, conversation_id: &str, session_id: &str) -> Result<()> {
+        let access = crate::project_brain::access(&self.store.lock().unwrap().connection, conversation_id);
+        let _guard = self.inner.lock().unwrap();
+        let table = self.directory.join("dsh-native").join("permissions.json");
+        let mut rules: serde_json::Map<String, Value> =
+            std::fs::read_to_string(&table).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        let rule = match access {
+            Some(("read", _)) => Some(json!({"mode":"read-only"})),
+            Some(("write", worktree)) => Some(json!({"mode":"workspace-write","root":worktree})),
+            _ => None,
+        };
+        if rules.get(session_id) == rule.as_ref() {
+            return Ok(());
+        }
+        match rule {
+            Some(rule) => rules.insert(session_id.into(), rule),
+            None => rules.remove(session_id),
+        };
+        std::fs::write(&table, Value::Object(rules).to_string()).map_err(|_| "DSH 权限档写入失败".into())
+    }
+
     fn prompt(&self, client: &Client, run_id: &str, content: &str) -> Result<()> {
         let conversation_id = crate::codex::run_ref(&self.inner.lock().unwrap().runs, run_id)
             .ok_or("运行已结束")?
@@ -674,6 +696,7 @@ impl Runtime {
                 .mark_turn(&mut run.record, run_id)?;
         }
         self.emit();
+        self.permit(&conversation_id, &session_id)?;
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
         let started = crate::store::now();
         let result = client.rpc_while_alive(
