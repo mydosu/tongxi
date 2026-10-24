@@ -1,0 +1,202 @@
+<!doctype html>
+<!-- README 演示动图的底稿：scripts/build_demo_gif.py 逐帧调 render(t) 截图拼成 GIF。示意，不是真实录屏。 -->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { width: 960px; height: 540px; overflow: hidden; font: 13px/1.5 'Noto Sans SC', 'Microsoft YaHei UI', 'Segoe UI', sans-serif; color: #303844; background: linear-gradient(135deg, #f5f2fc, #edf5fc 55%, #eef8f2); }
+  .window { position: absolute; inset: 18px; background: #f8f9fb; border-radius: 14px; box-shadow: 0 18px 44px rgb(86 92 150 / .18); display: flex; overflow: hidden; }
+  aside { width: 156px; flex-shrink: 0; background: #f1f2f5; border-right: 1px solid #e3e5e8; padding: 14px 10px; }
+  .brand { font-weight: 700; font-size: 15px; margin: 0 6px 14px; }
+  .brand small { font-weight: 400; color: #8f949b; font-size: 11px; margin-left: 4px; }
+  .group-label { font-size: 11px; color: #8f949b; margin: 10px 6px 6px; }
+  .item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 12.5px; }
+  .item.on { background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .06); }
+  .item .light { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
+  .avatar { width: 24px; height: 24px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; font: 600 12px 'Segoe UI', sans-serif; flex-shrink: 0; }
+  .you { background: #e9e4f7; color: #7a6bb8; } .claude { background: #f4e6dc; color: #b06d45; } .codex { background: #e2e5e8; color: #59616c; } .dsh { background: #e0e9f2; color: #5b7c9f; }
+  main { flex: 1; display: flex; min-width: 0; }
+  .chat { width: 344px; flex-shrink: 0; border-right: 1px solid #e3e5e8; display: flex; flex-direction: column; }
+  header { padding: 12px 16px; border-bottom: 1px solid #e3e5e8; }
+  header .eyebrow { font-size: 10.5px; color: #8f949b; }
+  header h1 { font-size: 15px; }
+  .messages { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; overflow: hidden; }
+  .msg { display: flex; gap: 8px; align-items: flex-start; transition: none; }
+  .msg .bubble { background: #fff; border: 1px solid #e8eaed; border-radius: 10px; padding: 6px 10px; font-size: 12.5px; max-width: 272px; }
+  .msg.mine { flex-direction: row-reverse; }
+  .msg.mine .bubble { background: #33383e; color: #edeff1; border-color: #33383e; }
+  .msg .who { font-size: 10.5px; color: #8f949b; display: block; }
+  .msg.note .bubble { background: #f3f1fa; border-color: #e4def6; color: #5d5390; font-size: 12px; }
+  .composer { margin: 0 14px 14px; border: 1px solid #dfe2e6; background: #fff; border-radius: 10px; padding: 9px 12px; min-height: 40px; font-size: 12.5px; color: #303844; }
+  .composer .placeholder { color: #a5aab1; }
+  .caret { display: inline-block; width: 1px; height: 14px; background: #303844; vertical-align: -2px; margin-left: 1px; }
+  .panel { flex: 1; min-width: 0; padding: 14px 16px; position: relative; }
+  .panel h2 { font-size: 13px; margin-bottom: 10px; display: flex; align-items: baseline; gap: 8px; }
+  .panel h2 small { font-weight: 400; color: #8f949b; font-size: 11px; }
+  .flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 8px; align-items: center; }
+  .card { position: relative; background: #fff; border: 1px solid #e3e5e8; border-radius: 10px; padding: 8px 8px; font-size: 12px; min-height: 64px; }
+  .card .owner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: #848990; margin-top: 5px; }
+  .card .owner .avatar { width: 18px; height: 18px; font-size: 10px; border-radius: 5px; }
+  .card .state { margin-left: auto; white-space: nowrap; font-size: 10px; padding: 0 6px; border-radius: 9px; background: #eef0f2; color: #848990; }
+  .card.running { border-color: transparent; }
+  .card.running::before { content: ''; position: absolute; inset: -1.5px; border-radius: 11px; padding: 1.5px; background: var(--ring); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .card.running .state { background: #e7f6ef; color: #3d8b68; }
+  .card.done { background: #f6f4fc; border-color: #e1dbf4; }
+  .card.done .state { background: rgb(165 152 216 / .18); color: #7a6bb8; }
+  .card .bar { height: 3px; border-radius: 2px; background: #eef0f2; margin-top: 6px; overflow: hidden; }
+  .card .bar i { display: block; height: 100%; background: #8fd3b6; }
+  .span2 { grid-row: span 2; }
+  .tree { font: 10px Consolas, monospace; color: #9aa0a8; margin-top: 3px; }
+  .ledger { position: absolute; inset: 14px 16px; background: #f8f9fb; }
+  .row { display: grid; grid-template-columns: 26px 1fr auto auto; gap: 8px; align-items: center; background: #fff; border: 1px solid #e8eaed; border-radius: 9px; padding: 7px 10px; margin-bottom: 7px; font-size: 12px; }
+  .row .tok { color: #848990; font-size: 11px; }
+  .row .cost { font-weight: 600; min-width: 52px; text-align: right; }
+  .total { margin-top: 12px; background: #fff; border: 1px solid #e1dbf4; border-radius: 11px; padding: 12px 14px; }
+  .compare { display: grid; grid-template-columns: 134px 1fr 50px; gap: 8px; align-items: center; font-size: 11.5px; margin: 6px 0; color: #5d636b; }
+  .compare .track { height: 12px; border-radius: 6px; background: #f0f1f3; overflow: hidden; }
+  .compare .track i { display: block; height: 100%; border-radius: 6px; }
+  .compare b { text-align: right; }
+  .saved { margin-top: 10px; font-size: 15px; font-weight: 700; color: #3d8b68; }
+  .saved small { display: block; font-size: 11px; font-weight: 400; color: #8f949b; margin-top: 2px; }
+  .caption { position: absolute; right: 40px; bottom: 36px; background: rgb(51 56 62 / .9); color: #fff; padding: 6px 14px; border-radius: 18px; font-size: 12.5px; white-space: nowrap; }
+  .caption b { color: #c9bff0; margin-right: 6px; }
+  .tag { position: absolute; right: 30px; top: 26px; font-size: 10px; color: #a5aab1; }
+</style>
+</head>
+<body>
+<div class="window">
+  <aside>
+    <div class="brand" id="brand"></div>
+    <div class="group-label" id="project-name"></div>
+    <div id="side"></div>
+  </aside>
+  <main>
+    <section class="chat">
+      <header><div class="eyebrow" id="chat-eyebrow"></div><h1 id="chat-title"></h1></header>
+      <div class="messages" id="messages"></div>
+      <div class="composer" id="composer"></div>
+    </section>
+    <section class="panel" id="panel"></section>
+  </main>
+</div>
+<div class="tag" id="tag"></div>
+<div class="caption" id="caption"></div>
+<script>
+const zh = {
+  brand: '同席', project: '项目 · settings-app', eyebrow: '项目群', title: '设置页改版',
+  side: [['you', '你', '项目群'], ['claude', 'C', '主脑 · Claude', '主脑'], ['codex', 'X', 'Codex'], ['dsh', 'D', 'DSH']],
+  jobs: '主脑任务', placeholder: '在群里说目标就行…',
+  ask: '给设置页加深色模式，顺手把测试补上',
+  plan: '收到。拆成 4 步：我先看现有主题，Codex 写深色样式、DSH 补测试并行做，最后我审完合并。',
+  send1: '派给 Codex：深色样式 · 独立工作树', send2: '派给 DSH：补主题切换的测试 · 独立工作树',
+  back1: 'Codex 交回：改了 3 个文件，本地测试通过', back2: 'DSH 交回：新增 6 个用例，全部通过',
+  merged: '两棵工作树都审过了，已合并回 main ✓',
+  planTitle: '计划', planSub: '主脑拆的步骤 · 并行的同时在跑',
+  steps: ['看现有主题变量', '深色样式', '主题切换测试', '审核并合并'],
+  states: { wait: '未开始', run: '进行中', done: '已完成' },
+  ledgerTitle: '这件事的账', ledgerSub: '按 API 价折算',
+  rows: [['claude', 'C', '主脑 · Claude', '想、拆、审', '96k', 0.62], ['codex', 'X', 'Codex', '深色样式', '182k', 0.41], ['dsh', 'D', 'DSH', '补测试', '240k', 0.09]],
+  ours: '分活实际', brainOnly: '全交给主脑模型',
+  saved: total => `分活省了 $${total}`, savedSub: '贵的模型想和收口，便宜的模型干体力活',
+  captions: ['一句话', '主脑拆计划', '成员并行', '交回合并', '省钱账'],
+  tag: '示意动画',
+};
+const en = {
+  brand: 'Tongxi', project: 'Project · settings-app', eyebrow: 'Project group', title: 'Settings revamp',
+  side: [['you', 'Y', 'Group'], ['claude', 'C', 'Lead · Claude', 'Lead'], ['codex', 'X', 'Codex'], ['dsh', 'D', 'DSH']],
+  jobs: 'Lead tasks', placeholder: 'Just say the goal…',
+  ask: 'Add a dark mode to the settings page, and add tests',
+  plan: 'Got it. 4 steps: I read the current theme, Codex writes the dark styles while DSH adds tests, then I review and merge.',
+  send1: 'To Codex: dark styles · own worktree', send2: 'To DSH: theme toggle tests · own worktree',
+  back1: 'Codex handed back: 3 files changed, tests pass', back2: 'DSH handed back: 6 new cases, all green',
+  merged: 'Both worktrees reviewed and merged into main ✓',
+  planTitle: 'Plan', planSub: 'Steps by the lead · parallel ones run together',
+  steps: ['Read theme variables', 'Dark styles', 'Theme toggle tests', 'Review & merge'],
+  states: { wait: 'Waiting', run: 'Running', done: 'Done' },
+  ledgerTitle: 'Cost of this task', ledgerSub: 'at API prices',
+  rows: [['claude', 'C', 'Lead · Claude', 'think, split, review', '96k', 0.62], ['codex', 'X', 'Codex', 'dark styles', '182k', 0.41], ['dsh', 'D', 'DSH', 'tests', '240k', 0.09]],
+  ours: 'Split across team', brainOnly: 'All on the lead model',
+  saved: total => `Saved $${total} by splitting`, savedSub: 'Pricey models think and review, cheap ones do the legwork',
+  captions: ['One sentence', 'Lead splits a plan', 'Members in parallel', 'Hand back & merge', 'The savings ledger'],
+  tag: 'illustration',
+};
+const L = new URLSearchParams(location.search).get('lang') === 'en' ? en : zh;
+const $ = id => document.getElementById(id);
+const clamp = x => Math.max(0, Math.min(1, x));
+// 每一步出现的时间（秒）；整段 DURATION 秒后循环。
+const T = { type: 0.4, sent: 2.6, plan: 3.4, cards: 3.8, send: 5.2, run: 5.6, back1: 8.6, back2: 9.4, merge: 10.0, merged: 11.4, ledger: 12.2, end: 17.5 };
+window.DURATION = T.end;
+
+$('brand').innerHTML = `${L.brand}<small>Agent Hub</small>`;
+$('project-name').textContent = L.project;
+$('chat-eyebrow').textContent = L.eyebrow;
+$('chat-title').textContent = L.title;
+$('tag').textContent = L.tag;
+
+function msg(kind, avatar, who, text) {
+  const face = `<span class="avatar ${avatar[0]}">${avatar[1]}</span>`;
+  return `<div class="msg ${kind}">${face}<div class="bubble">${who ? `<span class="who">${who}</span>` : ''}${text}</div></div>`;
+}
+
+window.render = t => {
+  const [you, claude, codex, dsh] = L.side;
+  const running = t >= T.run && t < T.back2;
+  const lights = { 1: t >= T.sent && t < T.merged ? '#8fd3b6' : '', 2: t >= T.run && t < T.back1 ? '#8fd3b6' : '', 3: t >= T.run && t < T.back2 ? '#8fd3b6' : '' };
+  $('side').innerHTML = L.side.map(([cls, face, name, seat], i) => `<div class="item ${i === 0 ? 'on' : ''}"><span class="avatar ${cls}">${face}</span>${seat || name}<span class="light" style="background:${lights[i] || 'transparent'}"></span></div>`).join('')
+    + `<div class="group-label">${L.jobs}${running ? ' · 2' : ''}</div>`;
+
+  const list = [];
+  if (t >= T.sent) list.push(msg('mine', you, '', L.ask));
+  if (t >= T.plan) list.push(msg('', claude, claude[2], L.plan));
+  if (t >= T.send) list.push(msg('note', claude, '', L.send1));
+  if (t >= T.send + 0.3) list.push(msg('note', claude, '', L.send2));
+  if (t >= T.back1) list.push(msg('note', codex, '', L.back1));
+  if (t >= T.back2) list.push(msg('note', dsh, '', L.back2));
+  if (t >= T.merged) list.push(msg('', claude, claude[2], L.merged));
+  $('messages').innerHTML = list.join('');
+
+  const typed = t < T.type ? 0 : t >= T.sent ? 0 : Math.round(clamp((t - T.type) / (T.sent - T.type - 0.4)) * [...L.ask].length);
+  const blink = Math.floor(t * 2) % 2 === 0 ? '<span class="caret"></span>' : '';
+  $('composer').innerHTML = typed ? [...L.ask].slice(0, typed).join('') + '<span class="caret"></span>' : `<span class="placeholder">${L.placeholder}</span>${t < T.sent ? blink : ''}`;
+
+  const angle = (t * 220) % 360;
+  const ring = `conic-gradient(from ${angle}deg, #8fd3b6, #c9bff0, #f0b8a0, #8fd3b6)`;
+  const state = (start, end) => t >= end ? 'done' : t >= start ? 'run' : 'wait';
+  const steps = [
+    { name: L.steps[0], who: claude, s: state(T.plan, T.run), at: 'grid-column:1' },
+    { name: L.steps[1], who: codex, s: state(T.run, T.back1), tree: 'tongxi/dark-styles', p: clamp((t - T.run) / (T.back1 - T.run)), at: 'grid-column:2;grid-row:1' },
+    { name: L.steps[2], who: dsh, s: state(T.run, T.back2), tree: 'tongxi/theme-tests', p: clamp((t - T.run) / (T.back2 - T.run)), at: 'grid-column:2;grid-row:2' },
+    { name: L.steps[3], who: claude, s: state(T.merge, T.merged), at: 'grid-column:3;grid-row:1 / span 2' },
+  ];
+  const cards = steps.map((step, i) => {
+    const shown = clamp((t - T.cards - i * 0.25) / 0.3);
+    const cls = step.s === 'run' ? 'running' : step.s === 'done' ? 'done' : '';
+    return `<div class="card ${cls}" style="${step.at};opacity:${shown};transform:translateY(${(1 - shown) * 8}px);--ring:${ring}">${step.name}<div class="owner"><span class="avatar ${step.who[0]}">${step.who[1]}</span>${step.who[2].split(' · ').pop()}<span class="state">${L.states[step.s]}</span></div>${step.tree ? `<div class="tree">${step.tree}</div>${step.s === 'run' ? `<div class="bar"><i style="width:${step.p * 100}%"></i></div>` : ''}` : ''}</div>`;
+  }).join('');
+  let panel = t >= T.cards ? `<h2>${L.planTitle}<small>${L.planSub}</small></h2><div class="flow">${cards}</div>` : '';
+
+  if (t >= T.ledger) {
+    const shown = clamp((t - T.ledger) / 0.4);
+    const grow = clamp((t - T.ledger - 1.2) / 1.4);
+    const spent = L.rows.reduce((sum, row) => sum + row[5], 0);
+    const brainOnly = 3.48;
+    const rows = L.rows.map(([cls, face, name, job, tok, cost], i) => {
+      const seen = clamp((t - T.ledger - 0.3 - i * 0.25) / 0.3);
+      return `<div class="row" style="opacity:${seen}"><span class="avatar ${cls}">${face}</span><span>${name}<br><span class="tok">${job} · ${tok} tokens</span></span><span></span><span class="cost">≈ $${cost.toFixed(2)}</span></div>`;
+    }).join('');
+    const savedShown = clamp((t - T.ledger - 2.8) / 0.4);
+    panel += `<div class="ledger" style="opacity:${shown}"><h2>${L.ledgerTitle}<small>${L.ledgerSub}</small></h2>${rows}<div class="total">
+      <div class="compare"><span>${L.ours}</span><span class="track"><i style="width:${grow * spent / brainOnly * 100}%;background:#8fd3b6"></i></span><b>$${spent.toFixed(2)}</b></div>
+      <div class="compare"><span>${L.brainOnly}</span><span class="track"><i style="width:${grow * 100}%;background:#f0b8a0"></i></span><b>$${brainOnly.toFixed(2)}</b></div>
+      <div class="saved" style="opacity:${savedShown}">${L.saved((brainOnly - spent).toFixed(2))}<small>${L.savedSub}</small></div></div></div>`;
+  }
+  $('panel').innerHTML = panel;
+
+  const scene = t >= T.ledger ? 4 : t >= T.back1 ? 3 : t >= T.send ? 2 : t >= T.plan ? 1 : 0;
+  $('caption').innerHTML = `<b>${scene + 1}/5</b>${L.captions[scene]}`;
+};
+render(location.hash ? Number(location.hash.slice(1)) : 0);
+</script>
+</body>
+</html>

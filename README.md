@@ -6,7 +6,13 @@
 
 [![Release](https://img.shields.io/github/v/release/mydosu/tongxi?style=flat-square&color=a598d8&label=%E7%89%88%E6%9C%AC)](https://github.com/mydosu/tongxi/releases/latest) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-8fd3b6?style=flat-square)](#快速开始) [![Tauri](https://img.shields.io/badge/Tauri-2-f0b8a0?style=flat-square)](https://v2.tauri.app/) [![License](https://img.shields.io/github/license/mydosu/tongxi?style=flat-square&color=b6bbd6&label=%E8%AE%B8%E5%8F%AF)](LICENSE)
 
-**[下载最新版](https://github.com/mydosu/tongxi/releases/latest)** · [快速开始](#快速开始) · [项目协作](#项目协作) · [常见问题](#常见问题) · [版本记录](#版本记录)
+**[下载最新版](https://github.com/mydosu/tongxi/releases/latest)** · [快速开始](#快速开始) · [项目协作](#项目协作) · [常见问题](#常见问题) · [版本记录](#版本记录) · [English](README.en.md)
+
+<br />
+
+<img src="docs/images/demo.gif" width="100%" alt="演示：在项目群里说一句话，主脑拆成计划，Codex 和 DSH 各在自己的工作树里并行做，交回后主脑审完合并，最后算出这件事比全交给主脑的模型省了多少钱" />
+
+<sub>示意动画：一句话 → 主脑拆计划 → 成员并行 → 交回合并 → 省钱账。金额是示例。</sub>
 
 </div>
 
@@ -175,7 +181,7 @@
 - **同一成员多开会话**：同一位成员在项目里最多开 4 个会话，彼此平行、不分主次，主脑把它们当作不同成员来派活。
 - **会话绑定**：新建项目时，或者项目进行中，都可以让主脑和成员续接**它们自己已有的原生会话**。
 - **独立工作树**：改代码的活在自己的分支和工作树里做，几位成员可以并行改，互不干扰。
-- **项目记忆**（可选）：本机装了 OpenViking 记忆服务时，成员可以读写共享的项目笔记。
+- **项目记忆**：成员可以读写项目笔记，分共享区和各自的私有区。本机装了 OpenViking 记忆服务（用 `AGENT_HUB_OPENVIKING_PYTHON` 指定它的 python，或者把 `ov` 放进 PATH）就存进 OpenViking；没装就存成项目里 `.tongxi/记忆/` 下的 markdown。
 
 <details>
 <summary><b>项目目录的登记与解除</b></summary>
@@ -305,7 +311,7 @@
 | **工作树** | 改代码的活一棵 `git worktree`、一条分支，主脑看过后合并或丢弃 |
 | **额度** | Claude 读 Claude Code 登录留下的 OAuth 令牌查官方用量（只读、不刷新令牌）；Codex 走 app-server 的 `account/rateLimits/read`；DSH、Hermes 的 Command Code 线路用各自的 Key 只读查询计费接口。只给主脑看 |
 | **插话** | 成员干活时把你的话作为 steer 注入当前回合，不中断、不重开 |
-| **项目记忆**（可选） | `project_memory.py` 接本机 OpenViking 客户端：项目共享池 + 每位成员的私有笔记，显式分享 |
+| **项目记忆** | 项目共享池 + 每位成员的私有笔记，显式分享。装了 OpenViking 走 `project_memory.py` 接它的客户端，没装由 `project_memory.rs` 存成项目里的 markdown，规则一样 |
 
 </details>
 
