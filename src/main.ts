@@ -779,7 +779,46 @@ async function selectProjectModule(groupId: string, moduleId: string) {
   renderChat();
 }
 
-/// 滚到底。屏幕外的消息先按估计高度占位（content-visibility），滚过去才排出真实高度，
+/// 切会话时先画、之后每批补的消息 HTML 体量：一屏装得下，又不至于让一帧拼几千个节点。按体量不按条数，一条工具调用多的回复能顶几十条短消息。
+const MESSAGE_BATCH = 48_000;
+/// 从 end 往前画到凑够 budget（至少一条），返回画到哪、拼好的 HTML。
+function renderTail(messages: Message[], end: number, budget: number, includeDetails: boolean) {
+  const parts: string[] = [];
+  let split = end;
+  while (split > 0 && budget > 0) { const html = renderMessage(messages[--split], includeDetails); parts.unshift(html); budget -= html.length; }
+  return { split, html: parts.join('') };
+}
+let backfillToken = 0;
+/// 把更早的消息从近到远、每次几条补到列表最上面：换页动画放完、浏览器空闲时才做，切换那一帧不卡。
+/// 补进来的带 data-backfill，不播新消息浮上来的动画。补的时候保持离底部的距离，人看着的地方不动。
+/// 先画的几条还没一屏高时立刻补到满，免得上面空一块、补完又整体下移。
+function backfillMessages(box: HTMLElement, older: Message[], head: string, includeDetails: boolean) {
+  const token = ++backfillToken;
+  older = older.filter(message => !box.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`));
+  let end = older.length;
+  if (!end) return;
+  const step = () => {
+    if (token !== backfillToken || !box.isConnected) return false;
+    const { split: start, html } = renderTail(older, end, MESSAGE_BATCH, includeDetails);
+    const template = document.createElement('template');
+    template.innerHTML = (start ? '' : head) + html;
+    end = start;
+    const nodes = [...template.content.children] as HTMLElement[];
+    nodes.forEach(node => { node.dataset.backfill = ''; });
+    const fromBottom = box.scrollHeight - box.scrollTop;
+    box.prepend(template.content);
+    box.scrollTop = box.scrollHeight - fromBottom;
+    nodes.forEach(restoreOpenedDetails);
+    if (!end) syncChatQuestions();
+    return end > 0;
+  };
+  while (end && box.scrollHeight <= box.clientHeight + 40 && step());
+  if (!end) return;
+  const later = () => requestIdleCallback(() => { if (step()) later(); }, { timeout: 400 });
+  setTimeout(later, 560);
+}
+
+/// 滚到底。图片、附件这类晚到的内容会在之后几帧把高度撑开，
 /// 所以每帧补滚一次，直到高度连续三帧不变（真实高度在 rAF 之后的渲染里才排出来，要隔一帧才读得到）；
 /// 用户往上翻了（listPaused）或换了页就停。
 function pinToBottom(box: Element | null) {
@@ -1618,11 +1657,15 @@ function renderConversationChat() {
   const key = harnessKey();
   // 回复中途的插话跟着那条回复显示，不再按自己的时间单独排。
   const steered = new Set([...detail.messages.map(message => message.thought), ...Object.values(runtimes).flatMap(snapshot => runsOf(snapshot).map(run => run.thought))].flatMap(steerIds));
+  const shownMessages = detail.messages.filter(message => !steered.has(message.id));
+  // 要贴底时先只画最后一小段，更早的交给 backfillMessages 等换页动画放完再补；人翻在上面看时整列一次画好，位置才对得上。
+  const { split, html: tailHtml } = renderTail(shownMessages, shownMessages.length, keepTop === null ? MESSAGE_BATCH : Infinity, !isGroup);
+  const dateDivider = detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>` : '';
   const name = directAgent?.name || ''; 
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : detail.project ? `项目群 · ${detail.project_agent_chats.filter(chat => !isBrain(chat.agent_id)).length} 个成员会话 · 你的话交给主脑` : `${roster.length} 位成员 · 群聊讨论`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"${detail.project ? ' hidden' : ''}><span class="status-dot" aria-hidden="true"></span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
       <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">项目成员配置</button><button data-project-sessions class="secondary" hidden>会话绑定</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
-      ${detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>${detail.messages.filter(message => !steered.has(message.id)).map(message => renderMessage(message, !isGroup)).join('')}` : `<div class="welcome">${directAgent && portrait(directAgent) ? `<div class="albion-hero small" style="background-image:url('${portrait(directAgent)}')" aria-hidden="true"></div>` : `<div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div>`}<span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
+      ${detail.messages.length ? `${split ? '' : dateDivider}${tailHtml}` : `<div class="welcome">${directAgent && portrait(directAgent) ? `<div class="albion-hero small" style="background-image:url('${portrait(directAgent)}')" aria-hidden="true"></div>` : `<div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div>`}<span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
       <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : detail.project ? 'Enter 发送给项目组 · Shift + Enter 换行' : 'Enter 开始群聊 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
@@ -1680,7 +1723,7 @@ function renderConversationChat() {
   document.querySelector('#composer')!.addEventListener('submit', event => { event.preventDefault(); void submit(); });
   document.querySelectorAll<HTMLButtonElement>('[data-suggestion]').forEach(button => button.addEventListener('click', () => { input.value = button.dataset.suggestion!; localStorage.setItem(draftKey(conversation.id), input.value); input.focus(); }));
   const messages = main.querySelector<HTMLElement>('#messages');
-  if (messages) restoreOpenedDetails(messages);
+  if (messages) { backfillMessages(messages, shownMessages.slice(0, split), dateDivider, !isGroup); restoreOpenedDetails(messages); }
   if (messages && keepTop !== null) messages.scrollTop = keepTop; else { listPaused = false; pinToBottom(messages); }
   listTop = messages?.scrollTop ?? 0;
   shownConversation = conversation.id;

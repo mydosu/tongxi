@@ -13,6 +13,8 @@ export function fogOut(main: HTMLElement) {
   document.querySelectorAll('.view-ghost').forEach(ghost => ghost.remove());
   if (still() || !main.firstChild) return;
   const box = main.getBoundingClientRect();
+  // 长列表只带走看得见的那几条：几千个节点挪进雾层要整段重新排版，切走长会话会卡几十毫秒。
+  for (const node of scrolledNodes) if (node.isConnected && main.contains(node) && node.scrollTop > 0) trimToView(node);
   // 节点挪走会丢滚动位置，先记下来，挪完再还回去。
   const scrolled = [...scrolledNodes].filter(node => (node.isConnected || !scrolledNodes.delete(node)) && main.contains(node) && node.scrollTop > 0).map(node => [node, node.scrollTop] as const);
   const ghost = document.createElement('div');
@@ -25,6 +27,20 @@ export function fogOut(main: HTMLElement) {
   for (const [node, top] of scrolled) node.scrollTop = top;
   // 里面的旧节点自己的动画结束也会冒泡上来，只认雾层自己的。
   ghost.addEventListener('animationend', event => { if (event.target === ghost) ghost.remove(); });
+}
+
+/// 去掉滚动列表里屏幕外的子元素，再把滚动位置校回去，让看得见的那条停在原处。
+function trimToView(list: HTMLElement) {
+  const view = list.getBoundingClientRect(), kids = [...list.children] as HTMLElement[];
+  const boxes = kids.map(kid => kid.getBoundingClientRect());
+  let first = 0, last = kids.length - 1;
+  while (first < kids.length && boxes[first].bottom <= view.top) first++;
+  while (last >= 0 && boxes[last].top >= view.bottom) last--;
+  if (first > last) return;
+  kids.slice(last + 1).forEach(kid => kid.remove());
+  if (!first) return;
+  kids.slice(0, first).forEach(kid => kid.remove());
+  list.scrollTop += kids[first].getBoundingClientRect().top - boxes[first].top;
 }
 
 /// 侧栏选中项：两层各一块「滑块」——会话卡片一层、项目子页一层。重绘前 measure()，重绘后 glide()。
@@ -87,7 +103,7 @@ export function watchArrivals(root: HTMLElement, view: () => string | undefined)
         const id = item.dataset.messageId!;
         if (seen.has(id)) continue;
         seen.add(id);
-        if (!fresh && !still()) item.classList.add('arrive');
+        if (!fresh && !still() && item.dataset.backfill === undefined) item.classList.add('arrive');
       }
     }
   }).observe(root, { childList: true, subtree: true });
