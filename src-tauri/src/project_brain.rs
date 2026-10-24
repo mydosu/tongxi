@@ -245,6 +245,7 @@ impl Store {
     /// 派活页：主脑派出去的每件活（最新的在前）和主脑还没收到的消息数。
     pub fn brain_overview(&self, room: &str) -> Result<BrainOverview> {
         let seat = brain_seat(self, room)?;
+        let seat_of_brain = seat.clone();
         let chat: Option<String> = self
             .connection
             .query_row(
@@ -263,16 +264,27 @@ impl Store {
             .prepare(
                 "SELECT j.id,j.seat,j.chat,j.content,COALESCE(j.model,(SELECT model FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
                         COALESCE(j.effort,(SELECT reasoning_effort FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
-                        j.worktree,j.branch,j.status,j.error,r.status,m.content,j.created_at,j.finished_at
+                        j.worktree,j.branch,j.status,j.error,r.status,m.content,j.created_at,j.finished_at,r.usage,r.agent_id,r.model
                  FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id
                  WHERE j.room=?1 AND j.kind='task' ORDER BY j.created_at DESC",
             )
             .map_err(|_| "任务记录读取失败")?;
+        // 主脑自己的模型：成员这件活要是交给主脑做，同样的用量要花多少。
+        let brain_model: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT r.model FROM runs r JOIN messages m ON m.id=r.assistant_message_id WHERE r.conversation_id=?1 AND r.model IS NOT NULL ORDER BY m.created_at DESC LIMIT 1",
+                [chat.as_deref().unwrap_or_default()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "主脑模型读取失败")?;
         let jobs = query
             .query_map([room], |row| {
                 let seat: String = row.get(1)?;
                 let status: String = row.get(8)?;
                 // 还在做的活结果不完整，做完了才带上。
+                let created_at: i64 = row.get(12)?;
                 let result: Option<String> = if matches!(status.as_str(), "done" | "failed") { row.get(11)? } else { None };
                 Ok(BrainJob {
                     id: row.get(0)?,
@@ -288,8 +300,23 @@ impl Store {
                     error: row.get(9)?,
                     run_status: row.get(10)?,
                     result: result.map(|text| tail(text.trim(), RESULT_LIMIT)),
-                    created_at: row.get(12)?,
+                    created_at,
                     finished_at: row.get(13)?,
+                    usage: row
+                        .get::<_, Option<String>>(14)?
+                        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                        .map(|mut usage| {
+                            let agent: Option<String> = row.get(15).ok().flatten();
+                            usage["cost"] = json!(run_cost(&usage, agent.as_deref().unwrap_or_default(), row.get::<_, Option<String>>(16).ok().flatten().as_deref(), created_at));
+                            usage["brain_cost"] = json!(brain_model.as_deref().and_then(|model| crate::pricing::cost(
+                                base_agent(&seat_of_brain),
+                                model,
+                                &usage["usage"],
+                                usage["context"].as_u64(),
+                                usage["at"].as_i64().unwrap_or(created_at).max(0) as u64 / 1000,
+                            )));
+                            usage
+                        }),
                 })
             })
             .map_err(|_| "任务记录读取失败")?
@@ -383,6 +410,8 @@ pub struct BrainJob {
     result: Option<String>,
     created_at: i64,
     finished_at: Option<i64>,
+    /// 这件活那一回合的用量（runs.usage），外加 brain_cost：同样用量按主脑模型折多少钱。
+    usage: Option<Value>,
 }
 
 /// 一段时间里的 token 合计：输入含缓存读写，新写入 = input - cache_read - cache_write。
@@ -393,6 +422,8 @@ pub struct UsageSum {
     cache_read: i64,
     cache_write: i64,
     output: i64,
+    /// 按 API 价折的美元，只加有价的回合；一回合都没价就是 None。
+    cost: Option<f64>,
 }
 
 #[derive(serde::Serialize)]
@@ -403,23 +434,38 @@ pub struct UsageStats {
     context: Option<i64>,
 }
 
+/// 一回合折多少钱：记用量时算好的优先，早先没记的按现在的价格表补算；早年的用量没记时间，用 fallback_at（毫秒）。
+fn run_cost(usage: &Value, agent: &str, model: Option<&str>, fallback_at: i64) -> Option<f64> {
+    usage["cost"].as_f64().or_else(|| {
+        let at = usage["at"].as_i64().unwrap_or(fallback_at).max(0) as u64 / 1000;
+        crate::pricing::cost(base_agent(agent), model?, &usage["usage"], usage["context"].as_u64(), at)
+    })
+}
+
 /// 主脑按回合报的用量加起来；today 只算本地时间今天的。
 fn usage_sum(connection: &Connection, runs: &str, target: &str, today: bool) -> Result<UsageSum> {
     let day = if today { " AND date(m.created_at/1000,'unixepoch','localtime')=date('now','localtime')" } else { "" };
-    connection
-        .query_row(
-            &format!(
-                "SELECT count(r.usage),
-                        COALESCE(sum(json_extract(r.usage,'$.usage.inputTokens')),0),
-                        COALESCE(sum(json_extract(r.usage,'$.usage.cachedReadTokens')),0),
-                        COALESCE(sum(json_extract(r.usage,'$.usage.cachedWriteTokens')),0),
-                        COALESCE(sum(json_extract(r.usage,'$.usage.outputTokens')),0)
-                 {runs} AND r.usage IS NOT NULL{day}"
-            ),
-            [target],
-            |row| Ok(UsageSum { turns: row.get(0)?, input: row.get(1)?, cache_read: row.get(2)?, cache_write: row.get(3)?, output: row.get(4)? }),
-        )
-        .map_err(|_| "用量统计读取失败".into())
+    let mut query = connection
+        .prepare(&format!("SELECT r.usage,r.agent_id,r.model,m.created_at {runs} AND r.usage IS NOT NULL{day}"))
+        .map_err(|_| "用量统计读取失败")?;
+    let rows = query
+        .query_map([target], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, i64>(3)?)))
+        .map_err(|_| "用量统计读取失败")?;
+    let mut sum = UsageSum::default();
+    for row in rows {
+        let (text, agent, model, at) = row.map_err(|_| "用量统计读取失败")?;
+        let Ok(usage) = serde_json::from_str::<Value>(&text) else { continue };
+        let tokens = |key: &str| usage["usage"][key].as_i64().unwrap_or(0);
+        sum.turns += 1;
+        sum.input += tokens("inputTokens");
+        sum.cache_read += tokens("cachedReadTokens");
+        sum.cache_write += tokens("cachedWriteTokens");
+        sum.output += tokens("outputTokens");
+        if let Some(cost) = run_cost(&usage, &agent, model.as_deref(), at) {
+            sum.cost = Some(sum.cost.unwrap_or(0.0) + cost);
+        }
+    }
+    Ok(sum)
 }
 
 #[derive(serde::Serialize)]
@@ -2241,7 +2287,7 @@ B6 做完了"));
         store.record_usage(&silent.id, &serde_json::json!({"stopReason": "end_turn"}));
 
         let usage = store.brain_overview(&room).unwrap().usage;
-        let expected = super::UsageSum { turns: 2, input: 23000, cache_read: 20000, cache_write: 2000, output: 600 };
+        let expected = super::UsageSum { turns: 2, input: 23000, cache_read: 20000, cache_write: 2000, output: 600, cost: None };
         assert_eq!(usage.brain_today, expected, "不报用量的回合不算");
         assert_eq!(usage.brain_total, expected);
         assert_eq!(usage.context, Some(15000), "上下文取最近一回合");

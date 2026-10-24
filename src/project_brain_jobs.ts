@@ -1,4 +1,4 @@
-import type { BrainJob, BrainOverview, PlanDoc, PlanStep, UsageSum } from './types';
+import type { BrainJob, BrainOverview, JobUsage, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 import dagre from '@dagrejs/dagre';
 import { still } from './motion';
@@ -27,9 +27,24 @@ function usageText(sum: UsageSum) {
   return `新写入 ${tokens(fresh)} · 缓存写 ${tokens(sum.cache_write)} · 缓存读 ${tokens(sum.cache_read)} · 输出 ${tokens(sum.output)}`;
 }
 
-function usageSection(usage: BrainOverview['usage']) {
-  const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)}` : '暂无记录'}</span></p>`;
-  return `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`;
+/// 「$0.42」：按 API 价折的钱；订阅线路实际不按 token 扣钱，只是折算。
+const money = (dollars: number) => dollars < 0.01 ? '<$0.01' : `$${dollars.toFixed(2)}`;
+const priced = (cost: number | null) => cost == null ? '价格未知' : `≈ ${money(cost)}`;
+
+/// 一件活的账：花了多少，同样用量交给主脑的模型要多少。
+function jobBill(usage: JobUsage) {
+  const u = usage.usage, sum = { turns: 1, input: u.inputTokens || 0, cache_read: u.cachedReadTokens || 0, cache_write: u.cachedWriteTokens || 0, output: u.outputTokens || 0, cost: usage.cost };
+  const compare = usage.cost != null && usage.brain_cost != null ? `，主脑做 ≈ ${money(usage.brain_cost)}${usage.brain_cost > usage.cost ? `，省 ${money(usage.brain_cost - usage.cost)}` : ''}` : '';
+  return `${usageText(sum)} · ${priced(usage.cost)}${compare}`;
+}
+
+function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[]) {
+  const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)} · ${priced(sum.cost)}` : '暂无记录'}</span></p>`;
+  // 只比两边都有价的活，不然「省了」会把没价的那件当成 0 算进去。
+  const both = jobs.map(job => job.usage).filter((usage): usage is JobUsage => usage?.cost != null && usage.brain_cost != null);
+  const spent = both.reduce((total, usage) => total + usage.cost!, 0), brain = both.reduce((total, usage) => total + usage.brain_cost!, 0);
+  const members = both.length ? `<p><strong>成员累计</strong><span>${both.length} 件活 ≈ ${money(spent)}，全交给主脑的模型 ≈ ${money(brain)}${brain > spent ? `，分活省了 ${money(brain - spent)}` : ''}（按 API 价折算）</span></p>` : '';
+  return `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${members}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`;
 }
 
 export const jobLive = (job: BrainJob) => job.status === 'pending' || job.status === 'running';
@@ -62,6 +77,7 @@ function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, o
     <p class="brain-job-title">${escape(title)}</p>
     ${long ? fold('task', '任务全文', job.content.trim()) : ''}
     <p class="brain-job-meta"><span>${escape(modelText(job.model))}${job.effort ? ` · ${escape(job.effort)}` : ''}</span>${tree}<span>任务 ${escape(job.id.slice(0, 8))}</span></p>
+    ${job.usage ? `<p class="brain-job-meta"><span>${escape(jobBill(job.usage))}</span></p>` : ''}
     ${job.error && job.error !== '你在派活页取消了' ? `<p class="brain-job-error">${escape(job.error)}</p>` : ''}
     ${job.result ? fold('result', '提交的结果', job.result) : ''}
     <div class="brain-job-actions">${jobLive(job) ? `<button type="button" class="secondary" data-stop-job="${escape(job.id)}">${job.status === 'pending' ? '取消' : '停止'}</button>` : ''}<button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>
@@ -159,6 +175,7 @@ function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: E
   const rows = [
     step.name || step.owner ? `<p><strong>负责人</strong><span>${escape(step.name || step.owner!)}</span></p>` : '',
     step.depends.length ? `<p><strong>前置步骤</strong><span>${step.depends.map(id => `<button type="button" class="plan-ref" data-plan-pick="${id}">#${id} ${escape(title(id))}</button>`).join('')}</span></p>` : '',
+    job?.usage ? `<p><strong>用量</strong><span>${escape(jobBill(job.usage))}</span></p>` : '',
     held ? `<p><strong>阻塞</strong><span>${held} 个未完成的后续步骤依赖此步骤</span></p>` : '',
   ].join('');
   const actions = job ? `<div class="brain-job-actions"><button type="button" class="secondary" data-show-job="${escape(job.id)}">查看任务</button><button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>` : '';
@@ -359,5 +376,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '暂无进行中的任务。' : '主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage, overview.jobs)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

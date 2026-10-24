@@ -66,8 +66,10 @@ export interface Project { id: string; name: string; root: string; summary_enabl
 export type RoleChoice = { agent: string; model: string | null; effort: string | null };
 /** 协作问答：主脑挂在项目问答面板上的问题。 */
 /** 主脑派出去的一件活。status：pending 排队、running 在做、done 做完、failed 失败或被停下（run_status 为 interrupted）。worktree 为空而 branch 还在，表示工作树已合并或丢弃。 */
-export interface BrainJob { id: string; seat: string; name: string; chat: string; content: string; model: string | null; effort: string | null; worktree: string | null; branch: string | null; status: 'pending' | 'running' | 'done' | 'failed'; error: string | null; run_status: string | null; result: string | null; created_at: number; finished_at: number | null; }
-export interface UsageSum { turns: number; input: number; cache_read: number; cache_write: number; output: number; }
+export interface BrainJob { id: string; seat: string; name: string; chat: string; content: string; model: string | null; effort: string | null; worktree: string | null; branch: string | null; status: 'pending' | 'running' | 'done' | 'failed'; error: string | null; run_status: string | null; result: string | null; created_at: number; finished_at: number | null; usage: JobUsage | null; }
+/// runs.usage：cost 是按 API 价折的美元（没收录的型号为 null），brain_cost 是同样用量按主脑模型折的。
+export interface JobUsage { usage: { inputTokens?: number; cachedReadTokens?: number; cachedWriteTokens?: number; outputTokens?: number }; cost: number | null; brain_cost: number | null; }
+export interface UsageSum { turns: number; input: number; cache_read: number; cache_write: number; output: number; cost: number | null; }
 /** 派活页：主脑席位和会话、还没送进主脑的消息数、全部派活（最新的在前）。 */
 export interface PlanDoc { name: string; brief: boolean; text: string; modified: number; }
 export interface PlanStep { id: number; title: string; status: 'todo' | 'doing' | 'review' | 'waiting' | 'done'; owner: string | null; name: string | null; depends: number[]; note: string | null; wait_key: string | null; job: string | null; }
