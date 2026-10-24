@@ -2,6 +2,7 @@ import { mkdir, copyFile, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { signManifest } from './update-key.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const destination = resolve(root, 'release', 'Agent Hub.exe');
@@ -16,6 +17,8 @@ const manifest = {
   sha256: createHash('sha256').update(binary).digest('hex'),
   requires: ['Windows', 'Microsoft Edge WebView2 Runtime'],
 };
+// 同席自更新只认这个签名，没私钥就别打包（不然这一版谁都更新不上来）。
+manifest.signature = signManifest(manifest);
 await mkdir(archive, { recursive: true });
 const archivedExe = resolve(archive, 'Agent Hub.exe');
 let archiveExists = false;

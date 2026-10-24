@@ -2048,6 +2048,7 @@ name = "local-agent-hub"
 version = "3.3.4"
 dependencies = [
  "base64 0.22.1",
+ "ring",
  "rusqlite",
  "ruzstd",
  "serde",

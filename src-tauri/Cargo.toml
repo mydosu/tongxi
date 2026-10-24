@@ -18,6 +18,7 @@ sha2 = "0.10"
 base64 = "0.22"
 tauri-plugin-global-shortcut = "2.4.0"
 ureq = { version = "2", features = ["json"] }
+ring = "0.17"
 ruzstd = "0.8"
 
 [target.'cfg(windows)'.dependencies]

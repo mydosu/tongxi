@@ -1,6 +1,7 @@
 //! 同席自己的更新：查 GitHub 最新 Release，下载那一版的 exe，按同一版 manifest 核对大小和 sha256，
 //! 把正在运行的 exe 改名让位、新的放进来，等本进程退出后再拉起新版。
 //! 发布物是单个免安装 exe（不是安装包），所以不用 Tauri 官方 updater。
+//! manifest 带发版私钥的 Ed25519 签名（scripts/update-key.mjs），没签名或对不上一律不更新，防发布被篡改。
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -9,6 +10,30 @@ use std::time::Duration;
 type Result<T> = std::result::Result<T, String>;
 
 const LATEST: &str = "https://api.github.com/repos/mydosu/tongxi/releases/latest";
+/// 发版公钥；私钥只在发版的机器上（~/.tongxi/update-signing-key.pem）。
+const PUBLIC_KEY: &str = "CRVMshQzReAKGE5Jb6AWrg1qdqQwfC5yMNyfvG3rMUQ=";
+
+/// 和 scripts/update-key.mjs 的 signedText 一字不差。
+fn signed(manifest: &serde_json::Value) -> Result<()> {
+    use base64::Engine;
+    let text = format!(
+        "tongxi-update
+{}
+{}
+{}",
+        manifest["version"].as_str().unwrap_or(""),
+        manifest["bytes"].as_u64().unwrap_or(0),
+        manifest["sha256"].as_str().unwrap_or("")
+    );
+    let engine = base64::engine::general_purpose::STANDARD;
+    let signature = engine
+        .decode(manifest["signature"].as_str().ok_or("这一版没有发版签名，不更新")?)
+        .map_err(|_| "发版签名格式不对，不更新")?;
+    let key = engine.decode(PUBLIC_KEY).expect("内置公钥无效");
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(text.as_bytes(), &signature)
+        .map_err(|_| "发版签名对不上，可能被篡改，不更新".to_string())
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Update {
@@ -94,9 +119,9 @@ fn download(update: &Update, exe: &Path) -> Result<PathBuf> {
     if manifest["version"].as_str() != Some(update.version.as_str()) {
         return Err("manifest 的版本号和发布不一致，不更新".into());
     }
+    signed(&manifest)?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut get(&update.exe)?.into_reader(), &mut bytes).map_err(|error| format!("下载中断：{error}"))?;
-    // shortcut: 只防下载损坏，校验值和 exe 来自同一个 Release；要防发布被篡改得另加签名。
     let hash = format!("{:x}", Sha256::digest(&bytes));
     if Some(bytes.len() as u64) != manifest["bytes"].as_u64() || Some(hash.as_str()) != manifest["sha256"].as_str() {
         return Err("下载的文件和 manifest 对不上（大小或 sha256），没有替换".into());
@@ -166,7 +191,22 @@ mod tests {
         assert!(newer(&json!({"tag_name":"v9.0.0","assets":[]}), "3.3.4").is_none(), "缺附件不提示");
     }
 
+    /// 样例签名是 scripts/update-key.mjs 用发版私钥签的（sha256 是假的，没法拿去冒充真发布）。
+    #[test]
+    fn signature_must_cover_version_size_and_hash() {
+        let good = json!({"version":"0.0.0","bytes":0,"sha256":"test-only",
+            "signature":"+Ge+0rw/ZDopitges5uiqXwsdkw2SBzdU7rhg0J0gcfSt4weCT565VhjkEgJ2Tb9P93o1iBiTleGD5wkcyMUCQ=="});
+        assert!(signed(&good).is_ok());
+        let mut tampered = good.clone();
+        tampered["sha256"] = json!("something-else");
+        assert!(signed(&tampered).unwrap_err().contains("对不上"));
+        let mut unsigned = good;
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert!(signed(&unsigned).unwrap_err().contains("没有发版签名"));
+    }
+
     /// 真去 GitHub 下最新 Release 并按 manifest 核对：`cargo test -- --ignored release_download`。
+    /// 第一个带签名的发布（v3.4 起）上线后才会通过，之前的发布没签名会被拒。
     #[test]
     #[ignore]
     fn release_download_matches_its_manifest() {
