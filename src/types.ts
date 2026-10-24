@@ -23,6 +23,7 @@ export interface ConversationDetail {
   project: Project | null;
   project_coordinator?: RoleChoice | null;
   project_grants?: string;
+  spend_cap?: number | null;
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
   chat_questions?: ChatQuestion[];

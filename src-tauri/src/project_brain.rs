@@ -187,6 +187,23 @@ impl Store {
             .flatten()
             .unwrap_or_default()
     }
+    /// 项目每天在按量计费线路上最多花多少美元；没设就是不限。
+    pub fn spend_cap(&self, room: &str) -> Option<f64> {
+        metadata(&self.connection, &format!("spend_cap:{room}")).and_then(|text| text.parse().ok())
+    }
+    pub fn set_spend_cap(&mut self, room: &str, cap: Option<f64>) -> Result<()> {
+        let key = format!("spend_cap:{room}");
+        match cap {
+            Some(cap) if !(cap.is_finite() && cap > 0.0) => return Err("每日花费上限要填大于 0 的美元数".into()),
+            Some(cap) => self.connection.execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, cap.to_string()],
+            ),
+            None => self.connection.execute("DELETE FROM metadata WHERE key=?1", [key]),
+        }
+        .map_err(|_| "花费上限保存失败")?;
+        Ok(())
+    }
     pub fn set_project_grants(&mut self, room: &str, grants: &str) -> Result<()> {
         let grants = grants.trim();
         if grants.chars().count() > 500 {
@@ -877,6 +894,61 @@ fn find_member(connection: &Connection, ctx: &Context, member: &str) -> Result<(
         .ok_or_else(|| format!("没有这个成员：{member}（用 hub_team 看成员的 seat）"))
 }
 
+/// 订阅线路（额度里报 5 小时、每周窗口的，如 Claude、ChatGPT 账号）不按 token 扣钱，不算进花费上限。
+fn subscription(quota: &Value, agent: &str) -> bool {
+    ["five_hour", "weekly"].iter().any(|window| !quota[agent][*window].is_null())
+}
+
+/// 项目今天在按量计费线路上花了多少美元（主脑和各席位都算）。
+fn paid_today(connection: &Connection, room: &str, quota: &Value) -> f64 {
+    let Ok(mut query) = connection.prepare(
+        "SELECT r.agent_id,r.model,r.usage,m.created_at
+         FROM project_agent_chats c JOIN runs r ON r.conversation_id=c.conversation_id JOIN messages m ON m.id=r.assistant_message_id
+         WHERE c.group_conversation_id=?1 AND r.usage IS NOT NULL AND date(m.created_at/1000,'unixepoch','localtime')=date('now','localtime')",
+    ) else {
+        return 0.0;
+    };
+    let rows = query.query_map([room], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)));
+    rows.into_iter()
+        .flatten()
+        .flatten()
+        .filter(|(agent, ..)| !subscription(quota, agent))
+        .filter_map(|(agent, model, text, at)| run_cost(&serde_json::from_str(&text).ok()?, &agent, model.as_deref(), at))
+        .sum()
+}
+
+/// 派给按量计费线路前看今天花到上限没有：到了就不派，挂问答问用户今天放不放开（已经在跑的活不管）。
+fn over_spend_cap(connection: &Connection, room: &str, brain: &str, agent: &str) -> Result<()> {
+    let Some(cap) = metadata(connection, &format!("spend_cap:{room}")).and_then(|text| text.parse::<f64>().ok()) else {
+        return Ok(());
+    };
+    let quota = metadata(connection, "brain_quota").and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
+    if subscription(&quota, agent) {
+        return Ok(());
+    }
+    let spent = paid_today(connection, room, &quota);
+    if spent < cap {
+        return Ok(());
+    }
+    let key: String = connection.query_row("SELECT 'spend-cap-'||date('now','localtime')", [], |row| row.get(0)).map_err(|_| "日期读取失败")?;
+    let lifted: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM project_inquiries WHERE conversation_id=?1 AND key=?2 AND status='answered' AND answer LIKE '今天放开%')", params![room, key], |row| row.get(0))
+        .unwrap_or(false);
+    if lifted {
+        return Ok(());
+    }
+    let ask = crate::project_inquiries::Ask {
+        key,
+        question: format!("今天按量计费的线路已花 ≈ ${spent:.2}，到了每日上限 ${cap:.2}，要放开吗？"),
+        background: Some("只算按 token 扣钱的线路（DSH、Hermes 等），订阅线路不算。到上限后主脑不再给这些线路派新活，已经在做的活照常做完；订阅线路照常派。上限在项目设置里改。".into()),
+        options: vec!["今天放开，照常派".into(), "保持上限".into()],
+        default: Some("保持上限".into()),
+        reversible: true,
+    };
+    crate::project_inquiries::ask_on(connection, room, None, brain, &ask)?;
+    Err(format!("今天按量计费的线路已花 ≈ ${spent:.2}，到了用户设的每日上限 ${cap:.2}：{agent} 这类按量计费的成员今天不再派新活（已在协作问答里问用户要不要放开）。订阅线路的成员照常可派。"))
+}
+
 /// 成员手上有没有没交回的活，或者用户正在它的会话里聊。
 fn busy(connection: &Connection, seat: &str, chat: &str) -> Option<String> {
     let job: Option<String> = connection
@@ -1038,6 +1110,7 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             if let Some(job) = busy(connection, &seat, &chat) {
                 return Err(format!("{seat} 手上还有活（{}），等它交回，或用 hub_tell_member / hub_stop_member", short(&job)));
             }
+            over_spend_cap(connection, &ctx.room, &ctx.seat, base_agent(&seat))?;
             let mut task = text_arg(&args, "task", 20000)?;
             let step = args["step"].as_i64();
             if let Some(id) = step {
@@ -2311,6 +2384,43 @@ B6 做完了"));
 修好了 a.rs"));
         assert!(!points.contains("先看日志"));
         assert_eq!(super::key_points("没按格式写"), "没按格式写");
+    }
+
+    #[test]
+    fn paid_lines_stop_at_the_daily_cap_until_the_user_lifts_it() {
+        let base = std::env::temp_dir().join(format!("tongxi-spend-cap-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("花费项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id;
+        let mut run = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "claude-win").unwrap();
+        run.status = "completed".into();
+        store.checkpoint(&run, "好了", "").unwrap();
+        store.connection.execute("UPDATE runs SET usage='{\"usage\":{},\"cost\":3.0}' WHERE id=?1", [&run.id]).unwrap();
+        let check = |store: &Store| super::over_spend_cap(&store.connection, &room, "claude-win-brain", "claude-win");
+
+        assert!(check(&store).is_ok(), "没设上限不拦");
+        store.set_spend_cap(&room, Some(2.0)).unwrap();
+        let refused = check(&store).unwrap_err();
+        assert!(refused.contains("$3.00") && refused.contains("$2.00"), "{refused}");
+        let inquiry = store.project_inquiries(&room).unwrap().into_iter().next().unwrap();
+        assert_eq!(inquiry.asked_by, "claude-win-brain", "用户的回答要能送回主脑");
+
+        store.connection.execute("INSERT INTO metadata(key,value) VALUES('brain_quota','{\"claude-win\":{\"five_hour\":{\"used_percent\":10}}}')", []).unwrap();
+        assert!(check(&store).is_ok(), "订阅线路不算钱也不拦");
+        store.connection.execute("DELETE FROM metadata WHERE key='brain_quota'", []).unwrap();
+
+        store.answer_inquiry(&room, &inquiry.id, "今天放开，照常派").unwrap();
+        assert!(check(&store).is_ok(), "用户放开了今天就不拦");
+        store.connection.execute("UPDATE project_inquiries SET answer='保持上限'", []).unwrap();
+        assert!(check(&store).is_err());
+        store.set_spend_cap(&room, Some(5.0)).unwrap();
+        assert!(check(&store).is_ok(), "没花到上限不拦");
+        assert!(store.set_spend_cap(&room, Some(0.0)).is_err());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

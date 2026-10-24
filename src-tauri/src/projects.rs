@@ -76,6 +76,14 @@ pub fn set_project_coordinator(
     store.detail(&conversation_id)
 }
 
+/// 项目每天在按量计费线路上的花费上限（美元），传空就是不限。
+#[tauri::command]
+pub fn set_project_spend_cap(state: State<'_, AppState>, conversation_id: String, cap: Option<f64>) -> Result<ConversationDetail> {
+    let mut store = locked(&state)?;
+    store.set_spend_cap(&conversation_id, cap)?;
+    store.detail(&conversation_id)
+}
+
 /// 项目长期授权：用户写一段话（如「允许提交并推送 main，不 force push」），主脑和成员都当作用户原话授权。
 #[tauri::command]
 pub fn set_project_grants(
