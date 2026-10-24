@@ -59,17 +59,24 @@ export function measure(list: HTMLElement): (Box | null)[] {
     const running = gliders.get(level);
     if (running?.glider.isConnected) return boxIn(list, running.glider);
     const node = list.querySelector(level);
-    return node ? boxIn(list, node) : null;
+    // 收起的子栏里的选中行没有尺寸：从那儿起滑会从侧栏外面飞进来。
+    return node?.getClientRects().length ? boxIn(list, node) : null;
   });
 }
+
+/// 滑块的终点就是建它时写进 style 的位置。
+const same = (glider: HTMLElement, to: Box) => [glider.style.left, glider.style.top, glider.style.width, glider.style.height].every((value, i) => Math.abs(parseFloat(value) - [to.x, to.y, to.w, to.h][i]) < 1);
 
 export function glide(list: HTMLElement, before: (Box | null)[]) {
   LEVELS.forEach((level, index) => {
     const running = gliders.get(level);
+    const target = list.querySelector<HTMLElement>(level);
+    const to = target?.getClientRects().length ? boxIn(list, target) : null;
+    // 切会话会连着重绘两次（点下时、详情回来时）：已经在往同一处滑的就让它滑完，重新起步会在半路顿一下。
+    if (running && running.target === target && to && same(running.glider, to)) return;
     if (running) { gliders.delete(level); running.animation.cancel(); running.glider.remove(); running.target.classList.remove('gliding'); }
-    const from = before[index], target = list.querySelector<HTMLElement>(level);
-    if (!from || !target || still()) return;
-    const to = boxIn(list, target);
+    const from = before[index];
+    if (!from || !target || !to || still()) return;
     if (Math.abs(from.y - to.y) < 1 && Math.abs(from.x - to.x) < 1 && Math.abs(from.h - to.h) < 1) return;
     const glider = document.createElement('div');
     glider.className = `nav-glider ${index ? 'module' : 'card'}`;
