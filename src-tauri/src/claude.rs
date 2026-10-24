@@ -253,6 +253,7 @@ impl Runtime {
             inner.version = initialized["agentInfo"]["version"]
                 .as_str()
                 .map(String::from);
+            crate::pricing::remember(AGENT_ID, &models);
             inner.models = models;
             inner.default_model = default_model;
             inner.default_effort = None;

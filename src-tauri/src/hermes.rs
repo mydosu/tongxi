@@ -257,6 +257,7 @@ impl Runtime {
                 .as_str()
                 .map(String::from);
             inner.models = models_from_response(&catalog);
+            crate::pricing::remember("hermes-win", &inner.models);
             inner.default_model = catalog["models"]["currentModelId"]
                 .as_str()
                 .map(String::from);
@@ -461,6 +462,7 @@ impl Runtime {
         let models = models_from_response(&response);
         {
             let mut inner = self.inner.lock().unwrap();
+            crate::pricing::remember("hermes-win", &models);
             inner.models = models;
             let run = run_mut(&mut inner.runs, run_id)
                 .filter(|run| busy(run))

@@ -1217,7 +1217,14 @@ impl Store {
     /// 结束时间给主脑换会话判断缓存凉没凉（project_brain::rollover）。
     pub fn record_usage(&self, run_id: &str, response: &serde_json::Value) {
         if response["usage"].is_object() {
-            let usage = serde_json::json!({"usage": response["usage"], "context": response["_meta"]["contextTokens"], "at": now()});
+            let at = now();
+            let context = response["_meta"]["contextTokens"].as_u64();
+            let cost = self
+                .connection
+                .query_row("SELECT agent_id,COALESCE(model,'') FROM runs WHERE id=?1", [run_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .ok()
+                .and_then(|(agent, model)| crate::pricing::cost(crate::project_store::base_agent(&agent), &model, &response["usage"], context, (at / 1000) as u64));
+            let usage = serde_json::json!({"usage": response["usage"], "context": response["_meta"]["contextTokens"], "at": at, "cost": cost});
             let _ = self.connection.execute("UPDATE runs SET usage=?1 WHERE id=?2", params![usage.to_string(), run_id]);
         }
     }

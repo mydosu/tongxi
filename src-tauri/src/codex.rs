@@ -769,6 +769,7 @@ impl Runtime {
                 return Err("Codex 连接已取消".into());
             }
             inner.version = version;
+            crate::pricing::remember("codex-win", &models);
             inner.models = models;
             inner.default_model = defaults["model"].as_str().map(String::from);
             inner.default_effort = defaults["reasoningEffort"].as_str().map(String::from);

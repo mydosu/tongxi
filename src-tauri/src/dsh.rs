@@ -436,6 +436,7 @@ impl Runtime {
                         .as_str()
                         .map(String::from)
                 });
+            crate::pricing::remember("dsh-win", &models);
             inner.models = models;
             inner.default_model = default_model;
             inner.default_effort = default_effort;

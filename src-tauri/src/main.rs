@@ -37,6 +37,7 @@ mod project_sessions;
 mod project_store;
 mod project_tools;
 mod project_worktree;
+mod pricing;
 mod projects;
 mod rpc;
 mod service_apply;
@@ -1256,6 +1257,7 @@ fn main() {
                 None => app.path().app_local_data_dir()?,
             };
             prompts::set_prompt_dir(directory.join("prompts"));
+            pricing::init(&directory);
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
             ));
