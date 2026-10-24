@@ -57,6 +57,7 @@
 | **Claude Code** | `irm https://claude.ai/install.ps1 \| iex` | `claude`（首次运行登录） | 无 | [安装文档](https://code.claude.com/docs/en/setup) |
 | **Hermes** | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | 安装器自带向导，之后可用 `hermes setup` | 无（自备 Python） | [Windows 指南](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native) |
 | **DSH** | `npm install -g @deepseek-ai/dsh` | `dsh web`（在网页里填 DeepSeek Key） | Node.js 22.19+ | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
+| **OpenCode**（可选） | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
 
 需要 Node.js 而本机没有时，安装脚本会先用 `winget install OpenJS.NodeJS.LTS` 装好。
 
@@ -364,6 +365,18 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 <br />
 
 ## 版本记录
+
+### v3.4.0 · 敢交权、看得见省钱、跟得上 CLI 升级
+
+- **省钱账**：找回按天自动更新的价格表（联网不上用内置表），每回合用量按 API 价折成钱；订阅线路也折算并标明，没收录的型号显示「价格未知」不瞎估。主脑任务页每件活、每个计划步骤显示花了多少、全交给主脑的模型要多少、省了多少；「项目总账」按天、按成员、按模型汇总。
+- **每日花费上限**：项目设置里按成员各设一个「美元 / 天」，只算按量计费的线路。某位成员到上限，主脑不再给它派新活，在协作问答里问你今天放不放开；在跑的活不掐。
+- **权限档**：每个项目选全权（默认）/ 只改工作树 / 只读。Claude 按档换权限模式，Codex、DSH 用各自沙箱收紧到项目目录和手上活的工作树，Hermes 靠提示词；非全权档合并工作树前先在协作问答给你看 diff。
+- **内置接入 OpenCode**（可选成员）：走它自带的 ACP（`opencode acp`），私聊、群聊、项目席位、派活、在 CLI 中打开、一键安装（`npm install -g opencode-ai`）都能用；默认不自动连接。
+- **同席自己更新**：启动时查 GitHub 最新 Release，有新版侧栏版本号会亮，点开看说明、确认后下载替换并自动重启；有成员在回复或主脑的活没结束时不更新。新版 manifest 带 Ed25519 签名，签名、大小、sha256 有一样对不上就不更新。
+- **项目记忆可降级**：没装 OpenViking 时存成项目里 `.tongxi/记忆/` 下的 markdown，共享 / 私有、只有作者能改共享笔记、拒存凭据这些规则不变。去掉写死的本机路径，改用 `AGENT_HUB_OPENVIKING_PYTHON` 或 PATH 上的 `ov`。**原来靠默认路径用 OpenViking 的，请设好这个环境变量**，否则记忆会存到项目里。
+- **导出诊断**：「成员与服务」右上角一键把版本、系统、各成员连接与版本、最近 7 天失败原因脱敏写成文本存到「下载」，不含会话内容。加一张已验证 CLI 版本表，版本不在表里的成员卡片标「未验证版本」。
+- **Hermes 用量补全**：走中转线路时 ACP 回包不带用量，改从它自己的会话库补上。
+- README 顶上加演示动图，补英文 README。
 
 ### v3.3.4 · 成员长任务不再被误掐，空回复修好
 
