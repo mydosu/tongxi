@@ -209,8 +209,8 @@ pub struct ConversationDetail {
     pub project_coordinator: Option<crate::project_store::RoleChoice>,
     /// 项目长期授权：用户写的一段话，每次协作都算用户原话授权。
     pub project_grants: String,
-    /// 项目每天在按量计费线路上的花费上限（美元），没设为空。
-    pub spend_cap: Option<f64>,
+    /// 项目里各成员每天的花费上限（成员 → 美元），没设的成员不在里面。
+    pub spend_cap: std::collections::BTreeMap<String, f64>,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub chat_questions: Vec<crate::chat_questions::Question>,

@@ -23,7 +23,7 @@ export interface ConversationDetail {
   project: Project | null;
   project_coordinator?: RoleChoice | null;
   project_grants?: string;
-  spend_cap?: number | null;
+  spend_cap?: Record<string, number>;
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
   chat_questions?: ChatQuestion[];

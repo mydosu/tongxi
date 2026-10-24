@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use sha2::Digest;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,19 +188,22 @@ impl Store {
             .flatten()
             .unwrap_or_default()
     }
-    /// 项目每天在按量计费线路上最多花多少美元；没设就是不限。
-    pub fn spend_cap(&self, room: &str) -> Option<f64> {
-        metadata(&self.connection, &format!("spend_cap:{room}")).and_then(|text| text.parse().ok())
+    /// 项目里各成员每天在按量计费线路上最多花多少美元（成员 → 上限）；没设的成员不限。
+    pub fn spend_cap(&self, room: &str) -> BTreeMap<String, f64> {
+        spend_caps(&self.connection, room)
     }
-    pub fn set_spend_cap(&mut self, room: &str, cap: Option<f64>) -> Result<()> {
+    pub fn set_spend_cap(&mut self, room: &str, caps: BTreeMap<String, f64>) -> Result<()> {
+        if caps.values().any(|cap| !(cap.is_finite() && *cap > 0.0)) {
+            return Err("每日花费上限要填大于 0 的美元数".into());
+        }
         let key = format!("spend_cap:{room}");
-        match cap {
-            Some(cap) if !(cap.is_finite() && cap > 0.0) => return Err("每日花费上限要填大于 0 的美元数".into()),
-            Some(cap) => self.connection.execute(
+        if caps.is_empty() {
+            self.connection.execute("DELETE FROM metadata WHERE key=?1", [key])
+        } else {
+            self.connection.execute(
                 "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                params![key, cap.to_string()],
-            ),
-            None => self.connection.execute("DELETE FROM metadata WHERE key=?1", [key]),
+                params![key, json!(caps).to_string()],
+            )
         }
         .map_err(|_| "花费上限保存失败")?;
         Ok(())
@@ -899,38 +903,42 @@ fn subscription(quota: &Value, agent: &str) -> bool {
     ["five_hour", "weekly"].iter().any(|window| !quota[agent][*window].is_null())
 }
 
-/// 项目今天在按量计费线路上花了多少美元（主脑和各席位都算）。
-fn paid_today(connection: &Connection, room: &str, quota: &Value) -> f64 {
+fn spend_caps(connection: &Connection, room: &str) -> BTreeMap<String, f64> {
+    metadata(connection, &format!("spend_cap:{room}")).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// 这个成员今天在项目里花了多少美元（它的各个会话、当主脑的回合都算）。
+fn paid_today(connection: &Connection, room: &str, agent: &str) -> f64 {
     let Ok(mut query) = connection.prepare(
-        "SELECT r.agent_id,r.model,r.usage,m.created_at
+        "SELECT r.model,r.usage,m.created_at
          FROM project_agent_chats c JOIN runs r ON r.conversation_id=c.conversation_id JOIN messages m ON m.id=r.assistant_message_id
-         WHERE c.group_conversation_id=?1 AND r.usage IS NOT NULL AND date(m.created_at/1000,'unixepoch','localtime')=date('now','localtime')",
+         WHERE c.group_conversation_id=?1 AND r.agent_id=?2 AND r.usage IS NOT NULL AND date(m.created_at/1000,'unixepoch','localtime')=date('now','localtime')",
     ) else {
         return 0.0;
     };
-    let rows = query.query_map([room], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)));
+    let rows = query.query_map([room, agent], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)));
     rows.into_iter()
         .flatten()
         .flatten()
-        .filter(|(agent, ..)| !subscription(quota, agent))
-        .filter_map(|(agent, model, text, at)| run_cost(&serde_json::from_str(&text).ok()?, &agent, model.as_deref(), at))
+        .filter_map(|(model, text, at)| run_cost(&serde_json::from_str(&text).ok()?, agent, model.as_deref(), at))
         .sum()
 }
 
-/// 派给按量计费线路前看今天花到上限没有：到了就不派，挂问答问用户今天放不放开（已经在跑的活不管）。
+/// 派活前看这个成员今天花到它的上限没有：到了就不派，挂问答问用户今天放不放开它（已经在跑的活不管）。
 fn over_spend_cap(connection: &Connection, room: &str, brain: &str, agent: &str) -> Result<()> {
-    let Some(cap) = metadata(connection, &format!("spend_cap:{room}")).and_then(|text| text.parse::<f64>().ok()) else {
+    let Some(&cap) = spend_caps(connection, room).get(agent) else {
         return Ok(());
     };
     let quota = metadata(connection, "brain_quota").and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
     if subscription(&quota, agent) {
         return Ok(());
     }
-    let spent = paid_today(connection, room, &quota);
+    let spent = paid_today(connection, room, agent);
     if spent < cap {
         return Ok(());
     }
-    let key: String = connection.query_row("SELECT 'spend-cap-'||date('now','localtime')", [], |row| row.get(0)).map_err(|_| "日期读取失败")?;
+    let name = label(connection, room, agent);
+    let key: String = connection.query_row("SELECT 'spend-cap-'||?1||'-'||date('now','localtime')", [agent], |row| row.get(0)).map_err(|_| "日期读取失败")?;
     let lifted: bool = connection
         .query_row("SELECT EXISTS(SELECT 1 FROM project_inquiries WHERE conversation_id=?1 AND key=?2 AND status='answered' AND answer LIKE '今天放开%')", params![room, key], |row| row.get(0))
         .unwrap_or(false);
@@ -939,14 +947,14 @@ fn over_spend_cap(connection: &Connection, room: &str, brain: &str, agent: &str)
     }
     let ask = crate::project_inquiries::Ask {
         key,
-        question: format!("今天按量计费的线路已花 ≈ ${spent:.2}，到了每日上限 ${cap:.2}，要放开吗？"),
-        background: Some("只算按 token 扣钱的线路（DSH、Hermes 等），订阅线路不算。到上限后主脑不再给这些线路派新活，已经在做的活照常做完；订阅线路照常派。上限在项目设置里改。".into()),
+        question: format!("{name}今天已花 ≈ ${spent:.2}，到了它的每日上限 ${cap:.2}，要放开吗？"),
+        background: Some(format!("到上限后主脑不再给{name}派新活，已经在做的活照常做完；别的成员按各自的上限照常派。订阅账号不按 token 扣钱，不算。上限在项目成员配置里改。")),
         options: vec!["今天放开，照常派".into(), "保持上限".into()],
         default: Some("保持上限".into()),
         reversible: true,
     };
     crate::project_inquiries::ask_on(connection, room, None, brain, &ask)?;
-    Err(format!("今天按量计费的线路已花 ≈ ${spent:.2}，到了用户设的每日上限 ${cap:.2}：{agent} 这类按量计费的成员今天不再派新活（已在协作问答里问用户要不要放开）。订阅线路的成员照常可派。"))
+    Err(format!("{agent}（{name}）今天已花 ≈ ${spent:.2}，到了用户给它设的每日上限 ${cap:.2}：今天不再给它的会话派新活（已在协作问答里问用户要不要放开）。别的成员按各自的上限照常可派。"))
 }
 
 /// 成员手上有没有没交回的活，或者用户正在它的会话里聊。
@@ -2403,9 +2411,13 @@ B6 做完了"));
         let check = |store: &Store| super::over_spend_cap(&store.connection, &room, "claude-win-brain", "claude-win");
 
         assert!(check(&store).is_ok(), "没设上限不拦");
-        store.set_spend_cap(&room, Some(2.0)).unwrap();
+        let caps = |pairs: &[(&str, f64)]| pairs.iter().map(|(agent, cap)| (agent.to_string(), *cap)).collect::<std::collections::BTreeMap<_, _>>();
+        store.set_spend_cap(&room, caps(&[("dsh-win", 1.0)])).unwrap();
+        assert!(check(&store).is_ok(), "上限按成员分：别的成员的上限不拦它");
+        store.set_spend_cap(&room, caps(&[("claude-win", 2.0), ("dsh-win", 1.0)])).unwrap();
         let refused = check(&store).unwrap_err();
         assert!(refused.contains("$3.00") && refused.contains("$2.00"), "{refused}");
+        assert!(super::over_spend_cap(&store.connection, &room, "claude-win-brain", "dsh-win").is_ok(), "花的钱也按成员分");
         let inquiry = store.project_inquiries(&room).unwrap().into_iter().next().unwrap();
         assert_eq!(inquiry.asked_by, "claude-win-brain", "用户的回答要能送回主脑");
 
@@ -2417,9 +2429,9 @@ B6 做完了"));
         assert!(check(&store).is_ok(), "用户放开了今天就不拦");
         store.connection.execute("UPDATE project_inquiries SET answer='保持上限'", []).unwrap();
         assert!(check(&store).is_err());
-        store.set_spend_cap(&room, Some(5.0)).unwrap();
+        store.set_spend_cap(&room, caps(&[("claude-win", 5.0)])).unwrap();
         assert!(check(&store).is_ok(), "没花到上限不拦");
-        assert!(store.set_spend_cap(&room, Some(0.0)).is_err());
+        assert!(store.set_spend_cap(&room, caps(&[("claude-win", 0.0)])).is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 

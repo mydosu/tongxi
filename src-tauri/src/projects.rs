@@ -76,11 +76,11 @@ pub fn set_project_coordinator(
     store.detail(&conversation_id)
 }
 
-/// 项目每天在按量计费线路上的花费上限（美元），传空就是不限。
+/// 项目里各成员每天的花费上限（成员 → 美元），没列的成员不限。
 #[tauri::command]
-pub fn set_project_spend_cap(state: State<'_, AppState>, conversation_id: String, cap: Option<f64>) -> Result<ConversationDetail> {
+pub fn set_project_spend_cap(state: State<'_, AppState>, conversation_id: String, caps: std::collections::BTreeMap<String, f64>) -> Result<ConversationDetail> {
     let mut store = locked(&state)?;
-    store.set_spend_cap(&conversation_id, cap)?;
+    store.set_spend_cap(&conversation_id, caps)?;
     store.detail(&conversation_id)
 }
 
