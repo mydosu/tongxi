@@ -520,7 +520,7 @@ impl Runtime {
         let result = client.rpc_timeout(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
-            Duration::from_secs(600),
+            Duration::from_secs(3600),
         );
         match result {
             Ok(value) => {
