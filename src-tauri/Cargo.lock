@@ -2045,7 +2045,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-agent-hub"
-version = "3.3.2"
+version = "3.3.3"
 dependencies = [
  "base64 0.22.1",
  "rusqlite",

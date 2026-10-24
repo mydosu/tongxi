@@ -1213,10 +1213,11 @@ impl Store {
         tx.commit().map_err(|e| e.to_string())
     }
 
-    /// 成员回报的这一回合用量（token 数、结束时的上下文大小），原样存下给派活页统计；不报用量的成员不记。
+    /// 成员回报的这一回合用量（token 数、结束时的上下文大小、结束时间），原样存下给派活页统计；不报用量的成员不记。
+    /// 结束时间给主脑换会话判断缓存凉没凉（project_brain::rollover）。
     pub fn record_usage(&self, run_id: &str, response: &serde_json::Value) {
         if response["usage"].is_object() {
-            let usage = serde_json::json!({"usage": response["usage"], "context": response["_meta"]["contextTokens"]});
+            let usage = serde_json::json!({"usage": response["usage"], "context": response["_meta"]["contextTokens"], "at": now()});
             let _ = self.connection.execute("UPDATE runs SET usage=?1 WHERE id=?2", params![usage.to_string(), run_id]);
         }
     }

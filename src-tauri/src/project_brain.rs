@@ -1200,8 +1200,14 @@ fn handoff_path(root: &str) -> PathBuf {
     Path::new(root).join(".tongxi").join("交接.md")
 }
 
-/// 主脑一轮做完写了新的交接（.tongxi/交接.md 比上次换会话时新），项目里也没有在等的活：
-/// 清掉主脑的原生会话，这条消息开新会话，开场说明里带上交接。没写交接就一直续旧会话。
+/// 主脑上一回合结束超过这么久，缓存就凉了，续旧会话得把整段重新写进缓存。
+const CACHE_LIFE_MS: i64 = 60 * 60 * 1000;
+/// 缓存热着也换的上下文大小：再长读起来费额度，模型也变迟钝。
+const FAT_CONTEXT: i64 = 270_000;
+
+/// 主脑一轮做完写了新的交接（.tongxi/交接.md 比上次换会话时新），项目里也没有在等的活，
+/// 并且缓存凉了（上一回合结束超过一小时）或会话太胖（上下文到 27 万）：
+/// 清掉主脑的原生会话，这条消息开新会话，开场说明里带上交接。否则续旧会话。
 pub fn rollover(connection: &Connection, conversation_id: &str) {
     let Ok((room, seat, root)) = connection.query_row(
         "SELECT c.group_conversation_id,c.agent_id,p.root FROM project_agent_chats c JOIN projects p ON p.id=c.project_id WHERE c.conversation_id=?1",
@@ -1229,6 +1235,17 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
         .query_row("SELECT COUNT(*) FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running')", [&room], |row| row.get(0))
         .unwrap_or(1);
     if waiting > 0 {
+        return;
+    }
+    // 缓存还热、会话也不胖就续旧会话：换会话要把开场说明重新写进缓存，比接着读旧的贵。交接留着，凉了或胖了再换。
+    let (context, ended): (i64, i64) = connection
+        .query_row(
+            "SELECT COALESCE(json_extract(usage,'$.context'),0),COALESCE(json_extract(usage,'$.at'),0) FROM runs WHERE conversation_id=?1 AND usage IS NOT NULL ORDER BY rowid DESC LIMIT 1",
+            [conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+    if crate::store::now() - ended < CACHE_LIFE_MS && context < FAT_CONTEXT {
         return;
     }
     let _ = connection.execute(
@@ -1964,8 +1981,23 @@ mod tests {
         assert_eq!(native(&store).as_deref(), Some("native-1"), "还有活没交回不换");
 
         store.connection.execute("UPDATE brain_jobs SET status='done'", []).unwrap();
+        // 上一回合的用量：结束时间和上下文决定缓存凉没凉、会话胖不胖。
+        store.connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let turn = |store: &Store, context: i64, ago: i64| {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO runs(id,conversation_id,agent_id,user_message_id,assistant_message_id,status,usage) VALUES(?1,?2,'claude-win',?1,?1,'completed',?3)",
+                    params![Uuid::new_v4().to_string(), chat, serde_json::json!({"context": context, "at": now() - ago}).to_string()],
+                )
+                .unwrap();
+        };
+        turn(&store, 120_000, 10 * 60 * 1000);
         super::rollover(&store.connection, &chat);
-        assert_eq!(native(&store), None, "一轮做完写了交接就换新会话");
+        assert_eq!(native(&store).as_deref(), Some("native-1"), "缓存还热、会话不胖就续旧会话");
+        turn(&store, 120_000, 61 * 60 * 1000);
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store), None, "一轮做完写了交接、缓存凉了就换新会话");
         let opening = super::preamble(&db, &chat).unwrap().expect("新会话带说明");
         assert!(opening.contains("B6 做到第二步"), "新会话带上交接");
         assert!(opening.ends_with("以下是用户的消息："));
@@ -1974,6 +2006,12 @@ mod tests {
         super::rollover(&store.connection, &chat);
         assert_eq!(native(&store).as_deref(), Some("native-2"), "同一份交接只换一次");
         assert_eq!(super::preamble(&db, &chat), Some(None));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".tongxi/交接.md"), "B6 做完了").unwrap();
+        turn(&store, 280_000, 60 * 1000);
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store), None, "缓存热着但会话太胖也换");
         let _ = std::fs::remove_dir_all(base);
     }
 
