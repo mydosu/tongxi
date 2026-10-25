@@ -1507,8 +1507,8 @@ const CACHE_LIFE_MS: i64 = 60 * 60 * 1000;
 /// 缓存热着也换的上下文大小：再长读起来费额度，模型也变迟钝。
 const FAT_CONTEXT: i64 = 270_000;
 
-/// 主脑一轮做完写了新的交接（.tongxi/交接.md 比上次换会话时新），项目里也没有在等的活，
-/// 并且缓存凉了（上一回合结束超过一小时）或会话太胖（上下文到 27 万）：
+/// 主脑一轮做完写了新的交接（.tongxi/交接.md 比上次换会话时新），
+/// 并且缓存凉了（上一回合结束超过一小时，还要项目里没有在等的活）或会话太胖（上下文到 27 万，有活在外也换）：
 /// 清掉主脑的原生会话，这条消息开新会话，开场说明里带上交接。否则续旧会话。
 pub fn rollover(connection: &Connection, conversation_id: &str) {
     let Ok((room, seat, root)) = connection.query_row(
@@ -1533,12 +1533,6 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
     if metadata(connection, &key).and_then(|seen| seen.parse::<i64>().ok()).is_some_and(|seen| seen >= written) {
         return;
     }
-    let waiting: i64 = connection
-        .query_row("SELECT COUNT(*) FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running')", [&room], |row| row.get(0))
-        .unwrap_or(1);
-    if waiting > 0 {
-        return;
-    }
     // 缓存还热、会话也不胖就续旧会话：换会话要把开场说明重新写进缓存，比接着读旧的贵。交接留着，凉了或胖了再换。
     let (context, ended): (i64, i64) = connection
         .query_row(
@@ -1547,7 +1541,15 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap_or((0, 0));
-    if crate::store::now() - ended < CACHE_LIFE_MS && context < FAT_CONTEXT {
+    let fat = context >= FAT_CONTEXT;
+    if crate::store::now() - ended < CACHE_LIFE_MS && !fat {
+        return;
+    }
+    // 只是缓存凉了就等外面的活都交回再换；会话胖了不等，不然 Claude 会先自己压缩（交接里本来就写着在外的活）。
+    let waiting: i64 = connection
+        .query_row("SELECT COUNT(*) FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running')", [&room], |row| row.get(0))
+        .unwrap_or(1);
+    if waiting > 0 && !fat {
         return;
     }
     let _ = connection.execute(
@@ -2341,9 +2343,10 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(root.join(".tongxi/交接.md"), "B6 做完了").unwrap();
+        store.connection.execute("UPDATE brain_jobs SET status='running'", []).unwrap();
         turn(&store, 280_000, 60 * 1000);
         super::rollover(&store.connection, &chat);
-        assert_eq!(native(&store), None, "缓存热着但会话太胖也换");
+        assert_eq!(native(&store), None, "缓存热着但会话太胖也换，有活在外也换");
         let _ = std::fs::remove_dir_all(base);
     }
 
