@@ -116,6 +116,11 @@ class ChatACP(HermesACPAgent):
                         response.usage = Usage(**fields, cached_write_tokens=delta["cache_write_tokens"] or None)
                     except Exception:
                         response.usage = Usage(**fields)
+        # 回包不带上下文大小：取 Hermes 自己记的最近一次调用的输入+输出，主脑据此决定要不要给它开新会话。
+        compressor = getattr(getattr(state, "agent", None), "context_compressor", None)
+        context = int(getattr(compressor, "last_total_tokens", 0) or 0)
+        if context > 0:
+            response.field_meta = {**(response.field_meta or {}), "contextTokens": context}
         return response
 
     def _switch_model(self, state, raw_model, *, keep_endpoint=False):
