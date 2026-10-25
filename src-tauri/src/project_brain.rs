@@ -38,7 +38,10 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
          CREATE TABLE IF NOT EXISTS brain_steps (
            room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,id INTEGER NOT NULL,
            title TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,depends TEXT NOT NULL DEFAULT '[]',
-           note TEXT,wait_key TEXT,job TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(room,id));",
+           note TEXT,wait_key TEXT,job TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(room,id));
+         CREATE TABLE IF NOT EXISTS brain_plan_history (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           steps TEXT NOT NULL,archived_at INTEGER NOT NULL);",
     )
     .map_err(|_| "主脑结构迁移失败")?;
     crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
@@ -389,8 +392,9 @@ impl Store {
                 .flatten(),
         };
         let steps = load_steps(&self.connection, room);
+        let history = plan_history(&self.connection, room);
         let ledger = ledger(&self.connection, room)?;
-        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, usage, ledger })
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, history, usage, ledger })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -518,8 +522,28 @@ pub struct BrainOverview {
     jobs: Vec<BrainJob>,
     plans: Vec<PlanDoc>,
     steps: Vec<PlanStep>,
+    /// 主脑 clear 换掉的旧计划（最近的在前），流程图上可以切回去看。
+    history: Vec<PlanHistory>,
     usage: UsageStats,
     ledger: Vec<LedgerRow>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PlanHistory {
+    id: i64,
+    archived_at: i64,
+    steps: Value,
+}
+
+fn plan_history(connection: &Connection, room: &str) -> Vec<PlanHistory> {
+    connection
+        .prepare("SELECT id,archived_at,steps FROM brain_plan_history WHERE room=?1 ORDER BY id DESC LIMIT 30")
+        .and_then(|mut query| {
+            query
+                .query_map([room], |row| Ok(PlanHistory { id: row.get(0)?, archived_at: row.get(1)?, steps: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default() }))?
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 项目总账的一格：某天、某个席位、某个模型的回合合计，界面按天、按成员、按模型再加起来。
@@ -698,6 +722,13 @@ fn update_plan(connection: &Connection, ctx: &Context, args: &Value) -> Result<V
     }
     if !acyclic(&steps) {
         return Err("依赖成环了，排不出先后".into());
+    }
+    // 清空重来前把旧计划存一份，流程图上还能切回去看。
+    let old = load_steps(connection, &ctx.room);
+    if args["clear"].as_bool() == Some(true) && !old.is_empty() {
+        connection
+            .execute("INSERT INTO brain_plan_history(room,steps,archived_at) VALUES(?1,?2,?3)", params![ctx.room, json!(old).to_string(), now()])
+            .map_err(|_| "旧计划存档失败")?;
     }
     save_steps(connection, &ctx.room, &steps)?;
     Ok(load_steps(connection, &ctx.room))
@@ -1582,11 +1613,20 @@ impl Courier {
         let handle = courier.clone();
         std::thread::spawn(move || {
             let mut tick: u64 = 0;
+            let mut asked = watcher.open_asks();
             loop {
                 if tick % 30 == 0 {
                     watcher.refresh_models();
                 }
-                let rooms = watcher.tick();
+                let mut rooms = watcher.tick();
+                // 主脑的工具进程直接往库里挂问题，没有事件：待答问题有增减就通知前端刷新问答面板。
+                let now_asked = watcher.open_asks();
+                for room in now_asked.keys().chain(asked.keys()) {
+                    if now_asked.get(room) != asked.get(room) && !rooms.contains(room) {
+                        rooms.push(room.clone());
+                    }
+                }
+                asked = now_asked;
                 for room in rooms {
                     let _ = watcher.app.emit("brain-state", room);
                 }
@@ -1783,6 +1823,18 @@ impl Courier {
     }
 
     /// 一轮：发出待发的活、收回做完的活、把回答和结果送进主脑。返回有变化的项目群。
+    /// 各项目群待答问题的（条数，最新提问时间）。
+    fn open_asks(&self) -> BTreeMap<String, (i64, i64)> {
+        let store = self.store.lock().unwrap();
+        let Ok(mut query) = store.connection.prepare("SELECT conversation_id,COUNT(*),MAX(created_at) FROM project_inquiries WHERE status='open' GROUP BY conversation_id") else {
+            return BTreeMap::new();
+        };
+        query
+            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
     fn tick(&self) -> Vec<String> {
         let mut rooms: Vec<String> = Vec::new();
         for job in self.pending() {
@@ -2399,6 +2451,12 @@ mod tests {
         let again = super::call(&store.connection, &brain, "hub_ask_user", serde_json::json!({"key":"b6-target","question":"B6 目标多少？","step":2})).unwrap();
         assert_eq!(again["asked"], true, "还挂着没答的老问题再问一次，照样挂到步骤上");
         assert_eq!(store.brain_overview(&room).unwrap().steps[1].status, "waiting");
+
+        super::call(&store.connection, &brain, "hub_plan", serde_json::json!({"clear":true,"steps":[{"id":1,"title":"新计划"}]})).unwrap();
+        let overview = store.brain_overview(&room).unwrap();
+        assert_eq!(overview.steps.len(), 1);
+        assert_eq!(overview.history.len(), 1, "clear 换掉的旧计划留档");
+        assert_eq!(overview.history[0].steps.as_array().unwrap().len(), 2);
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

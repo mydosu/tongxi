@@ -973,7 +973,7 @@ fn answer_chat_question(
 }
 /// 问答面板：项目群里主脑挂的问题（没答的全部，加最近答过的）。
 #[tauri::command]
-fn project_inquiries(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<project_inquiries::Inquiry>, String> {
+async fn project_inquiries(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<project_inquiries::Inquiry>, String> {
     with_store(&state, |store| store.project_inquiries(&conversation_id))
 }
 #[tauri::command]
@@ -986,7 +986,7 @@ fn answer_project_inquiry(
     with_store(&state, |store| store.answer_inquiry(&conversation_id, &inquiry_id, &answer))
 }
 #[tauri::command]
-fn brain_overview(state: State<'_, AppState>, conversation_id: String) -> Result<project_brain::BrainOverview, String> {
+async fn brain_overview(state: State<'_, AppState>, conversation_id: String) -> Result<project_brain::BrainOverview, String> {
     with_store(&state, |store| store.brain_overview(&conversation_id))
 }
 #[tauri::command]

@@ -586,6 +586,10 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-jobs-ended .brain-job { background: rgb(255 255 255 / .48); box-shadow: none; }
 .brain-plans { display: grid; gap: 8px; padding: 14px 18px; border: 1px solid rgb(255 255 255 / .9); border-radius: 16px; background: rgb(255 255 255 / .55); }
 .brain-plans h2 { margin: 0; color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.plan-head { display: flex; align-items: center; gap: 10px; }
+.plan-history { min-width: 0; max-width: 260px; height: 28px; padding: 3px 8px; border: 1px solid rgb(205 205 228 / .8); border-radius: 8px; background: rgb(255 255 255 / .85); color: #44506a; font-size: 12px; }
+/* 屏幕外的任务卡片不排版不绘制，几十件活滚起来也不卡。 */
+.brain-jobs-content .brain-job { content-visibility: auto; contain-intrinsic-size: auto 150px; }
 .brain-plan summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 4px 0; color: var(--muted); font-size: 12.5px; }
 .brain-plan summary::-webkit-details-marker { display: none; }
 .brain-plan summary::before { content: '▸'; color: var(--faint); transition: transform .15s; }

@@ -5,6 +5,20 @@ import { still } from './motion';
 
 type Escape = (value: string | number) => string;
 
+/// 收着的折叠框先不排版：几十件活的结果都转 Markdown，进页面、每次重画都要卡一下。点开时 fillFold 再补上。
+const lazy = new Map<string, () => string>();
+function folded(key: string, open: Set<string>, html: () => string) {
+  if (open.has(key)) return html();
+  lazy.set(key, html);
+  return '';
+}
+export function fillFold(fold: HTMLDetailsElement) {
+  const key = fold.dataset.jobFold!, html = lazy.get(key);
+  if (!html) return;
+  lazy.delete(key);
+  fold.insertAdjacentHTML('beforeend', html());
+}
+
 /// 「4 分钟」「2 小时 5 分」：一件活做了多久（没做完就算到现在）。
 function span(from: number, to: number) {
   const minutes = Math.max(0, Math.round((to - from) / 60000));
@@ -54,7 +68,7 @@ function ledgerSection(rows: LedgerRow[], escape: Escape, open: Set<string>) {
   const total = rows.reduce((sum, row) => sum + row.cost, 0);
   const key = 'ledger|project';
   return `<details class="brain-plan brain-ledger" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><strong>项目总账</strong><small>累计 ≈ ${money(total)}（按 API 价折算）</small></summary>
-    <div class="brain-usage"><h3>按天</h3>${group(row => row.day, true)}<h3>按成员</h3>${group(row => row.name)}<h3>按模型</h3>${group(row => modelText(row.model || null))}</div></details>`;
+    ${folded(key, open, () => `<div class="brain-usage"><h3>按天</h3>${group(row => row.day, true)}<h3>按成员</h3>${group(row => row.name)}<h3>按模型</h3>${group(row => modelText(row.model || null))}</div>`)}</details>`;
 }
 
 function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[]) {
@@ -90,7 +104,7 @@ function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, o
   const timing = jobLive(job) ? `${when(job.created_at)} 派发 · 已进行 ${span(job.created_at, Date.now())}` : `${when(job.created_at)} 派发 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`;
   const tree = job.branch ? `<span title="${escape(job.worktree || '')}">工作树 ${escape(job.branch)}${job.worktree ? '' : '（已合并或丢弃）'}</span>` : '<span>在项目目录中执行</span>';
   // 任务原文照原样显示；交回的结果是成员的回复，按 Markdown 排版。
-  const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary><div class="brain-job-text${key === 'result' ? ' markdown' : ''}">${key === 'result' ? agentMarkdown(body, escape) : escape(body)}</div></details>`;
+  const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary>${folded(`${job.id}|${key}`, open, () => `<div class="brain-job-text${key === 'result' ? ' markdown' : ''}">${key === 'result' ? agentMarkdown(body, escape) : escape(body)}</div>`)}</details>`;
   return `<article class="brain-job ${tone}" data-job-id="${escape(job.id)}">
     <header>${avatar(job.seat)}<strong>${escape(job.name)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(timing)}</small></header>
     <p class="brain-job-title">${escape(title)}</p>
@@ -112,7 +126,7 @@ function planDoc(doc: PlanDoc, escape: Escape, open: Set<string>) {
   const progress = steps.length ? `<span class="brain-plan-progress${done === steps.length ? ' done' : ''}">${done}/${steps.length}</span>` : '';
   const text = lines.map(line => line.replace(STEP, (_, head, mark) => `${head}${mark === ' ' ? '☐' : '☑'}`)).join('\n');
   const key = `plan|${doc.brief ? 'brief' : 'plan'}|${doc.name}`;
-  return `<details class="brain-plan" data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary><strong>${doc.brief ? `任务书 · ${escape(doc.name)}` : '长期计划'}</strong>${progress}<small>${escape(when(doc.modified))} 更新</small></summary><div class="brain-job-text markdown">${agentMarkdown(text, escape)}</div></details>`;
+  return `<details class="brain-plan" data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary><strong>${doc.brief ? `任务书 · ${escape(doc.name)}` : '长期计划'}</strong>${progress}<small>${escape(when(doc.modified))} 更新</small></summary>${folded(key, open, () => `<div class="brain-job-text markdown">${agentMarkdown(text, escape)}</div>`)}</details>`;
 }
 
 function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
@@ -127,8 +141,8 @@ const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '进行中'
 /// 等用户答问题、或负责人就是用户（手测这类）的等待，都算「等你」。
 const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key || step.owner === '你') ? 'you' : step.status;
 
-function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string, pick: number | null) {
-  if (!all.length) return '';
+function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string, pick: number | null, picker: string) {
+  if (!all.length) return picker ? `<section class="brain-plans plan-flow-section"><div class="plan-head"><h2>计划</h2>${picker}</div><p class="inquiry-empty">主脑当前没有计划，可切换查看以前的计划。</p></section>` : '';
   // 不选分类时，做完又不卡任何没做完步骤的收起来；点「全部」或「做完」都摆出来；全做完了就都显示。
   const feeds = (step: PlanStep) => all.some(next => next.depends.includes(step.id) && next.status !== 'done');
   const folded = filter === 'all' || filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
@@ -181,9 +195,17 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
   const bar = [['all', all.length] as const, ...counts].map(([kind, count]) => `<button type="button" class="plan-filter ${kind}${filter === kind ? ' on' : ''}" data-plan-filter="${kind}" aria-pressed="${filter === kind}">${kind === 'all' ? '全部' : STEP_LOOK[kind][1]} ${count}</button>`).join('');
   const hint = folded.length ? `<button type="button" class="plan-folded" data-plan-filter="all">已折叠 ${folded.length} 个不影响后续的已完成步骤 ▸</button>` : '';
   const zoom = `<div class="plan-zoom" role="group" aria-label="缩放"><button type="button" data-zoom="out" aria-label="缩小" title="缩小（也可在图上滚动滚轮）">−</button><button type="button" class="plan-zoom-level" data-zoom="reset" title="恢复为 100%">100%</button><button type="button" data-zoom="in" aria-label="放大" title="放大（也可在图上滚动滚轮）">+</button><button type="button" data-zoom="fit" aria-label="适应窗口" title="适应窗口（也可双击空白处）"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 5V1.5H5M9 1.5h3.5V5m0 4v3.5H9m-4 0H1.5V9"/></svg></button></div>`;
-  return `<section class="brain-plans plan-flow-section"><h2>计划</h2><div class="plan-filters">${bar}${hint}${zoom}</div>
+  return `<section class="brain-plans plan-flow-section"><div class="plan-head"><h2>计划</h2>${picker}</div><div class="plan-filters">${bar}${hint}${zoom}</div>
     <div class="plan-stage"><div class="plan-flow"><div class="plan-canvas" data-w="${width}" data-h="${height}" style="width:${width}px;height:${height}px">
       <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div><div class="plan-tip" hidden></div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}</section>`;
+}
+
+/// 计划流程图这一块：show 是选中的旧计划（null 看当前的）。切分类、点步骤只重画这一块，不动整页。
+export function planSection(overview: BrainOverview, escape: Escape, filter: string, pick: number | null, show: number | null) {
+  const old = overview.history.find(plan => plan.id === show);
+  const options = overview.history.map(plan => `<option value="${plan.id}"${plan === old ? ' selected' : ''}>${escape(when(plan.archived_at))} 换下的计划（${plan.steps.length} 步）</option>`).join('');
+  const picker = options ? `<select class="plan-history" data-plan-show aria-label="选择要查看的计划"><option value="">当前计划（${overview.steps.length} 步）</option>${options}</select>` : '';
+  return planFlow(old?.steps || overview.steps, overview.jobs, escape, filter, pick, picker);
 }
 
 /// 点开的一步：全文、谁负责、先要等哪几步、卡住几件；有派出去的活就能跳过去看、打开那位成员的会话。
@@ -386,7 +408,8 @@ export function bindPlanFlow(root: ParentNode, key: string) {
 }
 
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
-export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter = '', planPick: number | null = null) {
+export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter: string, planPick: number | null, planShow: number | null) {
+  lazy.clear();
   const head = `<header class="chat-header"><div><h1>主脑任务</h1><p>${escape(project)} · 主脑的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
@@ -394,6 +417,6 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
   const body = live.length
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '暂无进行中的任务。' : '主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。'}</p>`;
-  const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${ended.map(job => card(job, escape, avatar, open)).join('')}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planFlow(overview.steps, overview.jobs, escape, planFilter, planPick)}${usageSection(overview.usage, overview.jobs)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${folded('ended', open, () => ended.map(job => card(job, escape, avatar, open)).join(''))}</details>` : '';
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${usageSection(overview.usage, overview.jobs)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }
