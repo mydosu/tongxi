@@ -6,14 +6,29 @@ export function patchMessage(old: HTMLElement, html: string): boolean {
   const template = document.createElement('template');
   template.innerHTML = html.trim();
   const next = template.content.firstElementChild as HTMLElement | null;
-  if (!next || template.content.childElementCount !== 1 || next.tagName !== old.tagName || next.className !== old.className) return false;
+  if (!next || template.content.childElementCount !== 1) return false;
+  return patchNode(old, next);
+}
+
+function patchNode(old: HTMLElement, next: HTMLElement): boolean {
+  if (next.tagName !== old.tagName || next.className !== old.className) return false;
   for (const { name, value } of [...next.attributes]) if (old.getAttribute(name) !== value) old.setAttribute(name, value);
   const fresh = [...next.children];
   fresh.forEach((child, index) => {
     const current = old.children[index];
     if (!current) old.append(child);
     else if (current instanceof HTMLDetailsElement && child instanceof HTMLDetailsElement && current.classList.contains('thought') && child.classList.contains('thought')) patchThought(current, child);
-    else if (!current.isEqualNode(child)) current.replaceWith(child);
+    // 插过话的回复是一组 article：逐条往里补，里面的思考框同样留着原节点。
+    else if (current.matches('article.message') && patchNode(current as HTMLElement, child as HTMLElement)) return;
+    else {
+      // 用户展开过的工具详情带着 open：新节点先照抄开合再比，不然每帧都算变了、整块换掉再从零播展开动画（流式时狂闪）。
+      const opened = [...current.querySelectorAll('details')].map(details => details.open);
+      if (current instanceof HTMLDetailsElement) opened.unshift(current.open);
+      const fresh = [...child.querySelectorAll('details')];
+      if (child instanceof HTMLDetailsElement) fresh.unshift(child);
+      if (fresh.length === opened.length) fresh.forEach((details, at) => { details.open = opened[at]; });
+      if (!current.isEqualNode(child)) current.replaceWith(child);
+    }
   });
   while (old.children.length > fresh.length) old.lastElementChild!.remove();
   return true;

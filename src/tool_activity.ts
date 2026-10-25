@@ -21,6 +21,8 @@ export function captureToolState(root: Element | null) {
 export function restoreToolState(root: Element, state: ReturnType<typeof captureToolState>) {
   for (const saved of state) {
     const node = [...root.querySelectorAll<HTMLDetailsElement>('[data-tool-key]')].find(node => node.dataset.toolKey === saved.key);
-    if (node) { node.open = saved.open; const history = node.querySelector('.tool-history'); if (history) history.scrollTop = saved.scroll; }
+    // 程序还原开合不播展开动画（instant 见 theme.css），不然每次重画都从零展开一遍。
+    if (node && node.open !== saved.open) { node.classList.add('instant'); node.open = saved.open; void node.offsetHeight; node.classList.remove('instant'); }
+    if (node) { const history = node.querySelector('.tool-history'); if (history) history.scrollTop = saved.scroll; }
   }
 }

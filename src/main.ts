@@ -2124,8 +2124,9 @@ async function toggleArchive(conversation: Conversation) {
   try {
     await invoke('archive_conversation', { id: conversation.id, archived: !conversation.archived });
     toast(conversation.archived ? '会话已恢复' : '会话已归档');
-    if (selectedId === conversation.id) { archived = !conversation.archived; await refreshList(); await selectConversation(conversation.id); }
-    else await refreshList();
+    // 侧栏留在当前列表（不跳去归档/最近）：归档的会话从列表里消失，右边照样开着它。
+    await refreshList();
+    if (selectedId === conversation.id) await selectConversation(conversation.id);
   } catch (error) { toast(errorText(error), true); }
 }
 
