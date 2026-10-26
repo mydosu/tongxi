@@ -2405,8 +2405,10 @@ async function rollbackServiceUpdate(agentId: string, card: HTMLElement) {
 
 function renderServices() {
   disposeProjectTranscript();
+  // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
+  const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML = `<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 会自己自动更新，检测到已更新就提示重启会话 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 会自己自动更新，检测到已更新就提示重启会话 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
@@ -2418,6 +2420,7 @@ function renderServices() {
     button.disabled = true;
     try { toast(`诊断已存到 ${await invoke<string>('export_diagnostics')}`); } catch (error) { toast(errorText(error), true); } finally { button.disabled = false; }
   });
+  main.querySelector('.services-content')?.scrollTo(0, keepTop);
   const cards = [...main.querySelectorAll<HTMLElement>('.service-card')];
   const paint = (inventory?: Map<string, ServiceInfo>) => {
     if (screen !== 'services') return;
