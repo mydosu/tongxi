@@ -1521,7 +1521,12 @@ pub fn preamble(db: &Path, conversation_id: &str) -> Option<Option<String>> {
 
 {}", tail(text.trim(), RESULT_LIMIT)))
         .unwrap_or_default();
-    Some(Some(format!("{text}{handoff}
+    let cut = if native.is_empty() && metadata(&connection, &format!("brain_cut:{conversation_id}")).is_some() {
+        "\n\n## 上一轮被打断\n上一轮做到一半断了（多半是额度用完），没来得及写交接，上面的交接可能是更早的。先用 hub_plan、hub_team 看计划和还在外面的活，再看群里最近的消息，弄清做到哪再接着做；这一轮做完照常写交接。"
+    } else {
+        ""
+    };
+    Some(Some(format!("{text}{handoff}{cut}
 
 ---
 以下是用户的消息：")))
@@ -1550,19 +1555,13 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
     if !is_brain(&seat) {
         return;
     }
-    let Some(written) = std::fs::metadata(handoff_path(&root))
+    let written = std::fs::metadata(handoff_path(&root))
         .and_then(|meta| meta.modified())
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|at| at.as_millis() as i64)
-    else {
-        return;
-    };
+        .map(|at| at.as_millis() as i64);
     let key = format!("brain_handoff:{conversation_id}");
-    if metadata(connection, &key).and_then(|seen| seen.parse::<i64>().ok()).is_some_and(|seen| seen >= written) {
-        return;
-    }
-    // 缓存还热、会话也不胖就续旧会话：换会话要把开场说明重新写进缓存，比接着读旧的贵。交接留着，凉了或胖了再换。
+    let cut_key = format!("brain_cut:{conversation_id}");
     let (context, ended): (i64, i64) = connection
         .query_row(
             "SELECT COALESCE(json_extract(usage,'$.context'),0),COALESCE(json_extract(usage,'$.at'),0) FROM runs WHERE conversation_id=?1 AND usage IS NOT NULL ORDER BY rowid DESC LIMIT 1",
@@ -1570,8 +1569,26 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap_or((0, 0));
+    let cold = crate::store::now() - ended >= CACHE_LIFE_MS;
+    // 上一回合半路失败（多半是额度用完）就没写交接；等额度回来缓存早凉了，续旧会话等于把整段重写一遍缓存，不如开新会话。
+    let cut = cold
+        && connection
+            .query_row("SELECT status FROM runs WHERE conversation_id=?1 ORDER BY rowid DESC LIMIT 1", [conversation_id], |row| row.get::<_, String>(0))
+            .is_ok_and(|status| status == "failed");
+    if cut {
+        let _ = connection.execute("UPDATE sessions SET native_session_id=NULL WHERE conversation_id=?1 AND agent_id=?2", params![conversation_id, base_agent(&seat)]);
+        let _ = connection.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?1,'1')", [&cut_key]);
+        return;
+    }
+    let Some(written) = written else {
+        return;
+    };
+    if metadata(connection, &key).and_then(|seen| seen.parse::<i64>().ok()).is_some_and(|seen| seen >= written) {
+        return;
+    }
+    // 缓存还热、会话也不胖就续旧会话：换会话要把开场说明重新写进缓存，比接着读旧的贵。交接留着，凉了或胖了再换。
     let fat = context >= FAT_CONTEXT;
-    if crate::store::now() - ended < CACHE_LIFE_MS && !fat {
+    if !cold && !fat {
         return;
     }
     // 只是缓存凉了就等外面的活都交回再换；会话胖了不等，不然 Claude 会先自己压缩（交接里本来就写着在外的活）。
@@ -1589,6 +1606,7 @@ pub fn rollover(connection: &Connection, conversation_id: &str) {
         "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
         params![key, written.to_string()],
     );
+    let _ = connection.execute("DELETE FROM metadata WHERE key=?1", [&cut_key]);
 }
 
 /// 成员按说明把交回写在最后一段「## 交回」里，主脑只收这段；没写就收结尾一截。
@@ -2376,6 +2394,18 @@ mod tests {
         turn(&store, 280_000, 60 * 1000);
         super::rollover(&store.connection, &chat);
         assert_eq!(native(&store), None, "缓存热着但会话太胖也换，有活在外也换");
+
+        // 额度断流：上一回合失败、没写新交接，等额度回来缓存已凉，照样开新会话并提示先看计划。
+        set_native(&store, "native-3");
+        turn(&store, 150_000, 2 * 60 * 60 * 1000);
+        let failed = Uuid::new_v4().to_string();
+        store
+            .connection
+            .execute("INSERT INTO runs(id,conversation_id,agent_id,user_message_id,assistant_message_id,status) VALUES(?1,?2,'claude-win',?1,?1,'failed')", params![failed, chat])
+            .unwrap();
+        super::rollover(&store.connection, &chat);
+        assert_eq!(native(&store), None, "断流后缓存凉了不等交接就换");
+        assert!(super::preamble(&db, &chat).unwrap().unwrap().contains("上一轮被打断"));
         let _ = std::fs::remove_dir_all(base);
     }
 
