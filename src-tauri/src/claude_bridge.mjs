@@ -333,6 +333,7 @@ function prompt(id, params) {
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv() });
   session.child = child;
   session.cancelled = false;
+  session.steered = 0;
   let stderr = '';
   let result = null;
   let wroteText = false;
@@ -397,6 +398,11 @@ function prompt(id, params) {
     } else if (message.type === 'result') {
       // 续会话时上一单没跑完的后台命令会先来一条通知，claude 为它出一个零轮的空结果，真正这一单还在后面。
       if (message.num_turns === 0 && !message.is_error) return;
+      // 插话打断了前半段：claude 先报一个中止的结果，插进来的消息接着处理，回合还没完，不能在这里收尾。
+      if (session.steered && !session.cancelled && message.terminal_reason?.startsWith('aborted')) {
+        session.steered--;
+        return;
+      }
       result = message;
       child.stdin.end();
       // 回合已经结束，但 claude 偶尔迟迟不退出（子 agent 或 MCP 子进程还挂着）；再等 20 秒还不退就结束它，免得协作一直等下去。
@@ -442,6 +448,7 @@ function steer(params) {
     throw new Error('Claude 当前没有进行中的回复');
   }
   session.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
+  session.steered = (session.steered || 0) + 1;
   return {};
 }
 
