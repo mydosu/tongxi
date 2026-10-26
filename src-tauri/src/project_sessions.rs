@@ -330,6 +330,8 @@ impl Store {
             params![room, seat],
         )
         .map_err(|_| "席位撤销失败")?;
+        tx.execute("DELETE FROM metadata WHERE key=?1", [crate::project_brain::added_seat_key(room, seat)])
+            .map_err(|_| "席位撤销失败")?;
         tx.commit().map_err(|_| "席位撤销失败".into())
     }
 

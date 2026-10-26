@@ -940,6 +940,11 @@ fn team(connection: &Connection, ctx: &Context) -> Result<Vec<(String, String)>>
         .collect())
 }
 
+/// 主脑用 hub_add_seat 开的席位记在这里，它只能改名、撤掉这些；撤席位时（不论谁撤）一并清掉。
+pub(crate) fn added_seat_key(room: &str, seat: &str) -> String {
+    format!("brain_added_seat:{room}:{seat}")
+}
+
 fn find_member(connection: &Connection, ctx: &Context, member: &str) -> Result<(String, String)> {
     let member = member.trim();
     team(connection, ctx)?
@@ -1172,6 +1177,9 @@ pub fn tool_specs() -> Vec<Value> {
         ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
         ("hub_finish_worktree", "Close out a finished job that had a worktree: action=merge merges its branch into the project's current branch and removes the worktree; action=discard throws the work away. On merge conflicts the merge is left in the project directory for you to resolve.", json!({"job":string,"action":{"type":"string","enum":["merge","discard"]}}), vec!["job","action"]),
         ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message. step: the hub_plan step that can't go on until the user answers; it shows as waiting on the user and turns back to todo when answered.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"},"step":{"type":"integer"}}), vec!["question"]),
+        ("hub_add_seat", "Open another seat for a member already in this project group (up to 3 extra per member): a separate session with its own model, delegated to like any other member. agent: the base agent id (codex-win, claude-win, ...); name: optional seat name. Returns the new seat id.", json!({"agent":string,"name":string}), vec!["agent"]),
+        ("hub_rename_seat", "Rename a seat you opened with hub_add_seat. Empty name = default name.", json!({"member":string,"name":string}), vec!["member","name"]),
+        ("hub_remove_seat", "Remove a seat you opened with hub_add_seat once it is idle (its session is archived, not deleted). Seats the user opened are not yours to remove.", json!({"member":string}), vec!["member"]),
         ("hub_broadcast", "Post one short progress line to the project group the user watches (started what, delegated to whom, finished what, needs the user to decide what). Do not flood it. When a round of work is done, also post the progress report here: done, not done and why, next step, what the user must decide.", json!({"content":string}), vec!["content"]),
     ];
     let mut specs: Vec<Value> = definitions
@@ -1389,6 +1397,27 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                     .map_err(|_| "计划保存失败")?;
             }
             Ok(json!({"asked":asked,"note":if asked {"已挂到问答面板，用户答了会作为新消息发给你"} else {"这个 key 用户已经答过了，看之前的回答"}}))
+        }
+        "hub_add_seat" => {
+            let agent = args["agent"].as_str().unwrap_or("").trim();
+            let seat = Store::open(&ctx.db)?.add_project_seat(&ctx.room, agent, args["name"].as_str())?;
+            connection
+                .execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?1,'1')", [added_seat_key(&ctx.room, &seat)])
+                .map_err(|_| "席位归属保存失败")?;
+            Ok(json!({"seat":seat,"name":label(connection, &ctx.room, &seat)}))
+        }
+        "hub_rename_seat" | "hub_remove_seat" => {
+            let (seat, _) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
+            if metadata(connection, &added_seat_key(&ctx.room, &seat)).is_none() {
+                return Err(format!("{seat} 不是你用 hub_add_seat 开的席位，只能管自己开的"));
+            }
+            let mut store = Store::open(&ctx.db)?;
+            if name == "hub_remove_seat" {
+                store.remove_project_seat(&ctx.room, &seat)?;
+                Ok(json!({"removed":seat}))
+            } else {
+                Ok(json!({"seat":seat,"name":store.rename_project_seat(&ctx.room, &seat, args["name"].as_str().unwrap_or(""))?}))
+            }
         }
         "hub_plan" => Ok(json!({"steps":update_plan(connection, &ctx, &args)?})),
         "hub_broadcast" => {
@@ -2377,6 +2406,35 @@ mod tests {
         assert_eq!(others[0]["project"], "乙项目");
         assert_eq!(others[0]["agent"], "codex-win");
         assert_eq!(others[0]["model"], "gpt-6-luna");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn brain_opens_renames_and_removes_only_its_own_seats() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-seat-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let brain = chats.iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id.clone();
+        let user_seat = store.add_project_seat(&room, "codex-win", Some("用户开的")).unwrap();
+        let call = |name: &str, args: serde_json::Value| super::call(&store.connection, &brain, name, args);
+
+        let added = call("hub_add_seat", serde_json::json!({"agent":"codex-win","name":"测试位"})).unwrap();
+        let seat = added["seat"].as_str().unwrap().to_owned();
+        assert_eq!(added["name"], "测试位");
+        let team = call("hub_team", serde_json::Value::Null).unwrap();
+        assert!(team["members"].as_array().unwrap().iter().any(|member| member["seat"] == seat), "新席位能派活");
+        assert_eq!(call("hub_rename_seat", serde_json::json!({"member":"测试位","name":"审查位"})).unwrap()["name"], "审查位");
+        assert!(call("hub_remove_seat", serde_json::json!({"member":user_seat})).is_err(), "用户开的席位主脑不能撤");
+        assert!(call("hub_rename_seat", serde_json::json!({"member":"codex-win","name":"x"})).is_err(), "主席位也不归它管");
+        call("hub_remove_seat", serde_json::json!({"member":"审查位"})).unwrap();
+        assert!(store.project_seats(&room).unwrap().iter().all(|(id, _)| *id != seat));
+        assert!(super::metadata(&store.connection, &super::added_seat_key(&room, &seat)).is_none(), "撤掉后归属记录清掉，槽位再给用户用不会被误认");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
