@@ -1223,11 +1223,11 @@ main.addEventListener('click', event => {
 });
 
 async function connectAgent(agentId = currentAgentId()) {
-  try { adoptRuntime(await invoke<RuntimeSnapshot>(`connect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${member(agentId).name} 原生接口已连接`); }
+  try { adoptRuntime(await invoke<RuntimeSnapshot>(`connect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 原生接口已连接`); }
   catch (error) { toast(errorText(error), true); }
 }
 async function disconnectAgent(agentId = currentAgentId()) {
-  try { adoptRuntime(await invoke<RuntimeSnapshot>(`disconnect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${member(agentId).name} 已断开`); }
+  try { adoptRuntime(await invoke<RuntimeSnapshot>(`disconnect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 已断开`); }
   catch (error) { toast(errorText(error), true); }
 }
 
@@ -2303,7 +2303,7 @@ function paintServiceCard(card: HTMLElement, agentId: string, info?: ServiceInfo
   const control = card.querySelector<HTMLButtonElement>('[data-service-connect]')!;
   control.disabled = connection === 'connecting';
   control.id = `service-${harnessKey(agentId)}-control`;
-  control.textContent = connection === 'connected' ? `断开 ${member(agentId).name}` : connection === 'connecting' ? '正在连接…' : `连接 ${member(agentId).name}`;
+  control.textContent = connection === 'connected' ? `断开 ${globalMember(baseAgent(agentId)).name}` : connection === 'connecting' ? '正在连接…' : `连接 ${globalMember(baseAgent(agentId)).name}`;
   control.title = '连接本机原生接口，当前仅支持独立私聊';
   control.onclick = () => void (connection === 'connected' ? disconnectAgent(agentId) : connectAgent(agentId));
   const check = card.querySelector<HTMLButtonElement>('[data-service-check]')!;
