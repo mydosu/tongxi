@@ -1869,9 +1869,8 @@ function openModal(title: string, subtitle: string, body: string) {
 
 type AppUpdate = { current: string; version: string; notes: string; url: string };
 let appUpdate: AppUpdate | null = null;
-let announcedUpdate = '';
 
-/// 启动时和之后每小时悄悄查一次，有新版就点亮版本号并提示一次；点版本号手动查、有新版弹窗确认更新。
+/// 启动时和之后每小时悄悄查一次，有新版就点亮版本号；点版本号手动查、有新版弹窗确认更新。
 async function checkUpdate(quiet = false) {
   const badge = document.querySelector<HTMLButtonElement>('#app-version')!;
   try {
@@ -1880,8 +1879,6 @@ async function checkUpdate(quiet = false) {
     if (!quiet) toast(errorText(error), true);
     return;
   }
-  // 后台查到的新版本只提示一次，免得每小时弹。
-  if (quiet && appUpdate && appUpdate.version !== announcedUpdate) { announcedUpdate = appUpdate.version; toast(`同席有新版 v${appUpdate.version}，点同席旁的版本号更新`); }
   badge.classList.toggle('has-update', !!appUpdate);
   badge.title = appUpdate ? `有新版 v${appUpdate.version}，点击更新` : '检查更新';
   if (!appUpdate) { if (!quiet) toast('已是最新版本'); return; }
