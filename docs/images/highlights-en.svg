@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" width="1280" height="520" role="img" aria-label="Six highlights of Tongxi">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f4fc"/>
+      <stop offset="1" stop-color="#eef6f8"/>
+    </linearGradient>
+    <filter id="card" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#565c96" flood-opacity=".10"/>
+    </filter>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b9aee6"/><stop offset="1" stop-color="#9184cf"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a9cbea"/><stop offset="1" stop-color="#7aa6d4"/></linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f5c7b2"/><stop offset="1" stop-color="#e59f86"/></linearGradient>
+    <linearGradient id="g4" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a9e0c8"/><stop offset="1" stop-color="#6fc19f"/></linearGradient>
+    <linearGradient id="g5" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6bfcc"/><stop offset="1" stop-color="#e493a7"/></linearGradient>
+    <linearGradient id="g6" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a7adc8"/><stop offset="1" stop-color="#7a809f"/></linearGradient>
+    <style>
+      text { font-family: 'Segoe UI', -apple-system, 'Helvetica Neue', Arial, sans-serif; }
+      .t { font-size: 23px; font-weight: 700; fill: #394057; }
+      .d { font-size: 16px; fill: #636a8a; }
+    </style>
+  </defs>
+  <rect width="1280" height="520" rx="28" fill="url(#bg)"/>
+
+  <!-- 1 一张桌子 -->
+  <g transform="translate(50 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g1)"/>
+      <rect x="16" y="16" width="20" height="20" rx="2" fill="none" stroke="#fff" stroke-width="2.4"/>
+      <circle cx="16" cy="16" r="5" fill="#fff"/><circle cx="36" cy="16" r="5" fill="#fff"/>
+      <circle cx="16" cy="36" r="5" fill="#fff"/><circle cx="36" cy="36" r="5" fill="#fff"/>
+    </g>
+    <text class="t" x="96" y="63">One table</text>
+    <text class="d" x="28" y="118">1:1 chats, group chats and projects</text>
+    <text class="d" x="28" y="144">in one place. Each member can run</text>
+    <text class="d" x="28" y="170">several independent sessions.</text>
+  </g>
+
+  <!-- 2 原生会话 -->
+  <g transform="translate(450 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin=".5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g2)"/>
+      <rect x="11" y="20" width="18" height="12" rx="6" fill="none" stroke="#fff" stroke-width="2.6"/>
+      <rect x="23" y="20" width="18" height="12" rx="6" fill="none" stroke="#fff" stroke-width="2.6"/>
+    </g>
+    <text class="t" x="96" y="63">Native sessions</text>
+    <text class="d" x="28" y="118">Bring in a member's existing sessions,</text>
+    <text class="d" x="28" y="144">continue them in its own CLI, and</text>
+    <text class="d" x="28" y="170">they catch up when you come back.</text>
+  </g>
+
+  <!-- 3 主脑带队 -->
+  <g transform="translate(850 50)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="1s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g3)"/>
+      <path d="M17 26h8m0 0 9-9m-9 9 9 9" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      <circle cx="15" cy="26" r="4.5" fill="#fff"/><circle cx="36" cy="16" r="4" fill="#fff"/><circle cx="36" cy="36" r="4" fill="#fff"/>
+    </g>
+    <text class="t" x="96" y="63">A lead agent</text>
+    <text class="d" x="28" y="118">Each project has a lead. It takes your</text>
+    <text class="d" x="28" y="144">words, hands work to the right member,</text>
+    <text class="d" x="28" y="170">and reviews whatever comes back.</text>
+  </g>
+
+  <!-- 4 成员并行 -->
+  <g transform="translate(50 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="1.5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g4)"/>
+      <rect x="13" y="24" width="6" height="16" rx="3" fill="#fff"><animate attributeName="height" values="16;10;16" dur="2.4s" repeatCount="indefinite"/><animate attributeName="y" values="24;30;24" dur="2.4s" repeatCount="indefinite"/></rect>
+      <rect x="23" y="14" width="6" height="26" rx="3" fill="#fff"><animate attributeName="height" values="26;18;26" dur="2.4s" begin=".4s" repeatCount="indefinite"/><animate attributeName="y" values="14;22;14" dur="2.4s" begin=".4s" repeatCount="indefinite"/></rect>
+      <rect x="33" y="19" width="6" height="21" rx="3" fill="#fff"><animate attributeName="height" values="21;27;21" dur="2.4s" begin=".8s" repeatCount="indefinite"/><animate attributeName="y" values="19;13;19" dur="2.4s" begin=".8s" repeatCount="indefinite"/></rect>
+    </g>
+    <text class="t" x="96" y="63">Parallel members</text>
+    <text class="d" x="28" y="118">Code changes get their own worktree,</text>
+    <text class="d" x="28" y="144">so members work at once; the lead sees</text>
+    <text class="d" x="28" y="170">everyone's quota and assigns by it.</text>
+  </g>
+
+  <!-- 5 随时插话 -->
+  <g transform="translate(450 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="2s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g5)"/>
+      <path d="M14 16h24a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H24l-7 6v-6h-3a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4z" fill="#fff"/>
+      <circle cx="19" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" repeatCount="indefinite"/></circle>
+      <circle cx="26" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" begin=".2s" repeatCount="indefinite"/></circle>
+      <circle cx="33" cy="25" r="2" fill="#e493a7"><animate attributeName="opacity" values=".3;1;.3" dur="1.4s" begin=".4s" repeatCount="indefinite"/></circle>
+    </g>
+    <text class="t" x="96" y="63">Step in anytime</text>
+    <text class="d" x="28" y="118">Say a word in a working member's session</text>
+    <text class="d" x="28" y="144">and it changes course — no interrupt,</text>
+    <text class="d" x="28" y="170">no starting over.</text>
+  </g>
+
+  <!-- 6 数据在本机 -->
+  <g transform="translate(850 280)">
+    <rect width="380" height="200" rx="22" fill="#fff" fill-opacity=".8" stroke="#fff" filter="url(#card)"/>
+    <g transform="translate(28 28)">
+      <animateTransform attributeName="transform" type="translate" values="28 28;28 24;28 28" dur="4s" begin="2.5s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+      <rect width="52" height="52" rx="15" fill="url(#g6)"/>
+      <path d="M26 11 38 16v9c0 8-5 13-12 16-7-3-12-8-12-16v-9z" fill="#fff"/>
+      <path d="m20 26 4.5 4.5L33 22" stroke="#7a809f" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text class="t" x="96" y="63">Local data</text>
+    <text class="d" x="28" y="118">Sessions and settings live in local SQLite,</text>
+    <text class="d" x="28" y="144">keys are encrypted with Windows DPAPI;</text>
+    <text class="d" x="28" y="170">push and deploy wait for your OK.</text>
+  </g>
+</svg>

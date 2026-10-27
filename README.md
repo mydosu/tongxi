@@ -1,8 +1,6 @@
 <div align="center">
 
-<h1>Tongxi · Agent Hub</h1>
-
-<p><b>Seat the AI coding agents already on your machine at one table.</b></p>
+<img src="docs/images/hero-en.svg" width="100%" alt="Tongxi · Agent Hub: seat the AI coding agents already on your machine at one table" />
 
 [![Release](https://img.shields.io/github/v/release/mydosu/tongxi?style=flat-square&color=a598d8)](https://github.com/mydosu/tongxi/releases/latest) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-8fd3b6?style=flat-square)](#quick-start) [![Tauri](https://img.shields.io/badge/Tauri-2-f0b8a0?style=flat-square)](https://v2.tauri.app/) [![License](https://img.shields.io/github/license/mydosu/tongxi?style=flat-square&color=b6bbd6)](LICENSE)
 
@@ -29,6 +27,12 @@ There is also a seat for your own companion, if you have one.
 > Tongxi is only the table. Models, keys, tools, MCP servers and plugins all stay in each CLI's own config; Tongxi does not change them.
 
 **Why not just open a few terminals?** Three reasons: you can hand over real work (a lead agent plans, delegates, reviews and merges, inside the permissions you set), you can see what it cost (every task is priced and compared with doing it all on the expensive model), and it keeps up with CLI upgrades (verified versions, diagnostics, isolated updates).
+
+<br />
+
+## ✨ Highlights
+
+<img src="docs/images/highlights-en.svg" width="100%" alt="One table, native sessions, a lead agent, parallel members, step in anytime, local data" />
 
 <br />
 
@@ -80,6 +84,8 @@ Each member card shows the connection, the running and installed versions, and a
 ## Project mode
 
 In a group, choose **Select project folder** to bind a directory, then just say what you want in the group. If the folder isn't a Git repo yet, Tongxi initialises one locally with a safety baseline commit and never pushes it anywhere.
+
+<img src="docs/images/flow-en.svg" width="100%" alt="Project flow: you say one sentence, the lead plans, two members work in parallel, one step waits for your call, then the lead reviews and merges, and the next task picks up from the brief and plan" />
 
 ### The lead
 
