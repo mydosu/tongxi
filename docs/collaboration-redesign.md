@@ -1,6 +1,6 @@
 # 同席协作重构方案（v0.4，2026-10-22）
 
-依据 [协作模式讨论.md](协作模式讨论.md) 第 1–8 轮的结论。v0.1 是没问清需求前写的，已作废。
+依据 [collaboration-modes-discussion.md](collaboration-modes-discussion.md) 第 1–8 轮的结论。v0.1 是没问清需求前写的，已作废。
 
 ## 1. 要解决的问题（用户原话归纳）
 
