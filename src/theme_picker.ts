@@ -1,4 +1,4 @@
-import { invoke } from './transport';
+import { invoke, isRemote } from './transport';
 import { loadImage } from './image_file';
 
 // 主题背景：内置一套不含任何角色的公用背景；个人图片由用户自己导入（压缩后存在本机库里，只有这台电脑看得到）。
@@ -39,6 +39,8 @@ function saved(): Choice {
   return { id: 'chenwu', veil: 'medium' };
 }
 let current = saved();
+// 手机浏览器的 localStorage 是空的：第一次用桌面上导入的第一张自定义主题，没有再用默认。
+let firstRemote = isRemote && localStorage.getItem(KEY) === null;
 let front = 0;
 
 /// 背景容器：两层图交替淡入，切换时不闪；底色渐变也在这里，立绘才能和它正片叠底。
@@ -57,6 +59,11 @@ async function imageOf(theme: Backdrop) {
 }
 
 export async function applyTheme(choice: Choice = current, animate = true) {
+  if (firstRemote) {
+    firstRemote = false;
+    await loadCustom();
+    if (custom.length) choice = { ...choice, id: custom[0].id };
+  }
   current = choice;
   try { localStorage.setItem(KEY, JSON.stringify(choice)); } catch { /* 只是偏好，存不下也照常显示 */ }
   if (choice.id.startsWith('custom:') && !custom.length) await loadCustom();
@@ -105,8 +112,8 @@ async function compress(file: File) {
 export async function themePicker(host: { escape: Escape; open: (title: string, note: string, body: string) => void; modal: HTMLDialogElement; toast: (text: string, error?: boolean) => void }) {
   const { escape } = host;
   await loadCustom();
-  const card = (theme: Backdrop) => `<div class="theme-card${theme.id === current.id ? ' selected' : ''}" data-theme-id="${escape(theme.id)}" role="button" tabindex="0" aria-pressed="${theme.id === current.id}"><span class="theme-thumb${theme.mode === 'plain' ? ' plain' : ''}"${theme.thumb ? ` style="background-image:url('${theme.thumb}')"` : ''}></span><span class="theme-name">${escape(theme.name)}<small>${theme.custom ? `<button type="button" class="theme-mode" data-theme-mode="${escape(theme.id)}" title="切换显示方式">${theme.mode === 'figure' ? '立绘' : '铺满'}</button><button type="button" class="theme-remove" data-theme-remove="${escape(theme.id)}" title="删除这张背景" aria-label="删除这张背景">×</button>` : theme.mode === 'plain' ? '纯色' : '内置'}</small></span></div>`;
-  const grid = () => `${all().map(card).join('')}<label class="theme-card theme-import" title="导入你自己的图片（可多选），只保存在这台电脑上"><input type="file" accept="image/*" multiple hidden data-theme-import><span class="theme-thumb plus">＋</span><span class="theme-name">导入图片<small>可多选</small></span></label>`;
+  const card = (theme: Backdrop) => `<div class="theme-card${theme.id === current.id ? ' selected' : ''}" data-theme-id="${escape(theme.id)}" role="button" tabindex="0" aria-pressed="${theme.id === current.id}"><span class="theme-thumb${theme.mode === 'plain' ? ' plain' : ''}"${theme.thumb ? ` style="background-image:url('${theme.thumb}')"` : ''}></span><span class="theme-name">${escape(theme.name)}<small>${theme.custom && !isRemote ? `<button type="button" class="theme-mode" data-theme-mode="${escape(theme.id)}" title="切换显示方式">${theme.mode === 'figure' ? '立绘' : '铺满'}</button><button type="button" class="theme-remove" data-theme-remove="${escape(theme.id)}" title="删除这张背景" aria-label="删除这张背景">×</button>` : theme.custom ? '自定义' : theme.mode === 'plain' ? '纯色' : '内置'}</small></span></div>`;
+  const grid = () => `${all().map(card).join('')}${isRemote ? '' : '<label class="theme-card theme-import" title="导入你自己的图片（可多选），只保存在这台电脑上"><input type="file" accept="image/*" multiple hidden data-theme-import><span class="theme-thumb plus">＋</span><span class="theme-name">导入图片<small>可多选</small></span></label>'}`;
   host.open('主题背景', '点一下立即生效。导入的图片只保存在这台电脑上，竖图默认当立绘、横图铺满，可以在卡片上切换。', `<div class="theme-picker"><div class="theme-grid">${grid()}</div><div class="theme-veil"><span>背景浓淡</span><div class="segmented" role="radiogroup" aria-label="背景浓淡">${(Object.keys(VEILS) as Veil[]).map(id => `<button type="button" role="radio" data-veil="${id}" aria-checked="${id === current.veil}" class="${id === current.veil ? 'selected' : ''}">${VEILS[id].name}</button>`).join('')}</div></div><div class="modal-footer"><span>内置背景不含任何人物，适合所有人</span><button type="button" class="primary" data-theme-done>完成</button></div></div>`);
   const root = host.modal.querySelector<HTMLElement>('.theme-picker')!;
   const repaint = () => { root.querySelector('.theme-grid')!.innerHTML = grid(); };

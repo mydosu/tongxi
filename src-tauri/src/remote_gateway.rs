@@ -34,6 +34,8 @@ const READ_COMMANDS: &[&str] = &[
     "discussion_status",
     "cli_handoffs",
     "attachment_data",
+    "list_backgrounds",
+    "background_image",
 ];
 
 enum RpcError {
@@ -163,6 +165,8 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "discussion_status" => out(crate::discussion::discussion_status(app.state::<Arc<crate::discussion::Runtime>>())),
         "cli_handoffs" => out(Ok(crate::cli_handoffs(app.clone()))),
         "attachment_data" => out(crate::attachment_data(state(), arg_str(args, "conversationId")?, arg_str(args, "attachmentId")?)),
+        "list_backgrounds" => out(crate::backgrounds::list_backgrounds(state())),
+        "background_image" => out(crate::backgrounds::background_image(state(), arg_str(args, "id")?)),
         _ => Err(RpcError::Forbidden),
     }
 }
@@ -343,6 +347,7 @@ mod tests {
             assert!(!READ_COMMANDS.contains(&command), "{command} 不该在白名单里");
         }
         assert!(READ_COMMANDS.contains(&"list_conversations"));
+        assert!(READ_COMMANDS.contains(&"background_image") && !READ_COMMANDS.contains(&"add_background") && !READ_COMMANDS.contains(&"remove_background"));
     }
 
     #[test]
