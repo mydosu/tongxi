@@ -1020,10 +1020,13 @@ impl Runtime {
         let cwd = match native_cwd.as_deref() {
             Some(native) => std::path::PathBuf::from(native),
             None => {
-                let local = self
-                    .directory
-                    .join("codex-workspaces")
-                    .join(&conversation_id);
+                let local = self.store.lock().unwrap().fallback_cwd(
+                    &self.directory,
+                    &conversation_id,
+                    "codex-win",
+                    "codex",
+                    previous.is_some(),
+                );
                 std::fs::create_dir_all(&local).map_err(|_| "Codex 会话工作目录创建失败")?;
                 local
             }

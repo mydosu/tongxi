@@ -399,10 +399,13 @@ impl Runtime {
         let cwd = match settings.native_cwd.as_deref() {
             Some(native) => PathBuf::from(native),
             None => {
-                let local = self
-                    .directory
-                    .join("claude-workspaces")
-                    .join(&conversation_id);
+                let local = self.store.lock().unwrap().fallback_cwd(
+                    &self.directory,
+                    &conversation_id,
+                    AGENT_ID,
+                    "claude",
+                    settings.native_session_id.is_some(),
+                );
                 std::fs::create_dir_all(&local).map_err(|_| "Claude 会话目录创建失败")?;
                 local
             }

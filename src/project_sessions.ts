@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ConversationDetail, NativeSession } from './types';
+import type { NativeSession } from './types';
 import { baseAgent, isBrain } from './seats';
 
 type Escape = (value: string | number) => string;
@@ -17,14 +17,15 @@ const when = (value?: string | null) => value ? new Date(value).toLocaleString('
 /// 给每位成员（含主脑、额外席位）挑一个原生会话：第一项永远是「新建会话」，其余是该成员自己已有的会话。
 /// 同一成员的会话列表只读一次，各行共用；席位读的是底层成员的会话。
 /// `allowSeats` 时成员行带「＋」，可以给同一成员再开席位（最多 3 个）。
-export function mountSessionPicker(container: HTMLElement, initial: Row[], host: PickerHost, allowSeats = false) {
+/// `compact` 只画下拉框（嵌进成员卡片用）；多个选择器传同一个 `cache`，同一成员的会话只读一次。
+export const sessionCache = () => ({ lists: new Map<string, Promise<NativeSession[]>>(), cwd: new Map<string, string>() });
+export function mountSessionPicker(container: HTMLElement, initial: Row[], host: PickerHost, allowSeats = false, compact = false, cache = sessionCache()) {
   const { escape } = host;
   let serial = 0;
   const keyed = (list: Row[]) => list.map(row => ({ ...row, key: row.key || `${row.target}|${row.agent}|${serial++}` }));
   let rows = keyed(initial);
   const values = new Map<string, string>();
-  const lists = new Map<string, Promise<NativeSession[]>>();
-  const cwd = new Map<string, string>();
+  const { lists, cwd } = cache;
   const load = (agent: string) => {
     const base = baseAgent(agent);
     if (!lists.has(base)) lists.set(base, invoke<NativeSession[]>('native_sessions', { agentId: base, conversationId: null }).then(list => { list.forEach(item => { if (item.cwd) cwd.set(`${base}|${item.id}`, item.cwd); }); return list; }).catch(error => { lists.delete(base); throw error; }));
@@ -33,7 +34,7 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
   const tail = (row: Row) => allowSeats && row.target === 'member' && !isBrain(row.agent)
     ? '<button type="button" class="seat-plus" data-seat-plus title="同一成员再开一个平行的会话" aria-label="再开一个会话">＋</button>'
     : row.target === 'seat' ? '<button type="button" class="seat-plus" data-seat-drop title="去掉这个会话" aria-label="去掉这个会话">×</button>' : '';
-  const rowHtml = (row: Row) => `<div class="session-bind-row${row.busy ? ' busy' : ''}" data-bind-key="${escape(row.key!)}" data-bind-agent="${escape(row.agent)}" data-bind-target="${row.target}">${host.avatar(row.agent)}<div class="session-bind-who"><strong>${escape(host.name(row.agent))}</strong><small>${roleText(row)}${row.busy ? ' · 正在执行，结束后可切换' : ''}</small></div><div class="session-bind-choice"><select data-bind-session aria-label="${escape(host.name(row.agent))}${roleText(row)}的会话" ${row.busy ? 'disabled' : ''}><option value="">＋ 新建会话（不绑定）</option>${row.current ? `<option value="${escape(row.current)}" selected>当前绑定 · ${escape(short(row.current))}</option>` : ''}</select><small class="session-bind-note">正在读取已有会话…</small></div>${tail(row)}</div>`;
+  const rowHtml = (row: Row) => `<div class="session-bind-row${row.busy ? ' busy' : ''}" data-bind-key="${escape(row.key!)}" data-bind-agent="${escape(row.agent)}" data-bind-target="${row.target}">${compact ? '' : `${host.avatar(row.agent)}<div class="session-bind-who"><strong>${escape(host.name(row.agent))}</strong><small>${roleText(row)}${row.busy ? ' · 正在执行，结束后可切换' : ''}</small></div>`}<div class="session-bind-choice"><select data-bind-session aria-label="${escape(host.name(row.agent))}${roleText(row)}的会话" ${row.busy ? 'disabled' : ''}><option value="">＋ 新建会话（不绑定）</option>${row.current ? `<option value="${escape(row.current)}" selected>当前绑定 · ${escape(short(row.current))}</option>` : ''}</select><small class="session-bind-note">正在读取已有会话…</small></div>${tail(row)}</div>`;
   const fill = async (element: HTMLElement) => {
     const row = rows.find(item => item.key === element.dataset.bindKey)!;
     const select = element.querySelector<HTMLSelectElement>('[data-bind-session]')!, note = element.querySelector<HTMLElement>('.session-bind-note')!;
@@ -99,24 +100,3 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
 }
 
 export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win', 'opencode-win'].find(id => members.includes(id)) || members[0];
-
-/// 项目进行中切换各成员（含额外席位）与主脑的原生会话：正在执行的那位锁住，其余下一轮生效。
-export async function projectSessionsDialog(detail: ConversationDetail, host: PickerHost & { modal: HTMLDialogElement; open: (title: string, note: string, body: string) => void; saved: () => Promise<void> }) {
-  const room = detail.conversation.id;
-  const bindings = await invoke<SessionBinding[]>('project_session_bindings', { conversationId: room });
-  host.open('项目会话绑定', '为主脑、每位成员和每个席位选择续接哪一个原生会话。选「新建会话」则下一轮由成员新开会话；切换从下一轮任务开始生效。', `<form id="project-session-form"><div class="session-bind-list"></div><p class="model-setting-note">项目会话固定在项目目录里工作；原会话的聊天历史会被成员带进来作为背景。同一个原生会话同一时刻只能挂在一处。多开席位请到「项目成员配置」。</p><p class="form-error" role="alert"></p><div class="modal-footer"><button type="button" class="secondary" data-session-cancel>取消</button><button class="primary">保存会话绑定</button></div></form>`);
-  const form = host.modal.querySelector<HTMLFormElement>('#project-session-form')!;
-  const picker = mountSessionPicker(form.querySelector('.session-bind-list')!, bindings.map(binding => ({ agent: binding.agent_id, target: binding.target, current: binding.native_session_id, busy: binding.busy })), host);
-  form.querySelector('[data-session-cancel]')!.addEventListener('click', () => host.modal.close());
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const button = form.querySelector<HTMLButtonElement>('button.primary')!;
-    const choices = picker.choices();
-    if (!choices.length) { host.modal.close(); return; }
-    button.disabled = true;
-    try {
-      await invoke('bind_project_sessions', { conversationId: room, bindings: choices });
-      host.modal.close(); await host.saved();
-    } catch (error) { form.querySelector('.form-error')!.textContent = String(error); button.disabled = false; }
-  });
-}

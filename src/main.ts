@@ -15,7 +15,6 @@ import { inquiryPage } from './project_inquiries';
 import { bindPlanFlow, brainJobsPage, fillFold, jobLive, modelText, planSection, revealPlanNode } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
-import { projectSessionsDialog } from './project_sessions';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
 import { baseAgent, isBrain, isSeat, seatSlot } from './seats';
 import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
@@ -370,7 +369,7 @@ function enterView(view: string) {
   main.classList.remove('view-enter'); void main.offsetWidth; main.classList.add('view-enter');
   clearTimeout(enterTimer); enterTimer = setTimeout(() => main.classList.remove('view-enter'), 520);
 }
-let membersOpen = localStorage.getItem('hub.membersPanel') === '1';
+let membersOpen = false;
 new MutationObserver(()=>hydrateAttachments(main)).observe(main,{childList:true,subtree:true});
 watchArrivals(main, () => main.dataset.view);
 let pendingQuestions:PendingChatQuestion[]=[];
@@ -1514,8 +1513,6 @@ function updateProjectControls() {
   // 一位成员也能做项目：同一成员多开的会话就是多位成员。
   const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 1;
   if (bind) { bind.disabled = !eligible || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
-  const sessions = main.querySelector<HTMLButtonElement>('[data-project-sessions]');
-  if (sessions) { sessions.hidden = !detail.project; sessions.disabled = detail.conversation.archived; }
   const connect = main.querySelector<HTMLButtonElement>('#connect-project-members');
   if (connect) {
     const members = detail.conversation.members.filter(agent => agent !== 'albion-wsl');
@@ -1553,11 +1550,6 @@ async function showProjectBinding() {
 }
 
 const pickerHost = { escape, name: (id: string) => member(id).name, avatar: (id: string) => avatar(member(id)), connect: (id: string) => connectAgent(id), globalName: (id: string) => globalMember(id).name };
-async function showProjectSessions() {
-  if (!detail?.project) return;
-  try { await projectSessionsDialog(detail, { ...pickerHost, modal, open: openModal, saved: async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); toast('会话绑定已更新，下一轮生效'); } }); }
-  catch (error) { toast(errorText(error), true); }
-}
 
 // 共享开关按项目范围生效：同一个项目在其他房间显示同一标记，不同项目之间互不覆盖。
 async function toggleProjectSummary() {
@@ -1647,10 +1639,59 @@ async function refreshQuestionState() {
 }
 setInterval(()=>void refreshQuestionState(),1000);
 
-async function configureProjectMembers() {
-  if (!detail?.project) return;
-  try { await projectSettings(detail,{escape,modal,open:openModal,snapshot:id=>runtimes[id],name:id=>member(id).name,saved:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);toast('项目成员配置已保存');},reopen:async()=>{projectAgentChatDetails.clear();await selectConversation(selectedId);await configureProjectMembers();},busy:discussionBusy(currentDiscussion()),toast,avatar:id=>avatar(globalMember(id),'',false),renamed:(seat,label)=>{for(const chat of detail?.project_agent_chats||[])if(chat.agent_id===seat)chat.name=label;if(detail)projectRoomsByGroup.set(detail.conversation.id,detail.project_agent_chats);renderList();toast(`已改名为「${label}」`);},globalName:id=>globalMember(id).name}); }
-  catch(error){toast(errorText(error),true);}
+/// 成员面板：从右侧滑出，点面板外任意处或 Esc 收起。项目群在这里配主脑、席位模型与原生会话；
+/// 普通群聊在这里增减成员；私聊在这里接原生会话、指定工作文件夹。
+function setMembersOpen(open: boolean) {
+  if (screen !== 'chat' || !detail || membersOpen === open) return;
+  membersOpen = open;
+  main.querySelector('.chat-layout')?.classList.toggle('members-open', open);
+  const button = main.querySelector<HTMLButtonElement>('#toggle-members');
+  if (button) { button.setAttribute('aria-pressed', String(open)); button.title = open ? '收起成员面板' : '展开成员面板'; }
+  if (open) void fillMembersPanel();
+}
+document.addEventListener('pointerdown', event => {
+  const target = event.target as Element;
+  if (membersOpen && !modal.open && !target.closest('.members-panel, #toggle-members, [data-project-configure], #native-sessions, .toast')) setMembersOpen(false);
+}, true);
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && membersOpen && !modal.open) setMembersOpen(false); });
+
+async function fillMembersPanel() {
+  const body = main.querySelector<HTMLElement>('.members-body');
+  if (!body || !detail) return;
+  const conversation = detail.conversation;
+  if (detail.project) {
+    body.innerHTML = '<p class="model-setting-note">正在读取项目成员…</p>';
+    const refresh = async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); await fillMembersPanel(); };
+    try { await projectSettings(body, detail, { escape, picker: pickerHost, close: () => setMembersOpen(false), snapshot: id => runtimes[id], name: id => member(id).name, saved: async () => { await refresh(); toast('已保存，下一轮生效'); }, reopen: refresh, busy: discussionBusy(currentDiscussion()), toast, avatar: id => avatar(globalMember(id), '', false), renamed: (seat, label) => { for (const chat of detail?.project_agent_chats || []) if (chat.agent_id === seat) chat.name = label; if (detail) projectRoomsByGroup.set(detail.conversation.id, detail.project_agent_chats); renderList(); toast(`已改名为「${label}」`); }, globalName: id => globalMember(id).name }); }
+    catch (error) { body.innerHTML = `<p class="model-setting-note">读取失败：${escape(errorText(error))}</p>`; }
+    return;
+  }
+  if (conversation.kind === 'group') {
+    body.innerHTML = `<form id="members-form" class="panel-form"><div class="member-options">${memberOptions(conversation.members, 'checkbox')}</div><p class="form-error" role="alert"></p><div class="panel-footer"><span>至少保留一位成员</span><button class="primary">保存成员</button></div></form><p class="members-note">保留的成员沿用原来的会话映射，新加入的成员使用独立映射，不会合并已有私聊。</p>`;
+    const form = body.querySelector<HTMLFormElement>('#members-form')!;
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); const button = form.querySelector<HTMLButtonElement>('button.primary')!; button.disabled = true;
+      try {
+        await invoke('update_group_members', { id: conversation.id, members: new FormData(form).getAll('member').map(String) });
+        await refreshList(); await selectConversation(conversation.id); await fillMembersPanel(); toast('群聊成员已更新');
+      } catch (error) { form.querySelector('.form-error')!.textContent = errorText(error); button.disabled = false; }
+    });
+    return;
+  }
+  const agent = member(conversation.members[0]);
+  const session = detail.sessions.find(item => item.agent_id === agent.id);
+  body.innerHTML = `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small>${escape(agent.location)}</small></div></div><section class="panel-block"><h3>原生会话</h3><div class="native-session-list"></div></section>${agent.id === 'albion-wsl' ? '' : `<section class="panel-block"><h3>工作文件夹</h3><form id="cwd-form" class="cwd-form"><input name="cwd" value="${escape(session?.native_cwd || '')}" placeholder="未指定 · 用同席默认工作文件夹" spellcheck="false" aria-label="工作文件夹"><div class="panel-footer"><button type="button" class="secondary" data-cwd-reset>恢复默认</button><button class="primary">保存</button></div></form><small class="members-note">填已有文件夹的完整路径。换文件夹后，下一条消息会在新文件夹里开一个新的原生会话；旧会话还能从上面接回。私聊不建工作树。</small></section>`}`;
+  void showNativeSessions(agent.id, body);
+  const form = body.querySelector<HTMLFormElement>('#cwd-form');
+  const saveCwd = async (cwd: string | null) => {
+    try {
+      const saved = await invoke<ConversationDetail>('set_session_cwd', { conversationId: conversation.id, agentId: agent.id, cwd });
+      if (detail?.conversation.id === saved.conversation.id) detail.sessions = saved.sessions;
+      await fillMembersPanel(); toast(cwd ? '工作文件夹已保存，下一条消息生效' : '已恢复默认工作文件夹');
+    } catch (error) { toast(errorText(error), true); }
+  };
+  form?.addEventListener('submit', event => { event.preventDefault(); void saveCwd(new FormData(form).get('cwd')!.toString().trim() || null); });
+  form?.querySelector('[data-cwd-reset]')!.addEventListener('click', () => void saveCwd(null));
 }
 
 function renderProjectAgentRoom(agentId: string) {
@@ -1690,25 +1731,28 @@ function renderConversationChat() {
   const { split, html: tailHtml } = renderTail(shownMessages, shownMessages.length, keepTop === null ? MESSAGE_BATCH : Infinity, !isGroup);
   const dateDivider = detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>` : '';
   const name = directAgent?.name || ''; 
+  // 同一会话重画时成员面板原样留着（正在填的表单不丢）；换会话就收起。
+  if (shownConversation !== conversation.id) membersOpen = false;
+  const keptPanel = membersOpen ? main.querySelector('.members-panel') : null;
   main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : detail.project ? `项目群 · ${detail.project_agent_chats.filter(chat => !isBrain(chat.agent_id)).length} 个成员会话 · 你的话交给主脑` : `${roster.length} 位成员 · 群聊讨论`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
     <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"${detail.project ? ' hidden' : ''}><span class="status-dot" aria-hidden="true"></span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
-      <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">项目成员配置</button><button data-project-sessions class="secondary" hidden>会话绑定</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
+      <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">项目协作 · 先绑定项目目录</strong><small>绑定后，直接在本群讨论需求或推动实现。</small></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">成员与会话</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `${split ? '' : dateDivider}${tailHtml}` : `<div class="welcome">${directAgent && portrait(directAgent) ? `<div class="albion-hero small" style="background-image:url('${portrait(directAgent)}')" aria-hidden="true"></div>` : `<div class="seat-illustration"><span></span><span></span><span></span><span></span><div>${icon(directAgent ? 'chat' : 'group')}</div></div>`}<span class="eyebrow">${directAgent ? '留一个安静的对话空间' : '把想法带到同一张桌上'}</span><h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天，也聊聊正在做的事。' : `从一次与 ${escape(directAgent.name)} 的对话开始。`) : '一个问题，几种视角。'}</h2><p>${directAgent ? escape(directAgent.role) : '让管家梳理需求，让实现者把方案变成结果。<br>会话与成员已经分开，新的讨论从这里开始。'}</p><div class="suggestions">${(directAgent?.id === 'albion-wsl' ? ['记录今天的开发进展', '聊聊今天发生的事情'] : ['梳理一个新的开发需求', '记录一个待解决的问题', '整理接下来的计划']).map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div></div>`}
       </div>
       <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? '连接后 Enter 发送 · Shift + Enter 换行' : detail.project ? 'Enter 发送给项目组 · Shift + Enter 换行' : 'Enter 开始群聊 · Shift + Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
-    </section><aside class="members-panel"><div class="panel-title"><span>会话成员</span>${conversation.kind === 'group' ? `<button class="text-button" id="edit-members">管理</button>` : ''}</div><div class="member-list">${roster.map(agent => `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small><span class="status-dot muted"></span>待接入 · ${escape(agent.location)}</small></div></div>`).join('')}</div><p class="members-note">每位成员使用独立的会话映射，加入群聊不会合并已有私聊。</p></aside></div>`;
+    </section><aside class="members-panel" aria-label="成员面板"><div class="panel-title"><span>${detail.project ? '项目成员与会话' : isGroup ? '群聊成员' : '会话与工作区'}</span><button type="button" class="icon-button" id="close-members" aria-label="收起成员面板" title="收起（Esc）">${icon('close')}</button></div><div class="members-body"></div></aside></div>`;
+  if (keptPanel) main.querySelector('.members-panel')!.replaceWith(keptPanel); else if (membersOpen) void fillMembersPanel();
   renderDiscussionControls();
   wireAvatarEdit();
-  main.querySelector('[data-project-configure]')?.addEventListener('click', () => void configureProjectMembers());
-  main.querySelector('[data-project-sessions]')?.addEventListener('click', () => void showProjectSessions());
+  main.querySelector('[data-project-configure]')?.addEventListener('click', () => setMembersOpen(true));
   main.querySelector('#bind-project')?.addEventListener('click', () => void showProjectBinding());
   main.querySelector('#connect-project-members')?.addEventListener('click', () => void connectProjectMembers());
   main.querySelector('#share-project-summary')?.addEventListener('click', () => void toggleProjectSummary());
   main.querySelector('#cancel-discussion')?.addEventListener('click', () => void cancelDiscussion());
   // HUD 里模型/强度收成一个小小的 ⌄（像 Hermes 那样），点开仍是同一套设置。
   main.querySelector('#hud-model')?.addEventListener('click', () => showModelSettings());
-  main.querySelector('#native-sessions')?.addEventListener('click', () => void showNativeSessions(conversation.members[0]));
+  main.querySelector('#native-sessions')?.addEventListener('click', () => setMembersOpen(true));
   main.querySelector('#open-client')?.addEventListener('click', () => void openClient(conversation.members[0]));
   document.querySelector('#conversation-menu')!.addEventListener('click', () => showConversationActions());
   const heading = document.querySelector<HTMLElement>('.chat-heading h1');
@@ -1716,15 +1760,9 @@ function renderConversationChat() {
     heading.title = '双击重命名';
     heading.addEventListener('dblclick', () => startInlineRename(conversation.id, heading));
   }
-  document.querySelector('#edit-members')?.addEventListener('click', () => showMembers());
   wireToolChips();
-  main.querySelector('#toggle-members')?.addEventListener('click', event => {
-    membersOpen = !membersOpen;
-    localStorage.setItem('hub.membersPanel', membersOpen ? '1' : '0');
-    main.querySelector('.chat-layout')?.classList.toggle('members-open', membersOpen);
-    const button = event.currentTarget as HTMLButtonElement;
-    button.setAttribute('aria-pressed', String(membersOpen)); button.title = membersOpen ? '收起成员面板' : '展开成员面板';
-  });
+  main.querySelector('#toggle-members')?.addEventListener('click', () => setMembersOpen(!membersOpen));
+  if (!keptPanel) main.querySelector('#close-members')?.addEventListener('click', () => setMembersOpen(false));
   main.querySelector(`#connect-${key}`)?.addEventListener('click', () => void connectAgent());
   main.querySelector(`#cancel-${key}`)?.addEventListener('click', () => void cancelNative());
   main.querySelector('#open-cli')?.addEventListener('click', () => void openInCli(currentAgentId(), conversation.id));
@@ -1804,13 +1842,14 @@ async function openClient(agentId: string) {
 }
 
 /// 列出成员自己的历史会话，并允许把某一个接进当前私聊（一次只能挂一处）。
-async function showNativeSessions(agentId: string) {
+/// 在成员面板里列出这位成员自己的原生会话，点「接入」续在那个会话里；同席聊天记录保留不动。
+async function showNativeSessions(agentId: string, panel: HTMLElement) {
   const agent = member(agentId);
   const conversation = detail!.conversation;
-  openModal(`${agent.name} · 原生会话`, '接入后，发给这位成员的消息就续在这个原生会话里；已有的同席聊天记录保留不动', '<div class="native-session-list"><p class="model-setting-note">正在读取…</p></div>');
+  const host = panel.querySelector<HTMLElement>('.native-session-list')!;
+  host.innerHTML = '<p class="model-setting-note">正在读取…</p>';
 
   const render = async () => {
-    const host = modal.querySelector('.native-session-list')!;
     try {
       const sessions = await invoke<NativeSession[]>('native_sessions', { agentId, conversationId: conversation.id });
       if (!sessions.length) {
@@ -1828,11 +1867,12 @@ async function showNativeSessions(agentId: string) {
         return `<article class="native-session" data-session-id="${escape(session.id)}" title="${escape(session.id)}"><div class="native-session-main"><strong>${escape(title)}</strong><small>${escape(when)}${session.cwd ? ` · ${escape(session.cwd)}` : ''}</small></div>${action}</article>`;
       }).join('');
     } catch (error) {
-      host.innerHTML = `<p class="model-setting-note">读取失败：${escape(errorText(error))}</p>`;
+      host.innerHTML = `<p class="model-setting-note">读取失败：${escape(errorText(error))} <button type="button" class="text-button" data-native-connect>连接后读取</button></p>`;
+      host.querySelector('[data-native-connect]')!.addEventListener('click', async () => { host.innerHTML = '<p class="model-setting-note">正在连接…</p>'; await connectAgent(agentId); await render(); });
     }
   };
 
-  modal.querySelector('.native-session-list')!.addEventListener('click', async event => {
+  host.addEventListener('click', async event => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-attach]');
     if (!button) return;
     button.disabled = true;
@@ -2008,7 +2048,7 @@ function renderLiveSettingsInner(force: boolean) {
 
 function showModelSettings(initialAgent?: string) {
   if (!detail) return;
-  if (detail.project) { void configureProjectMembers(); return; }
+  if (detail.project) { setMembersOpen(true); return; }
   const conversation = detail.conversation;
   const agentId = initialAgent && conversation.members.includes(initialAgent) ? initialAgent : conversation.members[0];
   const settings = detail.sessions.find(session => session.agent_id === agentId)!;
@@ -2082,20 +2122,6 @@ function showCreate(initialKind: 'direct' | 'group' = 'group') {
   form.querySelector<HTMLInputElement>('[name=title]')!.focus();
 }
 
-function showMembers() {
-  if (!detail) return;
-  const conversation = detail.conversation;
-  openModal('管理群聊成员', '保留的成员沿用当前会话映射，新成员使用独立映射。', `<form id="members-form"><div class="member-options">${memberOptions(conversation.members, 'checkbox')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>至少保留一位成员</span><button class="primary">保存成员${icon('check')}</button></div></form>`);
-  const form = modal.querySelector<HTMLFormElement>('#members-form')!;
-  form.addEventListener('submit', async event => {
-    event.preventDefault(); const button = form.querySelector<HTMLButtonElement>('button')!; button.disabled = true;
-    try {
-      await invoke('update_group_members', { id: conversation.id, members: new FormData(form).getAll('member').map(String) });
-      modal.close(); await refreshList(); await selectConversation(conversation.id); toast('群聊成员已更新');
-    } catch (error) { form.querySelector('.form-error')!.textContent = errorText(error); }
-    finally { button.disabled = false; }
-  });
-}
 
 function showConversationActions() {
   if (!detail) return;
@@ -2107,7 +2133,7 @@ function showConversationActions() {
     button.className = 'settings-action';
     button.id = 'members-action';
     button.innerHTML = `${icon('group')}<span>管理群聊成员</span><small>${conversation.members.length} 位成员</small>`;
-    button.addEventListener('click', () => { modal.close(); showMembers(); });
+    button.addEventListener('click', () => { modal.close(); setMembersOpen(true); });
     modal.querySelector('#archive-action')!.before(button);
   }
   form.addEventListener('submit', async event => {
@@ -2408,7 +2434,7 @@ function renderServices() {
   // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; renderList(); enterView('services');
-  main.innerHTML =`<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 会自己自动更新，检测到已更新就提示重启会话 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><span class="eyebrow">你的协作成员</span><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="services-intro"><span class="eyebrow">四位技术成员 + 你的陪伴</span><h2>在同一个空间里，<br>保留各自的职责。</h2><p>DSH 与 Codex 支持隔离更新与回退（可准备候选后一键切换）· Hermes 只做只读核对、更新交给它自己的通道 · Claude 会自己自动更新，检测到已更新就提示重启会话 · 陪伴在你自己的服务里更新</p><span class="phase-chip">版本检查保持只读 · 更新需显式确认</span></div><div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
@@ -2433,6 +2459,14 @@ function renderServices() {
   wireSetup();
   wireServiceMenus();
   wireAgentRename();
+  const workspace = main.querySelector<HTMLFormElement>('#workspace-form')!;
+  void invoke<string | null>('default_workspace').then(root => { workspace.querySelector('input')!.value = root || ''; });
+  workspace.addEventListener('submit', async event => {
+    event.preventDefault();
+    const root = workspace.querySelector('input')!.value.trim() || null;
+    try { await invoke('set_default_workspace', { path: root }); toast(root ? '默认工作文件夹已保存，之后新开的私聊会话生效' : '已改回同席数据目录'); }
+    catch (error) { toast(errorText(error), true); }
+  });
   wireAvatarEdit();
   main.querySelectorAll<HTMLElement>('.service-card').forEach(paintInstall);
   if (!scanned().length) void scanAgents().then(paintSetup).catch(error => toast(errorText(error), true));

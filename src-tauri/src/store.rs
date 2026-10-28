@@ -304,6 +304,11 @@ pub(crate) fn now() -> i64 {
         .as_millis() as i64
 }
 
+fn existing_dir(path: &str) -> Result<()> {
+    let path = Path::new(path);
+    if path.is_absolute() && path.is_dir() { Ok(()) } else { Err("文件夹不存在，请填写已有文件夹的完整路径".into()) }
+}
+
 fn valid_title(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 80 || title.chars().any(char::is_control) {
@@ -640,6 +645,14 @@ impl Store {
         valid_members(kind, members)?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         let id = Self::insert_conversation(&tx, &title, kind, members)?;
+        // 新私聊沿用用户上次给这位成员选的模型与思考强度。
+        if kind == "direct" {
+            tx.execute(
+                "UPDATE sessions SET model=substr(m.value,1,instr(m.value,char(9))-1),reasoning_effort=nullif(substr(m.value,instr(m.value,char(9))+1),'')                  FROM metadata m WHERE m.key='direct_choice:'||sessions.agent_id AND sessions.conversation_id=?1",
+                [&id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.commit().map_err(|e| e.to_string())?;
         self.conversation(&id)
     }
@@ -937,6 +950,18 @@ impl Store {
             return Err("不支持的思考强度".into());
         }
         self.connection.execute("UPDATE sessions SET model=?1,reasoning_effort=?2 WHERE conversation_id=?3 AND agent_id=?4", params![model,reasoning_effort,id,agent_id]).map_err(|e| e.to_string())?;
+        // 用户在私聊里的选择记作这位成员的上次选择（模型	强度；选回默认就清掉）；项目席位会话不算。
+        if conversation.kind == "direct" && crate::project_brain::access(&self.connection, id).is_none() {
+            let key = format!("direct_choice:{agent_id}");
+            match &model {
+                Some(model) => self.connection.execute(
+                    "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+                    params![key, format!("{model}	{}", reasoning_effort.as_deref().unwrap_or(""))],
+                ),
+                None => self.connection.execute("DELETE FROM metadata WHERE key=?1", [key]),
+            }
+            .map_err(|e| e.to_string())?;
+        }
         self.detail(id)
     }
 
@@ -1478,6 +1503,82 @@ impl Store {
             .flatten()
     }
 
+    /// 同席默认工作文件夹；没设就是数据目录。各成员各会话仍在它下面各占一个 <成员>-workspaces/<会话> 子目录。
+    pub(crate) fn workspace_root(&self, data: &Path) -> PathBuf {
+        self.connection
+            .query_row("SELECT value FROM metadata WHERE key='default_workspace'", [], |row| row.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data.to_path_buf())
+    }
+
+    /// 私聊没指定目录时的工作目录。新会话开在默认工作文件夹下并立刻记下，之后改默认文件夹也续得上；
+    /// 早先没记目录的原生会话（`resuming`）当初都开在数据目录里，原样回去，换目录 resume 会被拒。
+    pub(crate) fn fallback_cwd(&self, data: &Path, conversation_id: &str, agent_id: &str, key: &str, resuming: bool) -> PathBuf {
+        let root = if resuming { data.to_path_buf() } else { self.workspace_root(data) };
+        let local = root.join(format!("{key}-workspaces")).join(conversation_id);
+        if !resuming {
+            let _ = self.connection.execute(
+                "UPDATE sessions SET native_cwd=?1 WHERE conversation_id=?2 AND agent_id=?3 AND native_cwd IS NULL",
+                params![local.to_string_lossy(), conversation_id, agent_id],
+            );
+        }
+        local
+    }
+
+    pub(crate) fn default_workspace(&self) -> Option<String> {
+        self.connection
+            .query_row("SELECT value FROM metadata WHERE key='default_workspace'", [], |row| row.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn set_default_workspace(&mut self, path: Option<&str>) -> Result<()> {
+        match path.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(path) => {
+                existing_dir(path)?;
+                self.connection.execute(
+                    "INSERT INTO metadata(key,value) VALUES('default_workspace',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+                    [path],
+                )
+            }
+            None => self.connection.execute("DELETE FROM metadata WHERE key='default_workspace'", []),
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 私聊单独指定工作文件夹（None＝回到默认）。原生会话按目录归档、换目录续不上，
+    /// 所以目录变了就解开当前原生会话，下一条消息在新目录里开新会话；旧会话仍可从「原生会话」接回。
+    pub fn set_session_cwd(&mut self, id: &str, agent_id: &str, cwd: Option<&str>) -> Result<()> {
+        let conversation = self.conversation(id)?;
+        if conversation.kind != "direct" || crate::project_brain::access(&self.connection, id).is_some() {
+            return Err("只有私聊能单独指定工作文件夹，项目会话固定在项目目录".into());
+        }
+        if agent_id == "albion-wsl" {
+            return Err("陪伴在 WSL 里工作，不支持指定 Windows 文件夹".into());
+        }
+        let cwd = cwd.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(path) = cwd {
+            existing_dir(path)?;
+        }
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE sessions SET native_cwd=?1, native_session_id=CASE WHEN native_cwd IS ?1 THEN native_session_id END \
+                 WHERE conversation_id=?2 AND agent_id=?3",
+                params![cwd, id, agent_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("这个会话里没有该成员".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_agent_default_model(&mut self, agent: &str, model: Option<&str>) -> Result<()> {
         let key = format!("default_model:{agent}");
         match model {
@@ -1753,6 +1854,45 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn new_direct_chat_reuses_last_model_choice() {
+        let mut store = memory();
+        let room = direct(&mut store, "旧");
+        store.set_session_settings(&room.id, "codex-win", Some("gpt-x".into()), Some("high".into())).unwrap();
+        let fresh = direct(&mut store, "新");
+        let session = &store.detail(&fresh.id).unwrap().sessions[0];
+        assert_eq!((session.model.as_deref(), session.reasoning_effort.as_deref()), (Some("gpt-x"), Some("high")));
+        store.set_session_settings(&room.id, "codex-win", Some("gpt-y".into()), None).unwrap();
+        let fresh = direct(&mut store, "再新");
+        let session = &store.detail(&fresh.id).unwrap().sessions[0];
+        assert_eq!((session.model.as_deref(), session.reasoning_effort.as_deref()), (Some("gpt-y"), None));
+        let group = store.create("群", "group", &["codex-win".into(), "dsh-win".into()]).unwrap();
+        assert!(store.detail(&group.id).unwrap().sessions.iter().all(|session| session.model.is_none()));
+    }
+    #[test]
+    fn session_cwd_unbinds_native_session_only_when_folder_changes() {
+        let mut store = memory();
+        let room = direct(&mut store, "工作区");
+        let folder = std::env::temp_dir();
+        let folder = folder.to_str().unwrap();
+        store.attach_native_session(&room.id, "codex-win", "thread-1", Some(folder)).unwrap();
+        store.set_session_cwd(&room.id, "codex-win", Some(folder)).unwrap();
+        assert_eq!(store.detail(&room.id).unwrap().sessions[0].native_session_id.as_deref(), Some("thread-1"));
+        store.set_session_cwd(&room.id, "codex-win", None).unwrap();
+        let session = &store.detail(&room.id).unwrap().sessions[0];
+        assert!(session.native_session_id.is_none() && session.native_cwd.is_none());
+        assert!(store.set_session_cwd(&room.id, "codex-win", Some("relative\\dir")).is_err());
+        let group = store.create("群", "group", &["codex-win".into(), "dsh-win".into()]).unwrap();
+        assert!(store.set_session_cwd(&group.id, "codex-win", Some(folder)).is_err());
+        assert_eq!(store.workspace_root(Path::new("D:\\data")), PathBuf::from("D:\\data"));
+        store.set_default_workspace(Some(folder)).unwrap();
+        assert_eq!(store.workspace_root(Path::new("D:\\data")), PathBuf::from(folder));
+        let data = Path::new("D:\\data");
+        assert!(store.fallback_cwd(data, &room.id, "codex-win", "codex", true).starts_with(data));
+        let fresh = store.fallback_cwd(data, &room.id, "codex-win", "codex", false);
+        assert!(fresh.starts_with(folder));
+        assert_eq!(store.detail(&room.id).unwrap().sessions[0].native_cwd.as_deref(), fresh.to_str());
+    }
     #[test]
     fn v3_upgrade_preserves_profiles_and_runs_and_admits_dsh() {
         let mut store = memory();

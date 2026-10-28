@@ -434,10 +434,9 @@ impl Runtime {
             // 原生会话自己的目录本来就是 agent 侧路径，续聊必须原样传回。
             Some(native) => native.to_owned(),
             None => {
-                let local = self
-                    .directory
-                    .join(format!("{}-workspaces", self.target.key()))
-                    .join(&conversation_id);
+                // 陪伴的目录映射到 WSL 数据目录，不跟默认工作文件夹走。
+                let resuming = settings.native_session_id.is_some() || self.target.key() == "albion";
+                let local = self.store.lock().unwrap().fallback_cwd(&self.directory, &conversation_id, self.target.id(), self.target.key(), resuming);
                 std::fs::create_dir_all(&local).map_err(|_| format!("{} 会话目录创建失败", self.target.name()))?;
                 self.target.cwd(&local)?
             }

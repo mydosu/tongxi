@@ -735,6 +735,29 @@ fn set_agent_default_model(
     }
 }
 
+#[tauri::command]
+fn default_workspace(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    with_store(&state, |store| Ok(store.default_workspace()))
+}
+
+#[tauri::command]
+fn set_default_workspace(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    with_store(&state, |store| store.set_default_workspace(path.as_deref()))
+}
+
+#[tauri::command]
+fn set_session_cwd(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    agent_id: String,
+    cwd: Option<String>,
+) -> Result<store::ConversationDetail, String> {
+    with_store(&state, |store| {
+        store.set_session_cwd(&conversation_id, &agent_id, cwd.as_deref())?;
+        store.detail(&conversation_id)
+    })
+}
+
 /// 主动收回：结束 CLI 窗口，会话回到同席。
 #[tauri::command]
 fn reclaim_cli_session(
@@ -1451,6 +1474,9 @@ fn main() {
             steer_agent_message,
             open_in_cli,
             set_agent_default_model,
+            default_workspace,
+            set_default_workspace,
+            set_session_cwd,
             reclaim_cli_session,
             cli_handoffs,
             cancel_claude_run,

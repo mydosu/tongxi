@@ -327,8 +327,8 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .storage-card code { font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; color: #838c99; word-break: break-all; user-select: text; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: #d7dadf; border-radius: 4px; }
-@media(max-width:1120px) { .members-panel { width: 205px; padding: 24px 15px; } .chat-content { padding: 16px 18px 0; } .shell { grid-template-columns: 235px minmax(0,1fr); } .welcome h2 { font-size: 21px; } .composer-bottom > span { max-width: 155px; line-height: 1.7; } }
-@media(max-width:980px) { .members-panel { display: none; } .chat-content { padding-left: 25px; padding-right: 25px; } }
+@media(max-width:1120px) { .chat-content { padding: 16px 18px 0; } .shell { grid-template-columns: 235px minmax(0,1fr); } .welcome h2 { font-size: 21px; } .composer-bottom > span { max-width: 155px; line-height: 1.7; } }
+@media(max-width:980px) { .chat-content { padding-left: 25px; padding-right: 25px; } }
 
 .thought { margin: 8px 2px 6px; font-size: 11px; color: #7b838d; min-width: 0; max-width: 100%; }
 .thought summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px;

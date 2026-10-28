@@ -604,7 +604,7 @@ impl Runtime {
         let cwd = match settings.native_cwd.as_deref() {
             Some(native) => std::path::PathBuf::from(native),
             None => {
-                let local = self.directory.join("dsh-workspaces").join(&conversation_id);
+                let local = self.store.lock().unwrap().fallback_cwd(&self.directory, &conversation_id, "dsh-win", "dsh", settings.native_session_id.is_some());
                 std::fs::create_dir_all(&local).map_err(|_| "DSH 会话目录创建失败")?;
                 local
             }
