@@ -325,6 +325,12 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .storage-card span { margin-left: auto; font-size: 10px; }
 .storage-card p { color: #979faa; font-size: 10px; line-height: 1.8; }
 .storage-card code { font-family: 'Cascadia Mono', Consolas, monospace; font-size: 10px; color: #838c99; word-break: break-all; user-select: text; }
+/* 远程访问：和「独立的本地数据」同款卡片，多一行状态和两个动作；开关沿用 .setup-auto 的原生 checkbox。 */
+.remote-card .remote-head .setup-auto { margin-left: auto; font-size: 11px; }
+.remote-card .remote-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 11px; color: #7c8592; overflow-wrap: anywhere; }
+.remote-card .remote-line.error { color: #a56c5c; }
+.remote-card .remote-actions { display: flex; gap: 8px; margin-top: 12px; }
+.remote-card .remote-tip { margin-top: 10px; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: #d7dadf; border-radius: 4px; }
 @media(max-width:1120px) { .chat-content { padding: 16px 18px 0; } .shell { grid-template-columns: 235px minmax(0,1fr); } .welcome h2 { font-size: 21px; } .composer-bottom > span { max-width: 155px; line-height: 1.7; } }

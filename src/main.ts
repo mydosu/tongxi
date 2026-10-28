@@ -1,6 +1,6 @@
 import { emit, hasRemoteToken, invoke, isTauri, listen } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
+import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -2441,7 +2441,7 @@ function renderServices() {
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
     return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
-  }).join('')}</div><div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
+  }).join('')}</div>${isTauri() ? remoteGatewayCard() : ''}<div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   main.querySelector<HTMLButtonElement>('#export-diagnostics')!.addEventListener('click', async event => {
     const button = event.currentTarget as HTMLButtonElement;
@@ -2460,6 +2460,7 @@ function renderServices() {
   paint();
   wireSetup();
   wireServiceMenus();
+  if (isTauri()) wireRemoteGateway();
   wireAgentRename();
   const workspace = main.querySelector<HTMLFormElement>('#workspace-form')!;
   void invoke<string | null>('default_workspace').then(root => { workspace.querySelector('input')!.value = root || ''; });
@@ -2549,6 +2550,75 @@ function wireServiceMenus() {
   const key = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
   document.addEventListener('pointerdown', outside, true);
   document.addEventListener('keydown', key, true);
+}
+
+/// 「远程访问」：桌面起网关，把同一份前端开给装了 Tailscale 的手机。
+/// 开关、状态都以后端为准；带令牌的 url 只在内存里给「复制」按钮用，不写进页面。
+let remoteGateway: RemoteGatewayStatus | null = null;
+/// 后端没有这几个命令（老版本）时，别让状态行永远停在「正在读取」。
+let remoteGatewayMissing = false;
+
+function remoteGatewayCard() {
+  return `<section class="storage-card remote-card" id="remote-access"><div class="remote-head">${icon('panel')}<strong>远程访问</strong><label class="setup-auto"><input type="checkbox" data-remote-toggle>允许手机访问</label></div><p class="remote-line" data-remote-status>正在读取状态…</p><div class="remote-actions"><button type="button" class="secondary" data-remote-copy hidden>复制访问地址</button><button type="button" class="secondary" data-remote-reset hidden>重置令牌</button></div><p class="remote-tip">手机装 Tailscale 并登录同一账号，用手机浏览器打开复制的地址。</p></section>`;
+}
+
+function wireRemoteGateway() {
+  const card = main.querySelector<HTMLElement>('#remote-access');
+  if (!card) return;
+  const toggle = card.querySelector<HTMLInputElement>('[data-remote-toggle]')!;
+  const copy = card.querySelector<HTMLButtonElement>('[data-remote-copy]')!;
+  const reset = card.querySelector<HTMLButtonElement>('[data-remote-reset]')!;
+  toggle.onchange = async () => {
+    toggle.disabled = true;
+    try { remoteGateway = await invoke<RemoteGatewayStatus>('set_remote_gateway', { enabled: toggle.checked }); }
+    catch (error) { toggle.checked = !toggle.checked; toast(errorText(error), true); }
+    finally { toggle.disabled = false; paintRemoteGateway(); }
+  };
+  copy.onclick = async () => {
+    const url = remoteGateway?.url;
+    if (!url) { toast('还没有可复制的地址', true); return; }
+    try { await navigator.clipboard.writeText(url); toast('访问地址已复制，发到手机浏览器打开'); }
+    catch { toast('复制失败，请稍后再试', true); }
+  };
+  reset.onclick = async () => {
+    if (!confirm('重置后，已经连上的手机要重新打开新地址。继续？')) return;
+    reset.disabled = true;
+    try { remoteGateway = await invoke<RemoteGatewayStatus>('reset_remote_gateway_token'); toast('令牌已重置，请把新地址发到手机'); }
+    catch (error) { toast(errorText(error), true); }
+    finally { reset.disabled = false; paintRemoteGateway(); }
+  };
+  paintRemoteGateway();
+  // 进页面就问一次：网关可能在别的窗口或启动时就被打开过。
+  void invoke<RemoteGatewayStatus>('remote_gateway_status')
+    .then(status => { remoteGateway = status; paintRemoteGateway(); })
+    .catch(error => { remoteGatewayMissing = true; console.error('remote_gateway_status 读取失败', error); paintRemoteGateway(); });
+}
+
+/// 只回填还活着的服务页：离开后到达的响应不该写进已经换掉的 DOM。
+function paintRemoteGateway() {
+  if (screen !== 'services') return;
+  const card = main.querySelector<HTMLElement>('#remote-access');
+  if (!card) return;
+  const toggle = card.querySelector<HTMLInputElement>('[data-remote-toggle]')!;
+  const line = card.querySelector<HTMLElement>('[data-remote-status]')!;
+  const copy = card.querySelector<HTMLButtonElement>('[data-remote-copy]')!;
+  const reset = card.querySelector<HTMLButtonElement>('[data-remote-reset]')!;
+  const status = remoteGateway;
+  if (!status) {
+    line.textContent = remoteGatewayMissing ? '读不到远程访问状态，桌面可能需要更新' : '正在读取状态…';
+    line.classList.toggle('error', remoteGatewayMissing);
+    toggle.disabled = true;
+    copy.hidden = reset.hidden = true;
+    return;
+  }
+  toggle.disabled = false;
+  toggle.checked = status.enabled;
+  line.classList.toggle('error', !!status.error);
+  // 状态行只放不带令牌的绑定地址；完整 url 从不出现在页面上。
+  if (status.error) line.textContent = status.error;
+  else if (status.running) line.innerHTML = status.address ? `运行中 · <code>${escape(status.address)}</code>` : '运行中';
+  else line.textContent = status.enabled ? '正在启动…' : '未开启';
+  copy.hidden = reset.hidden = !status.running;
 }
 
 /// 纯色头像可选的颜色（和界面配色协调，白字都看得清）。

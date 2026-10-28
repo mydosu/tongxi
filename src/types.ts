@@ -103,5 +103,16 @@ export interface ServiceUpdateStatus {
   rollback_available: boolean;
 }
 
+/// 桌面网关（src-tauri/src/remote_gateway.rs）：手机靠它打开同一份前端。
+export interface RemoteGatewayStatus {
+  enabled: boolean; running: boolean;
+  /// 绑定地址 `100.x.y.z:47680`，不含令牌，可以铺在页面上。
+  address: string | null;
+  /// 带令牌的完整地址，只在运行时给；只进剪贴板，不写进页面。
+  url: string | null;
+  /// 启用了却没跑起来的原因（比如 Tailscale 没登录）。
+  error: string | null;
+}
+
 export interface ChatQuestion { id:string;conversation_id:string;run_id:string;message_id:string;agent_id:string;prompt:string;options:string[];status:string;mode:string;answer:string|null;delivery:string;error:string|null; }
 export interface PendingChatQuestion { kind?:string;id:string;conversation_id:string;agent_id:string;group_id:string|null; }
