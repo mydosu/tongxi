@@ -25,9 +25,9 @@ export async function autoConnect(connected: (id: string) => boolean, connect: (
   if (companion?.configured && !connected('albion-wsl')) await connect('albion-wsl').catch(() => {});
 }
 
-export function setupBanner(escape: Escape) {
+export function setupBanner(_escape: Escape) {
   const ready = envs.filter(env => env.installed).length;
-  return `<section class="setup-center" id="setup-center"><div class="setup-copy"><span class="eyebrow">接入成员</span><strong>${envs.length ? `本机找到 ${ready}/${envs.length} 位成员` : '正在扫描本机…'}</strong><small>同席自动发现本机装好的 Codex、Claude Code、Hermes、DSH 并连上；没装的点「下载安装」，会在终端里跑官方安装命令，装好接着做登录。陪伴用你自己的服务接入。</small></div><div class="setup-actions"><label class="setup-auto"><input type="checkbox" id="auto-connect" ${autoConnectEnabled() ? 'checked' : ''}>启动时自动接入</label><button type="button" class="secondary" id="setup-rescan">重新扫描</button><button type="button" class="primary" id="setup-connect-all" ${ready ? '' : 'disabled'}>接入已安装的成员</button></div>${envs.length ? '' : `<p class="model-setting-note">${escape('扫描只读取安装位置和版本，不会连接或改动任何配置。')}</p>`}</section>`;
+  return `<section class="setup-center" id="setup-center"><div class="setup-copy"><span class="eyebrow">接入成员</span><strong>${envs.length ? `本机找到 ${ready}/${envs.length} 位成员` : '正在扫描本机…'}</strong><small>装好的成员自动连上；没装的点「下载安装」。</small></div><div class="setup-actions"><label class="setup-auto"><input type="checkbox" id="auto-connect" ${autoConnectEnabled() ? 'checked' : ''}>启动时自动接入</label><button type="button" class="secondary" id="setup-rescan">重新扫描</button><button type="button" class="primary" id="setup-connect-all" ${ready ? '' : 'disabled'}>接入已安装的成员</button></div></section>`;
 }
 
 /// 每张成员卡上的安装状态（只是状态文字；安装、登录、说明这些操作在卡片按钮和「更多」里）。

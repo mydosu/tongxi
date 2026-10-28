@@ -20,7 +20,7 @@ const BUILTIN: Backdrop[] = [
 // cover/figure：薄纱透明度；blur：场景主题下主面板的磨砂强度（越清晰越薄）。内置柔光背景本身就淡，纱减半。
 const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number }> = {
   soft: { name: '淡雅', cover: .66, figure: .42, blur: 18 },
-  medium: { name: '适中', cover: .46, figure: .16, blur: 12 },
+  medium: { name: '适中', cover: .34, figure: .16, blur: 9 },
   clear: { name: '清晰', cover: .24, figure: 0, blur: 5 },
 };
 const KEY = 'hub.theme';
