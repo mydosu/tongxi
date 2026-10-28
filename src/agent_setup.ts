@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { loadImage } from './image_file';
 
 // 成员接入：扫描本机已装的 agent、启动时自动连上；没装的一键在终端里装（命令先给用户看），

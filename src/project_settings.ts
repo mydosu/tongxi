@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import type { ConversationDetail, RoleChoice, RuntimeSnapshot } from './types';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { isBrain, isSeat } from './seats';

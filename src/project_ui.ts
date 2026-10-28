@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import type { Conversation, Project, ProjectTeamMessage, RoleChoice } from './types';
 import { defaultCoordinator, mountSessionPicker, PROJECT_AGENTS, type PickerHost } from './project_sessions';
 import { attachmentHtml, attachmentText } from './attachments';

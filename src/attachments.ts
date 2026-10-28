@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 
 export interface Attachment { id: string; name: string; mime: string; bytes: number; path: string; }
 type Escape = (value: string | number) => string;

@@ -1,5 +1,4 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emit, hasRemoteToken, invoke, isTauri, listen } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
@@ -2660,8 +2659,9 @@ async function connectQuietly(agentId: string) {
 async function boot() {  const controls = document.querySelectorAll<HTMLButtonElement>('#new-conversation, #service-link, #archive-filter, [data-filter]');
   controls.forEach(button => { button.disabled = true; });
   document.querySelector<HTMLInputElement>('#search')!.disabled = true;
-  if (!isTauri()) {
-    main.innerHTML = `<div class="no-selection">${brand}<h1>请从桌面软件打开同席。</h1><p>这个页面需要桌面应用提供本地数据存储。<br>运行 Agent Hub.exe，或使用 npm run desktop。</p></div>`;
+  // 桌面窗口靠 Tauri 拿数据；手机/别的电脑靠网关，条件是地址栏带过令牌（或之前存过）。
+  if (!isTauri() && !hasRemoteToken()) {
+    main.innerHTML = `<div class="no-selection">${brand}<h1>请从桌面同席的「远程访问」打开带令牌的地址。</h1><p>这个页面需要桌面应用提供本地数据存储。<br>运行 Agent Hub.exe，或使用 npm run desktop。</p></div>`;
     document.querySelector<HTMLButtonElement>('#new-conversation')!.disabled = true;
     document.querySelector<HTMLButtonElement>('#service-link')!.disabled = true;
     return;

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import type { NativeSession } from './types';
 import { baseAgent, isBrain } from './seats';
 

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { loadImage } from './image_file';
 
 // 主题背景：内置一套不含任何角色的公用背景；个人图片由用户自己导入（压缩后存在本机库里，只有这台电脑看得到）。
