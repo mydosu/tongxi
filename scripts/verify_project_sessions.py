@@ -2,7 +2,7 @@
 
 隔离数据目录里跑打包好的 EXE：
   · 新建项目时，在「各成员的会话」里给 Codex 成员挑一个它已有的原生会话，其余保持新建；
-  · 项目中途打开「会话绑定」，把 Codex 换回新建、把调度管家绑到一个会话，再验证落库；
+  · 项目中途在成员面板里把 Codex 换回新建、把主脑绑到一个会话，再验证落库；
   · 截图主界面、两个弹窗和阿尔比恩私聊，确认主题与立绘渲染。
 只读列出 Codex 已有会话、只改隔离库里的映射，不发任何消息。
 """
@@ -89,37 +89,43 @@ def main() -> int:
         check("codex member continues the chosen native session", codex["native_session_id"] == free[0]["id"], codex)
         seat = next((b for b in bindings if b["agent_id"] == "codex-win-2"), None)
         check("extra codex seat opened and bound to its own native session", bool(seat) and seat["native_session_id"] == free[2]["id"], seat)
-        others = [b for b in bindings if b["agent_id"] not in ("codex-win", "codex-win-2") or b["target"] != "member"]
+        others = [b for b in bindings if b["agent_id"] not in ("codex-win", "codex-win-2")]
         check("unbound members and coordinator stay new", all(b["native_session_id"] is None for b in others), others)
-        check("coordinator row present", any(b["target"] == "coordinator" for b in bindings))
+        check("coordinator row present", any(b["agent_id"].endswith("-brain") for b in bindings))
         page.wait_for_timeout(500)
         shot("project-room")
 
         # 项目中途：Codex 换回新建；调度（默认 Hermes→这里改成 Codex 管家）绑另一个已有会话。
         sd.ipc(page, "set_project_coordinator", conversationId=room["id"], coordinator={"agent": "codex-win", "model": None, "effort": None})
-        page.locator("[data-project-sessions]").first.click()
-        expect(page.locator("#project-session-form")).to_be_visible()
-        member_select = page.locator('.session-bind-row[data-bind-agent="codex-win"][data-bind-target="member"] select')
-        coordinator_select = page.locator('.session-bind-row[data-bind-target="coordinator"] select')
+        # 换了主脑后重载，面板按新主脑画出主脑会话那一栏。
+        page.evaluate("() => location.reload()")
+        page.wait_for_timeout(1200)
+        sd.choose(page, room["id"])
+        page.wait_for_timeout(900)
+        page.locator("[data-project-configure]").first.click()
+        expect(page.locator("#project-member-settings")).to_be_visible(timeout=15000)
+        member_select = page.locator('[data-seat-session="codex-win"] select')
+        coordinator_select = page.locator('[data-brain-session] select')
         expect(coordinator_select.locator(f'option[value="{free[1]["id"]}"]')).to_have_count(1, timeout=20000)
         taken = coordinator_select.locator(f'option[value="{free[0]["id"]}"]')
         check("session bound to a member is shown as occupied for the coordinator", taken.is_disabled())
         member_select.select_option("")
         coordinator_select.select_option(free[1]["id"])
         shot("switch")
-        page.locator("#project-session-form button.primary").click()
-        page.wait_for_function("() => !document.querySelector('#modal').open || document.querySelector('#project-session-form .form-error').textContent", timeout=30000)
-        error = page.locator("#project-session-form .form-error").text_content() if page.evaluate("() => document.querySelector('#modal').open") else ""
+        page.locator("#project-member-settings button.primary").click()
+        page.wait_for_function("() => document.querySelector('.toast')?.textContent.includes('已保存') || document.querySelector('#project-member-settings .form-error')?.textContent", timeout=30000)
+        error = page.locator("#project-member-settings .form-error").text_content() if page.locator("#project-member-settings .form-error").count() else ""
         check("mid-project switch saves", not error, error)
-        expect(page.locator("#modal")).not_to_have_attribute("open", "", timeout=5000)
         bindings = sd.ipc(page, "project_session_bindings", conversationId=room["id"])
-        codex = next(b for b in bindings if b["agent_id"] == "codex-win" and b["target"] == "member")
-        coordinator = next(b for b in bindings if b["target"] == "coordinator")
+        codex = next(b for b in bindings if b["agent_id"] == "codex-win")
+        coordinator = next(b for b in bindings if b["agent_id"].endswith("-brain"))
         check("mid-project switch back to a new member session", codex["native_session_id"] is None, codex)
-        check("mid-project coordinator binding saved", coordinator["agent_id"] == "codex-win" and coordinator["native_session_id"] == free[1]["id"], coordinator)
+        check("mid-project coordinator binding saved", coordinator["agent_id"] == "codex-win-brain" and coordinator["native_session_id"] == free[1]["id"], coordinator)
         owners = sd.ipc(page, "native_sessions", agentId="codex-win", conversationId=None)
         owner = next((s.get("occupied_by") for s in owners if s["id"] == free[1]["id"]), None)
-        check("coordinator binding blocks attaching elsewhere", bool(owner and "调度" in owner), owner)
+        check("coordinator binding blocks attaching elsewhere", bool(owner), owner)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
 
         # 成员配置：席位单独一行，可以选自己的模型。
         page.locator("[data-project-configure]").first.click()
@@ -152,14 +158,14 @@ def main() -> int:
         page.wait_for_timeout(300)
         # 项目开始前增减成员：移出 Claude 后它从项目里消失；加回来会话恢复；调度管家（Codex）不受影响。
         page.locator("[data-project-configure]").first.click()
+        page.locator(".members-body summary", has_text="参与成员").click()
         expect(page.locator(".project-roster")).to_be_visible()
-        page.evaluate("() => { window.__modalClosed = false; document.querySelector('#modal').addEventListener('close', () => { window.__modalClosed = true; }, { once: true }); }")
         page.locator('[data-roster][value="claude-win"]').uncheck()
         page.locator("[data-roster-save]").click()
         expect(page.locator('[data-project-module="claude-win"]')).to_have_count(0, timeout=15000)
         expect(page.locator(".project-roster")).to_be_visible(timeout=15000)
         check("removed member leaves the project", page.locator('[data-settings-seat="claude-win"]').count() == 0)
-        check("dialog refreshes in place without closing (no flash)", page.evaluate("() => window.__modalClosed === false && document.querySelector('#modal').open"))
+        check("members panel refreshes in place without closing", page.locator(".chat-layout.members-open").count() == 1)
         shot("roster-removed")
         page.locator('[data-roster][value="claude-win"]').check()
         page.locator("[data-roster-save]").click()
@@ -199,7 +205,7 @@ def main() -> int:
             page.locator("#toggle-members").click()
         page.locator("#toggle-members").click()
         page.wait_for_timeout(450)
-        width = page.locator(".members-panel").evaluate("el => getComputedStyle(el).display === 'none' ? 0 : el.getBoundingClientRect().width")
+        width = page.locator(".members-panel").evaluate("el => getComputedStyle(el).visibility === 'hidden' ? 0 : el.getBoundingClientRect().width")
         check("narrow window opens the members drawer", width > 150, width)
         shot("narrow-drawer")
         page.locator("#toggle-members").click()

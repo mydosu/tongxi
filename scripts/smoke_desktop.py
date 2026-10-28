@@ -83,7 +83,7 @@ def page_for(browser):
     while time.monotonic() < deadline:
         for context in browser.contexts:
             for page in context.pages:
-                if "localhost" in page.url:
+                if "localhost" in page.url or "127.0.0.1:1420" in page.url:
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     expect(page.locator("#new-conversation")).to_be_enabled(timeout=20000)
                     return page
@@ -103,6 +103,8 @@ def ipc(page, command, **args):
 def choose(page, conversation_id):
     page.locator(f'[data-conversation="{conversation_id}"]').click()
     page.wait_for_function("id => localStorage.getItem('hub.selected') === id", arg=conversation_id)
+    # 换会话有翻页动画，新旧两页会短暂并存，等旧页撤走。
+    page.wait_for_function("() => document.querySelectorAll('#message-input').length === 1")
     expect(page.locator("#message-input")).to_be_visible()
 
 
