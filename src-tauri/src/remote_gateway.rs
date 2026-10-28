@@ -36,6 +36,12 @@ const READ_COMMANDS: &[&str] = &[
     "attachment_data",
     "list_backgrounds",
     "background_image",
+    "codex_status",
+    "hermes_status",
+    "dsh_status",
+    "claude_status",
+    "opencode_status",
+    "albion_status",
 ];
 
 enum RpcError {
@@ -165,6 +171,12 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "discussion_status" => out(crate::discussion::discussion_status(app.state::<Arc<crate::discussion::Runtime>>())),
         "cli_handoffs" => out(Ok(crate::cli_handoffs(app.clone()))),
         "attachment_data" => out(crate::attachment_data(state(), arg_str(args, "conversationId")?, arg_str(args, "attachmentId")?)),
+        "codex_status" => out(Ok(crate::codex_status(app.state::<Arc<crate::codex::Runtime>>()))),
+        "hermes_status" => out(Ok(crate::hermes_status(app.state::<Arc<crate::hermes::Runtime>>()))),
+        "dsh_status" => out(Ok(crate::dsh_status(app.state::<Arc<crate::dsh::Runtime>>()))),
+        "claude_status" => out(Ok(crate::claude_status(app.state::<Arc<crate::claude::Runtime>>()))),
+        "opencode_status" => out(Ok(crate::opencode::opencode_status(app.state::<crate::opencode::Runtime>()))),
+        "albion_status" => out(Ok(crate::albion::albion_status(app.state::<crate::albion::Runtime>()))),
         "list_backgrounds" => out(crate::backgrounds::list_backgrounds(state())),
         "background_image" => out(crate::backgrounds::background_image(state(), arg_str(args, "id")?)),
         _ => Err(RpcError::Forbidden),
@@ -346,7 +358,7 @@ mod tests {
         for command in ["send_claude_message", "apply_app_update", "install_agent", "set_default_workspace", "save_companion", "delete_conversation", "remote_gateway_status", "reset_remote_gateway_token", "nope"] {
             assert!(!READ_COMMANDS.contains(&command), "{command} 不该在白名单里");
         }
-        assert!(READ_COMMANDS.contains(&"list_conversations"));
+        assert!(READ_COMMANDS.contains(&"list_conversations") && READ_COMMANDS.contains(&"dsh_status") && !READ_COMMANDS.contains(&"connect_dsh"));
         assert!(READ_COMMANDS.contains(&"background_image") && !READ_COMMANDS.contains(&"add_background") && !READ_COMMANDS.contains(&"remove_background"));
     }
 

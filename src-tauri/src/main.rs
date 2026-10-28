@@ -1257,8 +1257,6 @@ fn main() {
     // 全局快捷键 Ctrl+Shift+H：和托盘、HUD 自己的退出按钮共用 open_hud/close_hud 这一对路径。
     let hud_shortcut = hud_shortcut();
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcuts([hud_shortcut])
-        .expect("注册 HUD 快捷键失败")
         .with_handler(move |app, shortcut, event| {
             if shortcut != &hud_shortcut
                 || event.state() != tauri_plugin_global_shortcut::ShortcutState::Pressed
@@ -1355,6 +1353,13 @@ fn main() {
                 store,
                 directory: directory.clone(),
             });
+            // 热键被别的程序占用只记日志，不让应用起不来；能注册时行为和以前一致。
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                if let Err(error) = app.global_shortcut().register(crate::hud_shortcut()) {
+                    eprintln!("注册 HUD 快捷键失败（可能被占用）：{error}");
+                }
+            }
             remote_gateway::init(app.handle())?;
             restore_cli_handoffs(app.handle());
             tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?

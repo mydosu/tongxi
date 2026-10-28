@@ -1,4 +1,4 @@
-import { emit, hasRemoteToken, invoke, isTauri, listen } from './transport';
+import { emit, hasRemoteToken, invoke, isRemote, isTauri, listen } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
@@ -2789,8 +2789,8 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
     latestDiscussion = await invoke<Discussion | null>('discussion_status');
     [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
     document.querySelector('#app-version')!.textContent = info.version;
-    void checkUpdate(true);
-    window.setInterval(() => void checkUpdate(true), 60 * 60 * 1000);
+    if (!isRemote) void checkUpdate(true);
+    if (!isRemote) window.setInterval(() => void checkUpdate(true), 60 * 60 * 1000);
     document.querySelector('#app-version')!.addEventListener('click', () => appUpdate ? openUpdate(appUpdate) : void checkUpdate());
     updateMemberCount();
     adoptCliHandoffs(await invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'));
@@ -2800,7 +2800,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
     controls.forEach(button => { button.disabled = false; });
     document.querySelector<HTMLInputElement>('#search')!.disabled = false;
     // 后台扫描并接入本机的成员；一个都没找到的新用户，第一次直接带到接入页。
-    if (info?.autoconnect !== false) void autoConnect(id => runtimes[id]?.connection === 'connected', connectQuietly).then(() => {
+    if (!isRemote && info?.autoconnect !== false) void autoConnect(id => runtimes[id]?.connection === 'connected', connectQuietly).then(() => {
       let onboarded = false;
       try { onboarded = localStorage.getItem('hub.onboarded') === '1'; localStorage.setItem('hub.onboarded', '1'); } catch { /* 没有存储就每次都不打扰 */ onboarded = true; }
       if (!onboarded && scanned().length && !scanned().some(env => env.installed)) { renderServices(); toast('还没在本机找到任何 agent：在「接入成员」里一键安装'); }
