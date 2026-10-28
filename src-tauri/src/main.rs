@@ -42,6 +42,7 @@ mod project_tools;
 mod project_worktree;
 mod pricing;
 mod projects;
+mod remote_gateway;
 mod rpc;
 mod service_apply;
 mod service_install;
@@ -1354,6 +1355,7 @@ fn main() {
                 store,
                 directory: directory.clone(),
             });
+            remote_gateway::init(app.handle())?;
             restore_cli_handoffs(app.handle());
             tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
                 .data_directory(directory.join("webview"))
@@ -1537,7 +1539,10 @@ fn main() {
             native_sessions,
             open_agent_client,
             attach_native_session,
-            share_project_agent_message
+            share_project_agent_message,
+            remote_gateway::remote_gateway_status,
+            remote_gateway::set_remote_gateway,
+            remote_gateway::reset_remote_gateway_token
         ])
         .build(tauri::generate_context!())
         .expect("Agent Hub failed to start")
