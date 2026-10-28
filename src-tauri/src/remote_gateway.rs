@@ -7,17 +7,38 @@ use serde_json::Value;
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Listener, Manager, State};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const PORT: u16 = 47680;
 const ENABLED_KEY: &str = "remote_gateway_enabled";
 const TOKEN_KEY: &str = "remote_gateway_token";
 const MAX_BODY: u64 = 1 << 20;
+/// 附件走 stage_attachment：前端单个附件上限 32 MiB，base64 后约 43 MB，留一点余量。
+const MAX_ATTACHMENT_BODY: u64 = 48 << 20;
+const MAX_EVENT_CLIENTS: usize = 16;
+const PING_EVERY: Duration = Duration::from_secs(15);
+
+/// 前端 boot 里 listen 的全部事件（六个 harness 的 `<key>-state` 加五个公共事件）。
+const EVENTS: &[&str] = &[
+    "codex-state",
+    "hermes-state",
+    "dsh-state",
+    "claude-state",
+    "opencode-state",
+    "albion-state",
+    "cli-handoffs",
+    "cli-returned",
+    "discussion-state",
+    "brain-wrap-up",
+    "brain-state",
+];
 
 /// 远程只读白名单：都只读数据，不改库、不起子进程、不碰文件系统和配置。
 /// （get_conversation 会按需补建项目成员私聊的空行，和桌面打开项目时一样，不改已有内容。）
@@ -44,6 +65,34 @@ const READ_COMMANDS: &[&str] = &[
     "albion_status",
 ];
 
+/// 手机上要能做的写操作：发消息、插话、停止、答问、传附件、新建会话。
+/// 不含：删除/归档/改名、头像、主题、项目目录、成员接入与断开、服务更新安装、设置类、读桌面剪贴板。
+const WRITE_COMMANDS: &[&str] = &[
+    "send_codex_message",
+    "send_hermes_message",
+    "send_dsh_message",
+    "send_claude_message",
+    "send_opencode_message",
+    "send_albion_message",
+    "steer_agent_message",
+    "cancel_codex_run",
+    "cancel_hermes_run",
+    "cancel_dsh_run",
+    "cancel_claude_run",
+    "cancel_opencode_run",
+    "cancel_albion_run",
+    "brain_wrap_up",
+    "stop_brain_job",
+    "answer_chat_question",
+    "answer_project_inquiry",
+    "stage_attachment",
+    "create_conversation",
+];
+
+fn allowed(command: &str) -> bool {
+    READ_COMMANDS.contains(&command) || WRITE_COMMANDS.contains(&command)
+}
+
 enum RpcError {
     Forbidden,
     BadRequest(String),
@@ -58,7 +107,74 @@ struct Running {
     error: Option<String>,
 }
 
+struct Client {
+    id: u64,
+    tx: SyncSender<Arc<str>>,
+    alive: Arc<AtomicBool>,
+}
+
+/// SSE 广播：每条连接一个有界 channel，写不进去（满了/断了）就摘掉。
+#[derive(Default)]
+struct Events {
+    next: AtomicU64,
+    clients: Mutex<Vec<Client>>,
+}
+
+impl Events {
+    fn subscribe(&self) -> Option<(u64, std::sync::mpsc::Receiver<Arc<str>>, Arc<AtomicBool>)> {
+        let mut clients = self.clients.lock().ok()?;
+        if clients.len() >= MAX_EVENT_CLIENTS {
+            return None;
+        }
+        let (tx, rx) = sync_channel(256);
+        let (id, alive) = (self.next.fetch_add(1, Ordering::SeqCst), Arc::new(AtomicBool::new(true)));
+        clients.push(Client { id, tx, alive: alive.clone() });
+        Some((id, rx, alive))
+    }
+
+    fn broadcast(&self, frame: &str) {
+        let Ok(mut clients) = self.clients.lock() else { return };
+        if clients.is_empty() {
+            return;
+        }
+        let frame: Arc<str> = frame.into();
+        clients.retain(|client| client.tx.try_send(frame.clone()).is_ok());
+    }
+
+    fn remove(&self, id: u64) {
+        if let Ok(mut clients) = self.clients.lock() {
+            clients.retain(|client| client.id != id);
+        }
+    }
+
+    /// 网关关闭或换令牌：已有连接立刻作废（连接线程见 alive=false 就停写并收线）。
+    fn close_all(&self) {
+        if let Ok(mut clients) = self.clients.lock() {
+            for client in clients.drain(..) {
+                client.alive.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+/// 一帧 SSE：`event: <名>` 加若干行 `data:`；payload 里的换行拆成多行 data，保证不破帧。
+fn sse_frame(name: &str, payload: &str) -> String {
+    let mut frame = format!("event: {name}\n");
+    for line in payload.split('\n') {
+        frame.push_str("data: ");
+        frame.push_str(line.trim_end_matches('\r'));
+        frame.push('\n');
+    }
+    frame.push('\n');
+    frame
+}
+
+fn query_token(url: &str) -> Option<&str> {
+    url.split_once('?')?.1.split('&').find_map(|pair| pair.strip_prefix("token="))
+}
+
 pub struct Gateway {
+    events: Arc<Events>,
     token: Arc<Mutex<String>>,
     running: Mutex<Running>,
 }
@@ -118,7 +234,11 @@ fn bearer_ok(header: Option<&str>, token: &str) -> bool {
     let Some(given) = header.and_then(|value| value.strip_prefix("Bearer ")) else {
         return false;
     };
-    let (given, token) = (given.trim().as_bytes(), token.as_bytes());
+    token_eq(given.trim(), token)
+}
+
+fn token_eq(given: &str, token: &str) -> bool {
+    let (given, token) = (given.as_bytes(), token.as_bytes());
     // token 定长，长度不同直接不等；等长时逐字节异或累加，耗时与内容无关。
     given.len() == token.len() && given.iter().zip(token).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
 }
@@ -147,6 +267,13 @@ fn arg_bool(args: &Value, key: &str) -> Result<bool, RpcError> {
     args.get(key).and_then(Value::as_bool).ok_or_else(|| RpcError::BadRequest(format!("缺少参数 {key}")))
 }
 
+fn arg_strings(args: &Value, key: &str) -> Result<Vec<String>, RpcError> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().map(|item| item.as_str().map(str::to_owned)).collect())
+        .ok_or_else(|| RpcError::BadRequest(format!("缺少参数 {key}")))
+}
+
 fn out<T: Serialize>(result: Result<T, String>) -> Result<Value, RpcError> {
     let value = result.map_err(RpcError::Failed)?;
     serde_json::to_value(value).map_err(|e| RpcError::Failed(e.to_string()))
@@ -154,7 +281,7 @@ fn out<T: Serialize>(result: Result<T, String>) -> Result<Value, RpcError> {
 
 /// 命令名和参数（camelCase，与前端 invoke 一致）→ 直接调对应的 #[tauri::command] 函数。
 fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcError> {
-    if !READ_COMMANDS.contains(&command) {
+    if !allowed(command) {
         return Err(RpcError::Forbidden);
     }
     let state = || app.state::<AppState>();
@@ -179,6 +306,44 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "albion_status" => out(Ok(crate::albion::albion_status(app.state::<crate::albion::Runtime>()))),
         "list_backgrounds" => out(crate::backgrounds::list_backgrounds(state())),
         "background_image" => out(crate::backgrounds::background_image(state(), arg_str(args, "id")?)),
+        _ => dispatch_write(app, command, args),
+    }
+}
+
+/// 写命令：参数名和前端 invoke 一致（camelCase）。
+fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcError> {
+    use crate::{albion, claude, codex, dsh, hermes, opencode};
+    let state = || app.state::<AppState>();
+    let room = || arg_str(args, "conversationId");
+    let (message, content) = (|| arg_str(args, "messageId"), || arg_str(args, "content"));
+    match command {
+        "send_codex_message" => out(crate::send_codex_message(app.state::<Arc<codex::Runtime>>(), room()?, message()?, content()?)),
+        "send_hermes_message" => out(crate::send_hermes_message(app.state::<Arc<hermes::Runtime>>(), room()?, message()?, content()?)),
+        "send_dsh_message" => out(crate::send_dsh_message(app.state::<Arc<dsh::Runtime>>(), room()?, message()?, content()?)),
+        "send_claude_message" => out(crate::send_claude_message(app.state::<Arc<claude::Runtime>>(), room()?, message()?, content()?)),
+        "send_opencode_message" => out(opencode::send_opencode_message(app.state::<opencode::Runtime>(), room()?, message()?, content()?)),
+        "send_albion_message" => out(albion::send_albion_message(app.state::<albion::Runtime>(), room()?, message()?, content()?)),
+        "steer_agent_message" => out(tauri::async_runtime::block_on(crate::steer_agent_message(
+            state(),
+            app.state::<Arc<codex::Runtime>>(),
+            app.state::<Arc<claude::Runtime>>(),
+            arg_str(args, "agentId")?,
+            room()?,
+            message()?,
+            content()?,
+        ))),
+        "cancel_codex_run" => out(tauri::async_runtime::block_on(crate::cancel_codex_run(app.state::<Arc<codex::Runtime>>(), room()?))),
+        "cancel_hermes_run" => out(crate::cancel_hermes_run(app.state::<Arc<hermes::Runtime>>(), room()?)),
+        "cancel_dsh_run" => out(crate::cancel_dsh_run(app.state::<Arc<dsh::Runtime>>(), room()?)),
+        "cancel_claude_run" => out(crate::cancel_claude_run(app.state::<Arc<claude::Runtime>>(), room()?)),
+        "cancel_opencode_run" => out(opencode::cancel_opencode_run(app.state::<opencode::Runtime>(), room()?)),
+        "cancel_albion_run" => out(albion::cancel_albion_run(app.state::<albion::Runtime>(), room()?)),
+        "brain_wrap_up" => out(Ok(crate::brain_wrap_up(app.state::<Arc<crate::project_brain::Courier>>(), room()?))),
+        "stop_brain_job" => out(crate::stop_brain_job(app.clone(), state(), room()?, arg_str(args, "jobId")?)),
+        "answer_chat_question" => out(crate::answer_chat_question(app.clone(), state(), room()?, arg_str(args, "questionId")?, content()?)),
+        "answer_project_inquiry" => out(crate::answer_project_inquiry(state(), room()?, arg_str(args, "inquiryId")?, arg_str(args, "answer")?)),
+        "stage_attachment" => out(crate::stage_attachment(state(), room()?, arg_str(args, "name")?, arg_str(args, "mime")?, arg_str(args, "data")?)),
+        "create_conversation" => out(crate::create_conversation(state(), arg_str(args, "title")?, arg_str(args, "kind")?, arg_strings(args, "members")?)),
         _ => Err(RpcError::Forbidden),
     }
 }
@@ -197,7 +362,31 @@ fn reply_text(request: Request, status: u16, text: &str) {
     reply(request, status, "text/plain; charset=utf-8", text.as_bytes().to_vec());
 }
 
-fn handle(app: &AppHandle, token: &Mutex<String>, mut request: Request) {
+/// SSE：用 upgrade 拿到原始连接自己写帧（tiny_http 的分块响应会缓冲，实时事件出不去）。
+fn serve_events(events: &Events, request: Request) {
+    let Some((id, rx, alive)) = events.subscribe() else {
+        return reply_text(request, 503, "实时连接过多");
+    };
+    let mut head = Response::empty(200);
+    for (name, value) in [("Content-Type", "text/event-stream"), ("Cache-Control", "no-store"), ("X-Accel-Buffering", "no")] {
+        if let Ok(header) = Header::from_bytes(name, value) {
+            head.add_header(header);
+        }
+    }
+    let mut stream = request.upgrade("sse", head);
+    let mut send = |frame: &str| stream.write_all(frame.as_bytes()).and_then(|_| stream.flush()).is_ok();
+    let mut open = send(": connected\n\n");
+    while open && alive.load(Ordering::SeqCst) {
+        open = match rx.recv_timeout(PING_EVERY) {
+            Ok(frame) => alive.load(Ordering::SeqCst) && send(&frame),
+            Err(RecvTimeoutError::Timeout) => send(": ping\n\n"),
+            Err(RecvTimeoutError::Disconnected) => false,
+        };
+    }
+    events.remove(id);
+}
+
+fn handle(app: &AppHandle, token: &Mutex<String>, events: &Events, mut request: Request) {
     let url = request.url().to_owned();
     let path = url.split('?').next().unwrap_or("/").to_owned();
     if let Some(command) = path.strip_prefix("/rpc/") {
@@ -209,9 +398,13 @@ fn handle(app: &AppHandle, token: &Mutex<String>, mut request: Request) {
         if !valid {
             return reply_text(request, 401, "未授权");
         }
+        let limit = if command == "stage_attachment" { MAX_ATTACHMENT_BODY } else { MAX_BODY };
         let mut body = String::new();
-        if request.as_reader().take(MAX_BODY).read_to_string(&mut body).is_err() {
+        if request.as_reader().take(limit + 1).read_to_string(&mut body).is_err() {
             return reply_text(request, 400, "请求体读取失败");
+        }
+        if body.len() as u64 > limit {
+            return reply_text(request, 413, "请求体过大");
         }
         let args = if body.trim().is_empty() { Ok(Value::Object(Default::default())) } else { serde_json::from_str::<Value>(&body) };
         let result = args.map_err(|e| RpcError::BadRequest(format!("请求体不是 JSON：{e}"))).and_then(|args| dispatch(app, command, &args));
@@ -224,6 +417,13 @@ fn handle(app: &AppHandle, token: &Mutex<String>, mut request: Request) {
     }
     if *request.method() != Method::Get {
         return reply_text(request, 405, "只接受 GET");
+    }
+    if path == "/events" {
+        let valid = query_token(&url).zip(token.lock().ok()).is_some_and(|(given, token)| token_eq(given, &token));
+        if !valid {
+            return reply_text(request, 401, "未授权");
+        }
+        return serve_events(events, request);
     }
     // 页面本身不含数据，静态资源不鉴权；资源表是打包时固定的，这里只挡掉路径穿越。
     if path.contains("..") || path.contains('\\') {
@@ -238,6 +438,7 @@ fn handle(app: &AppHandle, token: &Mutex<String>, mut request: Request) {
 impl Gateway {
     fn stop(&self) {
         let Ok(mut running) = self.running.lock() else { return };
+        self.events.close_all();
         if let Some(stop) = running.stop.take() {
             stop.store(true, Ordering::SeqCst);
         }
@@ -260,13 +461,13 @@ impl Gateway {
             Err(reason) => running.error = Some(reason),
             Ok((address, server)) => {
                 let stop = Arc::new(AtomicBool::new(false));
-                let (flag, app, token) = (stop.clone(), app.clone(), self.token.clone());
+                let (flag, app, token, events) = (stop.clone(), app.clone(), self.token.clone(), self.events.clone());
                 running.thread = Some(std::thread::spawn(move || {
                     while !flag.load(Ordering::SeqCst) {
                         match server.recv_timeout(Duration::from_millis(300)) {
                             Ok(Some(request)) => {
-                                let (app, token) = (app.clone(), token.clone());
-                                std::thread::spawn(move || handle(&app, &token, request));
+                                let (app, token, events) = (app.clone(), token.clone(), events.clone());
+                                std::thread::spawn(move || handle(&app, &token, &events, request));
                             }
                             Ok(None) => {}
                             Err(_) => break,
@@ -304,7 +505,12 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
             token
         }
     };
-    let gateway = Gateway { token: Arc::new(Mutex::new(token)), running: Mutex::new(Running::default()) };
+    let events = Arc::new(Events::default());
+    for name in EVENTS {
+        let events = events.clone();
+        app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
+    }
+    let gateway = Gateway { events, token: Arc::new(Mutex::new(token)), running: Mutex::new(Running::default()) };
     if meta_get(app, ENABLED_KEY).as_deref() == Some("1") {
         gateway.start(app);
     }
@@ -337,6 +543,7 @@ pub fn reset_remote_gateway_token(app: AppHandle, gateway: State<'_, Gateway>) -
     let token = new_token()?;
     meta_set(&app, TOKEN_KEY, &token)?;
     *gateway.token.lock().map_err(|_| "token 暂不可用")? = token;
+    gateway.events.close_all();
     Ok(gateway.status(&app))
 }
 
@@ -358,6 +565,13 @@ mod tests {
         for command in ["send_claude_message", "apply_app_update", "install_agent", "set_default_workspace", "save_companion", "delete_conversation", "remote_gateway_status", "reset_remote_gateway_token", "nope"] {
             assert!(!READ_COMMANDS.contains(&command), "{command} 不该在白名单里");
         }
+        for command in WRITE_COMMANDS {
+            for danger in ["delete", "archive", "rename", "connect", "disconnect", "update", "install", "avatar", "paste", "attach_native", "set_", "remove", "remote_gateway", "open_", "register", "bind", "add_"] {
+                assert!(!command.contains(danger), "写表里不该有 {command}");
+            }
+            assert!(!READ_COMMANDS.contains(command), "{command} 同时在读表和写表");
+        }
+        assert!(allowed("send_claude_message") && allowed("stage_attachment") && !allowed("delete_conversation") && !allowed("connect_claude"));
         assert!(READ_COMMANDS.contains(&"list_conversations") && READ_COMMANDS.contains(&"dsh_status") && !READ_COMMANDS.contains(&"connect_dsh"));
         assert!(READ_COMMANDS.contains(&"background_image") && !READ_COMMANDS.contains(&"add_background") && !READ_COMMANDS.contains(&"remove_background"));
     }
@@ -378,5 +592,64 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sse_frames_split_lines_and_read_token_from_query() {
+        assert_eq!(sse_frame("brain-state", "\"room\""), "event: brain-state\ndata: \"room\"\n\n");
+        assert_eq!(sse_frame("x", "a\r\nb"), "event: x\ndata: a\ndata: b\n\n");
+        assert_eq!(query_token("/events?token=abc"), Some("abc"));
+        assert_eq!(query_token("/events?a=1&token=abc"), Some("abc"));
+        assert_eq!(query_token("/events"), None);
+        assert!(token_eq("abc", "abc") && !token_eq("abd", "abc") && !token_eq("ab", "abc"));
+    }
+
+    #[test]
+    fn events_broadcast_and_close_all_cut_clients() {
+        let events = Events::default();
+        let (_, rx, alive) = events.subscribe().unwrap();
+        events.broadcast("hello");
+        assert_eq!(&*rx.recv().unwrap(), "hello");
+        events.close_all();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert!(events.clients.lock().unwrap().is_empty());
+        let _held: Vec<_> = (0..MAX_EVENT_CLIENTS).map(|_| events.subscribe().unwrap()).collect();
+        assert!(events.subscribe().is_none());
+    }
+
+    /// 真起一个 tiny_http，确认 SSE 帧不经缓冲、立刻到客户端，且 close_all 之后连接收线。
+    #[test]
+    fn sse_stream_flushes_immediately_and_closes() {
+        use std::io::BufRead;
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let events = Arc::new(Events::default());
+        let served = events.clone();
+        let worker = std::thread::spawn(move || serve_events(&served, server.recv().unwrap()));
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.write_all(b"GET /events HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut reader = std::io::BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line, ": connected\n");
+        events.broadcast(&sse_frame("dsh-state", "{\"revision\":1}"));
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("event: dsh-state\n"), "{line}");
+        events.close_all();
+        events.broadcast("ignored");
+        worker.join().unwrap();
     }
 }
