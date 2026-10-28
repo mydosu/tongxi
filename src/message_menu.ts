@@ -1,5 +1,15 @@
 export interface MessageTarget { conversationId: string; kind: 'message' | 'team_message'; id: string; }
 
+/// 非安全上下文（手机经 http 打开）没有 navigator.clipboard：退回 execCommand，再不行就算了，不抛错。
+function copyText(text: string) {
+  if (navigator.clipboard) { void navigator.clipboard.writeText(text).catch(() => {}); return; }
+  const area = document.createElement('textarea');
+  area.value = text; area.style.cssText = 'position:fixed;opacity:0';
+  document.body.append(area); area.select();
+  try { document.execCommand('copy'); } catch { /* 复制不了就算了 */ }
+  area.remove();
+}
+
 export function installMessageMenu(root: HTMLElement, conversation: () => string, remove: (target: MessageTarget) => Promise<void>) {
   let menu: HTMLElement | null = null;
   const close = () => { menu?.remove(); menu = null; };
@@ -18,7 +28,7 @@ export function installMessageMenu(root: HTMLElement, conversation: () => string
     menu.style.top = `${Math.min(event.clientY, innerHeight - menu.offsetHeight - 12)}px`;
     menu.querySelector('[data-message-copy]')!.addEventListener('click', () => {
       const text = getSelection()?.toString() || row.querySelector<HTMLElement>('.agent-turn-text,.bubble')?.innerText || row.innerText;
-      close(); void navigator.clipboard.writeText(text).catch(() => {});
+      close(); copyText(text);
     });
     const button = menu.querySelector<HTMLButtonElement>('[data-message-delete]')!;
     button.focus();

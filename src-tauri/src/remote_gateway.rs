@@ -87,6 +87,10 @@ const WRITE_COMMANDS: &[&str] = &[
     "answer_project_inquiry",
     "stage_attachment",
     "create_conversation",
+    "cancel_chat_question",
+    "start_discussion",
+    "cancel_discussion",
+    "save_local_message",
 ];
 
 fn allowed(command: &str) -> bool {
@@ -343,6 +347,17 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
         "answer_chat_question" => out(crate::answer_chat_question(app.clone(), state(), room()?, arg_str(args, "questionId")?, content()?)),
         "answer_project_inquiry" => out(crate::answer_project_inquiry(state(), room()?, arg_str(args, "inquiryId")?, arg_str(args, "answer")?)),
         "stage_attachment" => out(crate::stage_attachment(state(), room()?, arg_str(args, "name")?, arg_str(args, "mime")?, arg_str(args, "data")?)),
+        "cancel_chat_question" => out(crate::cancel_chat_question(state(), room()?, arg_str(args, "questionId")?)),
+        "start_discussion" => out(crate::discussion::start_discussion(
+            app.state::<Arc<crate::discussion::Runtime>>(),
+            room()?,
+            message()?,
+            content()?,
+            arg_strings(args, "participants")?,
+            args.get("rounds").and_then(Value::as_u64).and_then(|rounds| u32::try_from(rounds).ok()).ok_or_else(|| RpcError::BadRequest("缺少参数 rounds".into()))?,
+        )),
+        "cancel_discussion" => out(tauri::async_runtime::block_on(crate::discussion::cancel_discussion(app.state::<Arc<crate::discussion::Runtime>>(), arg_str(args, "id")?))),
+        "save_local_message" => out(crate::save_local_message(state(), room()?, message()?, content()?)),
         "create_conversation" => out(crate::create_conversation(state(), arg_str(args, "title")?, arg_str(args, "kind")?, arg_strings(args, "members")?)),
         _ => Err(RpcError::Forbidden),
     }

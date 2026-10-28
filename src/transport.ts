@@ -14,6 +14,17 @@ export type TransportHandler<T> = (event: TransportEvent<T>) => void;
 /// 远程 = 页面不是 Tauri 窗口里打开的（手机浏览器、局域网里的别的电脑）。
 export const isRemote = !isTauri();
 
+// 手机经 http://100.x.y.z 打开不是安全上下文，浏览器没有 crypto.randomUUID（getRandomValues 还在）：补一个 v4。
+if (isRemote && typeof crypto.randomUUID !== 'function') {
+  (crypto as { randomUUID: () => string }).randomUUID = () => {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+}
+
 /// 地址栏带进来的令牌存这里，之后刷新页面靠它继续认人。
 const TOKEN_KEY = 'tongxi-remote-token';
 let incomingToken = '';
