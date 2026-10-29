@@ -204,7 +204,8 @@ fn forward(client: TcpStream, backend: SocketAddr, events: &Events) {
     }
     let upstream = std::thread::spawn(move || {
         let _ = std::io::copy(&mut client_in, &mut server_out);
-        let _ = server_out.shutdown(Shutdown::Both);
+        // 只把 EOF 传给后端；客户端半关写端后响应还要回，读端由下行收尾。
+        let _ = server_out.shutdown(Shutdown::Write);
     });
     let _ = std::io::copy(&mut server_in, &mut client_out);
     let _ = client.shutdown(Shutdown::Both);
@@ -758,6 +759,34 @@ mod tests {
             }
         };
         assert!(eof, "close_all 之后 2 秒内客户端没收到 EOF");
+        stop.store(true, Ordering::SeqCst);
+        front_thread.join().unwrap();
+    }
+
+    /// 客户端发完请求就半关写端，转发层不能把还没回完的响应一起切掉。
+    #[test]
+    fn half_closed_client_still_gets_response() {
+        use std::io::Read;
+        let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = backend.accept().unwrap();
+            let mut request = Vec::new();
+            conn.read_to_end(&mut request).unwrap(); // 读到客户端的 EOF 才会返回
+            std::thread::sleep(Duration::from_millis(200));
+            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+        });
+        let front = TcpListener::bind("127.0.0.1:0").unwrap();
+        let front_addr = front.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let front_thread = serve_front(front, backend_addr, stop.clone(), Arc::new(Events::default()));
+        let mut client = TcpStream::connect(front_addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.write_all(b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK") && response.ends_with("ok"), "{response}");
         stop.store(true, Ordering::SeqCst);
         front_thread.join().unwrap();
     }
