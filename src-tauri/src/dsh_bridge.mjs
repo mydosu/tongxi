@@ -168,6 +168,8 @@ try {
   configure('tool-subagent-fork', {
     provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'one-shot'
   });
+  // 后台任务跑完不让 DSH 在进程里自己开一轮（同席看不到）：通知留着，由下面报给同席，同席发新消息唤醒时一并领到。
+  configure('tool-jobs', { completionDelivery: 'quiet' });
   configure('tool-todo', { allowParallelInProgress: true });
   configure('workflow-ptc', { provider: 'spawn' });
   configure('tool-ralph', { subagentProvider: 'spawn', maxRounds: 64 });
@@ -219,6 +221,20 @@ try {
       return rule ? { ...resolved, mode: rule.mode, ...(rule.root ? { workspaceRoot: resolve(rule.root) } : {}) } : resolved;
     };
   } else noteFailure(new Error('sandboxPolicy service missing: project permission tiers not enforced'));
+  // 回合交回后才跑完的后台任务、后台子 agent：报给同席，由同席作为新消息唤醒这个会话。
+  const backgroundDone = (agent, text) => {
+    const sessionId = agent?.session?.id;
+    if (sessionId) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: '_tongxi/background_done', params: { sessionId, text } }) + '\n');
+  };
+  const jobs = ctx.get?.('jobs') ?? ctx.jobs;
+  // 回合进行中跑完的，DSH 会在这一轮里直接领到通知，不用唤醒。
+  jobs?.onJobDone?.((job, owner) => {
+    if (!job.reported && owner?.status === 'idle') backgroundDone(owner, `后台任务 ${job.id}（${job.label}）${job.status}，用 job_output 读它的输出`);
+  });
+  // 后台子 agent 交回时 DSH 会自己在进程里开一轮，同席看不到；shortcut: 回合中途交回的也会报，同席会在这轮结束后多发一次唤醒。
+  ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+    if (message?.source?.kind === 'subagent-settled') backgroundDone(agent, `后台子 agent 交回了：${message.source.summary || ''}`);
+  });
   // Keep DSH's native tool/plugin surface. Project sessions additionally mount
   // the Agent Hub MCP server for direct messages between group members.
   process.stdin.on('end', () => {

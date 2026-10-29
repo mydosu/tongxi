@@ -480,7 +480,7 @@ function background(session, sessionId, child, message) {
   if (session.tasks.size || session.turn) return;
   session.child = null;
   execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
-  if (session.done.length) send({ method: 'session/background_done', params: { sessionId, text: session.done.join('\n') } });
+  if (session.done.length) send({ method: '_tongxi/background_done', params: { sessionId, text: session.done.join('\n') } });
   session.done = [];
 }
 

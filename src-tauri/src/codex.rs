@@ -113,6 +113,20 @@ pub struct RuntimeSnapshot {
 }
 
 /// 把 Codex 的累计用量换成这一回合的，按 ACP 回包的样子返回；base 记回合开始前的累计，回合里第一次报时定下。
+/// 后台命令跑完的说明：命令、结果和输出末尾（codex 不落输出文件，只能带在消息里）。
+fn background_text(item: &Value) -> String {
+    let output = item["aggregatedOutput"].as_str().unwrap_or("").trim_end();
+    let skip = output.chars().count().saturating_sub(1500);
+    let tail: String = output.chars().skip(skip).collect();
+    format!(
+        "「{}」{}（退出码 {}），输出末尾：\n{}",
+        item["command"].as_str().unwrap_or("命令"),
+        if item["status"] == "completed" { "已完成" } else { "已结束" },
+        item["exitCode"].as_i64().map_or("未知".into(), |code| code.to_string()),
+        if tail.is_empty() { "（没有输出）" } else { &tail }
+    )
+}
+
 fn turn_usage(usage: &Value, base: &mut Option<[i64; 4]>) -> Value {
     const KEYS: [&str; 4] = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens"];
     let part = |name: &str| KEYS.map(|key| usage[name][key].as_i64().unwrap_or(0));
@@ -1301,6 +1315,14 @@ impl Runtime {
         }
         let params = &value["params"];
         let Some(index) = inner.runs.iter().position(|run| run.accepts(params)) else {
+            drop(inner);
+            // 回合交回后后台终端才跑完：codex 只补发这条 item/completed，不会自己接着做，交给同席唤醒。
+            if value["method"] == "item/completed" && params["item"]["type"] == "commandExecution" {
+                if let Some(thread) = params["threadId"].as_str() {
+                    let text = background_text(&params["item"]);
+                    crate::project_brain::background_done(&self.store.lock().unwrap(), "codex-win", thread, &text);
+                }
+            }
             return;
         };
         let run = &mut inner.runs[index];

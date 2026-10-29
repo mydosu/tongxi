@@ -96,7 +96,32 @@ def usage_counters(state):
 
 
 class ChatACP(HermesACPAgent):
+    _background = None
+
+    async def _forward_background(self):
+        """Hermes 的 ACP 适配器不取后台进程的完成通知（只有 CLI、网关取），回合交回后跑完的就没人管。
+        这里定时取出来按会话报给同席，由同席作为新消息唤醒那个会话。心跳不报，免得一直唤醒。"""
+        from tools.process_registry import process_registry
+        while True:
+            await asyncio.sleep(2)
+            try:
+                events = await asyncio.to_thread(process_registry.drain_notifications)
+            except Exception:
+                continue
+            grouped = {}
+            for event, text in events:
+                session = str(event.get("session_key") or "")
+                if session and event.get("type") != "heartbeat":
+                    grouped.setdefault(session, []).append(text)
+            for session, texts in grouped.items():
+                try:
+                    await self._conn.ext_notification("tongxi/background_done", {"sessionId": session, "text": "\n\n".join(texts)})
+                except Exception:
+                    pass
+
     async def prompt(self, prompt, session_id, **kwargs):
+        if self._background is None:
+            self._background = asyncio.ensure_future(self._forward_background())
         # Hermes 的回包只在运行结果带 token 数时才给 usage；同席要按回合计量，
         # 就用会话累计计数的前后差值补上（同一个 agent 对象才算，中途换了就不报，宁缺不错）。
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)

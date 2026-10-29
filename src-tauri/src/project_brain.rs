@@ -41,7 +41,10 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            note TEXT,wait_key TEXT,job TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(room,id));
          CREATE TABLE IF NOT EXISTS brain_plan_history (
            id INTEGER PRIMARY KEY AUTOINCREMENT,room TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           steps TEXT NOT NULL,archived_at INTEGER NOT NULL);",
+           steps TEXT NOT NULL,archived_at INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS wake_inbox (
+           id TEXT PRIMARY KEY,chat TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           agent TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL);",
     )
     .map_err(|_| "主脑结构迁移失败")?;
     crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
@@ -865,24 +868,73 @@ pub fn is_brain_chat(connection: &Connection, conversation_id: &str) -> bool {
         .is_ok_and(|seat| is_brain(&seat))
 }
 
-/// 主脑上一回合留在后台的命令跑完了（Claude 桥接留着进程等到的）：记进收件箱，像成员交回一样唤醒主脑。
-pub(crate) fn background_done(connection: &Connection, native_session: &str, text: &str) {
-    let Ok((room, seat)) = connection.query_row(
-        "SELECT c.group_conversation_id,c.agent_id FROM sessions s JOIN project_agent_chats c ON c.conversation_id=s.conversation_id
-         WHERE s.native_session_id=?1",
-        [native_session],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+/// 某个 agent 回合交回后，它放到后台的命令（或后台子 agent）才跑完：各运行时报上来，统一在这里安排唤醒。
+/// 主脑、成员的记进主脑收件箱（成员的由主脑决定怎么接，免得成员自己接着干、结果没人收）；
+/// 私聊记进 wake_inbox，作为新消息发回那个会话。用户停掉的那一轮留下的不唤醒。
+/// 桥接（Claude、Hermes、DSH）报后台任务跑完用的扩展通知；是这条就处理掉并返回 true。
+pub(crate) fn background_notice(store: &Mutex<Store>, agent: &str, value: &Value) -> bool {
+    if value["method"] != "_tongxi/background_done" {
+        return false;
+    }
+    let params = &value["params"];
+    if let (Some(session), Some(text)) = (params["sessionId"].as_str(), params["text"].as_str()) {
+        background_done(&store.lock().unwrap(), agent, session, text);
+    }
+    true
+}
+
+pub(crate) fn background_done(store: &Store, agent: &str, native_session: &str, text: &str) {
+    let connection = &store.connection;
+    let Ok(chat) = connection.query_row(
+        "SELECT conversation_id FROM sessions WHERE agent_id=?1 AND native_session_id=?2",
+        params![agent, native_session],
+        |row| row.get::<_, String>(0),
     ) else {
         return;
     };
-    if !is_brain(&seat) {
+    let stopped: bool = connection
+        .query_row(
+            "SELECT status='interrupted' FROM runs WHERE conversation_id=?1 AND agent_id=?2 ORDER BY rowid DESC LIMIT 1",
+            params![chat, agent],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if stopped {
         return;
     }
-    let note = format!("【同席】你上一回合放到后台的命令跑完了：\n{text}\n看输出接着做。");
-    let _ = connection.execute(
-        "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
-        params![Uuid::new_v4().to_string(), room, note, now()],
-    );
+    let seat = connection
+        .query_row(
+            "SELECT group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1",
+            [&chat],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let _ = match seat {
+        Some((room, seat)) => {
+            let note = if is_brain(&seat) {
+                format!("【同席】你上一回合放到后台的任务跑完了：\n{text}\n看结果接着做。")
+            } else {
+                let name = store.seat_name(&room, &seat);
+                format!("【同席】{name}上一回合放到后台的任务跑完了：\n{text}\n要它接着做就再派活。")
+            };
+            connection.execute(
+                "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
+                params![Uuid::new_v4().to_string(), room, note, now()],
+            )
+        }
+        None => connection.execute(
+            "INSERT INTO wake_inbox(id,chat,agent,content,created_at) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                Uuid::new_v4().to_string(),
+                chat,
+                agent,
+                format!("【同席】你上一回合放到后台的任务跑完了：\n{text}\n看结果接着做。"),
+                now()
+            ],
+        ),
+    };
 }
 
 fn context(connection: &Connection, conversation_id: &str) -> Result<Context> {
@@ -1911,6 +1963,7 @@ impl Courier {
                 rooms.push(job.room.clone());
             }
         }
+        self.wake_chats();
         for room in self.collect_finished().into_iter().chain(self.collect_answers()).chain(self.deliver()) {
             if !rooms.contains(&room) {
                 rooms.push(room);
@@ -2100,6 +2153,36 @@ impl Courier {
             rooms.push(room);
         }
         rooms
+    }
+
+    /// 私聊里后台任务跑完的唤醒：会话闲着就作为新消息发，正在回复就插话（不支持插话的等它这轮回复完）。
+    fn wake_chats(&self) {
+        let items: Vec<(String, String, String, String)> = self
+            .store
+            .lock()
+            .unwrap()
+            .connection
+            .prepare("SELECT id,chat,agent,content FROM wake_inbox ORDER BY created_at,rowid")
+            .and_then(|mut query| query.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect())
+            .unwrap_or_default();
+        for (id, chat, agent, content) in items {
+            // 投递线程发不了的成员，丢掉免得一直攒着。
+            if self.snapshot(&agent).is_none() {
+                self.execute("DELETE FROM wake_inbox WHERE id=?1", [&id]);
+                continue;
+            }
+            if !matches!(self.ready(&agent), Ok(true)) {
+                continue;
+            }
+            let sent = if self.live(&agent, &chat) {
+                matches!(agent.as_str(), "codex-win" | "claude-win") && self.steer(&agent, &chat, &content, "hub").is_ok()
+            } else {
+                self.send(&agent, &chat, &content, "hub").is_ok()
+            };
+            if sent {
+                self.execute("DELETE FROM wake_inbox WHERE id=?1", [&id]);
+            }
+        }
     }
 
     /// 把收件箱里的东西送进主脑：主脑闲着就作为新消息发，正在回复就插话（不支持插话的等它这轮回复完）。
@@ -2786,36 +2869,39 @@ B6 做完了"));
     }
 
     #[test]
-    fn brain_background_commands_finishing_wake_the_brain() {
+    fn background_tasks_finishing_wake_the_right_place() {
         let base = std::env::temp_dir().join(format!("tongxi-brain-background-{}", Uuid::new_v4()));
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
         let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
-        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let room = store.create("项目群", "group", &["claude-win".into(), "codex-win".into()]).unwrap().id;
         let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
         store.bind_project(&room, Some(&project)).unwrap();
-        let chat = store
-            .ensure_project_agent_chats(&room)
-            .unwrap()
-            .into_iter()
-            .find(|chat| chat.agent_id == "claude-win-brain")
-            .unwrap()
-            .conversation_id;
-        store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "claude-win").unwrap();
-        let changed = store.connection.execute("UPDATE sessions SET native_session_id='native-1' WHERE conversation_id=?1", [&chat]).unwrap();
-        assert_eq!(changed, 1);
-        super::background_done(&store.connection, "native-1", "「构建」已完成");
-        super::background_done(&store.connection, "别的会话", "「构建」已完成");
-        let inbox: Vec<String> = store
-            .connection
-            .prepare("SELECT content FROM brain_inbox WHERE room=?1 AND delivered=0")
-            .unwrap()
-            .query_map([&room], |row| row.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(inbox.len(), 1, "只认主脑自己的会话");
-        assert!(inbox[0].contains("「构建」已完成"));
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let brain = chats.iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id.clone();
+        let member = chats.iter().find(|chat| chat.agent_id == "codex-win").unwrap().conversation_id.clone();
+        let private = store.create("私聊", "direct", &["codex-win".into()]).unwrap().id;
+        let stopped = store.create("停掉的私聊", "direct", &["codex-win".into()]).unwrap().id;
+        for (chat, agent, native) in [(&brain, "claude-win", "n-brain"), (&member, "codex-win", "n-member"), (&private, "codex-win", "n-private"), (&stopped, "codex-win", "n-stopped")] {
+            let mut run = store.begin_agent_run(chat, &Uuid::new_v4().to_string(), "做事", agent).unwrap();
+            run.status = if chat == &stopped { "interrupted" } else { "completed" }.into();
+            store.checkpoint(&run, "好了", "").unwrap();
+            let changed = store.connection.execute("UPDATE sessions SET native_session_id=?1 WHERE conversation_id=?2", params![native, chat]).unwrap();
+            assert_eq!(changed, 1);
+        }
+        for (agent, native) in [("claude-win", "n-brain"), ("codex-win", "n-member"), ("codex-win", "n-private"), ("codex-win", "n-stopped"), ("claude-win", "n-member"), ("codex-win", "别的会话")] {
+            super::background_done(&store, agent, native, &format!("「构建 {native}」已完成"));
+        }
+        let rows = |sql: &str| -> Vec<String> {
+            store.connection.prepare(sql).unwrap().query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let inbox = rows("SELECT content FROM brain_inbox WHERE delivered=0 ORDER BY rowid");
+        assert_eq!(inbox.len(), 2, "主脑和成员的都进主脑收件箱，对不上席位的不算：{inbox:?}");
+        assert!(inbox[0].contains("你上一回合") && inbox[0].contains("n-brain"));
+        assert!(!inbox[1].contains("你上一回合") && inbox[1].contains("n-member"), "成员的写明是谁的：{}", inbox[1]);
+        let wakes = rows("SELECT chat||' '||content FROM wake_inbox");
+        assert_eq!(wakes.len(), 1, "私聊发回原会话，用户停掉的那轮不唤醒：{wakes:?}");
+        assert!(wakes[0].starts_with(&private) && wakes[0].contains("n-private"));
         let _ = std::fs::remove_dir_all(base);
     }
 }

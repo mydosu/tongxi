@@ -723,6 +723,9 @@ impl Runtime {
         Ok(())
     }
     fn notification(&self, generation: &str, value: Value) {
+        if crate::project_brain::background_notice(&self.store, "dsh-win", &value) {
+            return;
+        }
         if value["method"] != "session/update" {
             return;
         }
