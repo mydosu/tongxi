@@ -1,6 +1,7 @@
 //! 手机遥控网关（第 0 期，只读）：只绑 Tailscale 地址，Bearer token 鉴权，
 //! `POST /rpc/<command>` 走只读白名单，其余 GET 回打包进 exe 的前端资源。
 use crate::AppState;
+use flate2::{write::GzEncoder, Compression};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Serialize;
 use serde_json::Value;
@@ -19,6 +20,10 @@ use tiny_http::{Header, Method, Request, Response, Server};
 const PORT: u16 = 47680;
 const ENABLED_KEY: &str = "remote_gateway_enabled";
 const TOKEN_KEY: &str = "remote_gateway_token";
+/// 端口默认固定；测试版要和正在跑的正式版并存时，用 AGENT_HUB_GATEWAY_PORT 换一个。
+fn gateway_port() -> u16 {
+    std::env::var("AGENT_HUB_GATEWAY_PORT").ok().and_then(|port| port.parse().ok()).unwrap_or(PORT)
+}
 const MAX_BODY: u64 = 1 << 20;
 /// 附件走 stage_attachment：前端单个附件上限 32 MiB，base64 后约 43 MB，留一点余量。
 const MAX_ATTACHMENT_BODY: u64 = 48 << 20;
@@ -39,6 +44,11 @@ const EVENTS: &[&str] = &[
     "brain-wrap-up",
     "brain-state",
 ];
+
+/// 运行状态事件：每个都是带版本号的完整快照（含模型表和全部在跑回复的全文），流式回复时一秒几十个，
+/// 手机上每个都是上百 KB。网关只把最新的一份按这个间隔发出去，前端本来就只认版本号最大的。
+const COALESCED: &[&str] = &["codex-state", "hermes-state", "dsh-state", "claude-state", "opencode-state", "albion-state", "discussion-state"];
+const COALESCE_EVERY: Duration = Duration::from_millis(100);
 
 /// 远程只读白名单：都只读数据，不改库、不起子进程、不碰文件系统和配置。
 /// （get_conversation 会按需补建项目成员私聊的空行，和桌面打开项目时一样，不改已有内容。）
@@ -116,6 +126,26 @@ struct Client {
     id: u64,
     tx: SyncSender<Arc<str>>,
     alive: Arc<AtomicBool>,
+}
+
+/// 每种事件只留最新一帧，等下一个发送时机一起放出。
+#[derive(Default)]
+struct Latest {
+    frames: Mutex<Vec<(&'static str, String)>>,
+}
+
+impl Latest {
+    fn put(&self, name: &'static str, frame: String) {
+        let Ok(mut frames) = self.frames.lock() else { return };
+        match frames.iter_mut().find(|(have, _)| *have == name) {
+            Some(slot) => slot.1 = frame,
+            None => frames.push((name, frame)),
+        }
+    }
+
+    fn take(&self) -> Vec<String> {
+        self.frames.lock().map(|mut frames| frames.drain(..).map(|(_, frame)| frame).collect()).unwrap_or_default()
+    }
 }
 
 /// SSE 广播：每条连接一个有界 channel，写不进去（满了/断了）就摘掉。
@@ -419,8 +449,39 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
 }
 
 fn reply(request: Request, status: u16, content_type: &str, body: Vec<u8>) {
+    reply_with(request, status, content_type, body, "no-store", Compression::fast());
+}
+
+/// vite 打出来的 `assets/名字-哈希.扩展名` 内容跟文件名绑定、永不变，可以长缓存；index.html 等其余每次都问一遍。
+fn cache_policy(path: &str) -> &'static str {
+    if path.starts_with("/assets/") { "public, max-age=31536000, immutable" } else { "no-cache" }
+}
+
+/// 文本类（脚本、样式、JSON、SVG）压了才有收益；图片、字体本身已压缩。
+fn compressible(content_type: &str) -> bool {
+    content_type.starts_with("text/") || ["json", "javascript", "svg", "xml"].iter().any(|kind| content_type.contains(kind))
+}
+
+fn gzip(body: &[u8], level: Compression) -> Option<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::with_capacity(body.len() / 3), level);
+    encoder.write_all(body).ok()?;
+    encoder.finish().ok()
+}
+
+/// 手机经 Tailscale（可能走中继）下载，整包 JSON 动辄几百 KB 到一两 MB：对方接受 gzip 就压。
+fn reply_with(request: Request, status: u16, content_type: &str, body: Vec<u8>, cache: &str, level: Compression) {
+    let accepts_gzip = request.headers().iter().any(|h| h.field.equiv("Accept-Encoding") && h.value.as_str().contains("gzip"));
+    let packed = if accepts_gzip && body.len() >= 1024 && compressible(content_type) { gzip(&body, level) } else { None };
+    let mut headers = vec![("Content-Type", content_type), ("Cache-Control", cache), ("X-Content-Type-Options", "nosniff")];
+    let body = match packed {
+        Some(packed) => {
+            headers.extend([("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]);
+            packed
+        }
+        None => body,
+    };
     let mut response = Response::from_data(body).with_status_code(status);
-    for (name, value) in [("Content-Type", content_type), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")] {
+    for (name, value) in headers {
         if let Ok(header) = Header::from_bytes(name, value) {
             response.add_header(header);
         }
@@ -499,8 +560,9 @@ fn handle(app: &AppHandle, token: &Mutex<String>, events: &Events, mut request: 
     if path.contains("..") || path.contains('\\') {
         return reply_text(request, 400, "路径无效");
     }
+    let cache = cache_policy(&path);
     match app.asset_resolver().get(path) {
-        Some(asset) => reply(request, 200, &asset.mime_type, asset.bytes),
+        Some(asset) => reply_with(request, 200, &asset.mime_type, asset.bytes, cache, Compression::default()),
         None => reply_text(request, 404, "没有这个页面"),
     }
 }
@@ -522,7 +584,7 @@ impl Gateway {
     fn start(&self, app: &AppHandle) {
         self.stop();
         let result = tailscale_ip().and_then(|ip| {
-            let address = SocketAddr::from((ip, PORT));
+            let address = SocketAddr::from((ip, gateway_port()));
             let listener = TcpListener::bind(address).map_err(|e| format!("绑定 {address} 失败：{e}"))?;
             let server = Server::http("127.0.0.1:0").map_err(|e| format!("起内部服务失败：{e}"))?;
             let backend = server.server_addr().to_ip().ok_or("内部服务地址无效")?;
@@ -579,10 +641,22 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         }
     };
     let events = Arc::new(Events::default());
+    let latest = Arc::new(Latest::default());
     for name in EVENTS {
-        let events = events.clone();
-        app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
+        let (events, latest) = (events.clone(), latest.clone());
+        if COALESCED.contains(name) {
+            app.listen_any(*name, move |event| latest.put(name, sse_frame(name, event.payload())));
+        } else {
+            app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
+        }
     }
+    let flush = events.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(COALESCE_EVERY);
+        for frame in latest.take() {
+            flush.broadcast(&frame);
+        }
+    });
     let gateway = Gateway { events, token: Arc::new(Mutex::new(token)), running: Mutex::new(Running::default()) };
     if meta_get(app, ENABLED_KEY).as_deref() == Some("1") {
         gateway.start(app);
@@ -647,6 +721,41 @@ mod tests {
         assert!(allowed("send_claude_message") && allowed("stage_attachment") && !allowed("delete_conversation") && !allowed("connect_claude"));
         assert!(READ_COMMANDS.contains(&"list_conversations") && READ_COMMANDS.contains(&"dsh_status") && !READ_COMMANDS.contains(&"connect_dsh"));
         assert!(READ_COMMANDS.contains(&"background_image") && !READ_COMMANDS.contains(&"add_background") && !READ_COMMANDS.contains(&"remove_background"));
+    }
+
+    #[test]
+    fn latest_keeps_only_newest_frame_per_event() {
+        let latest = Latest::default();
+        for revision in 0..50 {
+            latest.put("claude-state", format!("claude {revision}"));
+        }
+        latest.put("codex-state", "codex 1".into());
+        latest.put("claude-state", "claude 50".into());
+        assert_eq!(latest.take(), vec!["claude 50".to_string(), "codex 1".to_string()]);
+        assert!(latest.take().is_empty(), "放出去的不会再发第二遍");
+        assert!(COALESCED.iter().all(|name| EVENTS.contains(name)));
+        assert!(!COALESCED.contains(&"brain-state"), "brain-state 载荷是各自不同的会话 id，不是快照，不能合并");
+    }
+
+    #[test]
+    fn hashed_assets_cache_forever_and_pages_revalidate() {
+        assert!(cache_policy("/assets/index-BPXGmM66.js").contains("immutable"));
+        assert!(cache_policy("/assets/KaTeX_Main-Regular-B22Nviop.woff2").contains("immutable"));
+        for page in ["/", "/index.html", "/favicon.ico"] {
+            assert_eq!(cache_policy(page), "no-cache", "{page} 不能长缓存，否则发新版后手机还在用旧页面");
+        }
+    }
+
+    #[test]
+    fn gzip_only_text_and_round_trips() {
+        assert!(compressible("application/json") && compressible("text/javascript") && compressible("text/css") && compressible("image/svg+xml"));
+        assert!(!compressible("font/woff2") && !compressible("image/webp") && !compressible("application/octet-stream"));
+        let body = r#"{"messages":[{"content":"同席同席同席同席"}]}"#.repeat(200).into_bytes();
+        let packed = gzip(&body, Compression::fast()).unwrap();
+        assert!(packed.len() < body.len() / 4);
+        let mut back = Vec::new();
+        flate2::read::GzDecoder::new(&packed[..]).read_to_end(&mut back).unwrap();
+        assert_eq!(back, body);
     }
 
     #[test]
