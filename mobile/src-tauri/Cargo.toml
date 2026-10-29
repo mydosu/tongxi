@@ -31,3 +31,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# 薄壳自己没有一行 Rust 业务代码，debug 版带着 tauri/wry 的调试符号有 110 MB+，
+# 打进 APK 就是 129 MB（gradle 那边 keepDebugSymbols 还会拦住 AGP 的 strip）。
+# 编译时就把 debuginfo 去掉：本机 .so 直接降到 10 MB 上下，APK 跟着小两个数量级，
+# 真要调 Rust 侧就临时把这行注释掉。
+[profile.dev]
+strip = "debuginfo"
