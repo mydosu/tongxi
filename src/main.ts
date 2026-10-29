@@ -24,6 +24,7 @@ import { fogOut, glide, measure, watchArrivals } from './motion';
 import './styles.css';
 import './agent_transcript.css';
 import './theme.css';
+import './mobile.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const icons: Record<string, string> = {
@@ -34,6 +35,7 @@ const icons: Record<string, string> = {
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   archive: '<path d="M4 8v12h16V8M3 4h18v4H3zM9 12h6"/>',
   arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
   settings: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   lock: '<rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
@@ -327,6 +329,7 @@ app.innerHTML = `
     </aside>
     <main id="main" class="main"><div class="loading">正在打开你的工作空间…</div></main>
   </div>
+  <button type="button" id="mobile-back" class="icon-button mobile-back" aria-label="返回会话列表" title="返回会话列表">${icon('back')}</button>
   <div class="window-controls" aria-label="窗口操作"><button id="hud-toggle" aria-label="HUD 模式" title="HUD 模式">▣</button><button id="window-minimize" aria-label="最小化到托盘" title="最小化到托盘">−</button><button id="window-maximize" aria-label="最大化" title="最大化">□</button><button id="window-close" aria-label="退出同席" title="退出同席">×</button></div>
   ${(['North', 'South', 'East', 'West', 'NorthEast', 'NorthWest', 'SouthEast', 'SouthWest'] as const).map(direction => `<div class="resize-edge resize-${direction}" data-resize="${direction}" aria-hidden="true"></div>`).join('')}
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -369,6 +372,10 @@ function enterView(view: string) {
   clearTimeout(enterTimer); enterTimer = setTimeout(() => main.classList.remove('view-enter'), 520);
 }
 let membersOpen = false;
+/// 手机（≤600px）一次只显示一页：会话列表或会话页；窄屏样式见 mobile.css，桌面宽度下这个属性无效。
+const setMobileView = (view: 'list' | 'chat') => { document.documentElement.dataset.mview = view; };
+setMobileView('list');
+if (isRemote) document.documentElement.dataset.remote = '1';
 new MutationObserver(()=>hydrateAttachments(main)).observe(main,{childList:true,subtree:true});
 watchArrivals(main, () => main.dataset.view);
 let pendingQuestions:PendingChatQuestion[]=[];
@@ -576,11 +583,11 @@ function renderList() {
     list.addEventListener('click', event => {
       const target = event.target as HTMLElement;
       const module = target.closest<HTMLButtonElement>('[data-project-module]');
-      if (module) { void selectProjectModule(module.dataset.groupId || '', module.dataset.projectModule || 'team'); return; }
+      if (module) { setMobileView('chat'); void selectProjectModule(module.dataset.groupId || '', module.dataset.projectModule || 'team'); return; }
       const toggle = target.closest<HTMLButtonElement>('[data-project-expand]')?.dataset.projectExpand;
       if (toggle !== undefined) { expandedProjectGroup = expandedProjectGroup === toggle ? '' : toggle; renderList(); return; }
       const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
-      if (id) void selectConversation(id);
+      if (id) { setMobileView('chat'); void selectConversation(id); }
     });
   }
   bindConversationDrag(list, visible.map(conversation => conversation.id));
@@ -2116,7 +2123,7 @@ function showCreate(initialKind: 'direct' | 'group' = 'group') {
     const button = form.querySelector<HTMLButtonElement>('[type=submit]')!; button.disabled = true;
     try {
       const conversation = await invoke<Conversation>('create_conversation', { title: String(data.get('title') || ''), kind: initialKind, members: data.getAll('member').map(String) });
-      modal.close(); archived = false; search = ''; filter = 'all'; document.querySelector<HTMLInputElement>('#search')!.value = '';
+      modal.close(); setMobileView('chat'); archived = false; search = ''; filter = 'all'; document.querySelector<HTMLInputElement>('#search')!.value = '';
       await refreshList(); await selectConversation(conversation.id); toast('新的会话已创建');
     } catch (error) { form.querySelector('.form-error')!.textContent = errorText(error); }
     finally { button.disabled = false; }
@@ -2167,7 +2174,7 @@ function confirmDeleteConversation(conversation: Conversation) {
     try {
       await invoke('delete_conversation', { id: conversation.id }); localStorage.removeItem(draftKey(conversation.id)); modal.close();
       if (selectedId === conversation.id) {
-        detail = null; selectedId = ''; localStorage.removeItem('hub.selected'); await refreshList();
+        detail = null; selectedId = ''; localStorage.removeItem('hub.selected'); setMobileView('list'); await refreshList();
         if (conversations[0]) await selectConversation(conversations[0].id); else renderChat();
       } else await refreshList();
       toast('会话已删除');
@@ -2435,7 +2442,7 @@ function renderServices() {
   disposeProjectTranscript();
   // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
-  ++detailGeneration; screen = 'services'; renderList(); enterView('services');
+  ++detailGeneration; screen = 'services'; setMobileView('chat'); renderList(); enterView('services');
   main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
@@ -2511,6 +2518,7 @@ document.querySelector('#archive-filter')!.addEventListener('click', async () =>
   try { await refreshList(); } catch (error) { toast(errorText(error), true); }
 });
 document.querySelector('#service-link')!.addEventListener('click', () => renderServices());
+document.querySelector('#mobile-back')!.addEventListener('click', () => { setMembersOpen(false); setMobileView('list'); });
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); document.querySelector<HTMLInputElement>('#search')!.focus(); } });
 
 /// 扫描结果回来后只重画接入横条和每张卡的安装行，不重画整页（卡上的更新状态保留）。
