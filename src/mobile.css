@@ -40,4 +40,11 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   .workspace-row { flex-wrap: wrap; }
   .workspace-row input { width: 100%; flex: 1 1 100%; }
   .setup-copy { min-width: 0; }
+
+  /* 项目群：展开钮和子栏放大到好点的触控尺寸。 */
+  html:not([data-hud]) .conversation-branch-row > .conversation { padding-right: 52px; }
+  html:not([data-hud]) .project-expand { right: 6px; width: 40px; height: 40px; margin-top: -20px; }
+  html:not([data-hud]) .project-expand svg { width: 18px; height: 18px; }
+  html:not([data-hud]) .project-subnav { margin-left: 22px; gap: 4px; }
+  html:not([data-hud]) .project-module-row { min-height: 44px; font-size: 14px; padding: 6px 10px; }
 }

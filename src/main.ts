@@ -588,7 +588,11 @@ function renderList() {
       const toggle = target.closest<HTMLButtonElement>('[data-project-expand]')?.dataset.projectExpand;
       if (toggle !== undefined) { expandedProjectGroup = expandedProjectGroup === toggle ? '' : toggle; renderList(); return; }
       const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
-      if (id) { setMobileView('chat'); void selectConversation(id); }
+      if (id) {
+        // 手机上项目群卡片只负责展开/收起子栏（团队对话是子栏第一行），不然进了团队对话就够不到协作问答、主脑任务。
+        if (matchMedia('(max-width: 600px)').matches && target.closest('.conversation-branch')) { expandedProjectGroup = expandedProjectGroup === id ? '' : id; renderList(); return; }
+        setMobileView('chat'); void selectConversation(id);
+      }
     });
   }
   bindConversationDrag(list, visible.map(conversation => conversation.id));
