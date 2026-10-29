@@ -5,7 +5,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::Serialize;
 use serde_json::Value;
 use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -107,6 +107,7 @@ enum RpcError {
 struct Running {
     stop: Option<Arc<AtomicBool>>,
     thread: Option<JoinHandle<()>>,
+    front: Option<JoinHandle<()>>,
     address: Option<SocketAddr>,
     error: Option<String>,
 }
@@ -122,6 +123,8 @@ struct Client {
 struct Events {
     next: AtomicU64,
     clients: Mutex<Vec<Client>>,
+    /// 对外一侧的 socket（见 `forward`）：close_all 直接 shutdown 它们，对端才会收到 FIN。
+    conns: Mutex<Vec<(u64, TcpStream)>>,
 }
 
 impl Events {
@@ -158,6 +161,57 @@ impl Events {
                 client.alive.store(false, Ordering::SeqCst);
             }
         }
+        if let Ok(mut conns) = self.conns.lock() {
+            for (_, conn) in conns.drain(..) {
+                let _ = conn.shutdown(Shutdown::Both);
+            }
+        }
+    }
+}
+
+/// tiny_http 的连接线程在 upgrade 之后仍握着底层 socket 去等下一个请求，丢掉 upgrade 出来的流并不会关连接，
+/// 对端收不到 FIN；它也不给 TcpStream。所以对外监听的是我们自己的 listener，字节转发给回环上的 tiny_http，
+/// 要断就 shutdown 对外这一端。
+/// shortcut: 连接断开清理靠 forward 收尾，没做空闲超时，真有慢连接堆积时再加。
+fn serve_front(listener: TcpListener, backend: SocketAddr, stop: Arc<AtomicBool>, events: Arc<Events>) -> JoinHandle<()> {
+    let _ = listener.set_nonblocking(true);
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((client, _)) => {
+                    let events = events.clone();
+                    std::thread::spawn(move || forward(client, backend, &events));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => break,
+            }
+        }
+    })
+}
+
+fn forward(client: TcpStream, backend: SocketAddr, events: &Events) {
+    let _ = client.set_nonblocking(false);
+    let Ok(server) = TcpStream::connect(backend) else { return };
+    let (Ok(mut client_in), Ok(mut client_out), Ok(mut server_in), Ok(mut server_out), Ok(tracked)) =
+        (client.try_clone(), client.try_clone(), server.try_clone(), server.try_clone(), client.try_clone())
+    else {
+        return;
+    };
+    let id = events.next.fetch_add(1, Ordering::SeqCst);
+    match events.conns.lock() {
+        Ok(mut conns) => conns.push((id, tracked)),
+        Err(_) => return,
+    }
+    let upstream = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_in, &mut server_out);
+        let _ = server_out.shutdown(Shutdown::Both);
+    });
+    let _ = std::io::copy(&mut server_in, &mut client_out);
+    let _ = client.shutdown(Shutdown::Both);
+    let _ = server.shutdown(Shutdown::Both);
+    let _ = upstream.join();
+    if let Ok(mut conns) = events.conns.lock() {
+        conns.retain(|(conn_id, _)| *conn_id != id);
     }
 }
 
@@ -457,7 +511,7 @@ impl Gateway {
         if let Some(stop) = running.stop.take() {
             stop.store(true, Ordering::SeqCst);
         }
-        if let Some(thread) = running.thread.take() {
+        for thread in [running.front.take(), running.thread.take()].into_iter().flatten() {
             let _ = thread.join();
         }
         running.address = None;
@@ -468,15 +522,18 @@ impl Gateway {
         self.stop();
         let result = tailscale_ip().and_then(|ip| {
             let address = SocketAddr::from((ip, PORT));
-            let server = Server::http(address).map_err(|e| format!("绑定 {address} 失败：{e}"))?;
-            Ok((address, server))
+            let listener = TcpListener::bind(address).map_err(|e| format!("绑定 {address} 失败：{e}"))?;
+            let server = Server::http("127.0.0.1:0").map_err(|e| format!("起内部服务失败：{e}"))?;
+            let backend = server.server_addr().to_ip().ok_or("内部服务地址无效")?;
+            Ok((address, listener, server, backend))
         });
         let Ok(mut running) = self.running.lock() else { return };
         match result {
             Err(reason) => running.error = Some(reason),
-            Ok((address, server)) => {
+            Ok((address, listener, server, backend)) => {
                 let stop = Arc::new(AtomicBool::new(false));
                 let (flag, app, token, events) = (stop.clone(), app.clone(), self.token.clone(), self.events.clone());
+                running.front = Some(serve_front(listener, backend, stop.clone(), events.clone()));
                 running.thread = Some(std::thread::spawn(move || {
                     while !flag.load(Ordering::SeqCst) {
                         match server.recv_timeout(Duration::from_millis(300)) {
@@ -666,5 +723,42 @@ mod tests {
         events.close_all();
         events.broadcast("ignored");
         worker.join().unwrap();
+    }
+
+    /// close_all 后对端必须真的收到 FIN（read 返回 0 或出错），不能只是服务端线程退出。
+    #[test]
+    fn close_all_makes_client_see_eof() {
+        use std::io::Read;
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let events = Arc::new(Events::default());
+        let served = events.clone();
+        let _worker = std::thread::spawn(move || serve_events(&served, server.recv().unwrap()));
+        let front = TcpListener::bind("127.0.0.1:0").unwrap();
+        let front_port = front.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let front_thread = serve_front(front, SocketAddr::from(([127, 0, 0, 1], port)), stop.clone(), events.clone());
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", front_port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.write_all(b"GET /events HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 256];
+        while !String::from_utf8_lossy(&seen).contains(": connected\n") {
+            let n = client.read(&mut buf).unwrap();
+            assert!(n > 0, "握手前连接就断了");
+            seen.extend_from_slice(&buf[..n]);
+        }
+        events.close_all();
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let eof = loop {
+            match client.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(_) => continue,
+                Err(e) => break !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+            }
+        };
+        assert!(eof, "close_all 之后 2 秒内客户端没收到 EOF");
+        stop.store(true, Ordering::SeqCst);
+        front_thread.join().unwrap();
     }
 }
