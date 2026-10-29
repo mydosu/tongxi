@@ -20,11 +20,6 @@
           </div>
         </div>
 
-        <button type="button" class="primary" id="scan">扫码配对</button>
-        <p class="hint">扫桌面「成员与服务 → 远程访问」里的二维码。</p>
-
-        <div class="or"><span>或者粘贴地址</span></div>
-
         <form id="paste-form" autocomplete="off">
           <input
             id="address"
@@ -35,9 +30,10 @@
             spellcheck="false"
             placeholder="http://100.x.y.z:47680/?token=…"
           />
-          <button type="submit" class="secondary" id="connect">连接</button>
+          <button type="submit" class="primary" id="connect">连接</button>
         </form>
 
+        <p class="hint">在桌面同席「成员与服务 → 远程访问」里点「复制访问地址」，发到手机后粘贴到这里。</p>
         <p class="error" id="error" role="alert" hidden></p>
       </section>
 

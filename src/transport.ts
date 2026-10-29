@@ -65,10 +65,10 @@ function remoteToken() {
 /// boot 用它判断要不要放行这个页面：远程模式下没令牌就是空手进来的。
 export function hasRemoteToken(): boolean { return remoteToken() !== ''; }
 
-/// 薄壳里令牌作废（桌面重置过令牌）时先忘掉旧的，再退回配对页重扫。
+/// 薄壳里令牌作废（桌面重置过令牌）时先忘掉旧的，再退回配对页重新配对。
 function forgetRemoteToken() {
   incomingToken = '';
-  try { localStorage.removeItem(TOKEN_KEY); } catch { /* 清不掉也不影响跳过去重扫 */ }
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* 清不掉也不影响跳过去重新配对 */ }
 }
 
 export async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
@@ -89,7 +89,7 @@ async function rpc<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     throw '连不上同席，请检查手机和电脑是否在同一个网络';
   }
   if (!response.ok) {
-    // 薄壳里 401 = 桌面那边重置过令牌（或者换了电脑）：退回配对页重新扫码，
+    // 薄壳里 401 = 桌面那边重置过令牌（或者换了电脑）：退回配对页重新粘贴地址，
     // 别让人对着一屏「令牌无效」干瞪眼。普通手机浏览器没有薄壳，行为不变。
     if (response.status === 401 && isShell) {
       forgetRemoteToken();

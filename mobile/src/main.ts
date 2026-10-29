@@ -1,18 +1,16 @@
-// 同席手机薄壳的「配对」页：这一页只做一件事——拿到桌面同席网关的完整地址，
+// 同席手机薄壳的「配对」页：这一页只做一件事——拿到用户粘贴的桌面同席网关完整地址，
 // 存下来，然后整页跳过去。跳过去之后跑的是桌面那份前端（同一份 src/），薄壳不再插手。
-import { scan, Format } from '@tauri-apps/plugin-barcode-scanner';
 
 /// 存的就是桌面「远程访问」卡片里那条带令牌的 url，薄壳自己不解令牌、不发请求。
 const STORAGE_KEY = 'tongxi.pair.url';
-const NOT_PAIRING_CODE = '这不是同席的配对码';
+const NOT_PAIRING_CODE = '这不是同席的访问地址，请粘贴桌面「复制访问地址」得到的那条';
 
 const input = document.querySelector<HTMLInputElement>('#address')!;
 const errorLine = document.querySelector<HTMLElement>('#error')!;
-const scanButton = document.querySelector<HTMLButtonElement>('#scan')!;
 const pasteForm = document.querySelector<HTMLFormElement>('#paste-form')!;
 
 /// 只认薄壳能直接打开的那种地址：http（网关没有证书）、主机落在 Tailscale 的
-/// 100.64.0.0/10 或 *.ts.net、并且带 token 参数。别的一律当误扫。
+/// 100.64.0.0/10 或 *.ts.net、并且带 token 参数。别的一律当粘错了。
 export function pairingUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -69,30 +67,12 @@ function savedUrl(): string {
   }
 }
 
-async function startScan() {
-  clearError();
-  scanButton.disabled = true;
-  try {
-    const result = await scan({ formats: [Format.QRCode] });
-    const url = store(result.content);
-    if (url) connect(url);
-  } catch (error) {
-    // 用户中途退出扫码、没给相机权限，都只提示一句，不打断。
-    const message = String(error ?? '');
-    if (message && !/cancel/i.test(message)) showError(`扫码没有成功：${message}`);
-  } finally {
-    scanButton.disabled = false;
-  }
-}
-
 pasteForm.addEventListener('submit', event => {
   event.preventDefault();
   clearError();
   const url = store(input.value);
   if (url) connect(url);
 });
-
-scanButton.addEventListener('click', () => { void startScan(); });
 
 /// 回来路上带 ?repair=1 就是要换一台电脑/换了令牌：停在配对页，旧地址只用来预填。
 /// 顺便把存的那条清掉，免得下次冷启动又跳回已经 401 的旧地址、在配对页和页面之间来回弹。
