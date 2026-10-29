@@ -8,6 +8,7 @@ import { morphChildren, patchMessage } from './live_patch';
 import { plainThought, steerIds, thoughtFlow, type FlowPart } from './thought_flow';
 import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
+import { qrSvg } from './qr';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
 import { inquiryPage } from './project_inquiries';
@@ -2567,7 +2568,7 @@ let remoteGateway: RemoteGatewayStatus | null = null;
 let remoteGatewayMissing = false;
 
 function remoteGatewayCard() {
-  return `<section class="storage-card remote-card" id="remote-access"><div class="remote-head">${icon('panel')}<strong>远程访问</strong><label class="setup-auto"><input type="checkbox" data-remote-toggle>允许手机访问</label></div><p class="remote-line" data-remote-status>正在读取状态…</p><div class="remote-actions"><button type="button" class="secondary" data-remote-copy hidden>复制访问地址</button><button type="button" class="secondary" data-remote-reset hidden>重置令牌</button></div><p class="remote-tip">手机装 Tailscale 并登录同一账号，用手机浏览器打开复制的地址。</p></section>`;
+  return `<section class="storage-card remote-card" id="remote-access"><div class="remote-head">${icon('panel')}<strong>远程访问</strong><label class="setup-auto"><input type="checkbox" data-remote-toggle>允许手机访问</label></div><p class="remote-line" data-remote-status>正在读取状态…</p><div class="remote-actions"><button type="button" class="secondary" data-remote-copy hidden>复制访问地址</button><button type="button" class="secondary" data-remote-qr hidden>显示配对二维码</button><button type="button" class="secondary" data-remote-reset hidden>重置令牌</button></div><div class="remote-qr" data-remote-qr-box hidden></div><p class="remote-tip">手机装 Tailscale 并登录同一账号，用同席 App 或手机相机扫码打开。</p></section>`;
 }
 
 function wireRemoteGateway() {
@@ -2576,6 +2577,8 @@ function wireRemoteGateway() {
   const toggle = card.querySelector<HTMLInputElement>('[data-remote-toggle]')!;
   const copy = card.querySelector<HTMLButtonElement>('[data-remote-copy]')!;
   const reset = card.querySelector<HTMLButtonElement>('[data-remote-reset]')!;
+  // 令牌在码里，默认收起；卡片每次进服务页都是新建的，所以展开状态不会带到下次。
+  card.querySelector<HTMLButtonElement>('[data-remote-qr]')!.onclick = () => { card.toggleAttribute('data-qr-open'); paintRemoteGateway(); };
   toggle.onchange = async () => {
     toggle.disabled = true;
     try { remoteGateway = await invoke<RemoteGatewayStatus>('set_remote_gateway', { enabled: toggle.checked }); }
@@ -2611,12 +2614,14 @@ function paintRemoteGateway() {
   const line = card.querySelector<HTMLElement>('[data-remote-status]')!;
   const copy = card.querySelector<HTMLButtonElement>('[data-remote-copy]')!;
   const reset = card.querySelector<HTMLButtonElement>('[data-remote-reset]')!;
+  const qr = card.querySelector<HTMLButtonElement>('[data-remote-qr]')!;
+  const qrBox = card.querySelector<HTMLElement>('[data-remote-qr-box]')!;
   const status = remoteGateway;
   if (!status) {
     line.textContent = remoteGatewayMissing ? '读不到远程访问状态，桌面可能需要更新' : '正在读取状态…';
     line.classList.toggle('error', remoteGatewayMissing);
     toggle.disabled = true;
-    copy.hidden = reset.hidden = true;
+    copy.hidden = reset.hidden = qr.hidden = qrBox.hidden = true;
     return;
   }
   toggle.disabled = false;
@@ -2626,7 +2631,13 @@ function paintRemoteGateway() {
   if (status.error) line.textContent = status.error;
   else if (status.running) line.innerHTML = status.address ? `运行中 · <code>${escape(status.address)}</code>` : '运行中';
   else line.textContent = status.enabled ? '正在启动…' : '未开启';
-  copy.hidden = reset.hidden = !status.running;
+  copy.hidden = reset.hidden = qr.hidden = !status.running;
+  // 关网关后收起；重置令牌后 url 变了，展开着的码跟着换。
+  if (!status.running || !status.url) card.removeAttribute('data-qr-open');
+  const open = card.hasAttribute('data-qr-open') && !!status.url;
+  qr.textContent = open ? '隐藏二维码' : '显示配对二维码';
+  qrBox.hidden = !open;
+  qrBox.innerHTML = open ? qrSvg(status.url!) : '';
 }
 
 /// 纯色头像可选的颜色（和界面配色协调，白字都看得清）。

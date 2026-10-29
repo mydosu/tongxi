@@ -2,17 +2,21 @@
 // 手机浏览器里走桌面同席起的 HTTP 网关（POST /rpc/<command>、SSE /events）。
 // 调用处一律从 './transport' 取 invoke / listen / emit，签名与 @tauri-apps/api 对齐，一字不改。
 
-import { invoke as tauriInvoke, isTauri, type InvokeArgs } from '@tauri-apps/api/core';
+import { invoke as tauriInvoke, isTauri as tauriPresent, type InvokeArgs } from '@tauri-apps/api/core';
 import { emit as tauriEmit, listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 
-export { isTauri };
 
 /// 远程模式下和 Tauri 的 Event<T> 同形：处理函数只认 event 名和 payload。
 export type TransportEvent<T> = { event: string; payload: T };
 export type TransportHandler<T> = (event: TransportEvent<T>) => void;
 
-/// 远程 = 页面不是 Tauri 窗口里打开的（手机浏览器、局域网里的别的电脑）。
-export const isRemote = !isTauri();
+/// 远程 = 页面不是 Tauri 窗口里打开的（手机浏览器、局域网里的别的电脑、薄壳 App 跳转后的页面）。
+// 薄壳 APK 会整页跳到 http://100.x:47680，Tauri 可能仍把 __TAURI_INTERNALS__ 注进这个远程页面：
+// 光看 isTauri() 会误走 IPC 而失败，所以页面不在本地 origin（桌面 dev 的 localhost、正式包的 tauri.localhost）也算远程。
+const localOrigin = /^(localhost|127\.0\.0\.1|\[::1\]|tauri\.localhost)$/.test(location.hostname) || location.protocol === 'tauri:';
+export const isRemote = !tauriPresent() || !localOrigin;
+/// 真正在桌面 Tauri 窗口里（和 isRemote 互斥）；调用处用它判断能不能用窗口、网关这类桌面能力。
+export const isTauri = () => !isRemote;
 
 // 手机经 http://100.x.y.z 打开不是安全上下文，浏览器没有 crypto.randomUUID（getRandomValues 还在）：补一个 v4。
 if (isRemote && typeof crypto.randomUUID !== 'function') {

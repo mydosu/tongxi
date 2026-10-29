@@ -331,6 +331,8 @@ body.conversation-dragging, body.conversation-dragging * { cursor: grabbing !imp
 .remote-card .remote-line.error { color: #a56c5c; }
 .remote-card .remote-actions { display: flex; gap: 8px; margin-top: 12px; }
 .remote-card .remote-tip { margin-top: 10px; }
+.remote-card .remote-qr { margin-top: 12px; width: 180px; border-radius: 10px; overflow: hidden; border: 1px solid #e0e2e5; line-height: 0; }
+.remote-card .remote-qr[hidden] { display: none; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: #d7dadf; border-radius: 4px; }
 @media(max-width:1120px) { .chat-content { padding: 16px 18px 0; } .shell { grid-template-columns: 235px minmax(0,1fr); } .welcome h2 { font-size: 21px; } .composer-bottom > span { max-width: 155px; line-height: 1.7; } }
