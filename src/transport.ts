@@ -18,6 +18,14 @@ export const isRemote = !tauriPresent() || !localOrigin;
 /// 真正在桌面 Tauri 窗口里（和 isRemote 互斥）；调用处用它判断能不能用窗口、网关这类桌面能力。
 export const isTauri = () => !isRemote;
 
+/// 薄壳 = 从同席 App 里跳到桌面网关的那个页面：既是远程（不在 tauri.localhost），又还能摸到
+// Tauri 注入的 __TAURI_INTERNALS__。普通手机浏览器没有后者，桌面窗口走不到远程分支。
+export const isShell = isRemote && '__TAURI_INTERNALS__' in window;
+
+/// 薄壳的本地 origin 就是 http://tauri.localhost（Tauri 2 的 use_https_scheme 默认关，安卓也是 http），
+/// 配对页就在那儿；带上 ?repair=1 让它停在配对页而不是立刻再跳回旧地址。
+export const REPAIR_URL = 'http://tauri.localhost/?repair=1';
+
 // 手机经 http://100.x.y.z 打开不是安全上下文，浏览器没有 crypto.randomUUID（getRandomValues 还在）：补一个 v4。
 if (isRemote && typeof crypto.randomUUID !== 'function') {
   (crypto as { randomUUID: () => string }).randomUUID = () => {
@@ -57,6 +65,12 @@ function remoteToken() {
 /// boot 用它判断要不要放行这个页面：远程模式下没令牌就是空手进来的。
 export function hasRemoteToken(): boolean { return remoteToken() !== ''; }
 
+/// 薄壳里令牌作废（桌面重置过令牌）时先忘掉旧的，再退回配对页重扫。
+function forgetRemoteToken() {
+  incomingToken = '';
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* 清不掉也不影响跳过去重扫 */ }
+}
+
 export async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   if (isRemote) return rpc<T>(cmd, args);
   return tauriInvoke<T>(cmd, args);
@@ -75,6 +89,13 @@ async function rpc<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     throw '连不上同席，请检查手机和电脑是否在同一个网络';
   }
   if (!response.ok) {
+    // 薄壳里 401 = 桌面那边重置过令牌（或者换了电脑）：退回配对页重新扫码，
+    // 别让人对着一屏「令牌无效」干瞪眼。普通手机浏览器没有薄壳，行为不变。
+    if (response.status === 401 && isShell) {
+      forgetRemoteToken();
+      location.href = REPAIR_URL;
+      throw '配对已失效，正在回到配对页…';
+    }
     let detail = '';
     try { detail = (await response.text()).trim(); } catch { /* 读不出 body 就只报状态码 */ }
     throw detail || `HTTP ${response.status}`;

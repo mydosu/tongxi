@@ -1,0 +1,165 @@
+/* 配对页：浅色玻璃感，配色跟桌面同席（src/styles.css）对齐——
+   #f8f9fb 底、#303844 字、#33383e 主色、#e3e5e8 分隔线、#848990 次要文字。 */
+:root {
+  font-family: 'Noto Sans SC', 'MiSans', 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  font-size: 15px;
+  color: #303844;
+  background: #f8f9fb;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  --accent: #33383e;
+  --line: #e3e5e8;
+  --muted: #848990;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  /* 两团很淡的光斑，让玻璃卡片有个底 */
+  background:
+    radial-gradient(circle at 18% 12%, #e9eefb 0%, transparent 46%),
+    radial-gradient(circle at 84% 88%, #f3ecf6 0%, transparent 50%),
+    #f8f9fb;
+  display: flex;
+  flex-direction: column;
+}
+
+.pair {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  padding: calc(28px + env(safe-area-inset-top)) 20px calc(22px + env(safe-area-inset-bottom));
+  max-width: 460px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.card {
+  display: grid;
+  gap: 14px;
+  padding: 26px 22px 24px;
+  border: 1px solid #ffffffc0;
+  border-radius: 22px;
+  background: linear-gradient(170deg, #ffffffd9, #ffffff9c);
+  box-shadow:
+    0 22px 50px -28px #2b36481f,
+    0 2px 8px #2b36480a,
+    inset 0 1px 0 #ffffff;
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.brand { display: flex; align-items: center; gap: 13px; }
+
+.mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  flex: none;
+  background: linear-gradient(150deg, #4a525e, #33383e 62%, #24282e);
+  box-shadow: 0 8px 18px -8px #33383e8c, inset 0 1px 0 #ffffff38;
+  position: relative;
+}
+/* 方块里挖一个「同席」的方桌意象：两笔叠出的方框 */
+.mark::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border: 1.6px solid #f8f9fb;
+  border-radius: 4px;
+  opacity: .92;
+}
+
+h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: .02em; }
+.tagline { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 0;
+  border-radius: 12px;
+  padding: 13px 16px;
+  transition: transform .14s ease, background .15s ease, box-shadow .15s ease, opacity .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+button:active { transform: scale(.985); }
+button:disabled { opacity: .55; cursor: default; }
+
+.primary {
+  color: #f8f9fb;
+  background: linear-gradient(160deg, #414750, #33383e 70%);
+  box-shadow: 0 10px 22px -12px #33383eaa, inset 0 1px 0 #ffffff26;
+  font-weight: 600;
+}
+
+.secondary {
+  color: #33383e;
+  background: #ffffffcc;
+  border: 1px solid var(--line);
+  font-weight: 600;
+  box-shadow: 0 1px 2px #2b36480a;
+  white-space: nowrap;
+}
+.secondary:hover { background: #fff; }
+
+.hint { margin: -6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+.or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #a5abb5;
+  font-size: 11.5px;
+  margin: 2px 0;
+}
+.or::before,
+.or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+}
+
+form { display: flex; gap: 8px; align-items: stretch; }
+
+input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: #303844;
+  background: #ffffffd0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 13px;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+input::placeholder { color: #b3b9c2; }
+input:focus { border-color: #b9c1cc; box-shadow: 0 0 0 3px #33383e12; }
+
+.error {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #fdf3f1;
+  border: 1px solid #f2ddd8;
+  color: #ab6659;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.foot { text-align: center; }
+.foot p { margin: 0; font-size: 11.5px; color: #a5abb5; }
+
+@media (max-width: 360px) {
+  .card { padding: 22px 16px 20px; border-radius: 18px; }
+  form { flex-wrap: wrap; }
+  form .secondary { flex: 1 1 100%; }
+}

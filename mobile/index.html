@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>同席</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="pair">
+      <section class="card">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>同席</h1>
+            <p class="tagline">手机上接着用桌面那台电脑的同席</p>
+          </div>
+        </div>
+
+        <button type="button" class="primary" id="scan">扫码配对</button>
+        <p class="hint">扫桌面「成员与服务 → 远程访问」里的二维码。</p>
+
+        <div class="or"><span>或者粘贴地址</span></div>
+
+        <form id="paste-form" autocomplete="off">
+          <input
+            id="address"
+            type="url"
+            inputmode="url"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="http://100.x.y.z:47680/?token=…"
+          />
+          <button type="submit" class="secondary" id="connect">连接</button>
+        </form>
+
+        <p class="error" id="error" role="alert" hidden></p>
+      </section>
+
+      <footer class="foot">
+        <p>这台手机要和电脑在同一个 Tailscale 网络里。</p>
+      </footer>
+    </main>
+  </body>
+</html>

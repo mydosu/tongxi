@@ -1,0 +1,12 @@
+# 仓库里统一按 LF 存、也按 LF 检出；只有 Windows 的批处理脚本检出时给 CRLF
+# （cmd 对 LF 结尾的 .bat 不稳，gradlew.bat 之类必须 CRLF）。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：别让 git 做行尾/编码猜测
+*.jar binary
+*.png binary
+*.ico binary
+*.icns binary
+*.so binary

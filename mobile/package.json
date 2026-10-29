@@ -1,0 +1,25 @@
+{
+  "name": "tongxi-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "同席手机薄壳：扫码配对后整页打开桌面同席的网关地址",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "android:init": "tauri android init --ci",
+    "android:apk": "pwsh -NoProfile -File scripts/android-build.ps1 -Debug -Target aarch64",
+    "android:apk:x86_64": "pwsh -NoProfile -File scripts/android-build.ps1 -Debug -Target x86_64"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-barcode-scanner": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

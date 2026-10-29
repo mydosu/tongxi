@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  同席手机薄壳只跟桌面同席的网关说话，而网关是明文 http（Tailscale 自己加密链路，
+  应用层没有再上证书）。Android 9 起默认禁止 cleartext，所以要显式放开。
+
+  想收窄到「只放行 Tailscale」是做不到的：network security config 的 <domain> 只认主机名
+  和通配子域，不支持 100.64.0.0/10 这种网段写法。所以：
+
+  shortcut: base-config 整体放开 cleartext（含明文 http），只把 *.ts.net 单独写出来当说明，
+  等哪天网关上了证书再收紧。App 本身没有任何其他网络出口——除了这个配对页加载本地资源，
+  整页只会跳到用户扫码/粘贴进来的那条地址（薄壳里已经校验必须是 http + 100.64.0.0/10 或
+  *.ts.net + 带 token），运行期的请求全部由那个页面发往同一台机器。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>

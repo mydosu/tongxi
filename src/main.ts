@@ -1,4 +1,4 @@
-import { emit, hasRemoteToken, invoke, isRemote, isTauri, listen } from './transport';
+import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, REPAIR_URL } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
@@ -2750,9 +2750,11 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   document.querySelector<HTMLInputElement>('#search')!.disabled = true;
   // 桌面窗口靠 Tauri 拿数据；手机/别的电脑靠网关，条件是地址栏带过令牌（或之前存过）。
   if (!isTauri() && !hasRemoteToken()) {
-    main.innerHTML = `<div class="no-selection">${brand}<h1>请从桌面同席的「远程访问」打开带令牌的地址。</h1><p>这个页面需要桌面应用提供本地数据存储。<br>运行 Agent Hub.exe，或使用 npm run desktop。</p></div>`;
+    main.innerHTML = `<div class="no-selection">${brand}<h1>请从桌面同席的「远程访问」打开带令牌的地址。</h1><p>这个页面需要桌面应用提供本地数据存储。<br>运行 Agent Hub.exe，或使用 npm run desktop。</p>${isShell ? '<button type="button" class="secondary" id="repair-pair">重新扫码配对</button>' : ''}</div>`;
     document.querySelector<HTMLButtonElement>('#new-conversation')!.disabled = true;
     document.querySelector<HTMLButtonElement>('#service-link')!.disabled = true;
+    // 薄壳里没有地址栏可改、也换不掉令牌：给一个回配对页重扫的出口。手机浏览器和桌面窗口不显示它。
+    document.querySelector<HTMLButtonElement>('#repair-pair')?.addEventListener('click', () => { location.href = REPAIR_URL; });
     return;
   }
   try {

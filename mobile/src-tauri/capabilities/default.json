@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "配对页只需要扫码：相机权限在 AndroidManifest 里另配，这里只放扫码插件的默认权限集",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "barcode-scanner:default"
+  ]
+}
