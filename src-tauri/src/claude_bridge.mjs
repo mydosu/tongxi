@@ -315,7 +315,20 @@ function failureMessage(result) {
 function prompt(id, params) {
   const session = sessions.get(params.sessionId);
   if (!session) throw new Error('Claude 会话未加载');
-  if (session.child) throw new Error('Claude 正在处理上一条消息');
+  if (session.turn) throw new Error('Claude 正在处理上一条消息');
+  // 本回合的状态；进程可能跨回合留着（等后台命令），所以挂在 session.turn 上。
+  // context：最后一次模型调用的输入+输出＝会话当前的上下文大小。
+  // spent：本回合到现在的累计用量（每次模型调用的输入含缓存读写＋输出），回合中途报给同席看软预算；按消息 id 去重。
+  // resetsAt：最近一次 rate_limit_event：被限流时带上重置时间（Unix 秒），同席据此等到重置再继续。
+  const turn = { id, result: null, wroteText: false, resetsAt: null, context: 0, spent: 0, counted: new Set(), resumed: true };
+  session.cancelled = false;
+  session.steered = 0;
+  // 上一回合留着等后台命令的进程还在：这条消息直接写进去，后台命令不被打断（模型、强度、权限档沿用那个进程的）。
+  if (session.child) {
+    session.turn = turn;
+    session.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
+    return;
+  }
   // 项目权限档（同席每回合带来）：read 只放行读的工具，write 不让推送、发版、合 PR，full 和私聊不限。
   const tier = params.tongxiTier;
   const denied = ['AskUserQuestion', ...(tier === 'write' ? IRREVERSIBLE.flatMap(command => [`Bash(${command}:*)`, `PowerShell(${command}:*)`]) : [])];
@@ -323,8 +336,8 @@ function prompt(id, params) {
     '--include-partial-messages', '--disallowedTools', ...denied];
   if (session.model && session.model !== 'default') args.push('--model', session.model);
   if (session.effort) args.push('--effort', session.effort);
-  const resumed = Boolean(session.started || transcript(params.sessionId));
-  args.push(resumed ? '--resume' : '--session-id', params.sessionId);
+  turn.resumed = Boolean(session.started || transcript(params.sessionId));
+  args.push(turn.resumed ? '--resume' : '--session-id', params.sessionId);
   if (tier === 'read') args.push('--permission-mode', 'dontAsk', '--allowedTools', ...READ_TOOLS, ...session.mcpServers.map(server => `mcp__${server.name}`));
   else args.push('--permission-mode', 'bypassPermissions');
   args.push('--append-system-prompt', memberHint);
@@ -332,42 +345,38 @@ function prompt(id, params) {
   if (mcp) args.push('--mcp-config', mcp);
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv() });
   session.child = child;
-  session.cancelled = false;
-  session.steered = 0;
+  session.turn = turn;
+  // 这个进程里还在跑的后台命令（task_id → 描述），和回合交回后才跑完的那些。
+  session.tasks = new Map();
+  session.done = [];
   let stderr = '';
-  let result = null;
-  let wroteText = false;
-  // 最近一次 rate_limit_event：被限流时带上重置时间（Unix 秒），同席据此等到重置再继续。
-  let resetsAt = null;
-  const blocks = new Map();
-  // 最后一次模型调用的输入+输出＝会话当前的上下文大小。
-  let context = 0;
-  // 本回合到现在的累计用量（每次模型调用的输入含缓存读写＋输出），回合中途报给同席看软预算；按消息 id 去重。
-  let spent = 0;
-  const counted = new Set();
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
+    if (session.child !== child) return;
     let message;
     try { message = JSON.parse(line); } catch { return; }
     if (message.session_id && message.session_id === params.sessionId) session.started = true;
     // 子 Agent 的内部输出只在其工具卡片里体现，不混进主回复。
     if (message.parent_tool_use_id) return;
+    if (message.type === 'system') return background(session, params.sessionId, child, message);
+    const turn = session.turn;
+    // 回合交回后进程还留着等后台命令；其间 claude 自己接的回合没人在等，不转发。
+    if (!turn) return;
     if (message.type === 'rate_limit_event') {
       const info = message.rate_limit_info || {};
-      if (info.status && info.status !== 'allowed' && Number.isFinite(info.resetsAt)) resetsAt = info.resetsAt;
+      if (info.status && info.status !== 'allowed' && Number.isFinite(info.resetsAt)) turn.resetsAt = info.resetsAt;
       return;
     }
     if (message.type === 'stream_event') {
       const event = message.event || {};
       if (event.type === 'content_block_start') {
-        blocks.set(event.index, event.content_block?.type);
-        if (event.content_block?.type === 'text' && wroteText) {
+        if (event.content_block?.type === 'text' && turn.wroteText) {
           update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\n' } });
         }
       } else if (event.type === 'content_block_delta') {
         if (event.delta?.type === 'text_delta' && event.delta.text) {
-          wroteText = true;
+          turn.wroteText = true;
           update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: event.delta.text } });
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
           update(params.sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: event.delta.thinking } });
@@ -375,12 +384,12 @@ function prompt(id, params) {
       }
     } else if (message.type === 'assistant') {
       const used = message.message?.usage;
-      if (used) context = (used.input_tokens || 0) + (used.cache_read_input_tokens || 0) + (used.cache_creation_input_tokens || 0) + (used.output_tokens || 0);
+      if (used) turn.context = (used.input_tokens || 0) + (used.cache_read_input_tokens || 0) + (used.cache_creation_input_tokens || 0) + (used.output_tokens || 0);
       const messageId = message.message?.id;
-      if (used && messageId && !counted.has(messageId)) {
-        counted.add(messageId);
-        spent += context;
-        update(params.sessionId, { sessionUpdate: 'usage_update', used: context, spent });
+      if (used && messageId && !turn.counted.has(messageId)) {
+        turn.counted.add(messageId);
+        turn.spent += turn.context;
+        update(params.sessionId, { sessionUpdate: 'usage_update', used: turn.context, spent: turn.spent });
       }
       for (const block of message.message?.content || []) {
         if (block.type !== 'tool_use') continue;
@@ -403,7 +412,13 @@ function prompt(id, params) {
         session.steered--;
         return;
       }
-      result = message;
+      turn.result = message;
+      // 还有后台命令在跑：关了 stdin claude 就退出、后台命令跟着被杀。进程留着等它们跑完，这一回合先交回去。
+      if (session.tasks.size && !session.cancelled && !message.is_error) {
+        session.turn = null;
+        reply(turn, params.sessionId);
+        return;
+      }
       child.stdin.end();
       // 回合已经结束，但 claude 偶尔迟迟不退出（子 agent 或 MCP 子进程还挂着）；再等 20 秒还不退就结束它，免得协作一直等下去。
       session.exitTimer = setTimeout(() => {
@@ -412,39 +427,67 @@ function prompt(id, params) {
     }
   });
   child.on('error', error => {
+    if (session.child !== child) return;
     session.child = null;
-    send({ id, error: { code: -32603, message: `Claude 启动失败：${error.message}` } });
+    const turn = session.turn;
+    session.turn = null;
+    if (turn) send({ id: turn.id, error: { code: -32603, message: `Claude 启动失败：${error.message}` } });
   });
   child.on('exit', code => {
+    if (session.child !== child) return;
     session.child = null;
     clearTimeout(session.killTimer);
     clearTimeout(session.exitTimer);
-    if (session.cancelled || result?.terminal_reason?.startsWith('aborted')) {
-      send({ id, result: { stopReason: 'cancelled' } });
-    } else if (result && !result.is_error) {
-      const reason = result.stop_reason === 'max_tokens' ? 'max_tokens'
-        : result.stop_reason === 'refusal' ? 'refusal' : 'end_turn';
-      send({ id, result: { stopReason: reason, ...usageOf(result, context, params.sessionId, resumed, spent) } });
-    } else if (result) {
-      noteFailure(`prompt failed: ${result.subtype} ${String(result.result || '').slice(0, 300)}`);
-      const limited = /429|额度/.test(failureMessage(result));
-      // 没收到限流事件时，从结果文字里只摘出“resets 5:50pm”这类时间短语，不转发原文。
-      const phrase = String(result.result || '').match(/(?:resets?|try again)\s+(?:at\s+|in\s+)?[0-9][0-9a-z: ]{0,30}/i)?.[0]?.trim();
-      const stamp = Number(String(result.result || '').match(/limit reached\|(\d{10})\b/i)?.[1]) || null;
-      const data = (resetsAt || stamp) ? { resets_at: resetsAt || stamp } : phrase ? { reset_hint: phrase.slice(0, 40) } : null;
-      send({ id, error: { code: -32603, message: failureMessage(result), ...(limited && data ? { data } : {}) } });
-    } else {
-      noteFailure(`claude exited ${code}: ${stderr.slice(-1000)}`);
-      send({ id, error: { code: -32603, message: `Claude 进程意外退出（${code}）` } });
-    }
+    const turn = session.turn;
+    session.turn = null;
+    if (!turn) return;
+    if (turn.result || session.cancelled) return reply(turn, params.sessionId);
+    noteFailure(`claude exited ${code}: ${stderr.slice(-1000)}`);
+    send({ id: turn.id, error: { code: -32603, message: `Claude 进程意外退出（${code}）` } });
   });
   child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
+}
+
+function reply(turn, sessionId) {
+  const { id, result } = turn;
+  if (sessions.get(sessionId)?.cancelled || result?.terminal_reason?.startsWith('aborted')) {
+    send({ id, result: { stopReason: 'cancelled' } });
+  } else if (!result.is_error) {
+    const reason = result.stop_reason === 'max_tokens' ? 'max_tokens'
+      : result.stop_reason === 'refusal' ? 'refusal' : 'end_turn';
+    send({ id, result: { stopReason: reason, ...usageOf(result, turn.context, sessionId, turn.resumed, turn.spent) } });
+  } else {
+    noteFailure(`prompt failed: ${result.subtype} ${String(result.result || '').slice(0, 300)}`);
+    const limited = /429|额度/.test(failureMessage(result));
+    // 没收到限流事件时，从结果文字里只摘出“resets 5:50pm”这类时间短语，不转发原文。
+    const phrase = String(result.result || '').match(/(?:resets?|try again)\s+(?:at\s+|in\s+)?[0-9][0-9a-z: ]{0,30}/i)?.[0]?.trim();
+    const stamp = Number(String(result.result || '').match(/limit reached\|(\d{10})\b/i)?.[1]) || null;
+    const data = (turn.resetsAt || stamp) ? { resets_at: turn.resetsAt || stamp } : phrase ? { reset_hint: phrase.slice(0, 40) } : null;
+    send({ id, error: { code: -32603, message: failureMessage(result), ...(limited && data ? { data } : {}) } });
+  }
+}
+
+// 后台命令：claude 用 background_tasks_changed 报还在跑的全部，用 task_notification 报跑完的那条。
+// 回合已交回、后台命令全跑完了：结束这个进程，告诉同席唤醒主脑（下一条消息照常 --resume 续会话）。
+// shortcut: 有几条后台命令时，先跑完的那条会让 claude 在进程里自己接一轮、输出没人看；要看就得把这轮挂成同席的一次回复。
+function background(session, sessionId, child, message) {
+  if (message.subtype === 'task_notification' && !session.turn) {
+    const name = session.tasks.get(message.task_id) || message.summary || message.task_id;
+    session.done.push(`「${name}」${message.status === 'completed' ? '已完成' : `结束（${message.status}）`}，输出在 ${message.output_file}`);
+  }
+  if (message.subtype !== 'background_tasks_changed') return;
+  session.tasks = new Map((message.tasks || []).map(task => [task.task_id, task.description]));
+  if (session.tasks.size || session.turn) return;
+  session.child = null;
+  execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+  if (session.done.length) send({ method: 'session/background_done', params: { sessionId, text: session.done.join('\n') } });
+  session.done = [];
 }
 
 // 回复进行中插话：把引导作为新的用户消息写进运行中进程的 stdin，Claude 在下一步原生采纳。
 function steer(params) {
   const session = sessions.get(params?.sessionId);
-  if (!session?.child || session.cancelled || !session.child.stdin.writable || session.child.stdin.writableEnded) {
+  if (!session?.turn || session.cancelled || !session.child.stdin.writable || session.child.stdin.writableEnded) {
     throw new Error('Claude 当前没有进行中的回复');
   }
   session.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
@@ -454,7 +497,7 @@ function steer(params) {
 
 function cancel(params) {
   const session = sessions.get(params?.sessionId);
-  if (!session?.child) return;
+  if (!session?.turn) return;
   session.cancelled = true;
   try {
     session.child.stdin.write(JSON.stringify({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } }) + '\n');
@@ -469,9 +512,9 @@ function open(params, existing) {
   if (!params?.cwd) throw new Error('缺少会话目录');
   const sessionId = existing ? params.sessionId : randomUUID();
   if (existing && !/^[0-9a-f-]{36}$/i.test(sessionId || '')) throw new Error('Claude 会话 ID 无效');
-  const previous = sessions.get(sessionId);
-  const session = { cwd: params.cwd, mcpServers: params.mcpServers || [], model: previous?.model ?? null,
-    effort: previous?.effort ?? null, started: existing && Boolean(transcript(sessionId)), child: previous?.child ?? null };
+  // 重新载入时沿用原对象：进程、回合、后台命令都挂在上面。
+  const session = Object.assign(sessions.get(sessionId) || { model: null, effort: null },
+    { cwd: params.cwd, mcpServers: params.mcpServers || [], started: existing && Boolean(transcript(sessionId)) });
   sessions.set(sessionId, session);
   return { sessionId, configOptions: configOptions(session) };
 }
@@ -493,9 +536,16 @@ async function handle(message) {
       return open(params, true);
     case 'session/list':
       return { sessions: listSessions() };
-    case 'session/close':
+    case 'session/close': {
+      // 交给 CLI 前卸下：留着等后台命令的进程也结束，免得两边同时续这个会话。
+      const session = sessions.get(params?.sessionId);
+      if (session?.child && !session.turn) {
+        execFile('taskkill', ['/PID', String(session.child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+        session.child = null;
+      }
       sessions.delete(params?.sessionId);
       return {};
+    }
     case 'session/set_model':
     case 'session/set_config_option': {
       const session = sessions.get(params?.sessionId);

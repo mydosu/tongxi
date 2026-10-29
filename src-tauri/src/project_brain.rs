@@ -865,6 +865,26 @@ pub fn is_brain_chat(connection: &Connection, conversation_id: &str) -> bool {
         .is_ok_and(|seat| is_brain(&seat))
 }
 
+/// 主脑上一回合留在后台的命令跑完了（Claude 桥接留着进程等到的）：记进收件箱，像成员交回一样唤醒主脑。
+pub(crate) fn background_done(connection: &Connection, native_session: &str, text: &str) {
+    let Ok((room, seat)) = connection.query_row(
+        "SELECT c.group_conversation_id,c.agent_id FROM sessions s JOIN project_agent_chats c ON c.conversation_id=s.conversation_id
+         WHERE s.native_session_id=?1",
+        [native_session],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ) else {
+        return;
+    };
+    if !is_brain(&seat) {
+        return;
+    }
+    let note = format!("【同席】你上一回合放到后台的命令跑完了：\n{text}\n看输出接着做。");
+    let _ = connection.execute(
+        "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
+        params![Uuid::new_v4().to_string(), room, note, now()],
+    );
+}
+
 fn context(connection: &Connection, conversation_id: &str) -> Result<Context> {
     let (project, room, seat): (String, String, String) = connection
         .query_row(
@@ -2762,6 +2782,40 @@ B6 做完了"));
         assert_eq!(usage.context, Some(15000), "上下文取最近一回合");
         let ledger = store.brain_overview(&room).unwrap().ledger;
         assert_eq!((ledger.len(), ledger[0].turns, ledger[0].input, ledger[0].output, ledger[0].priced), (1, 2, 23000, 600, 0), "同一天同一席位同一模型归成一格");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn brain_background_commands_finishing_wake_the_brain() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-background-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into()]).unwrap().id;
+        let project = store.register_project("主脑项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store
+            .ensure_project_agent_chats(&room)
+            .unwrap()
+            .into_iter()
+            .find(|chat| chat.agent_id == "claude-win-brain")
+            .unwrap()
+            .conversation_id;
+        store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "claude-win").unwrap();
+        let changed = store.connection.execute("UPDATE sessions SET native_session_id='native-1' WHERE conversation_id=?1", [&chat]).unwrap();
+        assert_eq!(changed, 1);
+        super::background_done(&store.connection, "native-1", "「构建」已完成");
+        super::background_done(&store.connection, "别的会话", "「构建」已完成");
+        let inbox: Vec<String> = store
+            .connection
+            .prepare("SELECT content FROM brain_inbox WHERE room=?1 AND delivered=0")
+            .unwrap()
+            .query_map([&room], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(inbox.len(), 1, "只认主脑自己的会话");
+        assert!(inbox[0].contains("「构建」已完成"));
         let _ = std::fs::remove_dir_all(base);
     }
 }

@@ -509,6 +509,13 @@ impl Runtime {
         Ok(())
     }
     fn notification(&self, generation: &str, value: Value) {
+        if value["method"] == "session/background_done" {
+            let params = &value["params"];
+            if let (Some(session), Some(text)) = (params["sessionId"].as_str(), params["text"].as_str()) {
+                crate::project_brain::background_done(&self.store.lock().unwrap().connection, session, text);
+            }
+            return;
+        }
         if value["method"] != "session/update" {
             return;
         }
