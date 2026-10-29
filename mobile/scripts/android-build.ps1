@@ -172,7 +172,8 @@ Set-Item -Path "Env:AR_$($t.triple)" -Value (Join-Path $ndkBin 'llvm-ar.exe')
 Set-Item -Path "Env:CFLAGS_$($t.triple)" -Value ''
 Set-Item -Path "Env:CXXFLAGS_$($t.triple)" -Value ''
 
-$cargoArgs = @('build', '--manifest-path', (Join-Path $tauriDir 'Cargo.toml'), '--target', $t.triple)
+# tauri/custom-protocol：tauri CLI 打包时总会加，缺了它 debug 包也会去连 devUrl（localhost:1420），手机上白屏报错。
+$cargoArgs = @('build', '--manifest-path', (Join-Path $tauriDir 'Cargo.toml'), '--target', $t.triple, '--features', 'tauri/custom-protocol')
 if ($Release) { $cargoArgs += '--release' }
 Push-Location $root
 try { & cargo @cargoArgs; if ($LASTEXITCODE -ne 0) { throw "cargo build 失败（$LASTEXITCODE）" } } finally { Pop-Location }
