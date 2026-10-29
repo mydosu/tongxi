@@ -4,6 +4,18 @@
 html[data-remote] .window-controls, html[data-remote] .resize-edge { display: none; }
 
 @media (max-width: 600px) {
+  /* 大面板的 backdrop-filter 滚动时每帧都要重做整屏模糊（真机实测帧耗时 34ms，关掉降到 14ms）。
+     背景是静态的：改成背景层自己模糊一次、之后缓存，面板照样是半透明磨砂，肉眼对比无差别。 */
+  html:not([data-hud]) :is(.main, .sidebar, .composer, .project-agent-chat-composer) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  html:not([data-hud])[data-mview="chat"] .theme-backdrop { filter: blur(var(--panel-blur, 12px)) saturate(1.25); }
+  html[data-bg-mode="figure"]:not([data-hud])[data-mview="chat"] .theme-backdrop { filter: blur(8px) saturate(1.25); }
+  html:not([data-hud])[data-mview="list"] .theme-backdrop { filter: blur(26px) saturate(1.45); }
+
+  /* 长会话里改一个节点（流式回复每一帧）手机上都要把整列几千个节点重新排版（真机实测每次 28ms）。
+     回复进行中（main.ts 的 markLive 打 data-live）屏幕外的消息跳过排版和绘制；auto 记着算出来的真实高度，滚动位置不乱。
+     平时不开：一次插入几百个这样的节点浏览器会逐个重排。 */
+  html[data-live]:not([data-hud]) :is(#messages, .agent-transcript-list) > * { content-visibility: auto; contain-intrinsic-size: auto 240px; }
+
   html:not([data-hud]) .shell, html:not([data-hud]) body.maximized .shell { grid-template-columns: minmax(0, 1fr); padding: 8px; gap: 0; }
   html:not([data-hud])[data-mview="list"] .main, html:not([data-hud])[data-mview="chat"] .sidebar { display: none; }
   html:not([data-hud]) .sidebar { padding-top: 14px; }

@@ -1025,6 +1025,7 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
   syncChatQuestions();
   const stop = host.querySelector<HTMLButtonElement>('[data-stop-project-chat-run]');
   if (busyIn(runtimes[agentId], chat.conversation.id)) {
+    markLive();
     if (!stop) host.querySelector('.project-agent-chat-heading')?.insertAdjacentHTML('beforeend', '<button type="button" class="text-button stop-reply" data-stop-project-chat-run title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>');
   } else stop?.remove();
   // 本会话自己的回复进行中时不锁输入框，Enter 即插话；其他会话占用成员时才锁。
@@ -1177,10 +1178,20 @@ function updateRuntimeControls() {
   if (!liveFrame) liveFrame = requestAnimationFrame(() => { liveFrame = 0; paintLiveMessages(); });
 }
 
+/// 流式回复每一帧都改一个节点，手机上整列几千个节点要重新排版；这段时间让屏幕外的消息跳过排版（mobile.css 的 html[data-live]）。
+/// 只在回复进行时开：整列一次插入很多个 content-visibility 节点，浏览器会逐个重排（实测 700 条要 5 秒）。
+let liveTimer = 0;
+function markLive() {
+  document.documentElement.dataset.live = '1';
+  window.clearTimeout(liveTimer);
+  liveTimer = window.setTimeout(() => { delete document.documentElement.dataset.live; }, 2000);
+}
+
 function paintLiveMessages() {
   if (!detail || !selectedId) return;
   for (const snapshot of Object.values(runtimes)) for (const active of runsOf(snapshot)) {
     if (active.conversation_id !== selectedId || (!liveRun(active) && !detail.messages.some(message => message.id === active.assistant_message_id))) continue;
+    if (liveRun(active)) markLive();
     const messages = main.querySelector('#messages');
     if (!messages) return;
     const old = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
@@ -1513,15 +1524,28 @@ function syncProjectTeamTimeline() {
   const previousTop = host.scrollTop;
   // 恢复协作时补充的需求同时存为聊天消息和团队消息（source_message_id 指向前者），聊天里已显示就不再重复画。
   const shown = new Set(detail.messages.map(message => message.id));
+  const known = new Map<string, HTMLElement>();
+  for (const node of host.querySelectorAll<HTMLElement>('[data-team-message-id]')) known.set(node.dataset.teamMessageId!, node);
+  let welcome = host.querySelector('.welcome');
+  // 新消息攒成一整段一次插入（几百条逐条 insertAdjacentHTML 手机上光插入就几百毫秒）；已有的、内容变了的才就地换。
+  const added: { id: string; html: string; paint: string }[] = [];
   for (const message of projectTeamMessages(selectedId, detail.project_team_messages || [])) {
     if (message.kind === 'user' && message.source_message_id && shown.has(message.source_message_id)) continue;
-    const old = host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`);
+    const old = known.get(message.id);
     const paint = message.content;
     if (old?.dataset.content === paint) continue;
     const html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
-    host.querySelector('.welcome')?.remove();
-    if (old) old.outerHTML = html; else host.insertAdjacentHTML('beforeend', html);
-    host.querySelector<HTMLElement>(`[data-team-message-id="${message.id}"]`)!.dataset.content = paint;
+    welcome?.remove(); welcome = null;
+    if (!old) { added.push({ id: message.id, html, paint }); continue; }
+    old.insertAdjacentHTML('afterend', html);
+    const fresh = old.nextElementSibling as HTMLElement;
+    old.remove();
+    fresh.dataset.content = paint;
+  }
+  if (added.length) {
+    host.insertAdjacentHTML('beforeend', added.map(item => item.html).join(''));
+    const inserted = [...host.children].slice(-added.length) as HTMLElement[];
+    inserted.forEach((node, index) => { node.dataset.content = added[index].paint; });
   }
   const entries = [...host.children].filter((node): node is HTMLElement => node instanceof HTMLElement && !!node.dataset.timelineAt);
   const ordered = [...entries].sort((a, b) => Number(a.dataset.timelineAt) - Number(b.dataset.timelineAt) || Number(a.dataset.timelineOrder) - Number(b.dataset.timelineOrder));
@@ -1642,6 +1666,7 @@ main.addEventListener('click',event=>{
   void answerDialog(question,{modal,escape,open:openModal,name:id=>member(id).name,saved:refreshQuestionState});
 });
 let questionRefreshBusy=false;
+let questionsFetched={id:'',at:0};
 async function refreshQuestionState() {
   if(questionRefreshBusy)return;questionRefreshBusy=true;
   try {
@@ -1657,7 +1682,12 @@ async function refreshQuestionState() {
     if(screen==='chat'&&detail) {
       const agent=activeProjectAgent(),chat=agent?projectChatFor(agent):null;
       const id=chat?.conversation_id || (detail.conversation.kind==='direct'?detail.conversation.id:null);
-      if(id){const fresh=await invoke<ConversationDetail>('get_conversation',{id});if(chat)projectAgentChatDetails.set(id,fresh);else if(selectedId===id)detail=fresh;syncChatQuestions();}
+      // 整份会话（长会话几百 KB）只为取问答状态：问答列表变了、换了会话、还有没落定的问答、或隔了 30 秒才重取，不是每秒一遍。
+      const unsettled=currentChatQuestions().some(q=>q.status==='pending'||q.delivery==='queued');
+      if(id&&(changed||unsettled||questionsFetched.id!==id||Date.now()-questionsFetched.at>30_000)){
+        questionsFetched={id,at:Date.now()};
+        const fresh=await invoke<ConversationDetail>('get_conversation',{id});if(chat)projectAgentChatDetails.set(id,fresh);else if(selectedId===id)detail=fresh;syncChatQuestions();
+      }
     }
   }catch{/* A stopped application or an older mock has no question endpoint. */}
   finally{questionRefreshBusy=false;}
@@ -2813,15 +2843,24 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       });
       eventSubscribed = true;
     }
-    for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) adoptRuntime(await invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`), agentId);
-    latestDiscussion = await invoke<Discussion | null>('discussion_status');
-    [agents, info] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<AppInfo>('app_info'), loadOwnAvatars()]);
+    // 这些读取互不依赖：并行发出去，手机上每个串行往返都是几十到几百毫秒。
+    const harnesses = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'];
+    const [snapshots, discussion, agentList, appInfo, handoffs] = await Promise.all([
+      Promise.all(harnesses.map(agentId => invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`))),
+      invoke<Discussion | null>('discussion_status'),
+      invoke<Agent[]>('list_agents'),
+      invoke<AppInfo>('app_info'),
+      invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'),
+      loadOwnAvatars(),
+    ]);
+    harnesses.forEach((agentId, index) => adoptRuntime(snapshots[index], agentId));
+    latestDiscussion = discussion; agents = agentList; info = appInfo;
     document.querySelector('#app-version')!.textContent = info.version;
     if (!isRemote) void checkUpdate(true);
     if (!isRemote) window.setInterval(() => void checkUpdate(true), 60 * 60 * 1000);
     document.querySelector('#app-version')!.addEventListener('click', () => appUpdate ? openUpdate(appUpdate) : void checkUpdate());
     updateMemberCount();
-    adoptCliHandoffs(await invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'));
+    adoptCliHandoffs(handoffs);
     await refreshList();
     const initial = conversations.find(conversation => conversation.id === selectedId) || conversations.find(conversation => conversation.kind === 'group') || conversations[0];
     if (initial) await selectConversation(initial.id); else renderChat();

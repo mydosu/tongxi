@@ -23,6 +23,16 @@ export interface AgentEntry {
 }
 
 export const entryBusy = (status: string) => ['starting', 'running', 'cancelling', 'streaming'].includes(status);
+
+/** 两份条目都已落定（不在流式）且内容一样：画过的节点不用再 patch。字符串先比指针，相同的条目几乎是 O(1)。 */
+export function settledSame(a: AgentEntry, b: AgentEntry): boolean {
+  if (entryBusy(a.status) || entryBusy(b.status)) return false;
+  for (const key of ['id', 'at', 'kind', 'author', 'body', 'thought', 'status', 'error', 'model', 'effort', 'messageId', 'attachmentRoom'] as const) if (a[key] !== b[key]) return false;
+  return a.protocol?.raw === b.protocol?.raw && a.protocol?.label === b.protocol?.label
+    && a.tools.length === b.tools.length
+    && a.tools.every((tool, index) => { const other = b.tools[index]; return tool === other || (tool.event_id === other.event_id && tool.kind === other.kind && tool.title === other.title && tool.status === other.status && tool.input === other.input && tool.output === other.output); })
+    && JSON.stringify(a.steers) === JSON.stringify(b.steers);
+}
 const toolActivity = (events: RunToolEvent[]) => events.filter(event => !['userMessage','hookPrompt','plan','functionCallOutput'].includes(event.kind));
 
 export function agentTimeline(agent: string, chat: ConversationDetail, runtime: RuntimeSnapshot): AgentEntry[] {

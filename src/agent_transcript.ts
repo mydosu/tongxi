@@ -1,4 +1,4 @@
-import { entryBusy, type AgentEntry } from './agent_timeline';
+import { entryBusy, settledSame, type AgentEntry } from './agent_timeline';
 import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
@@ -27,6 +27,8 @@ export class AgentTranscript {
   private frame = 0;
   // 第一批是打开页面时已有的记录，不播入场；之后新建的条目才浮上来。
   private seeded = false;
+  // 每个节点上次画的条目：已落定又没变的不再 patch（长会话每个流式事件都把几百条全 patch 一遍，手机上要几十毫秒）。
+  private drawn = new WeakMap<HTMLElement, { entry: AgentEntry; label: string }>();
   private scroll = () => {
     if (this.viewport.scrollHeight - this.viewport.scrollTop - this.viewport.clientHeight < 64) this.following = true;
     this.jump.hidden = this.following;
@@ -82,7 +84,9 @@ export class AgentTranscript {
     for (const entry of entries) {
       const node = nodes.get(entry.id) || this.create(entry);
       if (this.seeded && !nodes.has(entry.id)) node.classList.add('arrive');
-      this.patch(node, entry);
+      const label = this.format.name(entry.author);
+      const last = this.drawn.get(node);
+      if (!last || last.label !== label || !settledSame(last.entry, entry)) { this.patch(node, entry); this.drawn.set(node, { entry, label }); }
       if (node !== cursor) this.list.insertBefore(node, cursor);
       cursor = node.nextElementSibling;
     }
