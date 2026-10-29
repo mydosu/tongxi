@@ -590,13 +590,27 @@ function renderList() {
       const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
       if (id) {
         // 手机上项目群卡片只负责展开/收起子栏（团队对话是子栏第一行），不然进了团队对话就够不到协作问答、主脑任务。
-        if (matchMedia('(max-width: 600px)').matches && target.closest('.conversation-branch')) { expandedProjectGroup = expandedProjectGroup === id ? '' : id; renderList(); return; }
+        const narrow = matchMedia('(max-width: 600px)').matches;
+        if (narrow && target.closest('.conversation-branch')) { expandedProjectGroup = expandedProjectGroup === id ? '' : id; renderList(); return; }
+        // 刚启动还没打开过的项目群不知道有没有成员房间：先问一次再决定展开还是进会话。
+        if (narrow && conversations.find(conversation => conversation.id === id)?.kind === 'group' && !projectRoomsByGroup.has(id)) { void expandUnknownGroup(id, target.closest('.conversation')); return; }
         setMobileView('chat'); void selectConversation(id);
       }
     });
   }
   bindConversationDrag(list, visible.map(conversation => conversation.id));
   glide(list, before);
+}
+
+async function expandUnknownGroup(id: string, card: Element | null) {
+  card?.classList.add('loading');
+  try {
+    const rooms = (await invoke<ConversationDetail>('get_conversation', { id })).project_agent_chats || [];
+    projectRoomsByGroup.set(id, rooms);
+    if (rooms.length) { expandedProjectGroup = id; renderList(); return; }
+  } catch (error) { toast(errorText(error), true); }
+  card?.classList.remove('loading');
+  setMobileView('chat'); void selectConversation(id);
 }
 
 /// 就地改名：把标题元素换成输入框，Enter 或失焦保存，Esc 取消。侧栏卡片右键与聊天页标题双击共用。
