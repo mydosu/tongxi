@@ -18,6 +18,8 @@ interface TranscriptFormat {
   empty: string;
 }
 
+const WINDOW_FIRST = 12, WINDOW_STEP = 12;
+
 /** One keyed output list and one scroll owner for project turns and private turns. */
 export class AgentTranscript {
   private list: HTMLElement;
@@ -29,7 +31,20 @@ export class AgentTranscript {
   private seeded = false;
   // 每个节点上次画的条目：已落定又没变的不再 patch（长会话每个流式事件都把几百条全 patch 一遍，手机上要几十毫秒）。
   private drawn = new WeakMap<HTMLElement, { entry: AgentEntry; label: string }>();
+  // 手机上长记录不一次画完（几百条要排版好几百毫秒，点按排在后面）：只画最近 WINDOW_FIRST 条，翻到离顶部三屏内再往前补 WINDOW_STEP 条。
+  private all: AgentEntry[] = [];
+  private from: string | null = null;
+  private moreTimer = 0;
+  private windowed = () => matchMedia('(max-width: 600px)').matches;
+  private more = () => {
+    this.moreTimer = 0;
+    const at = this.all.findIndex(entry => entry.id === this.from);
+    if (at <= 0 || !this.viewport.isConnected || this.viewport.scrollTop > this.viewport.clientHeight * 3) return;
+    this.from = this.all[Math.max(0, at - WINDOW_STEP)].id;
+    this.update(this.all);
+  };
   private scroll = () => {
+    if (!this.moreTimer && this.from !== null && this.viewport.scrollTop <= this.viewport.clientHeight * 3 && this.all[0]?.id !== this.from) this.moreTimer = window.setTimeout(() => requestIdleCallback(this.more, { timeout: 300 }), 80);
     if (this.viewport.scrollHeight - this.viewport.scrollTop - this.viewport.clientHeight < 64) this.following = true;
     this.jump.hidden = this.following;
   };
@@ -55,7 +70,7 @@ export class AgentTranscript {
 
   latest() { this.following = true; this.jump.hidden = true; this.follow(); }
   dispose() {
-    this.observer.disconnect(); cancelAnimationFrame(this.frame);
+    this.observer.disconnect(); cancelAnimationFrame(this.frame); clearTimeout(this.moreTimer);
     this.viewport.removeEventListener('scroll', this.scroll);
     this.viewport.removeEventListener('wheel', this.wheel);
     this.viewport.removeEventListener('pointerdown', this.pointer);
@@ -73,7 +88,16 @@ export class AgentTranscript {
     });
   }
 
-  update(entries: AgentEntry[]) {
+  update(all: AgentEntry[]) {
+    this.all = all;
+    let entries = all;
+    if (this.windowed()) {
+      // 窗口起点按条目 id 记，新条目追加在后面时起点不动；起点那条没了（被删）就重新从尾部取。
+      let at = this.from === null ? -1 : all.findIndex(entry => entry.id === this.from);
+      if (at < 0) at = Math.max(0, all.length - WINDOW_FIRST);
+      this.from = all[at]?.id ?? null;
+      entries = all.slice(at);
+    } else this.from = null;
     const anchor = !this.following && [...this.list.children].find(node => node.getBoundingClientRect().bottom > this.viewport.getBoundingClientRect().top);
     const offset = anchor ? anchor.getBoundingClientRect().top : 0;
     const nodes = new Map([...this.list.querySelectorAll<HTMLElement>(':scope > [data-entry-id]')].map(node => [node.dataset.entryId!, node]));

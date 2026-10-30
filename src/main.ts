@@ -595,7 +595,7 @@ function renderList() {
       const id = target.closest<HTMLButtonElement>('[data-conversation]')?.dataset.conversation;
       if (id) {
         // 手机上项目群卡片只负责展开/收起子栏（团队对话是子栏第一行），不然进了团队对话就够不到协作问答、主脑任务。
-        const narrow = matchMedia('(max-width: 600px)').matches;
+        const narrow = narrowScreen();
         if (narrow && target.closest('.conversation-branch')) { expandedProjectGroup = expandedProjectGroup === id ? '' : id; renderList(); return; }
         // 刚启动还没打开过的项目群不知道有没有成员房间：先问一次再决定展开还是进会话。
         if (narrow && conversations.find(conversation => conversation.id === id)?.kind === 'group' && !projectRoomsByGroup.has(id)) { void expandUnknownGroup(id, target.closest('.conversation')); return; }
@@ -788,6 +788,8 @@ async function selectConversation(id: string) {
   const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
+  // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来。
+  if (switched && narrowScreen()) main.dataset.switching = '';
   // 先按已知的席位把上次看的板块定下来，免得等详情回来才换高亮、侧栏跳两下。展开与否只听展开钮的。
   const knownProject = (projectRoomsByGroup.get(id)?.length || 0) > 0;
   activeProjectModule = knownProject ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
@@ -803,8 +805,12 @@ async function selectConversation(id: string) {
   if (hudActive) void emit('hud:select', { id });
   try {
     const result = await invoke<ConversationDetail>('get_conversation', { id });
-    if (generation !== detailGeneration || screen !== 'chat') return;
+    if (generation !== detailGeneration) return;
+    delete main.dataset.switching;
+    if (screen !== 'chat') return;
     detail = result;
+    // 这份详情自带问答状态，refreshQuestionState 不必为同一个会话再整份取一遍。
+    questionsFetched = { id, at: Date.now() };
     projectRoomsByGroup.set(id, result.project_agent_chats || []);
     const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
     activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || savedModule === 'brain-jobs' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
@@ -813,6 +819,7 @@ async function selectConversation(id: string) {
     renderChat();
   } catch (error) {
     if (generation !== detailGeneration) return;
+    delete main.dataset.switching;
     // 会话已在别处被删除（如另一窗口或后台）：刷新侧栏去掉失效卡片，改选第一个会话。
     if (errorText(error).includes('会话不存在')) {
       toast('这个会话已被删除，已刷新列表', true);
@@ -838,6 +845,9 @@ async function selectProjectModule(groupId: string, moduleId: string) {
 
 /// 切会话时先画、之后每批补的消息 HTML 体量：一屏装得下，又不至于让一帧拼几千个节点。按体量不按条数，一条工具调用多的回复能顶几十条短消息。
 const MESSAGE_BATCH = 48_000;
+/// 手机上每批的体量小一截：每批插入加整列重排要控制在一两帧里，不然切会话后的点按、翻页排在后面。
+const narrowScreen = () => matchMedia('(max-width: 600px)').matches;
+const messageBatch = () => narrowScreen() ? 16_000 : MESSAGE_BATCH;
 /// 从 end 往前画到凑够 budget（至少一条），返回画到哪、拼好的 HTML。
 function renderTail(messages: Message[], end: number, budget: number, includeDetails: boolean) {
   const parts: string[] = [];
@@ -851,12 +861,13 @@ let backfillToken = 0;
 /// 先画的几条还没一屏高时立刻补到满，免得上面空一块、补完又整体下移。
 function backfillMessages(box: HTMLElement, older: Message[], head: string, includeDetails: boolean) {
   const token = ++backfillToken;
-  older = older.filter(message => !box.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`));
+  const drawn = new Set([...box.children].map(node => (node as HTMLElement).dataset.messageId));
+  older = older.filter(message => !drawn.has(message.id));
   let end = older.length;
   if (!end) return;
   const step = () => {
     if (token !== backfillToken || !box.isConnected) return false;
-    const { split: start, html } = renderTail(older, end, MESSAGE_BATCH, includeDetails);
+    const { split: start, html } = renderTail(older, end, messageBatch(), includeDetails);
     const template = document.createElement('template');
     template.innerHTML = (start ? '' : head) + html;
     end = start;
@@ -871,7 +882,20 @@ function backfillMessages(box: HTMLElement, older: Message[], head: string, incl
   };
   while (end && box.scrollHeight <= box.clientHeight + 40 && step());
   if (!end) return;
-  const later = () => requestIdleCallback(() => { if (step()) later(); }, { timeout: 400 });
+  if (narrowScreen()) {
+    // 手机上不在后台把整段历史排完（长会话要连着排几秒，点按排在后面）：人翻到离顶部三屏内才补一批，补完位置不动。
+    let waiting = false;
+    const onScroll = () => {
+      if (token !== backfillToken || !box.isConnected) { box.removeEventListener('scroll', onScroll); return; }
+      if (waiting || box.scrollTop > box.clientHeight * 3) return;
+      waiting = true;
+      setTimeout(() => requestIdleCallback(() => { waiting = false; if (token === backfillToken && box.scrollTop <= box.clientHeight * 3 && !step()) box.removeEventListener('scroll', onScroll); }, { timeout: 300 }), 80);
+    };
+    box.addEventListener('scroll', onScroll, { passive: true });
+    return;
+  }
+  // 批与批之间留出空隙：每批都要把整列重排一遍，背靠背地补会让点按、翻页一直排在后面。
+  const later = () => requestIdleCallback(() => { if (step()) setTimeout(later, 120); }, { timeout: 400 });
   setTimeout(later, 560);
 }
 
@@ -1053,6 +1077,7 @@ async function loadProjectAgentChat(host: HTMLElement, agentId: string) {
   try {
     const saved = await invoke<ConversationDetail>('get_conversation', { id: chat.conversation_id });
     projectAgentChatDetails.set(chat.conversation_id, saved);
+    questionsFetched = { id: chat.conversation_id, at: Date.now() };
     if (!host.isConnected || activeProjectAgent() !== agentId) return;
     const initialLoad = !host.querySelector('.project-agent-chat-heading');
     if (initialLoad) {
@@ -1852,7 +1877,7 @@ function renderConversationChat() {
   const steered = new Set([...detail.messages.map(message => message.thought), ...Object.values(runtimes).flatMap(snapshot => runsOf(snapshot).map(run => run.thought))].flatMap(steerIds));
   const shownMessages = detail.messages.filter(message => !steered.has(message.id));
   // 要贴底时先只画最后一小段，更早的交给 backfillMessages 等换页动画放完再补；人翻在上面看时整列一次画好，位置才对得上。
-  const { split, html: tailHtml } = renderTail(shownMessages, shownMessages.length, keepTop === null ? MESSAGE_BATCH : Infinity, !isGroup);
+  const { split, html: tailHtml } = renderTail(shownMessages, shownMessages.length, keepTop === null ? messageBatch() : Infinity, !isGroup);
   const dateDivider = detail.messages.length ? `<div class="date-divider">${date(detail.messages[0].created_at)}</div>` : '';
   const name = directAgent?.name || '';
   // 空会话里让角色当主角：私聊用成员自己的立绘，其余用陪伴的。

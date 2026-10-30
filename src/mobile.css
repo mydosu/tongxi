@@ -19,6 +19,8 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud]) .shell, html:not([data-hud]) body.maximized .shell { grid-template-columns: minmax(0, 1fr); padding: 8px; gap: 0; }
   html:not([data-hud])[data-mview="list"] .main, html:not([data-hud])[data-mview="chat"] .sidebar { display: none; }
   html:not([data-hud]) .sidebar { padding-top: 14px; }
+  /* 切会话：详情回来前上一个会话的整列消息不参与排版（main.ts selectConversation 打 data-switching）。 */
+  html:not([data-hud]) .main[data-switching] > * { display: none; }
 
   /* 返回钮浮在会话页标题行左侧，标题让出位置。 */
   html:not([data-hud])[data-mview="chat"] .mobile-back { display: inline-flex; position: fixed; z-index: 21; top: 20px; left: 16px; width: 32px; height: 32px; }
