@@ -108,13 +108,21 @@ async function rpc<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 let source: EventSource | null = null;
 const groups = new Map<string, { dispatch: (message: MessageEvent) => void; handlers: Set<TransportHandler<unknown>> }>();
 
+const reconnectHandlers = new Set<() => void>();
+/// 远程事件流断线重连后调用（桌面窗口里永远不会触发）。
+export function onRemoteReconnect(handler: () => void) { reconnectHandlers.add(handler); }
+
 function connect(): EventSource {
   if (source) return source;
   const stream = new EventSource(`/events?token=${encodeURIComponent(remoteToken())}`);
   source = stream;
   // SSE 断了浏览器自己会重连；只在掉线、连上各提示一次，免得手机上一直刷屏。
   let warned = false;
-  stream.addEventListener('open', () => { warned = false; });
+  stream.addEventListener('open', () => {
+    // 断线期间的事件收不到了：交给调用处重新取一遍完整状态（状态事件里没变的模型表不再重复带）。
+    if (warned) for (const handler of reconnectHandlers) handler();
+    warned = false;
+  });
   stream.addEventListener('error', () => {
     if (warned) return;
     warned = true;

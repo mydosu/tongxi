@@ -335,7 +335,7 @@ impl Runtime {
         }
     }
     fn emit(&self) {
-        let _ = self.app.emit("dsh-state", self.snapshot());
+        let _ = self.app.emit("dsh-state", crate::state_events::slim("dsh-state", &self.snapshot()));
     }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         let node = self

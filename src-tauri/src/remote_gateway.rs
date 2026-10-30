@@ -59,6 +59,7 @@ const READ_COMMANDS: &[&str] = &[
     "pending_chat_questions",
     "project_inquiries",
     "brain_overview",
+    "brain_live_jobs",
     "list_projects",
     "app_info",
     "own_avatars",
@@ -129,22 +130,37 @@ struct Client {
 }
 
 /// 每种事件只留最新一帧，等下一个发送时机一起放出。
+/// 状态事件的模型表没变就不带（见 state_events）：被替换掉的那帧要是带着模型表而新这帧没有，要把模型表并进新帧，不然改动丢了。
 #[derive(Default)]
 struct Latest {
-    frames: Mutex<Vec<(&'static str, String)>>,
+    payloads: Mutex<Vec<(&'static str, String)>>,
+}
+
+fn keep_models(old: &str, new: String) -> String {
+    if !old.contains("\"models\"") {
+        return new;
+    }
+    let (Ok(Value::Object(old)), Ok(Value::Object(mut fresh))) = (serde_json::from_str::<Value>(old), serde_json::from_str::<Value>(&new)) else { return new };
+    match (old.get("models"), fresh.contains_key("models")) {
+        (Some(models), false) => {
+            fresh.insert("models".into(), models.clone());
+            Value::Object(fresh).to_string()
+        }
+        _ => new,
+    }
 }
 
 impl Latest {
-    fn put(&self, name: &'static str, frame: String) {
-        let Ok(mut frames) = self.frames.lock() else { return };
-        match frames.iter_mut().find(|(have, _)| *have == name) {
-            Some(slot) => slot.1 = frame,
-            None => frames.push((name, frame)),
+    fn put(&self, name: &'static str, payload: &str) {
+        let Ok(mut payloads) = self.payloads.lock() else { return };
+        match payloads.iter_mut().find(|(have, _)| *have == name) {
+            Some(slot) => slot.1 = keep_models(&slot.1, payload.to_string()),
+            None => payloads.push((name, payload.to_string())),
         }
     }
 
     fn take(&self) -> Vec<String> {
-        self.frames.lock().map(|mut frames| frames.drain(..).map(|(_, frame)| frame).collect()).unwrap_or_default()
+        self.payloads.lock().map(|mut payloads| payloads.drain(..).map(|(name, payload)| sse_frame(name, &payload)).collect()).unwrap_or_default()
     }
 }
 
@@ -381,6 +397,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "pending_chat_questions" => out(crate::pending_chat_questions(state())),
         "project_inquiries" => out(tauri::async_runtime::block_on(crate::project_inquiries(state(), arg_str(args, "conversationId")?))),
         "brain_overview" => out(tauri::async_runtime::block_on(crate::brain_overview(state(), arg_str(args, "conversationId")?))),
+        "brain_live_jobs" => out(tauri::async_runtime::block_on(crate::brain_live_jobs(state(), arg_str(args, "conversationId")?))),
         "list_projects" => out(crate::projects::list_projects(state())),
         "app_info" => out(crate::app_info(app.clone(), state())),
         "own_avatars" => out(crate::avatars::own_avatars(state())),
@@ -645,7 +662,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     for name in EVENTS {
         let (events, latest) = (events.clone(), latest.clone());
         if COALESCED.contains(name) {
-            app.listen_any(*name, move |event| latest.put(name, sse_frame(name, event.payload())));
+            app.listen_any(*name, move |event| latest.put(name, event.payload()));
         } else {
             app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
         }
@@ -727,14 +744,29 @@ mod tests {
     fn latest_keeps_only_newest_frame_per_event() {
         let latest = Latest::default();
         for revision in 0..50 {
-            latest.put("claude-state", format!("claude {revision}"));
+            latest.put("claude-state", &format!("{{\"revision\":{revision}}}"));
         }
-        latest.put("codex-state", "codex 1".into());
-        latest.put("claude-state", "claude 50".into());
-        assert_eq!(latest.take(), vec!["claude 50".to_string(), "codex 1".to_string()]);
+        latest.put("codex-state", "{\"revision\":1}");
+        latest.put("claude-state", "{\"revision\":50}");
+        assert_eq!(latest.take(), vec![sse_frame("claude-state", "{\"revision\":50}"), sse_frame("codex-state", "{\"revision\":1}")]);
         assert!(latest.take().is_empty(), "放出去的不会再发第二遍");
         assert!(COALESCED.iter().all(|name| EVENTS.contains(name)));
         assert!(!COALESCED.contains(&"brain-state"), "brain-state 载荷是各自不同的会话 id，不是快照，不能合并");
+    }
+
+    #[test]
+    fn coalescing_never_loses_a_models_change() {
+        let latest = Latest::default();
+        latest.put("claude-state", r#"{"revision":1,"models":[{"id":"new"}],"runs":[]}"#);
+        latest.put("claude-state", r#"{"revision":2,"runs":[{"text":"提到 \"models\" 的回复"}]}"#);
+        let frame = latest.take().pop().unwrap();
+        let data: Value = serde_json::from_str(frame.lines().find(|line| line.starts_with("data: ")).unwrap().trim_start_matches("data: ")).unwrap();
+        assert_eq!(data["revision"], 2, "留最新一帧");
+        assert_eq!(data["models"][0]["id"], "new", "被覆盖那帧带的模型表要并进来");
+        latest.put("claude-state", r#"{"revision":3,"models":[{"id":"newer"}]}"#);
+        latest.put("claude-state", r#"{"revision":4,"models":[{"id":"newest"}]}"#);
+        assert!(latest.take().pop().unwrap().contains("newest"), "后一帧自己带模型表就用它的");
+        assert_eq!(keep_models(r#"{"a":1}"#, r#"{"b":2}"#.into()), r#"{"b":2}"#, "旧帧没有模型表就原样");
     }
 
     #[test]

@@ -184,7 +184,7 @@ impl Runtime {
         }
     }
     fn emit(&self) {
-        let _ = self.app.emit("claude-state", self.snapshot());
+        let _ = self.app.emit("claude-state", crate::state_events::slim("claude-state", &self.snapshot()));
     }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         let generation = Uuid::new_v4().to_string();

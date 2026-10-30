@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod quota;
+mod state_events;
 mod project_inquiries;
 mod project_brain;
 mod prompts;
@@ -1010,6 +1011,10 @@ fn answer_project_inquiry(
     with_store(&state, |store| store.answer_inquiry(&conversation_id, &inquiry_id, &answer))
 }
 #[tauri::command]
+async fn brain_live_jobs(state: State<'_, AppState>, conversation_id: String) -> Result<i64, String> {
+    with_store(&state, |store| store.brain_live_jobs(&conversation_id))
+}
+#[tauri::command]
 async fn brain_overview(state: State<'_, AppState>, conversation_id: String) -> Result<project_brain::BrainOverview, String> {
     with_store(&state, |store| store.brain_overview(&conversation_id))
 }
@@ -1454,6 +1459,7 @@ fn main() {
             project_inquiries,
             answer_project_inquiry,
             brain_overview,
+            brain_live_jobs,
             stop_brain_job,
             update_group_members,
             save_local_message,

@@ -288,6 +288,12 @@ impl Store {
             .map_err(|_| "项目动态读取失败")?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "项目动态读取失败".into())
     }
+    /// 侧栏角标只要在做的活数：不读任务全文，手机上省下几百 KB（brain_overview 带每件活的任务书和结果）。
+    pub fn brain_live_jobs(&self, room: &str) -> Result<i64> {
+        self.connection
+            .query_row("SELECT count(*) FROM brain_jobs WHERE room=?1 AND kind='task' AND status IN ('pending','running')", [room], |row| row.get(0))
+            .map_err(|_| "任务记录读取失败".into())
+    }
     /// 派活页：主脑派出去的每件活（最新的在前）和主脑还没收到的消息数。
     pub fn brain_overview(&self, room: &str) -> Result<BrainOverview> {
         let seat = brain_seat(self, room)?;
@@ -2326,7 +2332,9 @@ mod tests {
             .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('steer-1',?1,'codex-win','chat-x','steer','改方向','done',?2)", params![room, now()])
             .unwrap();
 
+        assert_eq!(store.brain_live_jobs(&room).unwrap(), 1, "只数排队和在做的派活，做完的、插话不算");
         let overview = store.brain_overview(&room).unwrap();
+        assert_eq!(overview.jobs.iter().filter(|job| matches!(job.status.as_str(), "pending" | "running")).count() as i64, store.brain_live_jobs(&room).unwrap(), "和派活页的在做数一致");
         assert_eq!(overview.seat, "claude-win-brain");
         let ids: Vec<&str> = overview.jobs.iter().map(|job| job.id.as_str()).collect();
         assert_eq!(ids, ["job-new", "job-old"], "只列派活，不列插话和停止，最新的在前");
@@ -2348,6 +2356,7 @@ mod tests {
         assert_eq!(overview.jobs[0].status, "failed");
         assert_eq!(overview.jobs[0].error.as_deref(), Some("你在派活页取消了"));
         assert_eq!(overview.waiting, 1, "主脑会收到一条说明");
+        assert_eq!(store.brain_live_jobs(&room).unwrap(), 0, "停掉后不再算在做");
         assert!(store.stop_brain_job(&room, "job-old").is_err(), "已经结束的活不能再停");
         let _ = std::fs::remove_dir_all(base);
     }

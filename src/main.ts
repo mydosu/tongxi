@@ -1,6 +1,6 @@
-import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, REPAIR_URL } from './transport';
+import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, onRemoteReconnect, REPAIR_URL } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, BrainOverview, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
+import type { Agent, BrainOverview, ProjectTeamMessage, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -96,7 +96,7 @@ const harnessKey = (agent = currentAgentId(), id = baseAgent(agent)) => id === '
 const busySnapshot = (snapshot: RuntimeSnapshot) => runsOf(snapshot).some(liveRun);
 type NativeRun = NonNullable<RuntimeSnapshot['active']>;
 /// 一个成员可以同时在多个会话里回复；旧快照只有 `active`。
-const runsOf = (snapshot?: RuntimeSnapshot): NativeRun[] => !snapshot ? [] : snapshot.runs?.length ? snapshot.runs : snapshot.active ? [snapshot.active] : [];
+const runsOf = (snapshot?: Pick<RuntimeSnapshot, 'runs' | 'active'>): NativeRun[] => !snapshot ? [] : snapshot.runs?.length ? snapshot.runs : snapshot.active ? [snapshot.active] : [];
 const liveRun = (run?: NativeRun | null) => !!run && ['starting', 'running', 'cancelling'].includes(run.status);
 /// 这个会话最近一次的运行（正在进行的优先）。
 const runIn = (snapshot: RuntimeSnapshot | undefined, conversationId: string | null) => { const runs = runsOf(snapshot).filter(run => run.conversation_id === conversationId); return runs.find(liveRun) || runs[runs.length - 1] || null; };
@@ -153,12 +153,15 @@ let planFor = '';
 let brainJobsPaint = '';
 async function refreshBrainJobs(groupId: string) {
   try {
-    const overview = await invoke<BrainOverview>('brain_overview', { conversationId: groupId });
-    const live = overview.jobs.filter(jobLive).length;
+    // 全文（每件活的任务书和结果，几百 KB）只在派活页开着、看的就是这个项目群时才取；侧栏角标只要在做的活数。
+    const page = groupId === selectedId && screen === 'chat' && !!detail?.project && activeProjectModule === 'brain-jobs';
+    let live: number, overview: BrainOverview | null = null;
+    if (page) { overview = await invoke<BrainOverview>('brain_overview', { conversationId: groupId }); live = overview.jobs.filter(jobLive).length; }
+    else live = await invoke<number>('brain_live_jobs', { conversationId: groupId });
     const changed = (liveBrainJobs.get(groupId) || 0) !== live;
     liveBrainJobs.set(groupId, live);
     if (changed && document.querySelector('#conversation-list')) renderList();
-    if (groupId !== selectedId) return;
+    if (!overview || groupId !== selectedId) return;
     brainOverview = overview;
     if (screen === 'chat' && detail?.project && activeProjectModule === 'brain-jobs') renderBrainJobs();
   } catch { liveBrainJobs.set(groupId, 0); }
@@ -302,9 +305,12 @@ function adoptDiscussion(job: Discussion) {
 const runBusy = () => busyIn(currentRuntime(), selectedId);
 const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'].includes(currentAgentId());
 const connectionLabel = () => currentRuntime().connection === 'connected' ? '接口已连接' : currentRuntime().connection === 'connecting' ? '正在连接' : '未连接';
-function adoptRuntime(snapshot: RuntimeSnapshot, agentId = currentAgentId()) {
+/// 状态事件里的模型表没变就不带（后端 state_events），缺省时沿用上一份。
+type RuntimeEvent = Omit<RuntimeSnapshot, 'models'> & { models?: RuntimeSnapshot['models'] };
+function adoptRuntime(incoming: RuntimeEvent, agentId = currentAgentId()) {
   const old = runtimes[agentId];
-  if (old && snapshot.revision < old.revision) return false;
+  if (old && incoming.revision < old.revision) return false;
+  const snapshot: RuntimeSnapshot = incoming.models ? incoming as RuntimeSnapshot : { ...incoming, models: old?.models ?? [] };
   const before = busyProjectChats();
   runtimes[agentId] = snapshot;
   // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
@@ -1516,6 +1522,60 @@ async function cancelDiscussion() {
   catch (error) { toast(errorText(error), true); }
 }
 
+/// 团队消息几百上千条时一次画完要排版几秒：先画最近一段（和主聊天一样按 HTML 体量），更早的空闲时从近到远补上。
+/// 已画出来的永远是按时间排序后的后缀（先画最近一段、之后只追加），第一条已画的之前就是还没补的旧消息。
+let teamPending: ProjectTeamMessage[] = [];
+let teamBackfillHost: HTMLElement | null = null;
+let teamBackfillTimer = 0;
+const teamKey = (node: HTMLElement) => [Number(node.dataset.timelineAt), Number(node.dataset.timelineOrder)] as const;
+const teamBefore = (a: readonly [number, number], b: readonly [number, number]) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
+
+function teamHtml(message: ProjectTeamMessage) {
+  return projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
+}
+
+/// 补一批旧的（最新的旧消息先补）：每条按 (timelineAt, order) 二分插到该在的位置，保持离底部的距离，人看着的地方不动。
+const TEAM_BACKFILL_BATCH = 14_000;
+function teamBackfillStep(host: HTMLElement): boolean {
+  if (!host.isConnected || teamBackfillHost !== host || !teamPending.length) return false;
+  const batch: { message: ProjectTeamMessage; node: HTMLElement }[] = [];
+  const template = document.createElement('template');
+  // 补的批比先画的那批小：手机上每批插入加排版要控制在一两帧里，不然翻页、点按会卡一下。
+  for (let budget = TEAM_BACKFILL_BATCH; teamPending.length && budget > 0;) {
+    const message = teamPending.pop()!;
+    const html = teamHtml(message);
+    template.innerHTML = html;
+    const node = template.content.firstElementChild as HTMLElement;
+    batch.push({ message, node });
+    budget -= html.length;
+  }
+  const entries = [...host.children].filter((node): node is HTMLElement => node instanceof HTMLElement && !!node.dataset.timelineAt);
+  const fromBottom = host.scrollHeight - host.scrollTop;
+  for (const { message, node } of batch) {
+    const key = teamKey(node);
+    let low = 0, high = entries.length;
+    while (low < high) { const mid = (low + high) >> 1; if (teamBefore(teamKey(entries[mid]), key)) low = mid + 1; else high = mid; }
+    host.insertBefore(node, entries[low] ?? null);
+    entries.splice(low, 0, node);
+    node.dataset.content = message.content;
+    node.dataset.backfill = '';
+  }
+  host.scrollTop = host.scrollHeight - fromBottom;
+  return teamPending.length > 0;
+}
+
+function scheduleTeamBackfill(host: HTMLElement) {
+  if (teamBackfillHost === host && teamBackfillTimer) return;
+  teamBackfillHost = host;
+  window.clearTimeout(teamBackfillTimer);
+  // 先画的还没一屏高时立刻补到满，免得上面空一块；其余等换页动画放完、浏览器空闲时再补。
+  while (teamPending.length && host.scrollHeight <= host.clientHeight + 40 && teamBackfillStep(host));
+  if (!teamPending.length) { teamBackfillTimer = 0; return; }
+  // 批与批之间留出空隙：每批都要把整列重排一遍，背靠背地补会让翻页、点按一直排在后面。
+  const later = () => requestIdleCallback(() => { if (teamBackfillStep(host)) window.setTimeout(later, 120); else teamBackfillTimer = 0; }, { timeout: 400 });
+  teamBackfillTimer = window.setTimeout(later, 560);
+}
+
 function syncProjectTeamTimeline() {
   if (!detail?.project || activeProjectAgent()) return;
   const host = main.querySelector<HTMLElement>('#messages');
@@ -1526,15 +1586,23 @@ function syncProjectTeamTimeline() {
   const shown = new Set(detail.messages.map(message => message.id));
   const known = new Map<string, HTMLElement>();
   for (const node of host.querySelectorAll<HTMLElement>('[data-team-message-id]')) known.set(node.dataset.teamMessageId!, node);
+  const all = projectTeamMessages(selectedId, detail.project_team_messages || []).filter(message => !(message.kind === 'user' && message.source_message_id && shown.has(message.source_message_id)));
+  const htmls = new Map<string, string>();
+  let firstShown = all.findIndex(message => known.has(message.id));
+  if (firstShown === -1) {
+    // 一条还没画：从最新的往前数，凑够一批的体量就停，更早的留给空闲补。
+    firstShown = all.length;
+    for (let budget = MESSAGE_BATCH; firstShown > 0 && budget > 0;) { const html = teamHtml(all[--firstShown]); htmls.set(all[firstShown].id, html); budget -= html.length; }
+  }
+  teamPending = all.slice(0, firstShown);
   let welcome = host.querySelector('.welcome');
   // 新消息攒成一整段一次插入（几百条逐条 insertAdjacentHTML 手机上光插入就几百毫秒）；已有的、内容变了的才就地换。
   const added: { id: string; html: string; paint: string }[] = [];
-  for (const message of projectTeamMessages(selectedId, detail.project_team_messages || [])) {
-    if (message.kind === 'user' && message.source_message_id && shown.has(message.source_message_id)) continue;
+  for (const message of all.slice(firstShown)) {
     const old = known.get(message.id);
     const paint = message.content;
     if (old?.dataset.content === paint) continue;
-    const html = projectTeamMessageHtml(message, escape, id => member(id).name, id => avatar(member(id)), ownFace());
+    const html = htmls.get(message.id) ?? teamHtml(message);
     welcome?.remove(); welcome = null;
     if (!old) { added.push({ id: message.id, html, paint }); continue; }
     old.insertAdjacentHTML('afterend', html);
@@ -1551,6 +1619,7 @@ function syncProjectTeamTimeline() {
   const ordered = [...entries].sort((a, b) => Number(a.dataset.timelineAt) - Number(b.dataset.timelineAt) || Number(a.dataset.timelineOrder) - Number(b.dataset.timelineOrder));
   if (ordered.some((node, index) => node !== entries[index])) for (const node of ordered) host.append(node);
   if (follow) host.scrollTop = host.scrollHeight; else host.scrollTop = previousTop;
+  if (teamPending.length) scheduleTeamBackfill(host); else if (teamBackfillHost === host) { window.clearTimeout(teamBackfillTimer); teamBackfillTimer = 0; }
 }
 
 function updateProjectControls() {
@@ -2797,7 +2866,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   try {
     if (!eventSubscribed) {
       for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) {
-        await listen<RuntimeSnapshot>(`${harnessKey(agentId)}-state`, event => {
+        await listen<RuntimeEvent>(`${harnessKey(agentId)}-state`, event => {
           const old = runtimes[agentId];
           if (!adoptRuntime(event.payload, agentId)) return;
           updateRuntimeControls();
@@ -2841,6 +2910,8 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         scheduleBrainJobsRefresh(event.payload);
         if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
       });
+      // 手机断线重连后补一次完整状态：断线期间的事件（包括模型表的变化）收不到了。
+      onRemoteReconnect(() => { for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) void invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`).then(snapshot => { adoptRuntime(snapshot, agentId); updateRuntimeControls(); }).catch(() => {}); });
       eventSubscribed = true;
     }
     // 这些读取互不依赖：并行发出去，手机上每个串行往返都是几十到几百毫秒。

@@ -49,13 +49,33 @@ export const backdropHtml = '<div class="theme-backdrop" aria-hidden="true"><div
 async function loadCustom() {
   try {
     custom = (await invoke<Stored[]>('list_backgrounds')).map(item => ({ id: `custom:${item.id}`, name: item.name, mode: item.mode, thumb: item.thumb, custom: true }));
+    pruneImages();
   } catch { custom = []; }
 }
 async function imageOf(theme: Backdrop) {
   if (!theme.custom) return theme.image;
   const id = theme.id.slice('custom:'.length);
-  if (!images.has(id)) images.set(id, await invoke<string>('background_image', { id }));
+  if (!images.has(id)) images.set(id, await cachedImage(id));
   return images.get(id);
+}
+
+/// 手机每次打开页面都要重取这张背景（几百 KB）；同一个 id 的图不会变（换图是新 id），按 id 存在本机。桌面窗口走本地调用，不缓存。
+const imageKey = (id: string) => `hub.bg-image.${id}`;
+async function cachedImage(id: string) {
+  let saved: string | null = null;
+  if (isRemote) try { saved = localStorage.getItem(imageKey(id)); } catch { /* 读不了就照常取 */ }
+  if (saved) return saved;
+  const image = await invoke<string>('background_image', { id });
+  if (isRemote) try { localStorage.setItem(imageKey(id), image); } catch { /* 存不下（配额）就每次取 */ }
+  return image;
+}
+/// 桌面上删掉的背景，手机本机存的那份也清掉。
+function pruneImages() {
+  if (!isRemote) return;
+  try {
+    const keep = new Set(custom.map(item => imageKey(item.id.slice('custom:'.length))));
+    for (const key of Object.keys(localStorage)) if (key.startsWith('hub.bg-image.') && !keep.has(key)) localStorage.removeItem(key);
+  } catch { /* 清不掉不影响显示 */ }
 }
 
 export async function applyTheme(choice: Choice = current, animate = true) {
@@ -140,6 +160,7 @@ export async function themePicker(host: { escape: Escape; open: (title: string, 
       const id = remove.dataset.themeRemove!;
       await invoke('remove_background', { id: id.slice('custom:'.length) });
       images.delete(id.slice('custom:'.length));
+      try { localStorage.removeItem(imageKey(id.slice('custom:'.length))); } catch { /* 没存过就算了 */ }
       await loadCustom();
       if (current.id === id) await applyTheme({ ...current, id: 'chenwu' });
       repaint(); return;

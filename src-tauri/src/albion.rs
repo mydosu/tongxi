@@ -53,7 +53,7 @@ impl Brain {
     }
 
     fn emit(&self) {
-        let _ = self.app.emit(&format!("{KEY}-state"), self.snapshot());
+        let _ = self.app.emit(&format!("{KEY}-state"), crate::state_events::slim(&format!("{KEY}-state"), &self.snapshot()));
     }
 
     fn name(&self) -> String {
