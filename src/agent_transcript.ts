@@ -18,7 +18,8 @@ interface TranscriptFormat {
   empty: string;
 }
 
-const WINDOW_FIRST = 12, WINDOW_STEP = 12;
+// 手机一屏小、排版慢，每批少画；桌面一屏能放下更多条。
+const windowSize = () => matchMedia('(max-width: 600px)').matches ? { first: 12, step: 12 } : { first: 40, step: 20 };
 
 /** One keyed output list and one scroll owner for project turns and private turns. */
 export class AgentTranscript {
@@ -31,20 +32,22 @@ export class AgentTranscript {
   private seeded = false;
   // 每个节点上次画的条目：已落定又没变的不再 patch（长会话每个流式事件都把几百条全 patch 一遍，手机上要几十毫秒）。
   private drawn = new WeakMap<HTMLElement, { entry: AgentEntry; label: string }>();
-  // 手机上长记录不一次画完（几百条要排版好几百毫秒，点按排在后面）：只画最近 WINDOW_FIRST 条，翻到离顶部三屏内再往前补 WINDOW_STEP 条。
+  // 长记录不一次画完（主脑会话上千条，整棵树在流式时每帧都要重排）：只画最近一批，翻到离顶部三屏内再往前补一批。
   private all: AgentEntry[] = [];
   private from: string | null = null;
   private moreTimer = 0;
-  private windowed = () => matchMedia('(max-width: 600px)').matches;
   private more = () => {
     this.moreTimer = 0;
     const at = this.all.findIndex(entry => entry.id === this.from);
     if (at <= 0 || !this.viewport.isConnected || this.viewport.scrollTop > this.viewport.clientHeight * 3) return;
-    this.from = this.all[Math.max(0, at - WINDOW_STEP)].id;
+    this.from = this.all[Math.max(0, at - windowSize().step)].id;
     this.update(this.all);
   };
-  private scroll = () => {
+  private wantMore() {
     if (!this.moreTimer && this.from !== null && this.viewport.scrollTop <= this.viewport.clientHeight * 3 && this.all[0]?.id !== this.from) this.moreTimer = window.setTimeout(() => requestIdleCallback(this.more, { timeout: 300 }), 80);
+  }
+  private scroll = () => {
+    this.wantMore();
     if (this.viewport.scrollHeight - this.viewport.scrollTop - this.viewport.clientHeight < 64) this.following = true;
     this.jump.hidden = this.following;
   };
@@ -90,14 +93,11 @@ export class AgentTranscript {
 
   update(all: AgentEntry[]) {
     this.all = all;
-    let entries = all;
-    if (this.windowed()) {
-      // 窗口起点按条目 id 记，新条目追加在后面时起点不动；起点那条没了（被删）就重新从尾部取。
-      let at = this.from === null ? -1 : all.findIndex(entry => entry.id === this.from);
-      if (at < 0) at = Math.max(0, all.length - WINDOW_FIRST);
-      this.from = all[at]?.id ?? null;
-      entries = all.slice(at);
-    } else this.from = null;
+    // 窗口起点按条目 id 记，新条目追加在后面时起点不动；起点那条没了（被删）就重新从尾部取。
+    let at = this.from === null ? -1 : all.findIndex(entry => entry.id === this.from);
+    if (at < 0) at = Math.max(0, all.length - windowSize().first);
+    this.from = all[at]?.id ?? null;
+    const entries = all.slice(at);
     const anchor = !this.following && [...this.list.children].find(node => node.getBoundingClientRect().bottom > this.viewport.getBoundingClientRect().top);
     const offset = anchor ? anchor.getBoundingClientRect().top : 0;
     const nodes = new Map([...this.list.querySelectorAll<HTMLElement>(':scope > [data-entry-id]')].map(node => [node.dataset.entryId!, node]));
@@ -118,6 +118,8 @@ export class AgentTranscript {
     if (!entries.length) this.list.innerHTML = this.format.empty;
     if (anchor && anchor.isConnected) this.viewport.scrollTop += anchor.getBoundingClientRect().top - offset;
     this.follow();
+    // 一批不满一屏时没有滚动事件，也接着往前补。
+    if (this.viewport.scrollHeight <= this.viewport.clientHeight) this.wantMore();
   }
 
   private create(entry: AgentEntry) {
