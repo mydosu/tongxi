@@ -23,7 +23,7 @@ export async function projectSettings(root:HTMLElement, detail:ConversationDetai
   const seatOf=(chat:ConversationDetail)=>detail.project_agent_chats.find(item=>item.conversation_id===chat.conversation.id)?.agent_id||chat.conversation.members[0];
   const ids=chats.map(chat=>chat.conversation.members[0]).filter((id,index,all)=>all.indexOf(id)===index);
   const available=(saved:string|undefined,preference:string[])=>saved&&ids.includes(saved)?saved:preference.find(id=>ids.includes(id))||ids[0];
-  const coordinator:RoleChoice={agent:available(detail.project_coordinator?.agent,['claude-win','codex-win','hermes-win','dsh-win','opencode-win']),model:detail.project_coordinator?.model||null,effort:detail.project_coordinator?.effort||null};
+  const coordinator:RoleChoice={agent:available(detail.project_coordinator?.agent,['claude-win','codex-win','hermes-win','dsh-win','opencode-win','antigravity-win']),model:detail.project_coordinator?.model||null,effort:detail.project_coordinator?.effort||null};
   const seatCard=(chat:ConversationDetail)=>{
     const agent=chat.conversation.members[0],seat=seatOf(chat),runtime=host.snapshot(agent),settings=chat.sessions[0];
     const model=settings.model || runtime.default_model || '';

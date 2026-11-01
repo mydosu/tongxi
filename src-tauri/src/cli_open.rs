@@ -42,8 +42,7 @@ pub(crate) fn resume_command(
         "claude-win" => format!("{} --resume {session}", program("claude")),
         "hermes-win" => format!("{} --resume {session}", program("hermes")),
         "opencode-win" => format!("{} --session {session}", program("opencode")),
-        // 同席的会话 ID 和 agy 的对话 ID 不是一回事（对应表在桥的数据目录里），暂不支持移交。
-        "antigravity-win" => return Err("Antigravity 暂不支持在 CLI 中打开".into()),
+        "antigravity-win" => format!("{} --conversation {session}", program("agy")),
         // DSH 在这台机器上没有终端界面，只有网页版：开网页版，再从会话历史里选这条会话。
         "dsh-win" => format!(
             "Write-Host '在打开的 DSH 网页里，从会话历史中选择会话 {session}；关闭本窗口即回到同席。'; {} --profile web",
@@ -77,6 +76,8 @@ fn shell() -> &'static str {
 /// 要交给 CLI 的那条原生会话。
 pub(crate) struct Target {
     pub native: String,
+    /// CLI 续接用的 ID：一般就是 native；Antigravity 要换成 agy 自己的对话 ID。
+    pub resume: String,
     pub cwd: PathBuf,
     pub title: String,
 }
@@ -103,7 +104,8 @@ pub(crate) fn begin(
     let native = session
         .native_session_id
         .ok_or("这个会话还没有原生会话，先在同席里发一条消息再打开")?;
-    resume_command(agent, &native, None)?;
+    let resume = cli_session(directory, agent, &native)?;
+    resume_command(agent, &resume, None)?;
     let cwd = session.native_cwd.map(PathBuf::from).unwrap_or_else(|| {
         directory
             .join(format!("{}-workspaces", workspace_key(agent)))
@@ -114,9 +116,22 @@ pub(crate) fn begin(
     store.save_cli_handoff(conversation_id, agent, &native, 0, crate::store::now())?;
     Ok(Target {
         native,
+        resume,
         cwd,
         title: format!("同席 · {}", detail.conversation.title),
     })
+}
+
+/// Antigravity 的桥在第一回合后才拿到 agy 的对话 ID，对应表记在它的数据目录（antigravity-native/conversations.json）。
+fn cli_session(directory: &Path, agent: &str, native: &str) -> Result<String> {
+    if agent != "antigravity-win" {
+        return Ok(native.to_owned());
+    }
+    let links: serde_json::Value = std::fs::read(directory.join("antigravity-native").join("conversations.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    Ok(links[native].as_str().unwrap_or(native).to_owned())
 }
 
 /// CLI 所在的终端窗口（其中 PowerShell 的进程）。
@@ -183,7 +198,7 @@ pub(crate) fn launch(
         CreateProcessW, CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
         STARTUPINFOW,
     };
-    let command = resume_command(agent, &target.native, executable)?;
+    let command = resume_command(agent, &target.resume, executable)?;
     let script = format!(
         "$Host.UI.RawUI.WindowTitle = {}; Get-ChildItem Env: | Where-Object {{ $_.Name -like 'CLAUDE_CODE_*' -or $_.Name -eq 'CLAUDECODE' }} | Remove-Item; {command}; if ($LASTEXITCODE) {{ Read-Host 'CLI 异常退出，按回车关闭窗口并回到同席' }}",
         quote(&target.title)
@@ -282,6 +297,18 @@ pub(crate) fn reclaim(store: &Store, conversation_id: &str, agent: &str) -> Resu
 mod tests {
     use super::resume_command;
     use std::path::Path;
+
+    #[test]
+    fn antigravity_resumes_agys_own_conversation_id() {
+        let directory = std::env::temp_dir().join(format!("tongxi-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(directory.join("antigravity-native")).unwrap();
+        std::fs::write(directory.join("antigravity-native/conversations.json"), r#"{"hub-id":"agy-id"}"#).unwrap();
+        assert_eq!(super::cli_session(&directory, "antigravity-win", "hub-id").unwrap(), "agy-id");
+        assert_eq!(super::cli_session(&directory, "antigravity-win", "cli-made").unwrap(), "cli-made", "CLI 里开的对话本身就是 agy 的 ID");
+        assert_eq!(super::cli_session(&directory, "claude-win", "hub-id").unwrap(), "hub-id");
+        assert_eq!(resume_command("antigravity-win", "agy-id", None).unwrap(), "agy --conversation agy-id");
+        let _ = std::fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn builds_each_agents_resume_command() {

@@ -99,4 +99,4 @@ export function mountSessionPicker(container: HTMLElement, initial: Row[], host:
   };
 }
 
-export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win', 'opencode-win'].find(id => members.includes(id)) || members[0];
+export const defaultCoordinator = (members: string[], saved?: string | null) => saved && members.includes(saved) ? saved : ['claude-win', 'codex-win', 'hermes-win', 'dsh-win', 'opencode-win', 'antigravity-win'].find(id => members.includes(id)) || members[0];

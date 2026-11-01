@@ -19,7 +19,7 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, String>;
 
 /// 没指定主脑成员时按这个顺序挑。
-const BRAIN_PREFERENCE: [&str; 5] = ["claude-win", "codex-win", "hermes-win", "dsh-win", "opencode-win"];
+const BRAIN_PREFERENCE: [&str; 6] = ["claude-win", "codex-win", "hermes-win", "dsh-win", "opencode-win", "antigravity-win"];
 const REPORT_LIMIT: usize = 6000;
 /// 派活页里每件活的结果最多带这么多字，全文去成员会话看。
 const RESULT_LIMIT: usize = 8000;

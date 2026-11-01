@@ -1,7 +1,8 @@
 // ACP over stdio for the installed Antigravity CLI (`agy`). Each prompt runs one
 // `agy -p=` process in stream-json mode and resumes the same native conversation
 // (`--conversation <id>`); conversations stay in the user's own ~/.gemini store.
-// agy has no per-session MCP config (`--settings` rejects mcpServers), so hub tools are not passed.
+// agy takes no MCP servers on the command line, but reads `.agents/mcp_config.json` in every --add-dir
+// directory: each session gets its own such directory under the bridge's data dir.
 import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -52,6 +53,23 @@ function configOptions(session) {
   ];
 }
 
+// 同席的项目工具（MCP）：写进这个会话自己的目录，用 --add-dir 带上；无头模式要显式放行。
+function mcpArgs(sessionId, servers) {
+  const mcpServers = {};
+  for (const server of servers || []) {
+    if (!server?.name || !server.command) continue;
+    const env = {};
+    for (const item of server.env || []) if (item?.name) env[item.name] = String(item.value ?? '');
+    mcpServers[server.name] = { command: String(server.command), args: (server.args || []).map(String), env };
+  }
+  const names = Object.keys(mcpServers);
+  if (!names.length) return [];
+  const root = join(data, 'mcp', sessionId.replace(/[^0-9a-zA-Z-]/g, ''));
+  mkdirSync(join(root, '.agents'), { recursive: true });
+  writeFileSync(join(root, '.agents', 'mcp_config.json'), JSON.stringify({ mcpServers }));
+  return ['--add-dir', root, '--settings', JSON.stringify({ permissions: { allow: names.map(name => `mcp(${name}/*)`) } })];
+}
+
 function promptText(prompt) {
   return (prompt || []).map(block => block.type === 'text' ? block.text
     : block.type === 'resource_link' ? `附件：${block.name || ''} ${block.uri}`
@@ -89,7 +107,9 @@ function prompt(id, params) {
   if (session.model) args.push('--model', session.model);
   const conversation = conversationOf(params.sessionId);
   if (conversation) args.push('--conversation', conversation);
+  args.push(...mcpArgs(params.sessionId, session.mcpServers));
   if (session.mode === 'plan') args.push('--mode', 'plan');
+  // shortcut: agy 的 deny 规则只认整条命令、跳过权限时还不生效，写档挡不住 git push / gh release；agy 支持前缀规则后改成 allow 全部 + deny 不可逆命令。
   else args.push('--dangerously-skip-permissions');
   args.push('-p=');
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -156,7 +176,7 @@ function open(params, existing) {
   if (!params?.cwd) throw new Error('缺少会话目录');
   const sessionId = existing ? params.sessionId : randomUUID();
   if (existing && !conversationOf(sessionId)) throw new Error('Antigravity 对话不存在');
-  const session = Object.assign(sessions.get(sessionId) || { model: null, mode: 'build' }, { cwd: params.cwd });
+  const session = Object.assign(sessions.get(sessionId) || { model: null, mode: 'build' }, { cwd: params.cwd, mcpServers: params.mcpServers || [] });
   sessions.set(sessionId, session);
   return { sessionId, configOptions: configOptions(session) };
 }

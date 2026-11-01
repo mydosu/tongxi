@@ -674,6 +674,7 @@ fn open_in_cli(
     let executable = match agent_id.as_str() {
         "codex-win" => codex::discover_executable(),
         "claude-win" => claude::discover_executable(),
+        "antigravity-win" => acp_transport::Target::antigravity_exe(),
         _ => None,
     };
     let (window, pid) =
