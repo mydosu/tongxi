@@ -811,6 +811,8 @@ async function selectConversation(id: string) {
   // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来，换成标题栏加加载胶囊（有缓存就直接画缓存）。
   const narrow = narrowScreen();
   const cached = switched && narrow ? detailCache.get(id) : undefined;
+  // 上一次没等到回来就被打断（连点、返回再点别的）留下的隐藏标记和胶囊先清掉，不然这次画出来的页面会被一并藏掉。
+  if (!(switched && narrow && !cached)) { delete main.dataset.switching; main.querySelector(':scope > .switch-loading')?.remove(); }
   if (switched && narrow && !cached) {
     main.dataset.switching = '';
     main.querySelector(':scope > .switch-loading')?.remove();
@@ -917,7 +919,8 @@ function backfillMessages(box: HTMLElement, older: Message[], head: string, incl
     if (!end) syncChatQuestions();
     return end > 0;
   };
-  while (end && box.scrollHeight <= box.clientHeight + 40 && step());
+  // 盒子不可见（手机在列表页、高度 0）时「不满一屏」恒成立，会把整段历史同步补完：要有高度才补。
+  while (end && box.clientHeight > 0 && box.scrollHeight <= box.clientHeight + 40 && step());
   if (!end) return;
   if (narrowScreen()) {
     // 手机上不在后台把整段历史排完（长会话要连着排几秒，点按排在后面）：人翻到离顶部两屏内才补一批，补完位置不动。

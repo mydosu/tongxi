@@ -120,7 +120,8 @@ export class AgentTranscript {
     if (anchor && anchor.isConnected) this.viewport.scrollTop += anchor.getBoundingClientRect().top - offset;
     this.follow();
     // 一批不满一屏时没有滚动事件，也接着往前补。
-    if (this.viewport.scrollHeight <= this.viewport.clientHeight) this.wantMore();
+    // 视口不可见（手机在列表页，高度 0）时不接着补：不然每个流式事件都在背后把整段历史一批批补完。
+    if (this.viewport.clientHeight > 0 && this.viewport.scrollHeight <= this.viewport.clientHeight) this.wantMore();
   }
 
   private create(entry: AgentEntry) {

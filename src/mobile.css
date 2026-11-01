@@ -21,6 +21,11 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   /* 触摸后不留蓝色点按框和聚焦框（键盘 :focus-visible 的框照旧）。 */
   html:not([data-hud]) * { -webkit-tap-highlight-color: transparent; }
   html:not([data-hud]) :focus:not(:focus-visible) { outline: none; }
+  /* 输入框一点就整圈蓝紫描边（:focus-visible 对文本框触摸也成立，styles.css 的 2px outline）：手机上不画描边，改用和搜索框一样的淡紫边加柔光。 */
+  html:not([data-hud]) :is(button, input, textarea, select, summary, [tabindex], [role="button"]):focus-visible { outline: none; }
+  html:not([data-hud]) :is(input, select):focus-visible { border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
+  /* 「清晰」档：面板的白纱也跟着薄下来，背景图才看得清（默认 .5 上下的白底会把图洗淡）。 */
+  html:not([data-hud])[data-veil="clear"] :is(.sidebar, .main) { background: rgb(255 255 255 / .28); }
 
   /* 长会话里改一个节点（流式回复每一帧）手机上都要把整列几千个节点重新排版（真机实测每次 28ms）。
      回复进行中（main.ts 的 markLive 打 data-live）屏幕外的消息跳过排版和绘制；auto 记着算出来的真实高度，滚动位置不乱。
@@ -31,7 +36,7 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud])[data-mview="list"] .main, html:not([data-hud])[data-mview="chat"] .sidebar { display: none; }
   html:not([data-hud]) .sidebar { padding-top: 14px; }
   /* 切会话：详情回来前上一个会话的整列消息不参与排版（main.ts selectConversation 打 data-switching）。 */
-  html:not([data-hud]) .main[data-switching] > :not(.switch-loading) { display: none; }
+  html:not([data-hud]) .main[data-switching]:has(> .switch-loading) > :not(.switch-loading) { display: none; }
   /* 没缓存时的加载态：标题栏照常，内容区空着透出背景；约 200ms 还没回来才在中间淡入一个小玻璃胶囊（更快回来就一直不可见）。
      数据回来后 enterView 的 fogOut 带着胶囊化雾淡出，新页面照常从雾里上浮。 */
   html:not([data-hud]) .switch-loading { display: flex; flex-direction: column; flex: 1; min-height: 0; }

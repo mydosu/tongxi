@@ -96,6 +96,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   const veil = VEILS[choice.veil];
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
+  root.dataset.veil = choice.veil;
   root.style.setProperty('--panel-blur', `${veil.blur}px`);
   root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
   const layers = [...document.querySelectorAll<HTMLElement>('.theme-backdrop .bg-layer')];
