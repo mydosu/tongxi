@@ -380,7 +380,9 @@ function enterView(view: string) {
 }
 let membersOpen = false;
 /// 手机（≤600px）一次只显示一页：会话列表或会话页；窄屏样式见 mobile.css，桌面宽度下这个属性无效。
-const setMobileView = (view: 'list' | 'chat') => { document.documentElement.dataset.mview = view; };
+// 手机上会话页时侧栏是 display:none：重绘它白花 50ms 左右（还会强制整页排版），先记下「过期了」，回到列表页再补。
+let listStale = false;
+const setMobileView = (view: 'list' | 'chat') => { document.documentElement.dataset.mview = view; if (view === 'list' && listStale) { listStale = false; renderList(); } };
 setMobileView('list');
 if (isRemote) document.documentElement.dataset.remote = '1';
 new MutationObserver(()=>hydrateAttachments(main)).observe(main,{childList:true,subtree:true});
@@ -559,6 +561,7 @@ function readDraft(id: string) { return localStorage.getItem(draftKey(id)) || ''
 function renderList() {
   // 侧栏卡片正在就地改名时先不重绘，免得把输入框冲掉；结束后补一次。
   if (renamingConversation) { listRenderPending = true; return; }
+  if (document.documentElement.dataset.mview === 'chat' && matchMedia('(max-width: 600px)').matches) { listStale = true; return; }
   document.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach(button => button.classList.toggle('selected', button.dataset.filter === filter));
   document.querySelector('#list-label')!.textContent = archived ? '归档会话' : '最近会话';
   document.querySelector('#archive-filter')!.classList.toggle('active', archived);
@@ -791,21 +794,30 @@ const detailStamp = (item: ConversationDetail) => {
   const last = item.messages[item.messages.length - 1];
   return [item.conversation.updated_at, item.messages.length, last?.id, last?.status, last?.content.length, item.chat_questions?.length, item.project_agent_chats?.length].join('|');
 };
-const endSwitching = () => { delete main.dataset.switching; main.querySelector(':scope > .switch-loading')?.remove(); };
+// 详情回来：只留加载胶囊（随后换页时由 fogOut 带着它化雾淡出），藏着的旧页面直接丢掉。
+const endSwitching = () => {
+  delete main.dataset.switching;
+  const loading = main.querySelector<HTMLElement>(':scope > .switch-loading');
+  if (!loading) return;
+  for (const node of [...main.children]) if (node !== loading) node.remove();
+  setTimeout(() => loading.remove(), 700);
+};
 
 async function selectConversation(id: string) {
   const generation = ++detailGeneration;
   const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
-  // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来，换成标题加骨架屏（有缓存就直接画缓存）。
+  // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来，换成标题栏加加载胶囊（有缓存就直接画缓存）。
   const narrow = narrowScreen();
   const cached = switched && narrow ? detailCache.get(id) : undefined;
   if (switched && narrow && !cached) {
     main.dataset.switching = '';
     main.querySelector(':scope > .switch-loading')?.remove();
-    const title = conversations.find(conversation => conversation.id === id)?.title || '';
-    main.insertAdjacentHTML('beforeend', `<div class="switch-loading" aria-hidden="true"><header class="chat-header"><div class="chat-heading"><div><h1>${escape(title)}</h1></div></div></header><div class="switch-skeleton"><i></i><i></i><i></i></div></div>`);
+    const target = conversations.find(conversation => conversation.id === id);
+    const face = target ? (target.kind === 'direct' ? avatar(globalMember(target.members[0])) : groupFace(target.id)) : '';
+    // 标题栏照常，内容区先空着；胶囊靠 CSS 延迟约 150ms 才淡入，更快回来就一直不可见（不闪）。
+    main.insertAdjacentHTML('beforeend', `<div class="switch-loading" aria-hidden="true"><header class="chat-header"><div class="chat-heading"><div><h1>${escape(target?.title || '')}</h1></div></div></header><div class="switch-stage"><div class="switch-pill">${face}<span>正在打开</span><span class="switch-dots"><i></i><i></i><i></i></span></div></div></div>`);
   }
   const show = (result: ConversationDetail) => {
     detail = result;
@@ -872,7 +884,7 @@ async function selectProjectModule(groupId: string, moduleId: string) {
 const MESSAGE_BATCH = 48_000;
 /// 手机上每批的体量小一截：每批插入加整列重排要控制在一两帧里，不然切会话后的点按、翻页排在后面。
 const narrowScreen = () => matchMedia('(max-width: 600px)').matches;
-const messageBatch = () => narrowScreen() ? 16_000 : MESSAGE_BATCH;
+const messageBatch = () => narrowScreen() ? 6_000 : MESSAGE_BATCH;
 /// 从 end 往前画到凑够 budget（至少一条），返回画到哪、拼好的 HTML。
 function renderTail(messages: Message[], end: number, budget: number, includeDetails: boolean) {
   const parts: string[] = [];
@@ -908,13 +920,13 @@ function backfillMessages(box: HTMLElement, older: Message[], head: string, incl
   while (end && box.scrollHeight <= box.clientHeight + 40 && step());
   if (!end) return;
   if (narrowScreen()) {
-    // 手机上不在后台把整段历史排完（长会话要连着排几秒，点按排在后面）：人翻到离顶部三屏内才补一批，补完位置不动。
+    // 手机上不在后台把整段历史排完（长会话要连着排几秒，点按排在后面）：人翻到离顶部两屏内才补一批，补完位置不动。
     let waiting = false;
     const onScroll = () => {
       if (token !== backfillToken || !box.isConnected) { box.removeEventListener('scroll', onScroll); return; }
-      if (waiting || box.scrollTop > box.clientHeight * 3) return;
+      if (waiting || box.scrollTop > box.clientHeight * 2) return;
       waiting = true;
-      setTimeout(() => requestIdleCallback(() => { waiting = false; if (token === backfillToken && box.scrollTop <= box.clientHeight * 3 && !step()) box.removeEventListener('scroll', onScroll); }, { timeout: 300 }), 80);
+      setTimeout(() => requestIdleCallback(() => { waiting = false; if (token === backfillToken && box.scrollTop <= box.clientHeight * 2 && !step()) box.removeEventListener('scroll', onScroll); }, { timeout: 300 }), 80);
     };
     box.addEventListener('scroll', onScroll, { passive: true });
     return;

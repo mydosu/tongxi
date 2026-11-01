@@ -19,7 +19,8 @@ interface TranscriptFormat {
 }
 
 // 手机一屏小、排版慢，每批少画；桌面一屏能放下更多条。
-const windowSize = () => matchMedia('(max-width: 600px)').matches ? { first: 12, step: 12 } : { first: 40, step: 20 };
+// 真机实测 DSH 这类长输出的记录一批 12 条要排 200–270ms（长任务），小批多次才不卡；预取只留两屏。
+const windowSize = () => matchMedia('(max-width: 600px)').matches ? { first: 8, step: 6, ahead: 2 } : { first: 40, step: 20, ahead: 3 };
 
 /** One keyed output list and one scroll owner for project turns and private turns. */
 export class AgentTranscript {
@@ -39,12 +40,12 @@ export class AgentTranscript {
   private more = () => {
     this.moreTimer = 0;
     const at = this.all.findIndex(entry => entry.id === this.from);
-    if (at <= 0 || !this.viewport.isConnected || this.viewport.scrollTop > this.viewport.clientHeight * 3) return;
+    if (at <= 0 || !this.viewport.isConnected || this.viewport.scrollTop > this.viewport.clientHeight * windowSize().ahead) return;
     this.from = this.all[Math.max(0, at - windowSize().step)].id;
     this.update(this.all);
   };
   private wantMore() {
-    if (!this.moreTimer && this.from !== null && this.viewport.scrollTop <= this.viewport.clientHeight * 3 && this.all[0]?.id !== this.from) this.moreTimer = window.setTimeout(() => requestIdleCallback(this.more, { timeout: 300 }), 80);
+    if (!this.moreTimer && this.from !== null && this.viewport.scrollTop <= this.viewport.clientHeight * windowSize().ahead && this.all[0]?.id !== this.from) this.moreTimer = window.setTimeout(() => requestIdleCallback(this.more, { timeout: 300 }), 80);
   }
   private scroll = () => {
     this.wantMore();

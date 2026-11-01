@@ -18,10 +18,11 @@ const BUILTIN: Backdrop[] = [
   { id: 'plain', name: '素净', mode: 'plain' },
 ];
 // cover/figure：薄纱透明度；blur：场景主题下主面板的磨砂强度（越清晰越薄）。内置柔光背景本身就淡，纱减半。
-const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number }> = {
-  soft: { name: '淡雅', cover: .66, figure: .42, blur: 18 },
-  medium: { name: '适中', cover: .34, figure: .16, blur: 9 },
-  clear: { name: '清晰', cover: .24, figure: 0, blur: 5 },
+// photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
+const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; photo: number }> = {
+  soft: { name: '淡雅', cover: .66, figure: .42, blur: 18, photo: 4 },
+  medium: { name: '适中', cover: .34, figure: .16, blur: 9, photo: 2 },
+  clear: { name: '清晰', cover: .24, figure: 0, blur: 5, photo: 0 },
 };
 const KEY = 'hub.theme';
 interface Choice { id: string; veil: Veil; }
@@ -96,13 +97,17 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
   root.style.setProperty('--panel-blur', `${veil.blur}px`);
+  root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
   const layers = [...document.querySelectorAll<HTMLElement>('.theme-backdrop .bg-layer')];
   if (layers.length < 2) return;
   const next = layers[animate ? 1 - front : front], previous = layers[animate ? front : 1 - front];
   if (next.dataset.theme !== `${theme.id}|${theme.mode}`) {
-    next.className = `bg-layer ${theme.mode}`;
+    next.className = `bg-layer ${theme.mode}${theme.pastel ? ' pastel' : ''}`; // pastel：内置柔光图，手机上照常铺满，不走「整张居中+模糊衬底」
     next.dataset.theme = `${theme.id}|${theme.mode}`;
     next.style.backgroundImage = image ? `url("${image}")` : 'none';
+    next.style.setProperty('--bg-img', image ? `url("${image}")` : 'none'); // 手机上横图的底衬/前景用伪元素画，同一个 url 不会多解码一份
+    // 手机上横图按宽度居中完整显示，前景那块的高度要靠宽高比定，边缘才能渐隐进模糊衬底。
+    if (theme.mode === 'cover' && !theme.pastel && image) { const probe = new Image(); probe.onload = () => next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); probe.src = image; }
     next.style.backgroundPosition = theme.mode === 'cover' ? theme.position || 'center' : '';
   }
   next.classList.add('visible');

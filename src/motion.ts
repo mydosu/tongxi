@@ -12,6 +12,9 @@ document.addEventListener('scroll', event => { if (event.target instanceof HTMLE
 export function fogOut(main: HTMLElement) {
   document.querySelectorAll('.view-ghost').forEach(ghost => ghost.remove());
   if (still() || !main.firstChild) return;
+  // 手机上一次只显示一页：旧会话页（刚从隐藏变出来、马上被换掉）只为化雾就得整页排一遍版并逐条量位置，真机实测每次切换白花 60ms 上下；
+  // 只让加载胶囊（main 里只剩它）化雾淡出。
+  if (matchMedia('(max-width: 600px)').matches && !main.querySelector(':scope > .switch-loading')) return;
   const box = main.getBoundingClientRect();
   // 长列表只带走看得见的那几条：几千个节点挪进雾层要整段重新排版，切走长会话会卡几十毫秒。
   for (const node of scrolledNodes) if (node.isConnected && main.contains(node) && node.scrollTop > 0) trimToView(node);
