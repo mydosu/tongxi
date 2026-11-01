@@ -58,6 +58,7 @@
 | **Hermes** | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | 安装器自带向导，之后可用 `hermes setup` | 无（自备 Python） | [Windows 指南](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native) |
 | **DSH** | `npm install -g @deepseek-ai/dsh` | `dsh web`（在网页里填 DeepSeek Key） | Node.js 22.19+ | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
 | **OpenCode**（可选） | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
+| **Antigravity**（可选） | `irm https://antigravity.google/cli/install.ps1 \| iex` | `agy`（首次运行登录） | Node.js 18+ | [antigravity.google](https://antigravity.google/) |
 
 需要 Node.js 而本机没有时，安装脚本会先用 `winget install OpenJS.NodeJS.LTS` 装好。
 
@@ -291,6 +292,7 @@
 | **Claude Code** | `claude_bridge.mjs` 把 ACP 转成 `claude -p --output-format stream-json`，每轮续接同一条原生会话 | Claude Code 自己的 `~/.claude` |
 | **Hermes** | `hermes_bridge.py` 在进程内扩展已安装的 Hermes ACP，原生工具和 MCP 照常可用 | 同席给它单独的 SessionDB |
 | **DSH** | `dsh_bridge.mjs` 直接加载已安装的 DeepSeek harness，走 ACP；模型和 Key 读 DSH 自己的配置（`dsh web` 里配的服务商） | DSH 的会话文件 |
+| **Antigravity** | `antigravity_bridge.mjs` 把 ACP 转成每轮一次 `agy -p= --output-format stream-json`，续接同一条 agy 对话；同席的项目工具按会话写进 `--add-dir` 目录的 `.agents/mcp_config.json` | Antigravity 自己的 `~/.gemini/antigravity-cli` |
 | **陪伴** | 任意 OpenAI 兼容端点：`/v1/models` 取模型、`/v1/chat/completions` 收流式正文 | 对方服务里（同席只当客户端，不拉起它的进程） |
 
 几个共性：
@@ -365,6 +367,14 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 <br />
 
 ## 版本记录
+
+### v3.7.0 · 接入 Antigravity、问答更顺手
+
+- **接入 Antigravity**（可选成员）：本机装了 Antigravity CLI（`agy`）就能私聊、进群聊、开项目席位、当主脑，同席的项目工具（提问、派活、广播等）都能用；支持在 CLI 中打开、一键安装，头像是它自己的标志。只读档用 agy 的 plan 模式；写档目前挡不住 `git push` 这类不可逆命令，需要推送的项目先别给它开写权限。
+- **主脑可以撤回问题**：问错了或不用再问时，主脑可以收回还没答的问题，等着它的计划步骤回到待办。
+- **问答里可以贴文件、可以忽略**：回答框里粘贴或拖进文件，会存到本机并把路径写进回答；不想答的问题点「忽略」，对方按自己的判断接着做。
+- **插话不再干等**：不支持中途插话的成员正在回复时你发了消息，会先停下这轮、再把你的消息发出去。
+- **用量统计折叠起来**：主脑页里的今日、累计和上下文用量收进一个可展开的「用量」栏。
 
 ### v3.6.2 · 长会话不卡
 

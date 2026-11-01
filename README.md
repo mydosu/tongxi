@@ -16,7 +16,7 @@
 
 <br />
 
-Tongxi (同席, "sharing a table") is a Windows desktop app that brings the agent CLIs you already use — **Codex, Claude Code, Hermes, DSH and OpenCode** — into one workspace:
+Tongxi (同席, "sharing a table") is a Windows desktop app that brings the agent CLIs you already use — **Codex, Claude Code, Hermes, DSH, OpenCode and Antigravity** — into one workspace:
 
 - Chat with any of them one-on-one.
 - Pull several into a group chat.
@@ -60,6 +60,7 @@ Open **Members & services** at the bottom of the sidebar. For a member that isn'
 | **Hermes** | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | the installer's wizard, later `hermes setup` | its own Python | [Windows guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native) |
 | **DSH** | `npm install -g @deepseek-ai/dsh` | `dsh web` (enter a DeepSeek key) | Node.js 22.19+ | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
 | **OpenCode** (optional) | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
+| **Antigravity** (optional) | `irm https://antigravity.google/cli/install.ps1 \| iex` | `agy` (sign in on first run) | Node.js 18+ | [antigravity.google](https://antigravity.google/) |
 
 If Node.js is missing, the install script gets it first with `winget install OpenJS.NodeJS.LTS`. Installed somewhere unusual? Point Tongxi at it with `AGENT_HUB_CODEX_EXE`, `AGENT_HUB_CLAUDE_EXE`, `AGENT_HUB_HERMES_PYTHON`, `AGENT_HUB_DSH_INSTALLATION` or `AGENT_HUB_DSH_NODE`.
 
@@ -188,6 +189,7 @@ A native Windows app: hand-written TypeScript UI (no framework) and a Rust core,
 | Hermes | `hermes_bridge.py` extends the installed Hermes ACP in-process |
 | DSH | `dsh_bridge.mjs` loads the installed DeepSeek harness over ACP |
 | OpenCode | its built-in ACP (`opencode acp`) |
+| Antigravity | `antigravity_bridge.mjs` turns ACP into one `agy -p= --output-format stream-json` run per turn, resuming the same agy conversation; Tongxi's project tools reach it through a per-session `--add-dir` folder holding `.agents/mcp_config.json` |
 | Companion | any OpenAI-compatible endpoint |
 
 <br />
