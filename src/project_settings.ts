@@ -7,7 +7,7 @@ import { mountSessionPicker, sessionCache, type PickerHost, type SessionBinding 
 type Escape=(value:string|number)=>string;
 const effortNames:Record<string,string>={none:'关闭',off:'关闭',low:'低',medium:'中',high:'高',xhigh:'很高',max:'最大',ultra:'Ultra'};
 interface Host { escape:Escape; picker:PickerHost; close:()=>void; snapshot:(id:string)=>RuntimeSnapshot; name:(id:string)=>string; saved:()=>Promise<void>; reopen:()=>Promise<void>; renamed:(seat:string,label:string)=>void; globalName:(id:string)=>string; busy:boolean; toast:(text:string,error?:boolean)=>void; avatar:(id:string)=>string; }
-const PROJECT_AGENTS=['codex-win','hermes-win','dsh-win','claude-win','opencode-win'];
+const PROJECT_AGENTS=['codex-win','hermes-win','dsh-win','claude-win','opencode-win','antigravity-win'];
 // 面板重画（增减成员、多开会话后）时，展开着的折叠节保持展开。
 const openSections=new Set<string>();
 

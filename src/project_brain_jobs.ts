@@ -71,13 +71,15 @@ function ledgerSection(rows: LedgerRow[], escape: Escape, open: Set<string>) {
     ${folded(key, open, () => `<div class="brain-usage"><h3>按天</h3>${group(row => row.day, true)}<h3>按成员</h3>${group(row => row.name)}<h3>按模型</h3>${group(row => modelText(row.model || null))}</div>`)}</details>`;
 }
 
-function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[]) {
+function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[], open: Set<string>) {
   const row = (label: string, sum: UsageSum) => `<p><strong>${label}</strong><span>${sum.turns ? `${sum.turns} 回合 · ${usageText(sum)} · ${priced(sum.cost)}` : '暂无记录'}</span></p>`;
   // 只比两边都有价的活，不然「省了」会把没价的那件当成 0 算进去。
   const both = jobs.map(job => job.usage).filter((usage): usage is JobUsage => usage?.cost != null && usage.brain_cost != null);
   const spent = both.reduce((total, usage) => total + usage.cost!, 0), brain = both.reduce((total, usage) => total + usage.brain_cost!, 0);
   const members = both.length ? `<p><strong>成员累计</strong><span>${both.length} 件活 ≈ ${money(spent)}，全交给主脑的模型 ≈ ${money(brain)}${brain > spent ? `，分活省了 ${money(brain - spent)}` : ''}（按 API 价折算）</span></p>` : '';
-  return `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${members}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`;
+  // 平时收起来只看今日和累计的钱，点开才看 token 明细。
+  const key = 'usage|brain', glance = (label: string, sum: UsageSum) => `${label} ${sum.turns ? priced(sum.cost) : '暂无'}`;
+  return `<details class="brain-plan brain-usage-fold" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><strong>用量</strong><small>${glance('主脑今日', usage.brain_today)} · ${glance('累计', usage.brain_total)}</small></summary>${folded(key, open, () => `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${members}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`)}</details>`;
 }
 
 export const jobLive = (job: BrainJob) => job.status === 'pending' || job.status === 'running';
@@ -418,5 +420,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : `<p class="inquiry-empty">${ended.length ? '暂无进行中的任务。' : '主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。'}</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${folded('ended', open, () => ended.map(job => card(job, escape, avatar, open)).join(''))}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${usageSection(overview.usage, overview.jobs)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${usageSection(overview.usage, overview.jobs, open)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

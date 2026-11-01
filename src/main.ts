@@ -10,7 +10,7 @@ import { agentMarkdown } from './agent_markdown';
 import { agentTimeline } from './agent_timeline';
 import { AgentTranscript } from './agent_transcript';
 import { agentChatChrome, agentEmpty, projectAgentPage } from './project_agent_view';
-import { inquiryPage } from './project_inquiries';
+import { IGNORED_ANSWER, inquiryPage } from './project_inquiries';
 import { bindPlanFlow, brainJobsPage, fillFold, jobLive, modelText, planSection, revealPlanNode } from './project_brain_jobs';
 import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
@@ -19,7 +19,7 @@ import { baseAgent, isBrain, isSeat, seatSlot } from './seats';
 import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
-import { mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
+import { mountAnswerFiles, mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
 import { fogOut, glide, measure, watchArrivals } from './motion';
 import './styles.css';
 import './agent_transcript.css';
@@ -84,7 +84,7 @@ let toastTimer: ReturnType<typeof setTimeout>;
 let pendingSave: { conversationId: string; messageId: string; content: string } | null = null;
 const emptyRuntime = (): RuntimeSnapshot => ({ revision: 0, connection: 'disconnected', executable: null, version: null, error: null, active: null, models: [], default_model: null, default_effort: null });
 // 席位（codex-win-2 …）和底层成员共用同一个原生连接，读写都落到底层成员上。
-const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, RuntimeSnapshot>>({ 'codex-win': emptyRuntime(), 'hermes-win': emptyRuntime(), 'dsh-win': emptyRuntime(), 'claude-win': emptyRuntime(), 'opencode-win': emptyRuntime(), 'albion-wsl': emptyRuntime() }, {
+const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, RuntimeSnapshot>>({ 'codex-win': emptyRuntime(), 'hermes-win': emptyRuntime(), 'dsh-win': emptyRuntime(), 'claude-win': emptyRuntime(), 'opencode-win': emptyRuntime(), 'antigravity-win': emptyRuntime(), 'albion-wsl': emptyRuntime() }, {
   get: (target, key) => typeof key === 'string' ? target[baseAgent(key)] : undefined,
   set: (target, key, value) => { target[baseAgent(String(key))] = value; return true; },
 });
@@ -92,7 +92,7 @@ const runtimes: Record<string, RuntimeSnapshot> = new Proxy<Record<string, Runti
 const currentAgentId = () => detail?.conversation.kind === 'direct' ? detail.conversation.members[0] : detail?.conversation.kind === 'group' && activeProjectModule !== 'team' ? activeProjectModule : 'codex-win';
 const activeProjectAgent = () => detail?.conversation.kind === 'group' && detail.project && activeProjectModule !== 'team' && detail.project_agent_chats.some(chat => chat.agent_id === activeProjectModule) ? activeProjectModule : null;
 const currentRuntime = () => runtimes[currentAgentId()] || emptyRuntime();
-const harnessKey = (agent = currentAgentId(), id = baseAgent(agent)) => id === 'hermes-win' ? 'hermes' : id === 'dsh-win' ? 'dsh' : id === 'claude-win' ? 'claude' : id === 'opencode-win' ? 'opencode' : id === 'albion-wsl' ? 'albion' : 'codex';
+const harnessKey = (agent = currentAgentId(), id = baseAgent(agent)) => id === 'hermes-win' ? 'hermes' : id === 'dsh-win' ? 'dsh' : id === 'claude-win' ? 'claude' : id === 'opencode-win' ? 'opencode' : id === 'antigravity-win' ? 'antigravity' : id === 'albion-wsl' ? 'albion' : 'codex';
 const busySnapshot = (snapshot: RuntimeSnapshot) => runsOf(snapshot).some(liveRun);
 type NativeRun = NonNullable<RuntimeSnapshot['active']>;
 /// 一个成员可以同时在多个会话里回复；旧快照只有 `active`。
@@ -264,21 +264,22 @@ function renderProjectInquiries() {
     const box = form.querySelector('textarea')!;
     box.value = draft.get(id) || '';
     form.closest('.inquiry-card')?.querySelectorAll<HTMLButtonElement>('[data-inquiry-option]').forEach(button => button.addEventListener('click', () => { box.value = button.dataset.inquiryOption || ''; box.focus(); }));
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
-      const answer = box.value.trim();
+    mountAnswerFiles(box, selectedId, message => toast(message, true));
+    const submit = async (answer: string) => {
       if (!answer) return;
-      form.querySelector('button')!.disabled = true;
+      form.querySelectorAll('button').forEach(button => { button.disabled = true; });
       try {
         await invoke('answer_project_inquiry', { conversationId: selectedId, inquiryId: id, answer });
         box.value = '';
-        toast('已回答，主脑会收到你的回答');
+        toast(answer === IGNORED_ANSWER ? '已忽略，主脑会按自己的判断处理' : '已回答，主脑会收到你的回答');
       } catch (error) {
         toast(errorText(error), true);
-        form.querySelector('button')!.disabled = false;
+        form.querySelectorAll('button').forEach(button => { button.disabled = false; });
       }
       await refreshInquiries(selectedId);
-    });
+    };
+    form.querySelector('[data-inquiry-ignore]')!.addEventListener('click', () => void submit(IGNORED_ANSWER));
+    form.addEventListener('submit', event => { event.preventDefault(); void submit(box.value.trim()); });
   });
 }
 
@@ -303,7 +304,7 @@ function adoptDiscussion(job: Discussion) {
   updateRuntimeControls();
 }
 const runBusy = () => busyIn(currentRuntime(), selectedId);
-const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'].includes(currentAgentId());
+const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl'].includes(currentAgentId());
 const connectionLabel = () => currentRuntime().connection === 'connected' ? '接口已连接' : currentRuntime().connection === 'connecting' ? '正在连接' : '未连接';
 /// 状态事件里的模型表没变就不带（后端 state_events），缺省时沿用上一份。
 type RuntimeEvent = Omit<RuntimeSnapshot, 'models'> & { models?: RuntimeSnapshot['models'] };
@@ -1305,8 +1306,18 @@ const liveReply = (agentId: string, conversationId: string) => {
 
 /// 回复进行中插话。原生支持的成员不打断、把引导追加进当前回复，返回存好的消息；
 /// 其他成员先停止当前回复，等确认停止后返回 'resend'，由调用方按普通消息发送。
-/// 等成员说完再自动发出的会话（没有原生插话的成员）。
+/// 正在停下当前回复、停下后再发出的会话（没有原生插话的成员）。
 const waitingSends = new Set<string>();
+
+/// 不支持中途插话的成员：停掉当前回复，等它真停下来。
+async function interruptReply(agentId: string, conversationId: string) {
+  toast(`${member(agentId).name} 不支持中途插话，先停下这次回复再发出你的消息`);
+  try { adoptRuntime(await invoke<RuntimeSnapshot>(`cancel_${harnessKey(agentId)}_run`, { conversationId }), agentId); }
+  catch (error) { toast(errorText(error), true); return false; }
+  for (let waited = 0; waited < 30_000 && busyIn(runtimes[agentId], conversationId); waited += 300) await new Promise(resolve => setTimeout(resolve, 300));
+  if (busyIn(runtimes[agentId], conversationId)) { toast(`${member(agentId).name} 还没停下，稍后再发`, true); return false; }
+  return true;
+}
 
 async function steerReply(agentId: string, conversationId: string, input: HTMLTextAreaElement): Promise<Message | 'resend' | null> {
   if (attachmentsBusy(conversationId)) { toast('附件正在保存，请稍后发送', true); return null; }
@@ -1323,14 +1334,11 @@ async function steerReply(agentId: string, conversationId: string, input: HTMLTe
       return message;
     } catch (error) { toast(errorText(error), true); return null; }
   }
-  // 没有原生插话的成员（Hermes、DSH、陪伴）：不打断它，这次回复说完就自动把这条发出去（要打断用「停止」）。
-  if (waitingSends.has(conversationId)) { toast('上一条还在等它说完，说完会一起发出'); return null; }
+  // 没有原生插话的成员（Hermes、DSH、OpenCode、Antigravity）：先停掉这次回复，再把这条作为新消息发出。
+  if (waitingSends.has(conversationId)) { toast('正在停止上一条回复，停下后会发出'); return null; }
   waitingSends.add(conversationId);
-  toast(`${member(agentId).name} 不支持中途插话，这次回复说完就自动发出`);
-  try {
-    for (let waited = 0; waited < 1_800_000 && busyIn(runtimes[agentId], conversationId); waited += 500) await new Promise(resolve => setTimeout(resolve, 500));
-  } finally { waitingSends.delete(conversationId); }
-  if (busyIn(runtimes[agentId], conversationId)) { toast(`${member(agentId).name} 还在回复，稍后再发`, true); return null; }
+  try { if (!await interruptReply(agentId, conversationId)) return null; }
+  finally { waitingSends.delete(conversationId); }
   return 'resend';
 }
 
@@ -1514,8 +1522,9 @@ async function sendGroupMessage() {
     try {
       const messageId = crypto.randomUUID();
       if (busyIn(runtimes[agent], brain.conversation_id)) {
-        if (agent !== 'codex-win' && agent !== 'claude-win') { toast('主脑正在回复，等它这一轮说完再发', true); return; }
-        await invoke('steer_agent_message', { agentId: agent, conversationId: brain.conversation_id, messageId, content });
+        if (NATIVE_STEER.has(agent)) await invoke('steer_agent_message', { agentId: agent, conversationId: brain.conversation_id, messageId, content });
+        else if (await interruptReply(agent, brain.conversation_id)) await invoke<RunRecord>(`send_${harnessKey(agent)}_message`, { conversationId: brain.conversation_id, messageId, content });
+        else return;
       } else await invoke<RunRecord>(`send_${harnessKey(agent)}_message`, { conversationId: brain.conversation_id, messageId, content });
       const input = main.querySelector<HTMLTextAreaElement>('#message-input');
       if (input && input.value.trim() === content) { input.value = ''; resizeComposer(input); }
@@ -1652,7 +1661,7 @@ function updateProjectControls() {
   if ((activeProjectModule === 'inquiries' || activeProjectModule === 'brain-jobs') && detail.project) return;
   if (activeProjectAgent()) { updateRuntimeControls(); return; }
   const bind = main.querySelector<HTMLButtonElement>('#bind-project');
-  const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win'].includes(agent));
+  const projectMembers = detail.conversation.members.filter(agent => ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win'].includes(agent));
   // 一位成员也能做项目：同一成员多开的会话就是多位成员。
   const eligible = detail.conversation.kind === 'group' && projectMembers.length >= 1;
   if (bind) { bind.disabled = !eligible || discussionBusy(currentDiscussion()) || detail.conversation.archived; bind.textContent = detail.project ? '更换项目目录' : '选择项目目录'; }
@@ -2330,7 +2339,7 @@ function confirmDeleteConversation(conversation: Conversation) {
 // `ServiceInfo` and the update-check result shapes live in `./types`.
 
 // Card order matches the four managed members rendered by `renderServices`.
-const serviceCardOrder = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'] as const;
+const serviceCardOrder = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl'] as const;
 
 // Passes through only the backend's real data: a version comes from the runtime handshake
 // (or a later install manifest), otherwise "unknown" is shown. No update claim is made here.
@@ -2398,6 +2407,8 @@ async function checkServiceUpdate(agentId: string, card: HTMLElement) {
           ? 'Claude Code 会自己自动更新；检测到已更新时点「重启」，重连后用上新版本和新的模型目录'
         : agentId === 'opencode-win'
           ? 'OpenCode 用它自己的 opencode upgrade 更新，更新后点「重启」'
+        : agentId === 'antigravity-win'
+          ? 'Antigravity 用它自己的 agy update 更新，更新后点「重启」'
         : result.update_available === null ? '仅本地版本检测，同席不代更新' : '由外部安装维护，同席不代你更新';
     // 这行字贴着按钮显示很格格不入：卡片上不再出现结论行，只留在 DOM 里供验收读取，
     // 细节挂到卡片悬停上，要看再hover。
@@ -2890,7 +2901,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   }
   try {
     if (!eventSubscribed) {
-      for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) {
+      for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl']) {
         await listen<RuntimeEvent>(`${harnessKey(agentId)}-state`, event => {
           const old = runtimes[agentId];
           if (!adoptRuntime(event.payload, agentId)) return;
@@ -2936,11 +2947,11 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
       });
       // 手机断线重连后补一次完整状态：断线期间的事件（包括模型表的变化）收不到了。
-      onRemoteReconnect(() => { for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl']) void invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`).then(snapshot => { adoptRuntime(snapshot, agentId); updateRuntimeControls(); }).catch(() => {}); });
+      onRemoteReconnect(() => { for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl']) void invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`).then(snapshot => { adoptRuntime(snapshot, agentId); updateRuntimeControls(); }).catch(() => {}); });
       eventSubscribed = true;
     }
     // 这些读取互不依赖：并行发出去，手机上每个串行往返都是几十到几百毫秒。
-    const harnesses = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'albion-wsl'];
+    const harnesses = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl'];
     const [snapshots, discussion, agentList, appInfo, handoffs] = await Promise.all([
       Promise.all(harnesses.map(agentId => invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`))),
       invoke<Discussion | null>('discussion_status'),

@@ -1255,6 +1255,7 @@ pub fn tool_specs() -> Vec<Value> {
         ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
         ("hub_finish_worktree", "Close out a finished job that had a worktree: action=merge merges its branch into the project's current branch and removes the worktree; action=discard throws the work away. On merge conflicts the merge is left in the project directory for you to resolve.", json!({"job":string,"action":{"type":"string","enum":["merge","discard"]}}), vec!["job","action"]),
         ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message. step: the hub_plan step that can't go on until the user answers; it shows as waiting on the user and turns back to todo when answered.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"},"step":{"type":"integer"}}), vec!["question"]),
+        ("hub_withdraw_question", "Take back a question you put on the Q&A panel that is still unanswered (it no longer matters, or you found the answer yourself). key: the question's key. A plan step waiting on it turns back to todo.", json!({"key":string}), vec!["key"]),
         ("hub_add_seat", "Open another seat for a member already in this project group (up to 3 extra per member): a separate session with its own model, delegated to like any other member. agent: the base agent id (codex-win, claude-win, ...); name: optional seat name. Returns the new seat id.", json!({"agent":string,"name":string}), vec!["agent"]),
         ("hub_rename_seat", "Rename a seat you opened with hub_add_seat. Empty name = default name.", json!({"member":string,"name":string}), vec!["member","name"]),
         ("hub_remove_seat", "Remove a seat you opened with hub_add_seat once it is idle (its session is archived, not deleted). Seats the user opened are not yours to remove.", json!({"member":string}), vec!["member"]),
@@ -1475,6 +1476,19 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                     .map_err(|_| "计划保存失败")?;
             }
             Ok(json!({"asked":asked,"note":if asked {"已挂到问答面板，用户答了会作为新消息发给你"} else {"这个 key 用户已经答过了，看之前的回答"}}))
+        }
+        "hub_withdraw_question" => {
+            let key = text_arg(&args, "key", 60)?;
+            let withdrawn = connection
+                .execute("UPDATE project_inquiries SET status='withdrawn' WHERE conversation_id=?1 AND key=?2 AND status='open'", params![ctx.room, key])
+                .map_err(|_| "问题撤回失败")?;
+            if withdrawn == 0 {
+                return Err("没有这个 key 的待答问题（可能已经答过或撤回了）".into());
+            }
+            connection
+                .execute("UPDATE brain_steps SET status='todo',wait_key=NULL,updated_at=?1 WHERE room=?2 AND wait_key=?3 AND status='waiting'", params![now(), ctx.room, key])
+                .map_err(|_| "计划保存失败")?;
+            Ok(json!({"withdrawn":true}))
         }
         "hub_add_seat" => {
             let agent = args["agent"].as_str().unwrap_or("").trim();
@@ -1780,6 +1794,7 @@ impl Courier {
             "hermes-win" => self.hermes.snapshot(),
             "dsh-win" => self.dsh.snapshot(),
             "opencode-win" => self.opencode.snapshot(),
+            "antigravity-win" => tauri::Manager::state::<crate::antigravity::Runtime>(&self.app).0.snapshot(),
             _ => return None,
         })
     }
@@ -1796,6 +1811,7 @@ impl Courier {
                     "claude-win" => self.claude.connect(),
                     "hermes-win" => self.hermes.connect(),
                     "opencode-win" => self.opencode.connect(),
+                    "antigravity-win" => tauri::Manager::state::<crate::antigravity::Runtime>(&self.app).0.connect(),
                     _ => self.dsh.connect(),
                 }?;
                 Ok(true)
@@ -1822,6 +1838,7 @@ impl Courier {
             "hermes-win" => self.hermes.send(chat, &message, content),
             "dsh-win" => self.dsh.send(chat, &message, content),
             "opencode-win" => self.opencode.send(chat, &message, content),
+            "antigravity-win" => tauri::Manager::state::<crate::antigravity::Runtime>(&self.app).0.send(chat, &message, content),
             _ => Err("未知成员".into()),
         };
         if sent.is_err() {
@@ -1848,6 +1865,7 @@ impl Courier {
             "hermes-win" => self.hermes.cancel(chat),
             "dsh-win" => self.dsh.cancel(chat),
             "opencode-win" => self.opencode.cancel(chat),
+            "antigravity-win" => tauri::Manager::state::<crate::antigravity::Runtime>(&self.app).0.cancel(chat),
             _ => return Err("未知成员".into()),
         }
         .map(|_| ())
@@ -2654,6 +2672,10 @@ mod tests {
         let again = super::call(&store.connection, &brain, "hub_ask_user", serde_json::json!({"key":"b6-target","question":"B6 目标多少？","step":2})).unwrap();
         assert_eq!(again["asked"], true, "还挂着没答的老问题再问一次，照样挂到步骤上");
         assert_eq!(store.brain_overview(&room).unwrap().steps[1].status, "waiting");
+        super::call(&store.connection, &brain, "hub_withdraw_question", serde_json::json!({"key":"b6-target"})).unwrap();
+        assert!(store.project_inquiries(&room).unwrap().is_empty(), "撤回的问题不再挂在面板上");
+        assert_eq!(store.brain_overview(&room).unwrap().steps[1].status, "todo", "等这个问题的步骤回到 todo");
+        assert!(super::call(&store.connection, &brain, "hub_withdraw_question", serde_json::json!({"key":"b6-target"})).is_err());
 
         super::call(&store.connection, &brain, "hub_plan", serde_json::json!({"clear":true,"steps":[{"id":1,"title":"新计划"}]})).unwrap();
         let overview = store.brain_overview(&room).unwrap();

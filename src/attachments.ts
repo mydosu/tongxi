@@ -88,6 +88,23 @@ export function mountAttachments(input: HTMLTextAreaElement, room: string, escap
   paint();
 }
 
+/// 回答框（问答面板、私聊提问）：粘贴或拖进来的文件存到本机，把路径写进回答，agent 用原生工具按路径读。
+export function mountAnswerFiles(input: HTMLTextAreaElement, room: string, error: (message: string) => void) {
+  const append = (items: Attachment[]) => { if (items.length) input.value = `${input.value.trimEnd()}${input.value.trim() ? '\n' : ''}${items.map(item => `[附件] ${item.name}：${item.path}`).join('\n')}`; input.dispatchEvent(new Event('input')); };
+  const stage = (files: File[]) => Promise.all(files.map(async file => {
+    if (file.size > 32 * 1024 * 1024) throw new Error('单个附件最大32 MiB');
+    const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('无法读取附件')); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(file); });
+    return invoke<Attachment>('stage_attachment', { conversationId: room, name: file.name || '粘贴图片.png', mime: file.type || 'application/octet-stream', data });
+  })).then(append).catch(failure => error(String(failure)));
+  input.addEventListener('paste', event => {
+    const files = [...event.clipboardData?.files || []];
+    if (files.length) { event.preventDefault(); void stage(files); }
+    else if (!event.clipboardData?.getData('text/plain')) void invoke<Attachment[]>('paste_clipboard_files', { conversationId: room }).then(append).catch(failure => error(String(failure)));
+  });
+  input.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
+  input.addEventListener('drop', event => { const files = [...event.dataTransfer?.files || []]; if (files.length) { event.preventDefault(); event.stopPropagation(); void stage(files); } });
+}
+
 // 文件拖到输入区以外时不让 WebView 直接打开它（那会把整个页面换成该文件）。
 for (const type of ['dragover', 'drop'] as const) document.addEventListener(type, event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
 

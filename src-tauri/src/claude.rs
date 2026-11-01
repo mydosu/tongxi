@@ -91,7 +91,7 @@ pub(crate) fn native_version(executable: &Path) -> Option<String> {
 }
 
 /// Node 运行时：`AGENT_HUB_CLAUDE_NODE` 优先，否则与 DSH 同样从 PATH 查找。
-fn discover_node() -> Option<PathBuf> {
+pub(crate) fn discover_node() -> Option<PathBuf> {
     std::env::var_os("AGENT_HUB_CLAUDE_NODE")
         .filter(|value| !value.is_empty())
         .and_then(|value| absolute_file(PathBuf::from(value)))

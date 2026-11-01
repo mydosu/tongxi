@@ -32,6 +32,7 @@ mod dsh;
 mod group_store;
 mod hermes;
 mod opencode;
+mod antigravity;
 mod updater;
 mod diagnostics;
 mod models;
@@ -507,11 +508,12 @@ fn set_session_settings(
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "albion-wsl" => app.state::<albion::Runtime>().0.snapshot(),
         "opencode-win" => app.state::<opencode::Runtime>().0.snapshot(),
+        "antigravity-win" => app.state::<antigravity::Runtime>().0.snapshot(),
         _ => app.state::<Arc<hermes::Runtime>>().snapshot(),
     };
     if matches!(
         agent_id.as_str(),
-        "codex-win" | "hermes-win" | "dsh-win" | "claude-win" | "albion-wsl" | "opencode-win"
+        "codex-win" | "hermes-win" | "dsh-win" | "claude-win" | "albion-wsl" | "opencode-win" | "antigravity-win"
     ) && snapshot.connection == "connected"
     {
         models::validate_selection(
@@ -616,6 +618,7 @@ fn native_snapshot(app: &tauri::AppHandle, agent: &str) -> Result<codex::Runtime
         "claude-win" => app.state::<Arc<claude::Runtime>>().snapshot(),
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().snapshot(),
         "opencode-win" => app.state::<opencode::Runtime>().0.snapshot(),
+        "antigravity-win" => app.state::<antigravity::Runtime>().0.snapshot(),
         _ => return Err("陪伴通过它自己的服务对话，没有 CLI 可以打开".into()),
     })
 }
@@ -665,6 +668,7 @@ fn open_in_cli(
         "dsh-win" => app.state::<Arc<dsh::Runtime>>().release_native(&target.native),
         "claude-win" => app.state::<Arc<claude::Runtime>>().release_native(&target.native),
         "opencode-win" => app.state::<opencode::Runtime>().0.release_native(&target.native),
+        "antigravity-win" => app.state::<antigravity::Runtime>().0.release_native(&target.native),
         _ => app.state::<Arc<hermes::Runtime>>().release_native(&target.native),
     }
     let executable = match agent_id.as_str() {
@@ -727,13 +731,15 @@ fn restore_cli_handoffs(app: &tauri::AppHandle) {
 fn set_agent_default_model(
     hermes: State<'_, Arc<hermes::Runtime>>,
     opencode: State<'_, opencode::Runtime>,
+    antigravity: State<'_, antigravity::Runtime>,
     agent_id: String,
     model: Option<String>,
 ) -> Result<(), String> {
     match agent_id.as_str() {
         "hermes-win" => hermes.set_default_model(model.as_deref()),
         "opencode-win" => opencode.0.set_default_model(model.as_deref()),
-        _ => Err("暂只支持为 Hermes、OpenCode 设置同席默认模型".into()),
+        "antigravity-win" => antigravity.0.set_default_model(model.as_deref()),
+        _ => Err("暂只支持为 Hermes、OpenCode、Antigravity 设置同席默认模型".into()),
     }
 }
 
@@ -936,6 +942,7 @@ fn answer_chat_question(
         let dsh = app.state::<Arc<dsh::Runtime>>().inner().clone();
         let claude = app.state::<Arc<claude::Runtime>>().inner().clone();
         let opencode = app.state::<opencode::Runtime>().0.clone();
+        let antigravity = app.state::<antigravity::Runtime>().0.clone();
         let queued = question.clone();
         std::thread::spawn(move || {
             loop {
@@ -976,6 +983,9 @@ fn answer_chat_question(
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 "opencode-win" => opencode
+                    .send(&queued.conversation_id, message, &reply)
+                    .map(|_| ()),
+                "antigravity-win" => antigravity
                     .send(&queued.conversation_id, message, &reply)
                     .map(|_| ()),
                 _ => Err("提问成员不可用".into()),
@@ -1049,6 +1059,7 @@ fn archive_conversation(
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     opencode: State<'_, opencode::Runtime>,
+    antigravity: State<'_, antigravity::Runtime>,
     id: String,
     archived: bool,
 ) -> Result<Conversation, String> {
@@ -1056,7 +1067,7 @@ fn archive_conversation(
         dsh.guard(&id, || {
             claude.guard(&id, || {
                 hermes.guard(&id, || {
-                    opencode.0.guard(&id, || runtime.mutate(&id, |store| store.archive(&id, archived)))
+                    opencode.0.guard(&id, || antigravity.0.guard(&id, || runtime.mutate(&id, |store| store.archive(&id, archived))))
                 })
             })
         })
@@ -1070,12 +1081,13 @@ fn delete_conversation(
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     opencode: State<'_, opencode::Runtime>,
+    antigravity: State<'_, antigravity::Runtime>,
     id: String,
 ) -> Result<(), String> {
     albion.0.guard(&id, || {
         dsh.guard(&id, || {
             claude.guard(&id, || {
-                hermes.guard(&id, || opencode.0.guard(&id, || runtime.mutate(&id, |store| store.delete(&id))))
+                hermes.guard(&id, || opencode.0.guard(&id, || antigravity.0.guard(&id, || runtime.mutate(&id, |store| store.delete(&id)))))
             })
         })
     })
@@ -1088,6 +1100,7 @@ fn update_group_members(
     runtime: State<'_, Arc<codex::Runtime>>,
     hermes: State<'_, Arc<hermes::Runtime>>,
     opencode: State<'_, opencode::Runtime>,
+    antigravity: State<'_, antigravity::Runtime>,
     id: String,
     members: Vec<String>,
 ) -> Result<Conversation, String> {
@@ -1095,7 +1108,7 @@ fn update_group_members(
         dsh.guard(&id, || {
             claude.guard(&id, || {
                 hermes.guard(&id, || {
-                    opencode.0.guard(&id, || runtime.mutate(&id, |store| store.replace_members(&id, &members)))
+                    opencode.0.guard(&id, || antigravity.0.guard(&id, || runtime.mutate(&id, |store| store.replace_members(&id, &members))))
                 })
             })
         })
@@ -1163,6 +1176,8 @@ async fn native_sessions(
         "claude-win" => app.state::<Arc<claude::Runtime>>().list_sessions()?,
         "hermes-win" => app.state::<Arc<hermes::Runtime>>().list_sessions()?,
         "opencode-win" => app.state::<opencode::Runtime>().0.list_sessions()?,
+        // 桥不列 agy 的历史对话（存在 agy 自己的 .db 里，没有公开格式）。
+        "antigravity-win" => Vec::new(),
         "albion-wsl" => app.state::<albion::Runtime>().0.list_sessions()?,
         _ => return Err("成员不存在".into()),
     };
@@ -1330,6 +1345,11 @@ fn main() {
                 directory.clone(),
             ));
             app.manage(opencode::Runtime::new(
+                app.handle().clone(),
+                store.clone(),
+                directory.clone(),
+            ));
+            app.manage(antigravity::Runtime::new(
                 app.handle().clone(),
                 store.clone(),
                 directory.clone(),
@@ -1506,6 +1526,11 @@ fn main() {
             opencode::disconnect_opencode,
             opencode::send_opencode_message,
             opencode::cancel_opencode_run,
+            antigravity::antigravity_status,
+            antigravity::connect_antigravity,
+            antigravity::disconnect_antigravity,
+            antigravity::send_antigravity_message,
+            antigravity::cancel_antigravity_run,
             discussion::discussion_status,
             discussion::start_discussion,
             discussion::cancel_discussion,
@@ -1566,6 +1591,7 @@ fn main() {
                 app.state::<Arc<claude::Runtime>>().stop();
                 app.state::<albion::Runtime>().0.stop();
                 app.state::<opencode::Runtime>().0.stop();
+                app.state::<antigravity::Runtime>().0.stop();
             }
         });
 }

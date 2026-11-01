@@ -35,7 +35,7 @@ struct Recipe {
 }
 
 /// 官方安装与初次配置命令。Node 包（Codex、DSH）缺 Node 时先用 winget 装 LTS。
-const RECIPES: [Recipe; 5] = [
+const RECIPES: [Recipe; 6] = [
     Recipe {
         id: "codex-win",
         name: "Codex",
@@ -74,6 +74,15 @@ const RECIPES: [Recipe; 5] = [
         install: "npm install -g opencode-ai",
         setup: "opencode auth login",
         docs: "https://opencode.ai/docs",
+        needs_node: Some((18, 0)),
+    },
+    Recipe {
+        id: "antigravity-win",
+        name: "Antigravity",
+        install: "irm https://antigravity.google/cli/install.ps1 | iex",
+        setup: "agy",
+        docs: "https://antigravity.google/",
+        // 同席接它的桥是 Node 脚本。
         needs_node: Some((18, 0)),
     },
 ];
@@ -149,6 +158,7 @@ fn detect(recipe: &Recipe, data: Option<&std::path::Path>) -> (Option<PathBuf>, 
         }
         "hermes-win" => (crate::acp_transport::Target::windows_python(), None),
         "opencode-win" => (crate::acp_transport::Target::opencode_exe(), None),
+        "antigravity-win" => (crate::acp_transport::Target::antigravity_exe(), None),
         _ => {
             let package = data.and_then(|data| crate::service_install::dsh_path(data).ok());
             let package = package.filter(|path| path.join("package.json").is_file());

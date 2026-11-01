@@ -3,7 +3,7 @@ import type { NativeSession } from './types';
 import { baseAgent, isBrain } from './seats';
 
 type Escape = (value: string | number) => string;
-export const PROJECT_AGENTS = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win'];
+export const PROJECT_AGENTS = ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win'];
 export interface SessionBinding { agent_id: string; target: 'member'; native_session_id: string | null; native_cwd: string | null; busy: boolean; }
 /// target=seat：新建项目时给同一成员再开的席位（agentId 是底层成员，保存时先开席位再绑会话）。
 export interface BindingChoice { agentId: string; target: 'member' | 'seat'; nativeSessionId: string | null; nativeCwd: string | null; }

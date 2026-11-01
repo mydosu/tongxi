@@ -37,6 +37,7 @@ const EVENTS: &[&str] = &[
     "dsh-state",
     "claude-state",
     "opencode-state",
+    "antigravity-state",
     "albion-state",
     "cli-handoffs",
     "cli-returned",
@@ -47,7 +48,7 @@ const EVENTS: &[&str] = &[
 
 /// 运行状态事件：每个都是带版本号的完整快照（含模型表和全部在跑回复的全文），流式回复时一秒几十个，
 /// 手机上每个都是上百 KB。网关只把最新的一份按这个间隔发出去，前端本来就只认版本号最大的。
-const COALESCED: &[&str] = &["codex-state", "hermes-state", "dsh-state", "claude-state", "opencode-state", "albion-state", "discussion-state"];
+const COALESCED: &[&str] = &["codex-state", "hermes-state", "dsh-state", "claude-state", "opencode-state", "antigravity-state", "albion-state", "discussion-state"];
 const COALESCE_EVERY: Duration = Duration::from_millis(100);
 
 /// 远程只读白名单：都只读数据，不改库、不起子进程、不碰文件系统和配置。
@@ -73,6 +74,7 @@ const READ_COMMANDS: &[&str] = &[
     "dsh_status",
     "claude_status",
     "opencode_status",
+    "antigravity_status",
     "albion_status",
 ];
 
@@ -84,6 +86,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "send_dsh_message",
     "send_claude_message",
     "send_opencode_message",
+    "send_antigravity_message",
     "send_albion_message",
     "steer_agent_message",
     "cancel_codex_run",
@@ -91,6 +94,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "cancel_dsh_run",
     "cancel_claude_run",
     "cancel_opencode_run",
+    "cancel_antigravity_run",
     "cancel_albion_run",
     "brain_wrap_up",
     "stop_brain_job",
@@ -409,6 +413,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "dsh_status" => out(Ok(crate::dsh_status(app.state::<Arc<crate::dsh::Runtime>>()))),
         "claude_status" => out(Ok(crate::claude_status(app.state::<Arc<crate::claude::Runtime>>()))),
         "opencode_status" => out(Ok(crate::opencode::opencode_status(app.state::<crate::opencode::Runtime>()))),
+        "antigravity_status" => out(Ok(crate::antigravity::antigravity_status(app.state::<crate::antigravity::Runtime>()))),
         "albion_status" => out(Ok(crate::albion::albion_status(app.state::<crate::albion::Runtime>()))),
         "list_backgrounds" => out(crate::backgrounds::list_backgrounds(state())),
         "background_image" => out(crate::backgrounds::background_image(state(), arg_str(args, "id")?)),
@@ -418,7 +423,7 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
 
 /// 写命令：参数名和前端 invoke 一致（camelCase）。
 fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcError> {
-    use crate::{albion, claude, codex, dsh, hermes, opencode};
+    use crate::{albion, antigravity, claude, codex, dsh, hermes, opencode};
     let state = || app.state::<AppState>();
     let room = || arg_str(args, "conversationId");
     let (message, content) = (|| arg_str(args, "messageId"), || arg_str(args, "content"));
@@ -428,6 +433,7 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
         "send_dsh_message" => out(crate::send_dsh_message(app.state::<Arc<dsh::Runtime>>(), room()?, message()?, content()?)),
         "send_claude_message" => out(crate::send_claude_message(app.state::<Arc<claude::Runtime>>(), room()?, message()?, content()?)),
         "send_opencode_message" => out(opencode::send_opencode_message(app.state::<opencode::Runtime>(), room()?, message()?, content()?)),
+        "send_antigravity_message" => out(antigravity::send_antigravity_message(app.state::<antigravity::Runtime>(), room()?, message()?, content()?)),
         "send_albion_message" => out(albion::send_albion_message(app.state::<albion::Runtime>(), room()?, message()?, content()?)),
         "steer_agent_message" => out(tauri::async_runtime::block_on(crate::steer_agent_message(
             state(),
@@ -443,6 +449,7 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
         "cancel_dsh_run" => out(crate::cancel_dsh_run(app.state::<Arc<dsh::Runtime>>(), room()?)),
         "cancel_claude_run" => out(crate::cancel_claude_run(app.state::<Arc<claude::Runtime>>(), room()?)),
         "cancel_opencode_run" => out(opencode::cancel_opencode_run(app.state::<opencode::Runtime>(), room()?)),
+        "cancel_antigravity_run" => out(antigravity::cancel_antigravity_run(app.state::<antigravity::Runtime>(), room()?)),
         "cancel_albion_run" => out(albion::cancel_albion_run(app.state::<albion::Runtime>(), room()?)),
         "brain_wrap_up" => out(Ok(crate::brain_wrap_up(app.state::<Arc<crate::project_brain::Courier>>(), room()?))),
         "stop_brain_job" => out(crate::stop_brain_job(app.clone(), state(), room()?, arg_str(args, "jobId")?)),

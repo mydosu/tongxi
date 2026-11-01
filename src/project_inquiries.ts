@@ -20,15 +20,18 @@ function openCard(item: Inquiry, escape: Escape, name: (agent: string) => string
     <p class="inquiry-meanwhile">${meanwhile}</p>
     ${item.background ? `<details class="inquiry-background"><summary>提问背景</summary><p>${escape(item.background)}</p></details>` : ''}
     ${options ? `<div class="inquiry-options">${options}</div>` : ''}
-    <form class="inquiry-answer" data-inquiry-form="${escape(item.id)}"><textarea rows="1" placeholder="填写回答，可补充条件或理由" required></textarea><button type="submit" class="primary">回答</button></form>
+    <form class="inquiry-answer" data-inquiry-form="${escape(item.id)}"><textarea rows="1" placeholder="填写回答，可补充条件或理由；可粘贴或拖入文件" required></textarea><button type="button" class="text-button" data-inquiry-ignore>忽略</button><button type="submit" class="primary">回答</button></form>
   </article>`;
 }
 
 function answeredRow(item: Inquiry, escape: Escape) {
-  return `<li><strong>${escape(item.question)}</strong><span>${escape(item.answer || '')}</span><small>${item.answered_at ? escape(ago(item.answered_at)) : ''}${item.seen ? ' · 主脑已收到' : ' · 待送达主脑'}</small></li>`;
+  return `<li><strong>${escape(item.question)}</strong><span>${escape(item.answer === IGNORED_ANSWER ? '已忽略' : item.answer || '')}</span><small>${item.answered_at ? escape(ago(item.answered_at)) : ''}${item.seen ? ' · 主脑已收到' : ' · 待送达主脑'}</small></li>`;
 }
 
 /// 协作问答：主脑要你确认的事。没答的在上面，答过的收在下面。
+/// 忽略也是一种回答：主脑收到后不再等、不再问，按自己的判断处理。
+export const IGNORED_ANSWER = '（用户选择忽略这个问题：不必等回答，也不要再问，按你自己的判断处理。）';
+
 export function inquiryPage(project: string, items: Inquiry[], escape: Escape, name: (agent: string) => string) {
   const open = items.filter(item => item.status === 'open');
   const answered = items.filter(item => item.status === 'answered');

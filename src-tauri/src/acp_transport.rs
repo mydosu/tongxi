@@ -7,6 +7,8 @@ pub enum Target {
     Windows(Option<PathBuf>),
     /// OpenCode 自带标准 ACP（`opencode acp`），不用桥。
     OpenCode,
+    /// Antigravity 的 `agy` 没有 ACP：经 `antigravity_bridge.mjs` 把 `agy -p` 的 stream-json 转成 ACP。
+    Antigravity,
     /// 旧 ACP 通路（WSL Hermes）。Hermes 已从 WSL 删除，同席现在走 `albion_openai`（见 albion.rs）；
     /// 这个变体暂时没人构造，留着只为回退时按 README 装回 WSL Hermes 再用。
     #[allow(dead_code, reason = "ACP 回退分支，MVP 已换 OpenAI 通路")]
@@ -63,6 +65,14 @@ impl Target {
             })
         })
     }
+    /// Antigravity 的 `agy.exe`：AGENT_HUB_ANTIGRAVITY 优先，再找 PATH，最后是官方安装位置 %LOCALAPPDATA%gyin。
+    pub fn antigravity_exe() -> Option<PathBuf> {
+        std::env::var_os("AGENT_HUB_ANTIGRAVITY")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| crate::service_install::on_path_find(&["agy.exe"], Some))
+            .or_else(|| std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("agy/bin/agy.exe")).filter(|path| path.is_file()))
+    }
     pub fn windows() -> Self {
         Self::Windows(Self::windows_python())
     }
@@ -107,6 +117,7 @@ impl Target {
         match self {
             Self::Windows(_) => "hermes-win",
             Self::OpenCode => "opencode-win",
+            Self::Antigravity => "antigravity-win",
             Self::Albion { .. } => "albion-wsl",
         }
     }
@@ -114,6 +125,7 @@ impl Target {
         match self {
             Self::Windows(_) => "hermes",
             Self::OpenCode => "opencode",
+            Self::Antigravity => "antigravity",
             Self::Albion { .. } => "albion",
         }
     }
@@ -121,6 +133,7 @@ impl Target {
         match self {
             Self::Windows(_) => "Hermes",
             Self::OpenCode => "OpenCode",
+            Self::Antigravity => "Antigravity",
             Self::Albion { .. } => "阿尔比恩",
         }
     }
@@ -131,6 +144,7 @@ impl Target {
                 .or_else(Self::windows_python)
                 .map(|path| path.to_string_lossy().into()),
             Self::OpenCode => Self::opencode_exe().map(|path| path.to_string_lossy().into()),
+            Self::Antigravity => Self::antigravity_exe().map(|path| path.to_string_lossy().into()),
             Self::Albion {
                 launcher, python, ..
             } => Some(format!("{} → {python}", launcher.display())),
@@ -138,7 +152,7 @@ impl Target {
     }
     pub fn cwd(&self, path: &Path) -> Result<String> {
         match self {
-            Self::Windows(_) | Self::OpenCode => Ok(path.to_string_lossy().into()),
+            Self::Windows(_) | Self::OpenCode | Self::Antigravity => Ok(path.to_string_lossy().into()),
             Self::Albion {
                 distro, profile, ..
             } => {
@@ -164,6 +178,13 @@ impl Target {
                 let exe = Self::opencode_exe().ok_or("未找到 OpenCode，请先安装（npm i -g opencode-ai），或设置 AGENT_HUB_OPENCODE")?;
                 let mut command = Command::new(exe);
                 command.arg("acp");
+                Ok(command)
+            }
+            Self::Antigravity => {
+                let exe = Self::antigravity_exe().ok_or("未找到 Antigravity CLI（agy），请先安装并登录，或设置 AGENT_HUB_ANTIGRAVITY")?;
+                let node = crate::claude::discover_node().ok_or("未找到 Node 运行时，Antigravity 的桥要用 Node")?;
+                let mut command = Command::new(node);
+                command.args(["--input-type=module", "-e", include_str!("antigravity_bridge.mjs")]).arg(exe).arg(data);
                 Ok(command)
             }
             Self::Windows(python) => {

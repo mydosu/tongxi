@@ -4,12 +4,13 @@ use std::path::PathBuf;
 
 /// 已在同席里实际跑过的 CLI 版本（按「主版本.次版本」比）；不在表里的提示可能不稳。
 /// 升级验证过一个新版本就往这里加。
-const VERIFIED: [(&str, &[&str]); 5] = [
+const VERIFIED: [(&str, &[&str]); 6] = [
     ("codex-win", &["0.164"]),
     ("claude-win", &["2.1"]),
     ("hermes-win", &["0.21"]),
     ("dsh-win", &["0.2"]),
     ("opencode-win", &["1.18"]),
+    ("antigravity-win", &["1.4"]),
 ];
 
 /// None：没测到版本或这位成员不在表里（如陪伴）。
