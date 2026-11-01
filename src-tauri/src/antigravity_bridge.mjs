@@ -6,7 +6,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -18,6 +18,8 @@ let catalog = [];
 let version = null;
 
 mkdirSync(data, { recursive: true });
+// 上次异常退出留下的工具配置：每回合都会重写，直接清掉。
+rmSync(join(data, 'mcp'), { recursive: true, force: true });
 const noteFailure = error => {
   try { writeFileSync(join(data, 'bridge-error.log'), `${new Date().toISOString()} ${(error && (error.stack || error.message)) || error}\n`, { flag: 'a' }); } catch {}
 };
@@ -53,8 +55,14 @@ function configOptions(session) {
   ];
 }
 
+// 回合结束就删：配置每回合重写，agy 按服务名缓存的工具说明也会在下次启动时重新生成。
+function dropMcp(session) {
+  for (const path of session.mcpLeftovers || []) rmSync(path, { recursive: true, force: true });
+  session.mcpLeftovers = null;
+}
+
 // 同席的项目工具（MCP）：写进这个会话自己的目录，用 --add-dir 带上；无头模式要显式放行。
-function mcpArgs(sessionId, servers) {
+function mcpArgs(session, sessionId, servers) {
   const mcpServers = {};
   for (const server of servers || []) {
     if (!server?.name || !server.command) continue;
@@ -67,6 +75,7 @@ function mcpArgs(sessionId, servers) {
   const root = join(data, 'mcp', sessionId.replace(/[^0-9a-zA-Z-]/g, ''));
   mkdirSync(join(root, '.agents'), { recursive: true });
   writeFileSync(join(root, '.agents', 'mcp_config.json'), JSON.stringify({ mcpServers }));
+  session.mcpLeftovers = [root, ...names.map(name => join(homedir(), '.gemini', 'antigravity-cli', 'mcp', name))];
   return ['--add-dir', root, '--settings', JSON.stringify({ permissions: { allow: names.map(name => `mcp(${name}/*)`) } })];
 }
 
@@ -107,7 +116,7 @@ function prompt(id, params) {
   if (session.model) args.push('--model', session.model);
   const conversation = conversationOf(params.sessionId);
   if (conversation) args.push('--conversation', conversation);
-  args.push(...mcpArgs(params.sessionId, session.mcpServers));
+  args.push(...mcpArgs(session, params.sessionId, session.mcpServers));
   if (session.mode === 'plan') args.push('--mode', 'plan');
   // shortcut: agy 的 deny 规则只认整条命令、跳过权限时还不生效，写档挡不住 git push / gh release；agy 支持前缀规则后改成 allow 全部 + deny 不可逆命令。
   else args.push('--dangerously-skip-permissions');
@@ -143,12 +152,14 @@ function prompt(id, params) {
   child.on('error', error => {
     if (session.child !== child) return;
     session.child = null;
+    dropMcp(session);
     send({ id, error: { code: -32603, message: `Antigravity 启动失败：${error.message}` } });
   });
   child.on('exit', code => {
     if (session.child !== child) return;
     session.child = null;
     clearTimeout(session.killTimer);
+    dropMcp(session);
     if (session.cancelled) return send({ id, result: { stopReason: 'cancelled' } });
     if (result?.status === 'SUCCESS') {
       // 无头模式下没被放行的工具会被拒掉，回复可能是空的：说清楚，别当成正常完成。
