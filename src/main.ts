@@ -784,13 +784,38 @@ async function refreshList() {
   for (const conversation of result) if (conversation.kind === 'group' && !liveBrainJobs.has(conversation.id)) void refreshBrainJobs(conversation.id);
 }
 
+/// 手机上留最近几个会话的详情：切回去先用它立刻画出来，后台再取一次，有变化才重画（长会话取一遍要一百多毫秒加解析）。
+const detailCache = new Map<string, ConversationDetail>();
+const DETAIL_CACHE_SIZE = 4;
+const detailStamp = (item: ConversationDetail) => {
+  const last = item.messages[item.messages.length - 1];
+  return [item.conversation.updated_at, item.messages.length, last?.id, last?.status, last?.content.length, item.chat_questions?.length, item.project_agent_chats?.length].join('|');
+};
+const endSwitching = () => { delete main.dataset.switching; main.querySelector(':scope > .switch-loading')?.remove(); };
+
 async function selectConversation(id: string) {
   const generation = ++detailGeneration;
   const switched = selectedId !== id;
   selectedId = id;
   screen = 'chat';
-  // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来。
-  if (switched && narrowScreen()) main.dataset.switching = '';
+  // 手机上点下去那一刻 #main 就显示出来，上一个会话的整列消息会白排一遍版：详情回来前先藏起来，换成标题加骨架屏（有缓存就直接画缓存）。
+  const narrow = narrowScreen();
+  const cached = switched && narrow ? detailCache.get(id) : undefined;
+  if (switched && narrow && !cached) {
+    main.dataset.switching = '';
+    main.querySelector(':scope > .switch-loading')?.remove();
+    const title = conversations.find(conversation => conversation.id === id)?.title || '';
+    main.insertAdjacentHTML('beforeend', `<div class="switch-loading" aria-hidden="true"><header class="chat-header"><div class="chat-heading"><div><h1>${escape(title)}</h1></div></div></header><div class="switch-skeleton"><i></i><i></i><i></i></div></div>`);
+  }
+  const show = (result: ConversationDetail) => {
+    detail = result;
+    projectRoomsByGroup.set(id, result.project_agent_chats || []);
+    const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
+    activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || savedModule === 'brain-jobs' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
+    if (result.project) { inquiryItems = []; brainOverview = null; void refreshInquiries(id); void refreshBrainJobs(id); }
+    renderList();
+    renderChat();
+  };
   // 先按已知的席位把上次看的板块定下来，免得等详情回来才换高亮、侧栏跳两下。展开与否只听展开钮的。
   const knownProject = (projectRoomsByGroup.get(id)?.length || 0) > 0;
   activeProjectModule = knownProject ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
@@ -804,23 +829,22 @@ async function selectConversation(id: string) {
     else if (at.bottom > box.bottom) list.scrollTop += at.bottom - box.bottom + 8;
   }
   if (hudActive) void emit('hud:select', { id });
+  if (cached) show(cached);
   try {
     const result = await invoke<ConversationDetail>('get_conversation', { id });
     if (generation !== detailGeneration) return;
-    delete main.dataset.switching;
+    endSwitching();
     if (screen !== 'chat') return;
-    detail = result;
     // 这份详情自带问答状态，refreshQuestionState 不必为同一个会话再整份取一遍。
     questionsFetched = { id, at: Date.now() };
-    projectRoomsByGroup.set(id, result.project_agent_chats || []);
-    const savedModule = result.project ? localStorage.getItem(`hub.project-module.${id}`) || 'team' : 'team';
-    activeProjectModule = (savedModule === 'team' || savedModule === 'inquiries' || savedModule === 'brain-jobs' || result.project_agent_chats.some(chat => chat.agent_id === savedModule)) ? savedModule : 'team';
-    if (result.project) { inquiryItems = []; brainOverview = null; void refreshInquiries(id); void refreshBrainJobs(id); }
-    renderList();
-    renderChat();
+    if (narrow) { detailCache.delete(id); detailCache.set(id, result); if (detailCache.size > DETAIL_CACHE_SIZE) detailCache.delete(detailCache.keys().next().value!); }
+    // 缓存先画过、后台取回来没变化：只换数据，不再重画。
+    if (cached && detail?.conversation.id === id && detailStamp(cached) === detailStamp(result)) { detail = result; return; }
+    show(result);
   } catch (error) {
     if (generation !== detailGeneration) return;
-    delete main.dataset.switching;
+    endSwitching();
+    detailCache.delete(id);
     // 会话已在别处被删除（如另一窗口或后台）：刷新侧栏去掉失效卡片，改选第一个会话。
     if (errorText(error).includes('会话不存在')) {
       toast('这个会话已被删除，已刷新列表', true);

@@ -8,8 +8,16 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
      背景是静态的：改成背景层自己模糊一次、之后缓存，面板照样是半透明磨砂，肉眼对比无差别。 */
   html:not([data-hud]) :is(.main, .sidebar, .composer, .project-agent-chat-composer) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
   html:not([data-hud])[data-mview="chat"] .theme-backdrop { filter: blur(var(--panel-blur, 12px)) saturate(1.25); }
-  html[data-bg-mode="figure"]:not([data-hud])[data-mview="chat"] .theme-backdrop { filter: blur(8px) saturate(1.25); }
   html:not([data-hud])[data-mview="list"] .theme-backdrop { filter: blur(26px) saturate(1.45); }
+  /* 立绘背景：只糊 2px；竖屏按宽度铺满（高度自动）贴底居中，人物完整落在中间，上下渐隐。 */
+  html[data-bg-mode="figure"]:not([data-hud]) .theme-backdrop { filter: blur(2px) saturate(1.2); }
+  html:not([data-hud]) .bg-layer.figure { background-position: center bottom; background-size: 100% auto;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24%), linear-gradient(to top, transparent, #000 10%); -webkit-mask-composite: source-in;
+    mask-image: linear-gradient(to bottom, transparent, #000 24%), linear-gradient(to top, transparent, #000 10%); mask-composite: intersect; }
+
+  /* 触摸后不留蓝色点按框和聚焦框（键盘 :focus-visible 的框照旧）。 */
+  html:not([data-hud]) * { -webkit-tap-highlight-color: transparent; }
+  html:not([data-hud]) :focus:not(:focus-visible) { outline: none; }
 
   /* 长会话里改一个节点（流式回复每一帧）手机上都要把整列几千个节点重新排版（真机实测每次 28ms）。
      回复进行中（main.ts 的 markLive 打 data-live）屏幕外的消息跳过排版和绘制；auto 记着算出来的真实高度，滚动位置不乱。
@@ -20,7 +28,14 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud])[data-mview="list"] .main, html:not([data-hud])[data-mview="chat"] .sidebar { display: none; }
   html:not([data-hud]) .sidebar { padding-top: 14px; }
   /* 切会话：详情回来前上一个会话的整列消息不参与排版（main.ts selectConversation 打 data-switching）。 */
-  html:not([data-hud]) .main[data-switching] > * { display: none; }
+  html:not([data-hud]) .main[data-switching] > :not(.switch-loading) { display: none; }
+  /* 没缓存时的轻量加载态：标题栏照常，下面三条玻璃骨架轻轻呼吸，不盖全屏。 */
+  html:not([data-hud]) .switch-loading { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  html:not([data-hud]) .switch-skeleton { display: grid; gap: 12px; padding: 22px 14px; }
+  html:not([data-hud]) .switch-skeleton i { display: block; height: 64px; border-radius: var(--r-l); background: rgb(255 255 255 / .55); border: 1px solid var(--glass-edge); animation: switch-pulse 1.1s ease-in-out infinite; }
+  html:not([data-hud]) .switch-skeleton i:nth-child(2) { width: 78%; justify-self: end; animation-delay: .15s; }
+  html:not([data-hud]) .switch-skeleton i:nth-child(3) { width: 90%; animation-delay: .3s; }
+  @keyframes switch-pulse { 50% { opacity: .45; } }
 
   /* 返回钮浮在会话页标题行左侧，标题让出位置。 */
   html:not([data-hud])[data-mview="chat"] .mobile-back { display: inline-flex; position: fixed; z-index: 21; top: 20px; left: 16px; width: 32px; height: 32px; }
