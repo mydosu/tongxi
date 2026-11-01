@@ -14,8 +14,9 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud]) .bg-layer.cover:not(.pastel) { background-image: none !important; filter: none; }
   html:not([data-hud]) .bg-layer.cover:not(.pastel)::before, html:not([data-hud]) .bg-layer.cover:not(.pastel)::after { content: ""; position: absolute; background: var(--bg-img, none) no-repeat center; }
   html:not([data-hud]) .bg-layer.cover:not(.pastel)::before { inset: -40px; background-size: cover; filter: blur(28px); }
-  html:not([data-hud]) .bg-layer.cover:not(.pastel)::after { left: 0; width: 100%; top: 50%; translate: 0 -50%; aspect-ratio: var(--bg-ar, 16 / 9); background-size: 100% 100%; filter: var(--bg-filter, none);
+  html:not([data-hud]) .bg-layer.cover:not(.pastel)::after { left: 0; width: 100%; top: 50%; translate: 0 -50%; aspect-ratio: var(--bg-ar, 16 / 9); background-size: 100% 100%; opacity: 0; transition: opacity .3s; filter: var(--bg-filter, none);
     -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24%, #000 76%, transparent); mask-image: linear-gradient(to bottom, transparent, #000 24%, #000 76%, transparent); }
+  html:not([data-hud]) .bg-layer.cover.measured:not(.pastel)::after { opacity: 1; } /* 宽高比量到前才不画，免得先按 16:9 画出一条带再跳 */
 
   /* 触摸后不留蓝色点按框和聚焦框（键盘 :focus-visible 的框照旧）。 */
   html:not([data-hud]) * { -webkit-tap-highlight-color: transparent; }
