@@ -299,7 +299,7 @@
 
 - **原生会话互通**：会话 ID 和工作目录记在同席里，内容留在成员自己的会话库，所以「在 CLI 中打开此会话」能把同一条会话交给 CLI 接着聊，CLI 关掉后同席自动收回。
 - **桥接脚本只用 Node / Python 标准库**，不引入第三方依赖；stdio 上只走协议，日志另走。
-- **成员更新**：DSH、Codex 的新版本先装到隔离目录里校验，确认后才替换，不动全局 npm 配置。
+- **成员更新**：卡片上点「更新」（或页头「全部更新」），成员直接更新到最新版并重新接入同席。DSH、Codex 的新版本先装到隔离目录里校验再切换，可回退，不动全局 npm 配置；Claude Code、OpenCode、Antigravity、Hermes 跑它们自己的更新命令。
 
 </details>
 
@@ -358,7 +358,7 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 | `scripts/verify_project_sessions.py` | 会话绑定、多开会话、成员栏、主题切换 | — |
 | `scripts/verify_seats_live.py` | 同一成员的两个会话真实并行、续接已有原生会话 | 少量 |
 | `scripts/verify_dsh_bridge.mjs` | DSH 桥接回归：私聊、项目、DSH 自己的 Key 几种接法；`--latest` 先装一份 npm 最新版来测，DSH 发新版时先跑它 | — |
-| `scripts/verify_managed_update.py` | Codex 隔离更新：从旧版准备候选 → 启用 → 回退，外部安装全程不动 | — |
+| `scripts/verify_managed_update.py` | Codex 一键更新：从旧版点「更新」→ 更新并接入 → 回退，外部安装全程不动 | — |
 
 设置 `AGENT_HUB_AUTOCONNECT=0` 可以关闭启动时的自动接入，回归脚本默认已经设置。
 
@@ -367,6 +367,12 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 <br />
 
 ## 版本记录
+
+### v3.8.0 · 一键更新成员
+
+- **点一下就更新**：「成员与服务」卡片上的「更新」直接把成员更新到最新版并重新接入同席，不用再「检查 → 准备 → 启用 → 重启」一步步点。DSH、Codex 照旧先装到隔离目录校验再切换，可「回退上一版」；Claude Code、OpenCode、Antigravity、Hermes 在后台跑各自的更新命令（`claude update`、`opencode upgrade`、`agy update`、`hermes update`）。
+- **全部更新**：页头的「全部更新」把已安装的成员依次更新并接入（阿尔比恩除外）。
+- 「检查更新」挪进卡片的「更多」菜单，只读核对版本。
 
 ### v3.7.0 · 接入 Antigravity、问答更顺手
 

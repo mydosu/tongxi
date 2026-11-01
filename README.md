@@ -64,7 +64,7 @@ Open **Members & services** at the bottom of the sidebar. For a member that isn'
 
 If Node.js is missing, the install script gets it first with `winget install OpenJS.NodeJS.LTS`. Installed somewhere unusual? Point Tongxi at it with `AGENT_HUB_CODEX_EXE`, `AGENT_HUB_CLAUDE_EXE`, `AGENT_HUB_HERMES_PYTHON`, `AGENT_HUB_DSH_INSTALLATION` or `AGENT_HUB_DSH_NODE`.
 
-Each member card shows the connection, the running and installed versions, and an **unverified version** badge when your CLI version hasn't been tested with Tongxi yet. Codex and DSH updates are installed into an isolated slot, verified, then switched over — with one-click rollback.
+Each member card shows the connection, the running and installed versions, and an **unverified version** badge when your CLI version hasn't been tested with Tongxi yet. Click **Update** on a card (or **Update all** at the top) and the member is brought to its latest version and reconnected to Tongxi. Codex and DSH updates are installed into an isolated slot, verified, then switched over — with one-click rollback; Claude Code, OpenCode, Antigravity and Hermes run their own updater.
 
 <br />
 
