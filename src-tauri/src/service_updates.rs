@@ -298,6 +298,20 @@ pub(crate) fn check_hermes(repo: &Path) -> Result<(Option<String>, Option<bool>,
     Ok((installed, available, note))
 }
 
+/// 跑成员自己的更新命令（`claude update` 这类）：后台不弹窗、PATH 取最新、输出丢弃，10 分钟兜底。
+pub(crate) fn run_self_update(command: &str) -> Result<(), String> {
+    let script = format!(
+        "$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); {command} *> $null; exit $LASTEXITCODE"
+    );
+    run_capture(
+        Path::new("powershell.exe"),
+        &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script],
+        Duration::from_secs(600),
+    )
+    .map(|_| ())
+    .map_err(|error| format!("`{command}` 没跑成（{error}），可在终端里手动跑一次看原因"))
+}
+
 /// 跑一个只读子进程并取回 stdout 文本：带超时，超时杀掉整棵进程树，失败只给中文受控错误。
 fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(program);

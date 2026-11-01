@@ -1568,6 +1568,7 @@ fn main() {
             services::check_service_update,
             services::prepare_service_update,
             services::restart_service,
+            services::update_service,
             services::service_update_status,
             services::apply_service_update,
             services::rollback_service_update,

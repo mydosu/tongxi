@@ -1,6 +1,6 @@
 import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, onRemoteReconnect, REPAIR_URL } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { Agent, BrainOverview, ProjectTeamMessage, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServicePlanResult, ServiceUpdateStatus } from './types';
+import type { Agent, BrainOverview, ProjectTeamMessage, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServiceUpdateStatus } from './types';
 import { bindingDialog, projectTeamMessageHtml, projectTeamMessages } from './project_ui';
 import { modelOptionsHtml, modelProviders, providerOptionsHtml, selectedProvider } from './model_select';
 import { captureThoughtScroll, restoreThoughtScroll } from './thought_scroll';
@@ -2365,7 +2365,7 @@ function serviceStatusHtml(info: ServiceInfo | undefined, snapshot: RuntimeSnaps
 // latest published release. This flow is check-only: nothing is downloaded and the
 // installation is never changed, so no prepare or apply call belongs here.
 /// 「检查更新」的结果按成员存下来（徽标文字 + 详情），每次重绘后重新贴上。
-const serviceChecks: Record<string, { badge: string; detail: string; tip: string; prepareLabel: string }> = {};
+const serviceChecks: Record<string, { badge: string; detail: string; tip: string }> = {};
 
 /// 把上次的检查结论贴回卡片（重绘后也要贴，否则结论会被冲掉）。
 function applyCheckResult(card: HTMLElement, agentId: string) {
@@ -2422,15 +2422,8 @@ async function checkServiceUpdate(agentId: string, card: HTMLElement) {
         : `更新：${result.update_available === true ? (result.latest_version ? `发现新版本 v${result.latest_version}` : '发现新版本') : result.update_available === false ? '已是最新' : '未检测'}`,
       detail,
       tip,
-      // 有新版时把按钮写清版本号，也是状态：重绘后不能退回「准备更新」。
-      prepareLabel: result.update_available === true && result.latest_version ? `更新到 v${result.latest_version}` : '准备更新',
     };
     applyCheckResult(card, agentId);
-    // 只有有受管安装槽的成员有这两个按钮（DSH 与 Codex）。
-    const prepare = card.querySelector<HTMLButtonElement>('[data-service-prepare]');
-    if (prepare) prepare.textContent = serviceChecks[agentId].prepareLabel;
-    const apply = card.querySelector<HTMLButtonElement>('[data-service-apply]');
-    if (apply && result.update_available === true && result.latest_version && !apply.textContent?.includes('v')) apply.textContent = `启用 v${result.latest_version}`;
   } catch (error) { toast(errorText(error), true); }
   finally { if (button.isConnected) { button.disabled = false; button.textContent = '检查更新'; } }
 }
@@ -2452,7 +2445,7 @@ async function restartService(agentId: string, card: HTMLElement) {
 
 // DSH 的隔离更新状态只来自后端：卡片只显示真实版本，不渲染计划标识、磁盘槽路径或原始记录。
 const serviceUpdates: Record<string, ServiceUpdateStatus> = {};
-const servicePending: Record<string, 'prepare' | 'apply' | 'rollback' | null> = {};
+const servicePending: Record<string, 'update' | 'rollback' | null> = {};
 const serviceVersion = (value: string) => escape(value.replace(/^v/i, ''));
 
 // 只反映后端状态：没有已验证候选就不能启用，没有可回退版本就不能回退。
@@ -2461,12 +2454,9 @@ function paintServiceUpdate(card: HTMLElement, agentId: string) {
   if (!host) return;
   const status = serviceUpdates[agentId];
   const pending = servicePending[agentId] || null;
-  const ready = !!status?.ready_plan_id;
   const revertible = !!status?.rollback_available;
-  const prepare = card.querySelector<HTMLButtonElement>('[data-service-prepare]');
-  if (prepare) { prepare.disabled = pending !== null; prepare.textContent = pending === 'prepare' ? '准备中…' : (serviceChecks[agentId]?.prepareLabel || '准备更新'); }
-  const apply = card.querySelector<HTMLButtonElement>('[data-service-apply]');
-  if (apply) { apply.disabled = pending !== null || !ready; apply.textContent = pending === 'apply' ? '启用中…' : '启用候选'; }
+  const upgrade = card.querySelector<HTMLButtonElement>('[data-service-upgrade]');
+  if (upgrade) { upgrade.disabled = pending !== null; upgrade.textContent = pending === 'update' ? '更新中…' : '更新'; }
   const revert = card.querySelector<HTMLButtonElement>('[data-service-rollback]');
   if (revert) { revert.disabled = pending !== null || !revertible; revert.textContent = pending === 'rollback' ? '回退中…' : '回退上一版'; }
   const lines: string[] = [];
@@ -2502,10 +2492,8 @@ function paintServiceCard(card: HTMLElement, agentId: string, info?: ServiceInfo
   restart.disabled = connection !== 'connected';
   restart.textContent = '重启';
   restart.onclick = () => void restartService(agentId, card);
-  const prepare = card.querySelector<HTMLButtonElement>('[data-service-prepare]');
-  if (prepare) prepare.onclick = () => void prepareServiceUpdate(agentId, card);
-  const apply = card.querySelector<HTMLButtonElement>('[data-service-apply]');
-  if (apply) apply.onclick = () => void applyServiceUpdate(agentId, card);
+  const upgrade = card.querySelector<HTMLButtonElement>('[data-service-upgrade]');
+  if (upgrade) upgrade.onclick = () => void updateService(agentId);
   const revert = card.querySelector<HTMLButtonElement>('[data-service-rollback]');
   if (revert) revert.onclick = () => void rollbackServiceUpdate(agentId, card);
   paintServiceUpdate(card, agentId);
@@ -2525,38 +2513,19 @@ function repaintServiceCard(agentId: string) {
   if (card) paintServiceCard(card, agentId);
 }
 
-// 只有显式点击才会下载候选；“检查更新”保持只读，绝不自动触发准备。
-async function prepareServiceUpdate(agentId: string, card: HTMLElement) {
+// 一键更新：后端把成员更新到最新版（DSH / Codex 走可回退的隔离安装）并重新接入同席。
+async function updateService(agentId: string) {
   if (servicePending[agentId]) return;
-  servicePending[agentId] = 'prepare';
-  paintServiceCard(card, agentId);
-  try {
-    const plan = await invoke<ServicePlanResult>('prepare_service_update', { serviceId: agentId });
-    if (!plan.supported) { toast(plan.reason || '该成员暂不支持隔离更新', true); return; }
-    // 候选版本与可启用条件以后端随后返回的状态为准，前端不缓存本地推断。
-    serviceUpdates[agentId] = await invoke<ServiceUpdateStatus>('service_update_status', { serviceId: agentId });
-    toast(plan.candidate_version ? `候选 v${String(plan.candidate_version).replace(/^v/i, '')} 已验证，确认后可启用` : '候选已准备，确认后可启用');
-  } catch (error) { toast(errorText(error), true); }
-  finally {
-    servicePending[agentId] = null;
-    repaintServiceCard(agentId);
-  }
-}
-
-// 启用使用准备时就绪的计划标识，仅作为调用参数传递，不渲染给用户。
-async function applyServiceUpdate(agentId: string, card: HTMLElement) {
-  const planId = serviceUpdates[agentId]?.ready_plan_id;
-  if (!planId) { toast('没有已验证的候选版本可启用', true); return; }
-  if (servicePending[agentId]) return;
-  servicePending[agentId] = 'apply';
-  paintServiceCard(card, agentId);
+  servicePending[agentId] = 'update';
+  repaintServiceCard(agentId);
   let applied = false;
   try {
-    adoptRuntime(await invoke<RuntimeSnapshot>('apply_service_update', { serviceId: agentId, planId }), agentId);
-    serviceUpdates[agentId] = await invoke<ServiceUpdateStatus>('service_update_status', { serviceId: agentId });
+    adoptRuntime(await invoke<RuntimeSnapshot>('update_service', { serviceId: agentId }), agentId);
+    if (['dsh-win', 'codex-win'].includes(agentId)) serviceUpdates[agentId] = await invoke<ServiceUpdateStatus>('service_update_status', { serviceId: agentId });
     applied = true;
-    toast(`${member(agentId).name} 已启用候选版本`);
-  } catch (error) { toast(errorText(error), true); }
+    const version = runtimes[agentId]?.version;
+    toast(`${member(agentId).name} 已更新${version ? `到 v${String(version).replace(/^v/i, '')}` : ''}并接入`);
+  } catch (error) { toast(`${member(agentId).name}：${errorText(error)}`, true); }
   finally { servicePending[agentId] = null; }
   await refreshAfterSwitch(applied, agentId);
 }
@@ -2596,13 +2565,20 @@ function renderServices() {
   // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; setMobileView('chat'); renderList(); enterView('services');
-  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-check class="secondary" title="重新检测该服务的安装与运行版本">检查更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu">${companion ? '<button data-service-check role="menuitem" title="重新检测该服务的版本">检查更新</button>' : ''}<button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<div class="service-menu-group">隔离更新</div><button data-service-prepare role="menuitem" disabled title="只在显式点击后下载并验证隔离候选，检查更新不会触发下载">准备更新</button><button data-service-apply role="menuitem" disabled title="只在候选已验证就绪时启用；启用后由后端保持原有连接状态">启用候选</button><button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div><div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-upgrade class="secondary" title="更新到最新版本并重新接入同席">更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button data-service-check role="menuitem" title="只读核对安装、运行与发行版本，不改动安装">检查更新</button><button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div>${isTauri() ? remoteGatewayCard() : ''}<div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
+  main.querySelector<HTMLButtonElement>('#update-all')!.addEventListener('click', async event => {
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    // 一个一个来：npm / 自更新器并发跑会互相抢锁。
+    for (const agent of agents) if (agent.id !== 'albion-wsl' && scanned().find(item => item.id === agent.id)?.installed) await updateService(agent.id);
+    if (button.isConnected) button.disabled = false;
+  });
   main.querySelector<HTMLButtonElement>('#export-diagnostics')!.addEventListener('click', async event => {
     const button = event.currentTarget as HTMLButtonElement;
     button.disabled = true;

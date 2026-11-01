@@ -134,11 +134,10 @@ def run():
             card = page.locator('[data-service-id="codex-win"]')
             card.wait_for(state="visible")
 
-            check("Codex 也有准备/启用/回退三个按钮", card.locator("[data-service-prepare]").count() == 1
-                  and card.locator("[data-service-apply]").count() == 1
+            check("Codex 有一键更新和回退按钮", card.locator("[data-service-upgrade]").count() == 1
                   and card.locator("[data-service-rollback]").count() == 1)
 
-            card.locator("[data-service-check]").click()
+            menu_click(card, "[data-service-check]")
             page.wait_for_function(
                 """() => {
                     const host = document.querySelector('[data-service-id="codex-win"] .service-check-result');
@@ -151,30 +150,15 @@ def run():
             text = (host.text_content() or "") + " " + (host.get_attribute("title") or "")
             check("检查更新拿到远程发行版", ("发行 v0.160.1" in text) or ("发现新版本" in text))
 
-            # 1) 真准备：下 tarball + npm install 到槽 + 跑候选里的 codex.exe --version。
-            menu_click(card, "[data-service-prepare]")
-            ready = wait_for(
-                page,
-                "候选准备完成",
-                lambda: status(page, "codex-win").get("ready_plan_id"),
-            )
-            module = status(page, "codex-win")
-            check(
-                "候选准备完成且有版本（v" + str(module.get("candidate_version")) + "）",
-                bool(module.get("candidate_version")),
-            )
-
-            # 2) 启用候选：指针切到槽，运行时重连到槽里的那份。
-            menu_click(card, "[data-service-apply]")
-            managed = wait_for(
-                page,
-                "候选已启用",
-                lambda: status(page, "codex-win").get("managed") or False,
-            )
+            # 1) 一键更新：下 tarball + npm install 到槽 + 预检 + 切换 + 重连，一次做完。
+            latest = (host.get_attribute("title") or "").split("发行 v")[-1].split(" ")[0]
+            card.locator("[data-service-upgrade]").click()
+            wait_for(page, "一键更新完成", lambda: status(page, "codex-win").get("managed") or False)
             after_apply = status(page, "codex-win")
+            module = {"candidate_version": after_apply.get("active_version")}
             check(
-                "启用后受管生效版本 = 候选版本（v" + str(after_apply.get("active_version")) + "）",
-                after_apply.get("active_version") == module.get("candidate_version"),
+                "更新后受管生效版本 = 发行版（v" + str(after_apply.get("active_version")) + "）",
+                after_apply.get("active_version") == latest,
             )
             entry = inventory(page, "codex-win")
             check(

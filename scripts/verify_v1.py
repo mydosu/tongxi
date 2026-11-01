@@ -111,7 +111,7 @@ def main() -> int:
         check("every member card has the same three main actions", visible == [3] * 5, visible)
         page.locator('.service-card[data-service-id="codex-win"] [data-service-more]').click()
         menu = page.locator('.service-card[data-service-id="codex-win"] .service-menu')
-        check("more menu holds setup, docs and isolated updates", menu.is_visible() and "登录 / 初次配置" in menu.inner_text() and "准备更新" in menu.inner_text(), menu.inner_text())
+        check("more menu holds setup, docs and update check", menu.is_visible() and "登录 / 初次配置" in menu.inner_text() and "检查更新" in menu.inner_text(), menu.inner_text())
         shot("service-menu")
         page.keyboard.press("Escape")
         # 原生头像：Codex、Claude 打包图标，Hermes、DSH 从本机安装读取；可以换，也能恢复。

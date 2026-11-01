@@ -756,54 +756,30 @@ fn managed_update_status(
 fn restart_blocking(
     app: tauri::AppHandle,
     service_id: String,
+    update: Option<&str>,
 ) -> Result<crate::codex::RuntimeSnapshot, String> {
     let lock = app.state::<MaintenanceLock>();
     // `acquire` 会写 store 标记并挡 project / group / private；未知 id 也在这里被拒。
     let _guard = acquire(&app, lock.inner(), &service_id, "restart")?;
+    // 停掉后（exe 不再被占用）跑成员自己的更新命令；更新失败也先重新接上，再报错。
+    macro_rules! cycle {
+        ($runtime:expr) => {{
+            $runtime.stop();
+            let updated = update.map_or(Ok(()), crate::service_updates::run_self_update);
+            $runtime.connect()?;
+            updated?;
+            $runtime.snapshot()
+        }};
+    }
     let snapshot = match service_id.as_str() {
-        "codex-win" => {
-            let runtime = app.state::<Arc<crate::codex::Runtime>>();
-            runtime.stop();
-            runtime.connect()?;
-            runtime.snapshot()
-        }
-        "hermes-win" => {
-            let runtime = app.state::<Arc<crate::hermes::Runtime>>();
-            runtime.stop();
-            runtime.connect()?;
-            runtime.snapshot()
-        }
-        "dsh-win" => {
-            let runtime = app.state::<Arc<crate::dsh::Runtime>>();
-            runtime.stop();
-            runtime.connect()?;
-            runtime.snapshot()
-        }
-        "claude-win" => {
-            let runtime = app.state::<Arc<crate::claude::Runtime>>();
-            runtime.stop();
-            runtime.connect()?;
-            runtime.snapshot()
-        }
-        "opencode-win" => {
-            let runtime = app.state::<crate::opencode::Runtime>();
-            runtime.0.stop();
-            runtime.0.connect()?;
-            runtime.0.snapshot()
-        }
-        "antigravity-win" => {
-            let runtime = app.state::<crate::antigravity::Runtime>();
-            runtime.0.stop();
-            runtime.0.connect()?;
-            runtime.0.snapshot()
-        }
+        "codex-win" => cycle!(app.state::<Arc<crate::codex::Runtime>>()),
+        "hermes-win" => cycle!(app.state::<Arc<crate::hermes::Runtime>>()),
+        "dsh-win" => cycle!(app.state::<Arc<crate::dsh::Runtime>>()),
+        "claude-win" => cycle!(app.state::<Arc<crate::claude::Runtime>>()),
+        "opencode-win" => cycle!(app.state::<crate::opencode::Runtime>().0),
+        "antigravity-win" => cycle!(app.state::<crate::antigravity::Runtime>().0),
         // 未知 id 已被上面的 `acquire` 拒掉，这里只剩 albion：runtime 放在 `.0`。
-        _ => {
-            let runtime = app.state::<crate::albion::Runtime>();
-            runtime.0.stop();
-            runtime.0.connect()?;
-            runtime.0.snapshot()
-        }
+        _ => cycle!(app.state::<crate::albion::Runtime>().0),
     };
     Ok(snapshot)
 }
@@ -815,9 +791,63 @@ pub async fn restart_service(
     app: tauri::AppHandle,
     service_id: String,
 ) -> Result<crate::codex::RuntimeSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || restart_blocking(app, service_id))
+    tauri::async_runtime::spawn_blocking(move || restart_blocking(app, service_id, None))
         .await
         .map_err(|_| "重启任务未正常完成，请重试".to_string())?
+}
+
+/// 一键更新：更新到最新版并接回同席。
+///
+/// DSH / Codex 有新版就走受管的隔离安装 + 切换（可回退）；Claude / OpenCode / Antigravity / Hermes
+/// 停掉运行时后跑它们自己的更新命令；最后都重新连接，用上新版本。Albion 如实拒绝。
+fn update_blocking(
+    app: tauri::AppHandle,
+    service_id: String,
+) -> Result<crate::codex::RuntimeSnapshot, String> {
+    let Some(layout) = crate::service_install::layout_for(&service_id) else {
+        let command = match service_id.as_str() {
+            "claude-win" => "claude update".to_string(),
+            "opencode-win" => "opencode upgrade".to_string(),
+            "antigravity-win" => "agy update".to_string(),
+            // 与 check_hermes 同一个入口；没找到源码检出就退回 PATH 上的 hermes。
+            "hermes-win" => crate::service_updates::hermes_repo()
+                .map(|repo| repo.join(".venv").join("Scripts").join("hermes.exe"))
+                .filter(|exe| exe.is_file())
+                .map(|exe| format!("& '{}' update", exe.display().to_string().replace('\'', "''")))
+                .unwrap_or_else(|| "hermes update".to_string()),
+            _ => return Err(update_blocker(&service_id)?.to_string()),
+        };
+        return restart_blocking(app, service_id, Some(&command));
+    };
+    let plan = {
+        let lock = app.state::<MaintenanceLock>();
+        let _guard = acquire(&app, lock.inner(), &service_id, "prepare")?;
+        let data = crate::service_updates::data_directory(&app)?;
+        let info = detect(&app, &service_id)?;
+        let (_, newer) = crate::service_updates::check_release(
+            &data,
+            layout.package,
+            info.installed_version.as_deref(),
+        )?;
+        match newer {
+            Some(true) => Some(crate::service_updates::prepare_member(&data, &layout)?),
+            _ => None,
+        }
+    };
+    if let Some(plan) = plan {
+        crate::service_apply::apply_member(&app, &layout, &plan.id)?;
+    }
+    restart_blocking(app, service_id, None)
+}
+
+#[tauri::command]
+pub async fn update_service(
+    app: tauri::AppHandle,
+    service_id: String,
+) -> Result<crate::codex::RuntimeSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || update_blocking(app, service_id))
+        .await
+        .map_err(|_| "更新任务未正常完成，请重试".to_string())?
 }
 
 /// 受管更新的切换命令：只有拥有受管 Layout 的成员可启用候选。
