@@ -120,12 +120,17 @@ impl Store {
     /// 跑完了、该交回主脑的派活。撞额度失败的 Codex 派活会被同席到点自动续跑（在成员会话里补一回合），
     /// 那一回合跑完也算这件活的交回；成员会话之后又被派了新活就不认。
     pub(crate) fn finished_brain_jobs(&self) -> Vec<FinishedJob> {
+        // 用户在成员会话里手动停、或插话（不支持原生插话的先停再发）不算交回：活继续挂着、跟到这个会话最新一轮，
+        // 那轮完了再交回；只有主脑或派活页发过停止（kind='stop'）、或主脑已在同一会话派了新活，停下才报给主脑。
         let Ok(mut query) = self.connection.prepare(
-            "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed' FROM brain_jobs j
-             LEFT JOIN runs r ON r.id=CASE WHEN j.status='running' THEN j.run_id
+            "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed' FROM
+             (SELECT b.*, EXISTS(SELECT 1 FROM brain_jobs k WHERE k.chat=b.chat AND k.created_at>=b.created_at AND k.id<>b.id
+                AND (k.kind='stop' OR k.kind='task')) AS ended FROM brain_jobs b
+                WHERE b.status='running' OR b.error LIKE '%自动继续%') j
+             LEFT JOIN runs r ON r.id=CASE WHEN j.status='running' AND j.ended THEN j.run_id
                ELSE (SELECT n.id FROM runs n WHERE n.conversation_id=j.chat ORDER BY n.rowid DESC LIMIT 1) END
              LEFT JOIN messages m ON m.id=r.assistant_message_id
-             WHERE (j.status='running' AND (r.id IS NULL OR r.status IN ('completed','interrupted','failed')))
+             WHERE (j.status='running' AND (r.id IS NULL OR r.status IN ('completed','failed') OR (r.status='interrupted' AND j.ended)))
                 OR (j.status='failed' AND j.kind='task' AND j.error LIKE '%自动继续%' AND r.id<>j.run_id
                     AND r.status IN ('completed','interrupted','failed')
                     AND NOT EXISTS(SELECT 1 FROM brain_jobs k WHERE k.chat=j.chat AND k.created_at>j.created_at))",
@@ -2719,6 +2724,46 @@ B6 做完了"));
 
         store.connection.execute("UPDATE brain_jobs SET status='done',run_id=?1 WHERE id='job-b6'", [&resumed.id]).unwrap();
         assert!(store.finished_brain_jobs().is_empty(), "交回一次就够");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_user_stop_or_interjection_in_the_member_chat_is_not_reported_but_a_brain_stop_is() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-userstop-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["codex-win".into()]).unwrap().id;
+        let project = store.register_project("停止项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "codex-win").unwrap().conversation_id;
+        let mut first = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "codex-win").unwrap();
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,run_id,created_at) VALUES('job-1',?1,'codex-win',?2,'task','做事','running',?3,?4)", params![room, chat, first.id, now()])
+            .unwrap();
+        first.status = "interrupted".into();
+        store.checkpoint(&first, "做了一半", "").unwrap();
+        assert!(store.finished_brain_jobs().is_empty(), "用户手动停的不报给主脑");
+
+        let mut next = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "用户插话", "codex-win").unwrap();
+        assert!(store.finished_brain_jobs().is_empty(), "插话后那轮还没完");
+        next.status = "completed".into();
+        store.checkpoint(&next, "做完了", "").unwrap();
+        let jobs = store.finished_brain_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!((jobs[0].status.as_deref(), jobs[0].run_id.as_deref()), (Some("completed"), Some(next.id.as_str())), "跟到插话后的那轮交回");
+
+        store.connection.execute("UPDATE brain_jobs SET status='running',run_id=?1 WHERE id='job-1'", [&next.id]).unwrap();
+        next.status = "interrupted".into();
+        store.checkpoint(&next, "做了一半", "").unwrap();
+        store
+            .connection
+            .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('stop-1',?1,'codex-win',?2,'stop','','done',?3)", params![room, chat, now() + 1])
+            .unwrap();
+        let jobs = store.finished_brain_jobs();
+        assert_eq!((jobs.len(), jobs[0].status.as_deref()), (1, Some("interrupted")), "主脑或派活页停的照样报");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
