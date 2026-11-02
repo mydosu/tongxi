@@ -107,11 +107,22 @@ function usageOf(u) {
     ...(u.thinking_tokens ? { thoughtTokens: u.thinking_tokens } : {}), totalTokens: input + output } };
 }
 
+// 和模型服务之间断线（代理掐连接、服务端掉流）：agy 自己只重试一次，断在回合中间整轮就算失败。
+const TRANSIENT = /\bEOF\b|forcibly closed|connection reset|stream reading error|ECONNRESET|ETIMEDOUT|i\/o timeout|\b50[234]\b|unavailable/i;
+const RETRIES = 3;
+const RESUME = '【同席】刚才和模型服务的连接断了，这一轮没做完。看一下已经做到哪，接着把剩下的做完；如果其实已经做完了，直接给出最终回复。';
+
 function prompt(id, params) {
   const session = sessions.get(params.sessionId);
   if (!session) throw new Error('Antigravity 会话未加载');
-  if (session.child) throw new Error('Antigravity 正在处理上一条消息');
+  if (session.child || session.retry) throw new Error('Antigravity 正在处理上一条消息');
   session.cancelled = false;
+  attempt(id, params, session, promptText(params.prompt), RETRIES, { wroteText: false, steps: new Set() });
+}
+
+/// 跑一次 agy；断线时隔一会儿在同一个对话里接着跑，turn 记着整轮已经写出过什么。
+function attempt(id, params, session, text, left, turn) {
+  const { steps } = turn;
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
   if (session.model) args.push('--model', session.model);
   const conversation = conversationOf(params.sessionId);
@@ -123,8 +134,7 @@ function prompt(id, params) {
   args.push('-p=');
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   session.child = child;
-  let stderr = '', result = null, wroteText = false;
-  const steps = new Set();
+  let stderr = '', result = null;
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   createInterface({ input: child.stdout }).on('line', line => {
     let message;
@@ -134,9 +144,9 @@ function prompt(id, params) {
       const step = message.step_update || {};
       if (step.step_type === 'agent_response') {
         // 一个回合里多段回复之间空一行，别粘在一起。
-        if (step.text_delta && !steps.has(step.step_index) && wroteText) update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\n' } });
+        if (step.text_delta && !steps.has(step.step_index) && turn.wroteText) update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\n' } });
         if (step.thinking_delta) update(params.sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: step.thinking_delta } });
-        if (step.text_delta) { steps.add(step.step_index); wroteText = true; update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } }); }
+        if (step.text_delta) { steps.add(step.step_index); turn.wroteText = true; update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } }); }
       } else if (step.step_type === 'tool') {
         const info = step.tool_info || { name: step.tool_name };
         const toolCallId = `${conversationOf(params.sessionId) || params.sessionId}-${step.step_index}`;
@@ -163,21 +173,37 @@ function prompt(id, params) {
     if (session.cancelled) return send({ id, result: { stopReason: 'cancelled' } });
     if (result?.status === 'SUCCESS') {
       // 无头模式下没被放行的工具会被拒掉，回复可能是空的：说清楚，别当成正常完成。
-      if (!String(result.response || '').trim() && !wroteText && result.denied_actions?.length) {
+      if (!String(result.response || '').trim() && !turn.wroteText && result.denied_actions?.length) {
         return send({ id, error: { code: -32603, message: `Antigravity 的操作被拒绝（${result.denied_actions.map(item => item.display_name || item.action).join('、')}）：只读模式下不能执行` } });
       }
-      if (!wroteText && result.response) update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } });
+      if (!turn.wroteText && result.response) update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } });
       return send({ id, result: { stopReason: 'end_turn', ...usageOf(result.usage) } });
     }
     const reason = result?.error || stderr.trim().split('\n').pop() || `进程退出（${code}）`;
     noteFailure(`agy exited ${code}: ${reason} ${stderr.slice(-1000)}`);
+    if (left > 0 && TRANSIENT.test(String(reason))) {
+      // 断线就隔一会儿在同一个对话里接着做；等的时候点停止照样能停。
+      const wait = (RETRIES - left + 1) * 10000;
+      update(params.sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: `\n（和模型服务的连接断了，${wait / 1000} 秒后自动重试，还能重试 ${left} 次）\n` } });
+      session.retry = { id, timer: setTimeout(() => {
+        session.retry = null;
+        attempt(id, params, session, conversationOf(params.sessionId) ? RESUME : text, left - 1, turn);
+      }, wait) };
+      return;
+    }
     send({ id, error: { code: -32603, message: `Antigravity 回复失败：${String(reason).slice(0, 300)}` } });
   });
-  child.stdin.end(JSON.stringify({ event: 'user', message: { content: promptText(params.prompt) } }) + '\n');
+  child.stdin.end(JSON.stringify({ event: 'user', message: { content: text } }) + '\n');
 }
 
 function cancel(params) {
   const session = sessions.get(params?.sessionId);
+  if (session?.retry) {
+    clearTimeout(session.retry.timer);
+    send({ id: session.retry.id, result: { stopReason: 'cancelled' } });
+    session.retry = null;
+    return;
+  }
   if (!session?.child) return;
   session.cancelled = true;
   execFile('taskkill', ['/PID', String(session.child.pid), '/T', '/F'], { windowsHide: true }, () => {});
