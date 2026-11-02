@@ -51,6 +51,11 @@ fn native_error_summary(error: &Value) -> String {
         "etimedout",
         "connection refused",
         "network error",
+        // Go 写的成员（agy）断线报的是这些
+        ": eof",
+        "unexpected eof",
+        "forcibly closed",
+        "connection reset",
     ]) {
         "原生成员与模型服务的连接失败，可保留原方案后重试"
     } else if contains(&["unknown tool", "tool not found", "tool is not registered"]) {
@@ -348,6 +353,7 @@ mod tests {
             native_error_summary(&json!({"code":-32603,"message":"fetch failed"}))
                 .contains("连接失败")
         );
+        assert!(native_error_summary(&json!({"code":-32603,"message":"Antigravity 回复失败：API error (attempt 1): request failed: Post \"https://x/v1internal:streamGenerateContent?alt=sse\": EOF"})).contains("连接失败"));
     }
     #[test]
     fn project_request_callback_can_use_nested_rpc_without_blocking_reader() {
