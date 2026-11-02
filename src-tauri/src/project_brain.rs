@@ -1389,7 +1389,11 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                     )
                     .map_err(|_| "计划保存失败")?;
             }
-            Ok(json!({"job":short(&job),"member":seat,"runs_with":runs_with,"quota":quota,"worktree":worktree,"branch":branch,"note":"已交给成员，它做完后结果会作为新消息发给你；不用等也不用查"}))
+            let mut note = "已交给成员，它做完后结果会作为新消息发给你；不用等也不用查".to_owned();
+            if step.is_none() {
+                note.push_str(&unplanned_hint(connection, &ctx.room));
+            }
+            Ok(json!({"job":short(&job),"member":seat,"runs_with":runs_with,"quota":quota,"worktree":worktree,"branch":branch,"note":note}))
         }
         "hub_member" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -1525,6 +1529,17 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
         name if name.starts_with("hub_memory_") => crate::project_memory::call(&ctx.project, &ctx.root, base_agent(&ctx.seat), name, args),
         _ => Err("主脑不支持这个工具".into()),
     }
+}
+
+/// 活没挂在计划上、计划里又还有没做完的步骤：提醒主脑改 hub_plan，不然用户看的流程图一直停着。
+fn unplanned_hint(connection: &Connection, room: &str) -> String {
+    let open: i64 = connection
+        .query_row("SELECT COUNT(*) FROM brain_steps WHERE room=?1 AND status<>'done'", [room], |row| row.get(0))
+        .unwrap_or(0);
+    if open == 0 {
+        return String::new();
+    }
+    format!("。这件活没挂在计划上（计划里还有 {open} 步没做完），用户看的流程图不会动：它属于哪一步就用 hub_plan 改那一步的状态，计划外的新事就加一步")
 }
 
 fn team_message(connection: &Connection, project: &str, room: &str, sender: Option<&str>, content: &str) -> Result<()> {
@@ -2121,6 +2136,14 @@ impl Courier {
             }
             report.push_str("\n");
             report.push_str(&key_points(reply.as_deref().unwrap_or("（没有回复内容）")));
+            let hint = {
+                let store = self.store.lock().unwrap();
+                let planned = store.connection.query_row("SELECT EXISTS(SELECT 1 FROM brain_steps WHERE room=?1 AND job=?2)", params![room, id], |row| row.get(0)).unwrap_or(true);
+                if planned { String::new() } else { unplanned_hint(&store.connection, &room) }
+            };
+            if !hint.is_empty() {
+                report.push_str(&format!("\n\n【同席】{}", hint.trim_start_matches('。')));
+            }
             self.inbox(&room, &report, &seat);
             let job_status = if status == "completed" { "done" } else { "failed" };
             self.execute(
@@ -2664,7 +2687,10 @@ mod tests {
         let steps = plan(serde_json::json!({"remove":[3]})).unwrap()["steps"].clone();
         assert_eq!(steps.as_array().unwrap().len(), 2, "删掉的步骤不留，坏的改动不落库");
 
-        super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"codex-win","task":"测重量","step":2})).unwrap();
+        let planned = super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"codex-win","task":"测重量","step":2})).unwrap();
+        assert!(!planned["note"].as_str().unwrap().contains("没挂在计划上"));
+        let unplanned = super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"claude-win","task":"顺手查个东西"})).unwrap();
+        assert!(unplanned["note"].as_str().unwrap().contains("还有 1 步没做完"), "计划外派活提醒主脑改计划：{unplanned}");
         let task: String = store.connection.query_row("SELECT content FROM brain_jobs WHERE kind='task'", [], |row| row.get(0)).unwrap();
         assert!(task.starts_with("【所在步骤】#2 重量 B6\n上游结论：\n- #1 切回 DeepSeek：已切，提交 abc123\n"), "{task}");
         let step = &store.brain_overview(&room).unwrap().steps[1];
