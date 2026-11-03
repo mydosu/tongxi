@@ -368,6 +368,10 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 
 ## 版本记录
 
+### v3.8.5 · 换 profile 后旧会话不再报错
+
+- **换了 Hermes profile 后，旧私聊能接着发**：会话原来绑的是别的 profile 库里的会话，Hermes 找不到时不报错、只回空结果，同席当成载入成功接着用，结果报「Unknown session」；现在空结果也当没找到，自动开新会话。
+
 ### v3.8.4 · Hermes 可以指定 profile
 
 - **同席里的 Hermes 可以单独用一个 profile**：「成员与服务」页新增「Hermes profile」选择，人格、记忆、会话库都跟着选中的 profile 走，不再和你平时聊天用的 Hermes 混在一起；没选时仍用 Hermes 默认 profile。

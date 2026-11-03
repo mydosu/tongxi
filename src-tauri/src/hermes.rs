@@ -442,20 +442,24 @@ impl Runtime {
         let mcp_servers =
             crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
                 .map_or_else(|| json!([]), |server| json!([server]));
-        // 绑着的历史会话在库里找不到时（例如刚切到共用真实库、旧绑定指向同席自己的库），
+        // 绑着的历史会话在库里找不到时（例如换了 profile、旧绑定指向别的库），
         // 直接开一条新的，别让整个会话发不出消息；bind_thread 会把新 id 写回。
+        // Hermes 找不到会话时不报错、回空结果，所以空结果也算没载入。
         let response = match settings.native_session_id.as_ref() {
-            Some(session_id) => client
+            Some(session_id) => match client
                 .rpc(
                     "session/load",
                     json!({"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers.clone()}),
                 )
-                .or_else(|_| {
-                    client.rpc(
-                        "session/new",
-                        json!({"cwd":self.target.cwd(&self.directory.join(format!("{}-workspaces", self.target.key())).join(&conversation_id))?,"mcpServers":mcp_servers.clone()}),
-                    )
-                })?,
+                .ok()
+                .filter(|loaded| !loaded.is_null())
+            {
+                Some(loaded) => loaded,
+                None => client.rpc(
+                    "session/new",
+                    json!({"cwd":self.target.cwd(&self.directory.join(format!("{}-workspaces", self.target.key())).join(&conversation_id))?,"mcpServers":mcp_servers.clone()}),
+                )?,
+            },
             None => client.rpc("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers.clone()}))?,
         };
         let session_id = response["sessionId"]
