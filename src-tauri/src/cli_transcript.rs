@@ -237,10 +237,7 @@ fn home() -> Option<PathBuf> {
 fn hermes_turns(session: &str, since: i64) -> Result<Vec<Turn>> {
     let db = std::env::var_os("AGENT_HUB_HERMES_SESSION_DB")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("LOCALAPPDATA")
-                .map(|dir| PathBuf::from(dir).join("hermes").join("state.db"))
-        })
+        .or_else(|| crate::service_updates::hermes_home().map(|home| home.join("state.db")))
         .ok_or("找不到 Hermes 会话库")?;
     let connection =
         rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)

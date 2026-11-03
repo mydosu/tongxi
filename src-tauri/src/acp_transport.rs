@@ -202,7 +202,11 @@ impl Target {
                     .args(["-u", "-c", include_str!("hermes_bridge.py")])
                     .arg(repo)
                     .arg(data);
-                let home = repo.parent().ok_or("Hermes 主目录不存在")?;
+                let home = crate::service_updates::hermes_home_in(repo.parent().ok_or("Hermes 主目录不存在")?);
+                if !home.join("config.yaml").is_file() {
+                    return Err(format!("Hermes profile 不存在：{}，请在「成员与服务」里重新选择", home.display()));
+                }
+                let home = home.as_path();
                 command.env("HERMES_HOME", home);
                 // 指向真实会话库：面板能列出并续聊她自己的历史会话（同一个家目录下的 state.db）。
                 // 不给这个变量时桥会退回同席自己的隔离库，删掉即可回退。

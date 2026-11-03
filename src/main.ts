@@ -2604,7 +2604,7 @@ function renderServices() {
   // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; setMobileView('chat'); renderList(); enterView('services');
-  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form>${isTauri() ? '<form id="hermes-profile-form" class="self-avatar-row workspace-row"><div><strong>Hermes profile</strong><span>同席里的 Hermes 用哪个 profile（人格、记忆、会话库各自独立）；换了会断开 Hermes，下次连接生效</span></div><select name="profile" aria-label="Hermes profile"><option value="">Hermes 默认</option></select><button class="secondary">保存</button></form>' : ''}<div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
@@ -2645,6 +2645,20 @@ function renderServices() {
     try { await invoke('set_default_workspace', { path: root }); toast(root ? '默认工作文件夹已保存，之后新开的私聊会话生效' : '已改回同席数据目录'); }
     catch (error) { toast(errorText(error), true); }
   });
+  const hermesProfile = main.querySelector<HTMLFormElement>('#hermes-profile-form');
+  if (hermesProfile) {
+    const select = hermesProfile.querySelector('select')!;
+    void invoke<{ current: string | null; options: string[] }>('hermes_profiles').then(({ current, options }) => {
+      for (const name of new Set([...options, ...(current ? [current] : [])])) select.add(new Option(name, name));
+      select.value = current || '';
+    });
+    hermesProfile.addEventListener('submit', async event => {
+      event.preventDefault();
+      const profile = select.value || null;
+      try { await invoke('set_hermes_profile', { profile }); toast(`Hermes 改用${profile ? ` profile「${profile}」` : '默认 profile'}，重新连接后生效`); renderServices(); }
+      catch (error) { toast(errorText(error), true); }
+    });
+  }
   wireAvatarEdit();
   main.querySelectorAll<HTMLElement>('.service-card').forEach(paintInstall);
   if (!scanned().length) void scanAgents().then(paintSetup).catch(error => toast(errorText(error), true));

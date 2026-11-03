@@ -1589,6 +1589,28 @@ impl Store {
         Ok(())
     }
 
+    /// 同席里 Hermes 用的 profile 名（没设＝Hermes 默认 profile）。
+    pub(crate) fn hermes_profile(&self) -> Option<String> {
+        self.connection
+            .query_row("SELECT value FROM metadata WHERE key='hermes_profile'", [], |row| row.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .filter(|name| crate::service_updates::valid_profile_name(name))
+    }
+
+    pub(crate) fn set_hermes_profile(&mut self, profile: Option<&str>) -> Result<()> {
+        match profile {
+            Some(name) => self.connection.execute(
+                "INSERT INTO metadata(key,value) VALUES('hermes_profile',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+                [name],
+            ),
+            None => self.connection.execute("DELETE FROM metadata WHERE key='hermes_profile'", []),
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub(crate) fn set_agent_default_model(&mut self, agent: &str, model: Option<&str>) -> Result<()> {
         let key = format!("default_model:{agent}");
         match model {

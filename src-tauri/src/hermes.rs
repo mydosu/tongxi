@@ -60,9 +60,7 @@ fn failure_reply(text: &str) -> Option<String> {
 /// Hermes 自己会话库里这个会话的累计用量（输入不含缓存、缓存读、缓存写、输出）。
 /// 有的线路不在 ACP 回包里报用量，回合前后各读一次相减补上。
 fn session_tokens(session_id: &str) -> Option<[i64; 4]> {
-    let home = std::env::var_os("HERMES_HOME")
-        .map(PathBuf::from)
-        .or_else(|| crate::service_updates::hermes_repo()?.parent().map(PathBuf::from))?;
+    let home = crate::service_updates::hermes_home()?;
     let db = rusqlite::Connection::open_with_flags(home.join("state.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     db.busy_timeout(Duration::from_secs(2)).ok()?;
     db.query_row(
@@ -758,6 +756,14 @@ impl Runtime {
     }
     pub fn stop(&self) {
         self.stop_expected(None);
+    }
+    /// 换 profile 用：没有回复在跑才断开，下次连接按新 profile 起进程。
+    pub(crate) fn disconnect_idle(&self) -> Result<()> {
+        if !busy_ids(&self.inner.lock().unwrap().runs).is_empty() {
+            return Err(format!("{} 正在回复，请完成或停止后再切换 profile", self.target.name()));
+        }
+        self.stop();
+        Ok(())
     }
     pub(crate) fn stop_expected(&self, expected: Option<&str>) {
         let (client, active) = {

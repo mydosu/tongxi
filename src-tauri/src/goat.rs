@@ -263,8 +263,8 @@ fn cached(key: &str) -> Option<Value> {
 /// 给调度和进度页：{"<成员>:<线路>": 额度概况}，键和资源池的 pool 一致。
 pub fn overview() -> serde_json::Map<String, Value> {
     let mut lines = crate::dsh::resolved_dsh_home().map(|home| dsh_lines(&home)).unwrap_or_default();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        lines.extend(hermes_lines(&PathBuf::from(local).join("hermes")));
+    if let Some(home) = crate::service_updates::hermes_home() {
+        lines.extend(hermes_lines(&home));
     }
     let mut result = serde_json::Map::new();
     for line in lines {

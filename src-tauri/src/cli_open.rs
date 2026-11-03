@@ -40,7 +40,10 @@ pub(crate) fn resume_command(
     Ok(match agent {
         "codex-win" => format!("{} resume {session}", program("codex")),
         "claude-win" => format!("{} --resume {session}", program("claude")),
-        "hermes-win" => format!("{} --resume {session}", program("hermes")),
+        "hermes-win" => match crate::service_updates::hermes_profile() {
+            Some(profile) => format!("{} -p {profile} --resume {session}", program("hermes")),
+            None => format!("{} --resume {session}", program("hermes")),
+        },
         "opencode-win" => format!("{} --session {session}", program("opencode")),
         "antigravity-win" => format!("{} --conversation {session}", program("agy")),
         // DSH 在这台机器上没有终端界面，只有网页版：开网页版，再从会话历史里选这条会话。

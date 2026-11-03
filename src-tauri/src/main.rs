@@ -744,6 +744,34 @@ fn set_agent_default_model(
     }
 }
 
+/// 同席里 Hermes 用的 profile：当前选择（null＝Hermes 默认）和本机可选的 profile 名。
+#[tauri::command]
+fn hermes_profiles() -> serde_json::Value {
+    serde_json::json!({
+        "current": service_updates::hermes_profile(),
+        "options": service_updates::hermes_profiles(),
+    })
+}
+
+/// 换 Hermes profile：断开 Hermes，下次连接起用新 profile（有回复在跑就拒绝）。传 null 回到 Hermes 默认。
+#[tauri::command]
+fn set_hermes_profile(
+    state: State<'_, AppState>,
+    hermes: State<'_, Arc<hermes::Runtime>>,
+    profile: Option<String>,
+) -> Result<(), String> {
+    let profile = profile.filter(|name| !name.is_empty());
+    if let Some(name) = profile.as_deref() {
+        if !service_updates::hermes_profiles().iter().any(|option| option == name) {
+            return Err(format!("本机没有 Hermes profile「{name}」"));
+        }
+    }
+    hermes.disconnect_idle()?;
+    with_store(&state, |store| store.set_hermes_profile(profile.as_deref()))?;
+    service_updates::set_hermes_profile(profile);
+    Ok(())
+}
+
 #[tauri::command]
 fn default_workspace(state: State<'_, AppState>) -> Result<Option<String>, String> {
     with_store(&state, |store| Ok(store.default_workspace()))
@@ -1321,6 +1349,7 @@ fn main() {
             let store = Arc::new(Mutex::new(
                 Store::open(&directory.join("hub.db")).map_err(std::io::Error::other)?,
             ));
+            service_updates::set_hermes_profile(store.lock().unwrap().hermes_profile());
             let codex_runtime =
                 codex::Runtime::new(app.handle().clone(), store.clone(), directory.clone());
             codex_runtime.watch_quota_resume();
@@ -1508,6 +1537,8 @@ fn main() {
             steer_agent_message,
             open_in_cli,
             set_agent_default_model,
+            hermes_profiles,
+            set_hermes_profile,
             default_workspace,
             set_default_workspace,
             set_session_cwd,

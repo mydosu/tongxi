@@ -250,6 +250,56 @@ pub(crate) fn hermes_repo() -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
+/// 同席里 Hermes 用哪个 profile（None＝Hermes 默认 profile，即数据根目录）。启动时和设置变更时写入。
+static HERMES_PROFILE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_hermes_profile(name: Option<String>) {
+    *HERMES_PROFILE.write().unwrap() = name;
+}
+
+pub(crate) fn hermes_profile() -> Option<String> {
+    HERMES_PROFILE.read().unwrap().clone()
+}
+
+/// 数据根目录 `root` 下同席该用的 Hermes 主目录（HERMES_HOME）：选了 profile 就是 `profiles/<名>`。
+pub(crate) fn hermes_home_in(root: &Path) -> PathBuf {
+    match hermes_profile() {
+        Some(name) => root.join("profiles").join(name),
+        None => root.to_path_buf(),
+    }
+}
+
+/// 本机同席该用的 Hermes 主目录；`HERMES_HOME` 环境变量（测试隔离用）优先。
+pub(crate) fn hermes_home() -> Option<PathBuf> {
+    std::env::var_os("HERMES_HOME")
+        .map(PathBuf::from)
+        .or_else(|| Some(hermes_home_in(hermes_repo()?.parent()?)))
+}
+
+/// 本机可选的 Hermes profile 名（`profiles/` 下带 config.yaml 的目录）。
+pub(crate) fn hermes_profiles() -> Vec<String> {
+    let Some(root) = hermes_repo().and_then(|repo| repo.parent().map(Path::to_path_buf)) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = std::fs::read_dir(root.join("profiles"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().join("config.yaml").is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| valid_profile_name(name))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Hermes 的 profile 名规则：小写字母数字（允许 - _），挡掉路径穿越。
+pub(crate) fn valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
 /// 问 Hermes 自己的更新通道，全程只读。
 ///
 /// **只调 `hermes update --plan` 与 `--check`，绝不调 `hermes update` 本体**：真正的更新会等
@@ -862,6 +912,17 @@ pub(crate) fn prepare_member(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hermes_profile_picks_subdirectory_and_rejects_traversal() {
+        assert!(valid_profile_name("tongxi") && valid_profile_name("my-bot_2"));
+        assert!(!valid_profile_name("") && !valid_profile_name("..") && !valid_profile_name("a/b") && !valid_profile_name("Tongxi"));
+        let root = Path::new("C:/hermes");
+        set_hermes_profile(Some("tongxi".into()));
+        assert_eq!(hermes_home_in(root), root.join("profiles").join("tongxi"));
+        set_hermes_profile(None);
+        assert_eq!(hermes_home_in(root), root);
+    }
 
     fn value(provider: &str, model: &str) -> String {
         serde_json::to_string(&[provider, model]).unwrap()
