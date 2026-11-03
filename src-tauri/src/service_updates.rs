@@ -263,9 +263,22 @@ pub(crate) fn hermes_profile() -> Option<String> {
 
 /// 数据根目录 `root` 下同席该用的 Hermes 主目录（HERMES_HOME）：选了 profile 就是 `profiles/<名>`。
 pub(crate) fn hermes_home_in(root: &Path) -> PathBuf {
-    match hermes_profile() {
+    hermes_home_named(root, hermes_profile().as_deref())
+}
+
+/// 指定 profile 的 Hermes 主目录（None＝Hermes 默认 profile，即数据根目录）。
+pub(crate) fn hermes_home_named(root: &Path, profile: Option<&str>) -> PathBuf {
+    match profile {
         Some(name) => root.join("profiles").join(name),
         None => root.to_path_buf(),
+    }
+}
+
+/// 某条会话实际用的 Hermes 主目录：会话自己选的 profile 优先，否则同席默认。
+pub(crate) fn hermes_home_for(profile: Option<&str>) -> Option<PathBuf> {
+    match profile {
+        Some(name) => Some(hermes_home_named(hermes_repo()?.parent()?, Some(name))),
+        None => hermes_home(),
     }
 }
 
@@ -274,6 +287,20 @@ pub(crate) fn hermes_home() -> Option<PathBuf> {
     std::env::var_os("HERMES_HOME")
         .map(PathBuf::from)
         .or_else(|| Some(hermes_home_in(hermes_repo()?.parent()?)))
+}
+
+/// 这条 Hermes 会话在哪个 profile 的库里：(profile 名，None＝默认 profile；主目录)。
+/// 会话可以按会话选 profile，开 CLI、读 CLI 记录时按会话 ID 找回它的库。
+pub(crate) fn hermes_home_of_session(session: &str) -> Option<(Option<String>, PathBuf)> {
+    let root = hermes_repo()?.parent()?.to_path_buf();
+    let mut candidates: Vec<Option<String>> = vec![hermes_profile(), None];
+    candidates.extend(hermes_profiles().into_iter().map(Some));
+    candidates.into_iter().find_map(|profile| {
+        let home = hermes_home_named(&root, profile.as_deref());
+        let db = rusqlite::Connection::open_with_flags(home.join("state.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        db.query_row("SELECT 1 FROM sessions WHERE id=?1", [session], |_| Ok(())).ok()?;
+        Some((profile, home))
+    })
 }
 
 /// 本机可选的 Hermes profile 名（`profiles/` 下带 config.yaml 的目录）。

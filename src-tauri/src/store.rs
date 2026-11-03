@@ -215,6 +215,8 @@ pub struct Session {
     pub native_cwd: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    /// 这条会话里该成员用的 profile（目前只有 Hermes 用）；None＝成员默认。
+    pub profile: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -531,6 +533,15 @@ impl Store {
             allow_agent_in_checks(&tx, "dsh-win", "claude-win")?;
         }
         allow_agent_in_checks(&tx, "dsh-win", "opencode-win")?;
+        // 每条会话各自的 Hermes profile；同 native_cwd 一样先查列，重跑不再 ALTER。
+        let has_profile = tx
+            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='profile'")
+            .and_then(|mut statement| statement.exists([]))
+            .map_err(|e| e.to_string())?;
+        if !has_profile {
+            tx.execute_batch("ALTER TABLE sessions ADD COLUMN profile TEXT;")
+                .map_err(|e| e.to_string())?;
+        }
         allow_agent_in_checks(&tx, "dsh-win", "antigravity-win")?;
         // 项目额外席位（codex-win-2 …）：放宽成员白名单。幂等，已放宽的表会被跳过。
         for seat in crate::project_store::seat_ids() {
@@ -804,7 +815,7 @@ impl Store {
                 message.tool_events = self.tool_events(&run_id)?;
             }
         }
-        let mut statement = self.connection.prepare("SELECT agent_id,session_key,native_session_id,native_cwd,model,reasoning_effort FROM sessions WHERE conversation_id=?1 ORDER BY agent_id").map_err(|e| e.to_string())?;
+        let mut statement = self.connection.prepare("SELECT agent_id,session_key,native_session_id,native_cwd,model,reasoning_effort,profile FROM sessions WHERE conversation_id=?1 ORDER BY agent_id").map_err(|e| e.to_string())?;
         let sessions = statement
             .query_map([id], |row| {
                 Ok(Session {
@@ -814,6 +825,7 @@ impl Store {
                     native_cwd: row.get(3)?,
                     model: row.get(4)?,
                     reasoning_effort: row.get(5)?,
+                    profile: row.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -925,6 +937,29 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         self.conversation(id)
+    }
+
+    /// 这条会话里某成员用的 profile。换了就解开原生会话：旧会话在另一个 profile 的库里，下一条消息开新的。
+    pub fn set_session_profile(&mut self, id: &str, agent_id: &str, profile: Option<&str>) -> Result<ConversationDetail> {
+        let conversation = self.conversation(id)?;
+        if conversation.archived {
+            return Err("先恢复归档会话，再修改设置".into());
+        }
+        let profile = profile.map(str::trim).filter(|value| !value.is_empty());
+        if profile.is_some_and(|name| !crate::service_updates::valid_profile_name(name)) {
+            return Err("profile 名称无效".into());
+        }
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE sessions SET profile=?1, native_session_id=CASE WHEN profile IS ?1 THEN native_session_id END                  WHERE conversation_id=?2 AND agent_id=?3",
+                params![profile, id, agent_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("这个会话里没有该成员".into());
+        }
+        self.detail(id)
     }
 
     pub fn set_session_settings(
@@ -1900,6 +1935,22 @@ mod tests {
         assert_eq!((session.model.as_deref(), session.reasoning_effort.as_deref()), (Some("gpt-y"), None));
         let group = store.create("群", "group", &["codex-win".into(), "dsh-win".into()]).unwrap();
         assert!(store.detail(&group.id).unwrap().sessions.iter().all(|session| session.model.is_none()));
+    }
+    #[test]
+    fn session_profile_is_per_conversation_and_unbinds_on_change() {
+        let mut store = memory();
+        let group = store.create("群", "group", &["hermes-win".into(), "codex-win".into()]).unwrap();
+        let other = store.create("另一个群", "group", &["hermes-win".into(), "codex-win".into()]).unwrap();
+        store.attach_native_session(&group.id, "hermes-win", "s-1", None).unwrap();
+        let hermes = |store: &Store, id: &str| store.detail(id).unwrap().sessions.into_iter().find(|s| s.agent_id == "hermes-win").unwrap();
+        store.set_session_profile(&group.id, "hermes-win", Some("tongxi")).unwrap();
+        let session = hermes(&store, &group.id);
+        assert_eq!((session.profile.as_deref(), session.native_session_id), (Some("tongxi"), None));
+        assert_eq!(hermes(&store, &other.id).profile, None);
+        store.attach_native_session(&group.id, "hermes-win", "s-2", None).unwrap();
+        store.set_session_profile(&group.id, "hermes-win", Some("tongxi")).unwrap();
+        assert_eq!(hermes(&store, &group.id).native_session_id.as_deref(), Some("s-2"));
+        assert!(store.set_session_profile(&group.id, "hermes-win", Some("../x")).is_err());
     }
     #[test]
     fn session_cwd_unbinds_native_session_only_when_folder_changes() {

@@ -368,6 +368,12 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 
 ## 版本记录
 
+### v3.8.6 · 每个会话各选 Hermes profile
+
+- **私聊、群聊各自选 profile**：会话上方的设置栏选中 Hermes 时多了「profile」，每个会话可以各用一个（人格、记忆、模型、会话库各自独立），不选就跟随 Hermes 卡片上的「默认 profile」。
+- 不同 profile 的会话同时进行互不影响：同席按需给每个用到的 profile 各起一个 Hermes 进程。
+- 换 profile 从下一条消息起生效，开新的 Hermes 会话（旧会话在另一个 profile 的库里）；「在 CLI 打开」和 CLI 记录回读会自动找到会话所在的 profile。
+
 ### v3.8.5 · Hermes 卡片里切 profile，旧会话不再报错
 
 - **profile 选择挪进 Hermes 卡片**：在「成员与服务」的 Hermes 卡片里直接切换 profile。

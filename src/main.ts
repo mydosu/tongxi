@@ -75,6 +75,8 @@ let listGeneration = 0;
 let detailGeneration = 0;
 let sending = false;
 let settingsAgentId = '';
+// 本机 Hermes profile（会话设置栏里按会话选）；null＝还没读过。
+let hermesProfileInfo: { current: string | null; options: string[] } | null = null;
 const liveProviderSelection: Record<string, string> = {};
 let settingsPending = 0;
 let settingsQueue: Promise<void> = Promise.resolve();
@@ -2178,7 +2180,7 @@ function renderLiveSettingsInner(force: boolean) {
   const snapshot = runtimes[settingsAgentId];
   const connected = snapshot?.connection === 'connected';
   const catalog = connected ? snapshot.models : [];
-  const signature = JSON.stringify([conversation.id, settingsAgentId, session.model, session.reasoning_effort, catalog, snapshot?.default_model, conversation.archived, autoProjectSetting, autoProjectModel]);
+  const signature = JSON.stringify([conversation.id, settingsAgentId, session.model, session.reasoning_effort, session.profile, hermesProfileInfo, catalog, snapshot?.default_model, conversation.archived, autoProjectSetting, autoProjectModel]);
   const status = host.querySelector('#live-setting-status');
   if (status) status.textContent = settingsPending ? '正在保存…' : busyIn(snapshot, conversation.id) ? '下一条生效 · 当前回复保留原参数' : snapshot?.connection === 'connected' ? '切换即保存 · 下一条消息生效' : '切换即保存 · 连接后应用';
   if (!force && (host.dataset.signature === signature || settingsPending || host.contains(document.activeElement))) return;
@@ -2190,7 +2192,11 @@ function renderLiveSettingsInner(force: boolean) {
   const providerHtml = providers.length > 1 ? `<label>提供商<select id="live-provider" aria-label="当前会话模型提供商">${providerOptionsHtml(catalog, provider, escape)}</select></label>` : '';
   const modelHtml = `<select id="live-model" aria-label="当前会话模型">${modelOptionsHtml(catalog, provider, session.model, escape, autoProjectModel ? '项目自动选型 · 聊天默认' : `默认${snapshot?.default_model ? ` · ${catalog.find(item => item.id === snapshot.default_model)?.name || snapshot.default_model}` : ''}`)}${session.model && !catalog.some(item => item.id === session.model) ? `<option value="${escape(session.model)}" selected>${escape(modelText(session.model))} · 待验证</option>` : ''}</select>`;
   const efforts = catalog.find(item => item.id === selectedModel)?.efforts || Object.keys(effortLabels);
-  host.innerHTML = `${conversation.kind === 'group' ? `<label>成员<select id="live-agent" aria-label="设置成员">${conversation.members.map(id => `<option value="${escape(id)}" ${id === settingsAgentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>` : ''}${providerHtml}<label class="live-model-field">模型${modelHtml}</label><label>思考<select id="live-effort" aria-label="当前会话思考强度"><option value="">${autoProjectSetting ? '自动按任务 · 聊天默认' : '默认'}</option>${efforts.map(effort => `<option value="${escape(effort)}" ${session.reasoning_effort === effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><button type="button" id="live-reset" class="text-button">恢复默认</button>${connected ? '' : '<button type="button" id="live-connect" class="text-button">连接并读取模型</button>'}<span id="live-setting-status" role="status"></span>`;
+  // Hermes 每条会话可以各用一个 profile（人格、记忆、模型、会话库各自独立）；没选就跟随 Hermes 卡片上的默认。
+  if (settingsAgentId === 'hermes-win' && isTauri() && !hermesProfileInfo) void invoke<{ current: string | null; options: string[] }>('hermes_profiles').then(info => { hermesProfileInfo = info; renderLiveSettings(true); }).catch(() => undefined);
+  const profileNames = hermesProfileInfo ? [...new Set([...hermesProfileInfo.options, ...(session.profile ? [session.profile] : [])])] : [];
+  const profileHtml = settingsAgentId === 'hermes-win' && hermesProfileInfo ? `<label>profile<select id="live-profile" aria-label="这个会话里 Hermes 用的 profile" title="这个会话里 Hermes 用哪个 profile；换了从下一条消息起开新的 Hermes 会话"><option value="">默认${hermesProfileInfo.current ? ` · ${escape(hermesProfileInfo.current)}` : ''}</option>${profileNames.map(name => `<option value="${escape(name)}" ${name === session.profile ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select></label>` : '';
+  host.innerHTML = `${conversation.kind === 'group' ? `<label>成员<select id="live-agent" aria-label="设置成员">${conversation.members.map(id => `<option value="${escape(id)}" ${id === settingsAgentId ? 'selected' : ''}>${escape(member(id).name)}</option>`).join('')}</select></label>` : ''}${providerHtml}${profileHtml}<label class="live-model-field">模型${modelHtml}</label><label>思考<select id="live-effort" aria-label="当前会话思考强度"><option value="">${autoProjectSetting ? '自动按任务 · 聊天默认' : '默认'}</option>${efforts.map(effort => `<option value="${escape(effort)}" ${session.reasoning_effort === effort ? 'selected' : ''}>${escape(effortLabels[effort] || effort)}</option>`).join('')}</select></label><button type="button" id="live-reset" class="text-button">恢复默认</button>${connected ? '' : '<button type="button" id="live-connect" class="text-button">连接并读取模型</button>'}<span id="live-setting-status" role="status"></span>`;
   host.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button').forEach(control => { control.disabled = conversation.archived; });
   host.querySelector('#live-agent')?.addEventListener('change', event => { settingsAgentId = (event.target as HTMLSelectElement).value; renderLiveSettings(true); });
   host.querySelector('#live-connect')?.addEventListener('click', async event => {
@@ -2240,6 +2246,22 @@ function renderLiveSettingsInner(force: boolean) {
     queueSave();
   });
   effort.addEventListener('change', queueSave);
+  host.querySelector<HTMLSelectElement>('#live-profile')?.addEventListener('change', event => {
+    const id = conversation.id, profile = (event.target as HTMLSelectElement).value || null;
+    settingsPending++;
+    settingsQueue = settingsQueue.then(async () => {
+      let failed = false;
+      try {
+        const saved = await invoke<ConversationDetail>('set_session_profile', { id, agentId: 'hermes-win', profile });
+        if (detail?.conversation.id === id) detail.sessions = saved.sessions;
+        toast(`这个会话的 Hermes 改用${profile ? ` profile「${profile}」` : '默认 profile'}，下一条消息起生效`);
+      } catch (error) { failed = true; toast(errorText(error), true); }
+      finally {
+        settingsPending--;
+        if (!settingsPending && selectedId === id && screen === 'chat') renderLiveSettings(failed);
+      }
+    });
+  });
   host.querySelector('#live-reset')!.addEventListener('click', () => { delete liveProviderSelection[providerKey]; model.value = ''; effort.value = ''; queueSave(); });
   const nextStatus = host.querySelector('#live-setting-status')!;
   nextStatus.textContent = busyIn(snapshot, conversation.id) ? '下一条生效 · 当前回复保留原参数' : snapshot?.connection === 'connected' ? '切换即保存 · 下一条消息生效' : '切换即保存 · 连接后应用';
@@ -2608,7 +2630,7 @@ function renderServices() {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div>${agent.id === 'hermes-win' && isTauri() ? '<form id="hermes-profile-form" class="hermes-profile"><label><span>profile</span><select name="profile" aria-label="Hermes profile" title="同席里的 Hermes 用哪个 profile（人格、记忆、模型、会话库各自独立）；换了会断开 Hermes，下次连接生效"><option value="">Hermes 默认</option></select></label><button class="secondary">切换</button></form>' : ''}<div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-upgrade class="secondary" title="更新到最新版本并重新接入同席">更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button data-service-check role="menuitem" title="只读核对安装、运行与发行版本，不改动安装">检查更新</button><button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div>${agent.id === 'hermes-win' && isTauri() ? '<form id="hermes-profile-form" class="hermes-profile"><label><span>默认 profile</span><select name="profile" aria-label="Hermes 默认 profile" title="没单独选 profile 的会话用这个；每个会话可以在会话设置栏里另选。换了会断开 Hermes，下次连接生效"><option value="">Hermes 默认</option></select></label><button class="secondary">切换</button></form>' : ''}<div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-upgrade class="secondary" title="更新到最新版本并重新接入同席">更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button data-service-check role="menuitem" title="只读核对安装、运行与发行版本，不改动安装">检查更新</button><button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div>${isTauri() ? remoteGatewayCard() : ''}<div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   main.querySelector<HTMLButtonElement>('#update-all')!.addEventListener('click', async event => {
@@ -2655,7 +2677,7 @@ function renderServices() {
     hermesProfile.addEventListener('submit', async event => {
       event.preventDefault();
       const profile = select.value || null;
-      try { await invoke('set_hermes_profile', { profile }); toast(`Hermes 改用${profile ? ` profile「${profile}」` : '默认 profile'}，重新连接后生效`); renderServices(); }
+      try { await invoke('set_hermes_profile', { profile }); hermesProfileInfo = null; toast(`Hermes 默认改用${profile ? ` profile「${profile}」` : ' Hermes 自带的默认 profile'}，重新连接后生效`); renderServices(); }
       catch (error) { toast(errorText(error), true); }
     });
   }

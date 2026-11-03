@@ -40,7 +40,7 @@ pub(crate) fn resume_command(
     Ok(match agent {
         "codex-win" => format!("{} resume {session}", program("codex")),
         "claude-win" => format!("{} --resume {session}", program("claude")),
-        "hermes-win" => match crate::service_updates::hermes_profile() {
+        "hermes-win" => match crate::service_updates::hermes_home_of_session(session).map_or_else(crate::service_updates::hermes_profile, |(profile, _)| profile) {
             Some(profile) => format!("{} -p {profile} --resume {session}", program("hermes")),
             None => format!("{} --resume {session}", program("hermes")),
         },

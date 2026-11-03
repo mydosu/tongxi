@@ -237,6 +237,7 @@ fn home() -> Option<PathBuf> {
 fn hermes_turns(session: &str, since: i64) -> Result<Vec<Turn>> {
     let db = std::env::var_os("AGENT_HUB_HERMES_SESSION_DB")
         .map(PathBuf::from)
+        .or_else(|| crate::service_updates::hermes_home_of_session(session).map(|(_, home)| home.join("state.db")))
         .or_else(|| crate::service_updates::hermes_home().map(|home| home.join("state.db")))
         .ok_or("找不到 Hermes 会话库")?;
     let connection =

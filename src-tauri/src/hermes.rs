@@ -21,6 +21,8 @@ struct Inner {
     connection: String,
     generation: String,
     client: Option<Arc<Client>>,
+    /// 会话单独选了别的 profile 时另起的 Hermes 进程：profile → (generation, client)。一个进程只能服务一个 HERMES_HOME。
+    extra: HashMap<String, (String, Arc<Client>)>,
     version: Option<String>,
     error: Option<String>,
     runs: Vec<RunSnapshot>,
@@ -37,6 +39,8 @@ pub struct Runtime {
     target: crate::acp_transport::Target,
     inner: Mutex<Inner>,
     revision: AtomicU64,
+    /// 同一 profile 只起一个进程。
+    spawning: Mutex<()>,
 }
 fn busy(run: &RunSnapshot) -> bool {
     matches!(
@@ -59,8 +63,8 @@ fn failure_reply(text: &str) -> Option<String> {
 }
 /// Hermes 自己会话库里这个会话的累计用量（输入不含缓存、缓存读、缓存写、输出）。
 /// 有的线路不在 ACP 回包里报用量，回合前后各读一次相减补上。
-fn session_tokens(session_id: &str) -> Option<[i64; 4]> {
-    let home = crate::service_updates::hermes_home()?;
+fn session_tokens(profile: Option<&str>, session_id: &str) -> Option<[i64; 4]> {
+    let home = crate::service_updates::hermes_home_for(profile)?;
     let db = rusqlite::Connection::open_with_flags(home.join("state.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     db.busy_timeout(Duration::from_secs(2)).ok()?;
     db.query_row(
@@ -176,10 +180,12 @@ impl Runtime {
             directory,
             target,
             revision: AtomicU64::new(1),
+            spawning: Mutex::new(()),
             inner: Mutex::new(Inner {
                 connection: "disconnected".into(),
                 generation: String::new(),
                 client: None,
+                extra: HashMap::new(),
                 version: None,
                 error: None,
                 runs: Vec::new(),
@@ -394,7 +400,48 @@ impl Runtime {
         Ok(record)
     }
 
-    fn prompt(&self, client: &Client, run_id: &str, content: &str) -> Result<()> {
+    /// 会话单独选的 profile 和同席默认不同时，换用那个 profile 的进程，没有就起一个。
+    fn client_for(self: &Arc<Self>, primary: &Arc<Client>, profile: Option<&str>) -> Result<Arc<Client>> {
+        let profile = profile.filter(|_| self.target.id() == "hermes-win");
+        let Some(profile) = profile.filter(|name| Some(*name) != crate::service_updates::hermes_profile().as_deref()) else {
+            return Ok(primary.clone());
+        };
+        let _spawning = self.spawning.lock().unwrap();
+        if let Some((_, client)) = self.inner.lock().unwrap().extra.get(profile) {
+            return Ok(client.clone());
+        }
+        let command = self.target.command_profile(&self.directory, Some(profile))?;
+        let generation = Uuid::new_v4().to_string();
+        let (weak, exit) = (Arc::downgrade(self), Arc::downgrade(self));
+        let (message_generation, exit_generation) = (generation.clone(), generation.clone());
+        let client = Client::spawn_command(
+            command,
+            move |value| {
+                if let Some(runtime) = weak.upgrade() {
+                    runtime.notification(&message_generation, value);
+                }
+            },
+            move || {
+                if let Some(runtime) = exit.upgrade() {
+                    runtime.lost(&exit_generation);
+                }
+            },
+        )?;
+        if let Err(error) = client.rpc("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}})) {
+            client.stop();
+            return Err(format!("Hermes profile「{profile}」启动失败：{error}"));
+        }
+        self.inner.lock().unwrap().extra.insert(profile.to_owned(), (generation, client.clone()));
+        Ok(client)
+    }
+
+    /// 主进程加各 profile 的额外进程，取消、卸会话时都要通知到。
+    fn all_clients(&self) -> Vec<Arc<Client>> {
+        let inner = self.inner.lock().unwrap();
+        inner.client.iter().cloned().chain(inner.extra.values().map(|(_, client)| client.clone())).collect()
+    }
+
+    fn prompt(self: &Arc<Self>, primary: &Arc<Client>, run_id: &str, content: &str) -> Result<()> {
         let conversation_id = self
             .inner
             .lock()
@@ -415,6 +462,8 @@ impl Runtime {
             .into_iter()
             .find(|session| session.agent_id == self.target.id())
             .ok_or_else(|| format!("{} 会话不存在", self.target.name()))?;
+        let profile = settings.profile.clone().or_else(crate::service_updates::hermes_profile);
+        let client = &self.client_for(primary, settings.profile.as_deref())?;
         {
             let inner = self.inner.lock().unwrap();
             let record = &run_ref(&inner.runs, run_id).ok_or("运行已结束")?.record;
@@ -562,7 +611,7 @@ impl Runtime {
         }
         self.emit();
         let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
-        let before = (self.target.id() == "hermes-win").then(|| session_tokens(&session_id)).flatten();
+        let before = (self.target.id() == "hermes-win").then(|| session_tokens(profile.as_deref(), &session_id)).flatten();
         let result = client.rpc_while_alive(
             "session/prompt",
             json!({"sessionId":session_id,"prompt":input}),
@@ -571,7 +620,7 @@ impl Runtime {
         match result {
             Ok(mut value) => {
                 if !value["usage"].is_object() {
-                    if let Some(usage) = before.zip(session_tokens(&session_id)).and_then(|(before, after)| turn_usage(before, after)) {
+                    if let Some(usage) = before.zip(session_tokens(profile.as_deref(), &session_id)).and_then(|(before, after)| turn_usage(before, after)) {
                         value["usage"] = usage;
                     }
                 }
@@ -597,7 +646,13 @@ impl Runtime {
             }
             Err(error) => {
                 self.finish(run_id, "failed", Some(error.clone()));
-                self.stop();
+                if Arc::ptr_eq(client, primary) {
+                    self.stop();
+                } else {
+                    // 只断这个 profile 的进程，别连累主进程上的其他会话。
+                    self.inner.lock().unwrap().extra.retain(|_, (_, extra)| !Arc::ptr_eq(extra, client));
+                    client.stop();
+                }
                 return Err(error);
             }
         }
@@ -612,7 +667,7 @@ impl Runtime {
         }
         let params = &value["params"];
         let mut inner = self.inner.lock().unwrap();
-        if inner.generation != generation {
+        if inner.generation != generation && !inner.extra.values().any(|(extra, _)| extra == generation) {
             return;
         }
         let checkpoint = inner.last_checkpoint.elapsed() >= Duration::from_millis(350);
@@ -688,11 +743,7 @@ impl Runtime {
     }
     /// 把会话交给 CLI 前从桥里卸下这条会话；下次续聊重新载入，接上 CLI 里的新对话。
     pub(crate) fn release_native(&self, session_id: &str) {
-        let client = {
-            let inner = self.inner.lock().unwrap();
-            inner.client.clone()
-        };
-        if let Some(client) = client {
+        for client in self.all_clients() {
             let _ = client.rpc("session/close", json!({"sessionId":session_id}));
         }
     }
@@ -724,9 +775,10 @@ impl Runtime {
         conversation_id: &str,
         expected: Option<&str>,
     ) -> Result<RuntimeSnapshot> {
-        let (client, session) = {
+        let (clients, session) = {
             let mut inner = self.inner.lock().unwrap();
-            let client = inner.client.clone().ok_or_else(|| format!("{} 已断开", self.target.name()))?;
+            inner.client.as_ref().ok_or_else(|| format!("{} 已断开", self.target.name()))?;
+            let clients: Vec<Arc<Client>> = inner.client.iter().cloned().chain(inner.extra.values().map(|(_, client)| client.clone())).collect();
             let run = live_in(&mut inner.runs, conversation_id)
                 .filter(|run| expected.is_none_or(|id| run.record.id == id))
                 .ok_or("这个会话没有正在进行的回复")?;
@@ -735,11 +787,14 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .checkpoint(&run.record, &run.text, &run.thought)?;
-            (client, run.record.native_thread_id.clone())
+            (clients, run.record.native_thread_id.clone())
         };
         self.emit();
         if let Some(session_id) = session {
-            client.write(&json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}}))?;
+            // 会话在哪个 profile 的进程上不单独记，各进程都发一遍；不认识的会话 Hermes 直接忽略。
+            for client in clients {
+                client.write(&json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}}))?;
+            }
         }
         Ok(self.snapshot())
     }
@@ -747,6 +802,8 @@ impl Runtime {
         let id = {
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation {
+                // 某个 profile 的额外进程退出：从表里拿掉，下次用到再起；它上面的回合由 prompt 的出错分支收尾。
+                inner.extra.retain(|_, (extra, _)| extra != generation);
                 return;
             }
             inner.connection = "disconnected".into();
@@ -777,9 +834,10 @@ impl Runtime {
             }
             inner.generation = Uuid::new_v4().to_string();
             inner.connection = "disconnected".into();
-            (inner.client.take(), busy_ids(&inner.runs))
+            let extra: Vec<Arc<Client>> = inner.extra.drain().map(|(_, (_, client))| client).collect();
+            (inner.client.take().into_iter().chain(extra).collect::<Vec<_>>(), busy_ids(&inner.runs))
         };
-        if let Some(client) = client {
+        for client in client {
             client.stop();
         }
         for id in active {

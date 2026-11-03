@@ -493,6 +493,27 @@ fn cancel_hermes_run(
 ) -> Result<codex::RuntimeSnapshot, String> {
     runtime.cancel(&conversation_id)
 }
+/// 某条会话（私聊或群聊）里 Hermes 用哪个 profile；null＝跟随 Hermes 卡片上的默认。下一条消息生效。
+#[tauri::command]
+fn set_session_profile(
+    state: State<'_, AppState>,
+    hermes: State<'_, Arc<hermes::Runtime>>,
+    id: String,
+    agent_id: String,
+    profile: Option<String>,
+) -> Result<ConversationDetail, String> {
+    if agent_id != "hermes-win" {
+        return Err("目前只有 Hermes 能按会话选 profile".into());
+    }
+    let profile = profile.filter(|name| !name.is_empty());
+    if let Some(name) = profile.as_deref() {
+        if !service_updates::hermes_profiles().iter().any(|option| option == name) {
+            return Err(format!("本机没有 Hermes profile「{name}」"));
+        }
+    }
+    hermes.guard(&id, || with_store(&state, |store| store.set_session_profile(&id, &agent_id, profile.as_deref())))
+}
+
 #[tauri::command]
 fn set_session_settings(
     state: State<'_, AppState>,
@@ -1539,6 +1560,7 @@ fn main() {
             set_agent_default_model,
             hermes_profiles,
             set_hermes_profile,
+            set_session_profile,
             default_workspace,
             set_default_workspace,
             set_session_cwd,

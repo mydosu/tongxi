@@ -172,7 +172,14 @@ impl Target {
         }
     }
     pub fn command(&self, directory: &Path) -> Result<Command> {
-        let data = directory.join(format!("{}-native", self.key()));
+        self.command_profile(directory, None)
+    }
+    /// `profile` 只对 Windows Hermes 有效：用那个 profile 另起一个进程（数据目录也分开）。
+    pub fn command_profile(&self, directory: &Path, profile: Option<&str>) -> Result<Command> {
+        let data = match profile {
+            Some(name) => directory.join(format!("{}-native-{name}", self.key())),
+            None => directory.join(format!("{}-native", self.key())),
+        };
         match self {
             Self::OpenCode => {
                 let exe = Self::opencode_exe().ok_or("未找到 OpenCode，请先安装（npm i -g opencode-ai），或设置 AGENT_HUB_OPENCODE")?;
@@ -202,7 +209,11 @@ impl Target {
                     .args(["-u", "-c", include_str!("hermes_bridge.py")])
                     .arg(repo)
                     .arg(data);
-                let home = crate::service_updates::hermes_home_in(repo.parent().ok_or("Hermes 主目录不存在")?);
+                let root = repo.parent().ok_or("Hermes 主目录不存在")?;
+                let home = match profile {
+                    Some(name) => crate::service_updates::hermes_home_named(root, Some(name)),
+                    None => crate::service_updates::hermes_home_in(root),
+                };
                 if !home.join("config.yaml").is_file() {
                     return Err(format!("Hermes profile 不存在：{}，请在「成员与服务」里重新选择", home.display()));
                 }
