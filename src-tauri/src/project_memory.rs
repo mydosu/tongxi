@@ -19,6 +19,9 @@ pub fn uses_openviking() -> bool {
 /// 装了 OpenViking 就用它；没装就退回项目里 `.tongxi/记忆/` 下的 markdown。
 /// 装了但连不上照样报错，不悄悄换地方存，免得记忆分成两半。
 pub fn call(project: &str, root: &Path, agent: &str, tool: &str, args: Value) -> Result<Value, String> {
+    if !crate::project_store::EXECUTOR_AGENTS.contains(&agent) {
+        return Err("项目或成员身份无效".into());
+    }
     match openviking_python() {
         Some(python) => openviking(&python, project, agent, tool, args),
         None => local(&root.join(".tongxi").join("记忆"), agent, tool, &args),

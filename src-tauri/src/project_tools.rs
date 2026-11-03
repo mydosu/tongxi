@@ -196,15 +196,16 @@ fn chat_broadcast(connection: &Connection, conversation_id: &str, content: &str)
     if !allowed {
         return Err("该 Agent 已不属于项目团队".into());
     }
+    // 只防单个成员刷屏：按发送者算最近一小时，群里攒了多少历史都不影响交回。
     let count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM project_team_messages WHERE conversation_id=?1",
-            [&group],
+            "SELECT COUNT(*) FROM project_team_messages WHERE conversation_id=?1 AND sender_agent=?2 AND created_at>?3",
+            params![group, agent, crate::store::now() - 3_600_000],
             |row| row.get(0),
         )
         .map_err(|_| "团队消息计数失败")?;
-    if count >= 500 {
-        return Err("团队消息已达到 500 条上限".into());
+    if count >= 60 {
+        return Err("你一小时内已发了 60 条团队消息，先停一停；交回内容直接写在最终回复里".into());
     }
     let id = Uuid::new_v4().to_string();
     connection.execute(

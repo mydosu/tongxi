@@ -7,7 +7,6 @@ import json
 import re
 import sys
 
-AGENTS = ('codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win')
 NAME = re.compile(r'(?!\.)[\w.-]{1,80}')
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b')
 
@@ -47,7 +46,8 @@ def author_of(text):
 async def run(payload):
     from openviking_cli.client._http_compat import AsyncHTTPClient
     project, agent, tool, args = (payload[key] for key in ('project', 'agent', 'tool', 'args'))
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', project) or agent not in AGENTS:
+    # 成员名单由 Rust 端按 EXECUTOR_AGENTS 把关，这里只防路径注入。
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', project) or not re.fullmatch(r'[a-z0-9-]{1,40}', agent or ''):
         raise Refused('项目或成员身份无效')
     root = f'viking://resources/tongxi/projects/{project}/'
     shared = root + 'shared/'
