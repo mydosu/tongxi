@@ -772,3 +772,46 @@ html:not([data-hud]) .bubble { padding: 10px 14px; line-height: 1.75; }
 /* 会话列表：一行一会话，紧一点，一屏多看几条。 */
 html:not([data-hud]) .conversation { padding-block: 8px; margin-bottom: 1px; }
 html:not([data-hud]) .sidebar-top { margin-bottom: 6px; }
+
+/* ---------- 下拉框：统一换成同席的样子 ----------
+   原生下拉的箭头和弹出列表各处都是系统默认的，跟磨砂玻璃不搭。这里统一换成同一个浅紫箭头；
+   WebView2（Chromium ≥135）支持 base-select，弹出列表也换成玻璃浮层。只写 background-image
+   这一类属性，底色、边框还是各处自己的规则说了算。放在文件末尾，同等优先级时这条赢。 */
+html:not([data-hud]) select:not([multiple]) {
+  appearance: none; -webkit-appearance: none; padding-right: 30px !important; cursor: pointer; text-overflow: ellipsis; white-space: nowrap;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%237f74b4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 12px;
+  transition: border-color .15s, box-shadow .15s, background-color .15s; }
+html:not([data-hud]) select:not([multiple]):hover:not(:disabled) { border-color: rgb(165 152 216 / .6); }
+html:not([data-hud]) select:not([multiple]):disabled { cursor: default; opacity: .55; }
+@supports (appearance: base-select) {
+  html:not([data-hud]) select:not([multiple]), html:not([data-hud]) select:not([multiple])::picker(select) { appearance: base-select; }
+  html:not([data-hud]) select:not([multiple]) { align-items: center; }
+  html:not([data-hud]) select:not([multiple])::picker-icon { display: none; }
+  html:not([data-hud]) select:not([multiple]):open { border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
+  html:not([data-hud]) select:not([multiple])::picker(select) {
+    min-width: anchor-size(width); max-height: min(380px, 60vh); margin-block: 4px; padding: 5px; overflow-y: auto;
+    border: 1px solid rgb(255 255 255 / .95); border-radius: var(--r-m); background: rgb(251 251 255 / .94); color: var(--ink-2);
+    box-shadow: 0 18px 46px rgb(70 74 130 / .22), inset 0 1px 0 #fff; backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    opacity: 0; translate: 0 -4px; transition: opacity .14s ease, translate .18s var(--ease), overlay .18s allow-discrete, display .18s allow-discrete; }
+  html:not([data-hud]) select:not([multiple]):open::picker(select) { opacity: 1; translate: 0; }
+  @starting-style { html:not([data-hud]) select:not([multiple]):open::picker(select) { opacity: 0; translate: 0 -4px; } }
+  html:not([data-hud]) select:not([multiple]) option { gap: 8px; padding: 7px 10px; border-radius: 6px; font-size: 13px; line-height: 1.4; color: var(--ink-2); cursor: pointer; }
+  html:not([data-hud]) select:not([multiple]) option:is(:hover, :focus-visible) { background: rgb(165 152 216 / .14); outline: none; }
+  html:not([data-hud]) select:not([multiple]) option:checked { background: rgb(165 152 216 / .22); color: var(--ink); font-weight: 500; }
+  html:not([data-hud]) select:not([multiple]) option::checkmark { color: var(--accent-2); }
+  html:not([data-hud]) select:not([multiple]) option:disabled { color: var(--faint); cursor: default; }
+  html:not([data-hud]) select:not([multiple]) optgroup { padding-top: 4px; font-size: 11px; font-weight: 600; color: var(--faint); }
+  html:not([data-hud]) select:not([multiple]) optgroup option { font-weight: 400; }
+}
+
+/* ---------- 会话设置浮层：标签在上、控件在下，三列网格；成员、模型整行，底部一行放状态和按钮 ---------- */
+.live-settings.tool-pop.open:not([hidden]) { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 12px; width: min(560px, 100%); padding: 14px 16px 10px; }
+html:not([data-hud]) .live-settings label { flex-direction: column; align-items: stretch; gap: 5px; font-size: 12px; color: var(--muted); white-space: normal; }
+.live-settings label > span { padding-left: 2px; }
+.live-settings .live-wide { grid-column: 1 / -1; }
+.live-settings .live-model-field:not(.live-wide) { grid-column: span 2; }
+html:not([data-hud]) .live-settings :is(select, input) { width: 100%; max-width: none; height: 34px; padding: 0 10px; font-size: 13px; color: var(--ink-2);
+  background-color: rgb(255 255 255 / .78); border: 1px solid rgb(205 205 228 / .8); border-radius: var(--r-s); }
+.live-settings .live-foot { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+.live-settings .live-foot #live-setting-status { flex: 1; min-width: 0; }
