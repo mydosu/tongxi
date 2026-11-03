@@ -368,6 +368,11 @@ npm run desktop:build                           # 构建 release/Agent Hub.exe �
 
 ## 版本记录
 
+### v3.8.4 · Hermes 可以指定 profile
+
+- **同席里的 Hermes 可以单独用一个 profile**：「成员与服务」页新增「Hermes profile」选择，人格、记忆、会话库都跟着选中的 profile 走，不再和你平时聊天用的 Hermes 混在一起；没选时仍用 Hermes 默认 profile。
+- 切换会断开 Hermes、下次连接生效；有回复在跑时不让切。之前绑在旧 profile 会话库里的会话会自动开新会话接着用。
+
 ### v3.8.3 · 成员交回不再被卡住
 
 - **团队消息不再永久发不出**：原来全群一辈子只能有 500 条，群里攒满历史后成员的 hub_broadcast 一直失败，交回时反复重试直到断线；改成每个成员每小时最多 60 条。
