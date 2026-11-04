@@ -2,7 +2,7 @@ type Escape = (value: string | number) => string;
 
 
 export function projectAgentPage(name: string, portrait: string, project: string, agent: string, chat: string, escape: Escape) {
-  return `<header class="chat-header project-agent-room-header"><div class="chat-heading">${portrait}<div><h1>${escape(name)}</h1><p>${escape(project)} · 专属会话</p></div></div><div class="header-actions"><span id="project-agent-connection" class="connection-badge"></span><button id="connect-project-agent" class="secondary">连接 ${escape(name)}</button><button id="project-team-return" class="secondary">团队对话</button></div></header><section class="project-agent-room-body"><div class="project-agent-chat" data-project-chat-id="${escape(chat)}" data-project-chat-agent="${escape(agent)}"><p class="team-feed-empty">正在载入会话…</p></div></section>`;
+  return `<header class="chat-header project-agent-room-header"><div class="chat-heading">${portrait}<div><h1>${escape(name)}</h1><p>${escape(project)} · 专属会话</p></div></div><div class="header-actions"><span id="project-agent-connection" class="connection-badge"></span><button id="connect-project-agent" class="secondary">连接 ${escape(name)}</button><button id="project-team-return" class="secondary">团队对话</button></div></header><section class="project-agent-room-body"><div class="project-agent-chat" data-project-chat-id="${escape(chat)}" data-project-chat-agent="${escape(agent)}"><p class="team-feed-empty wait-pill">正在载入会话…</p></div></section>`;
 }
 
 export function agentChatChrome(name: string, escape: Escape, arrow: string) {

@@ -338,7 +338,7 @@ app.innerHTML = `
       <div id="conversation-list" class="conversation-list" aria-label="会话列表"></div>
       <div class="sidebar-bottom"><div class="sidebar-actions"><button id="service-link">${icon('settings')}<span>成员与服务</span><span class="count-pill" id="member-count">${agents.length}</span></button><button id="theme-link" class="icon-button" aria-label="主题背景" title="主题背景">${icon('palette')}</button></div></div>
     </aside>
-    <main id="main" class="main"><div class="loading">正在打开你的工作空间…</div></main>
+    <main id="main" class="main"><div class="loading wait-pill">正在打开你的工作空间…</div></main>
   </div>
   <button type="button" id="mobile-back" class="icon-button mobile-back" aria-label="返回会话列表" title="返回会话列表">${icon('back')}</button>
   <div class="window-controls" aria-label="窗口操作"><button id="hud-toggle" aria-label="HUD 模式" title="HUD 模式">▣</button><button id="window-minimize" aria-label="最小化到托盘" title="最小化到托盘">−</button><button id="window-maximize" aria-label="最大化" title="最大化">□</button><button id="window-close" aria-label="退出同席" title="退出同席">×</button></div>
@@ -902,6 +902,13 @@ let backfillToken = 0;
 /// 把更早的消息从近到远、每次几条补到列表最上面：换页动画放完、浏览器空闲时才做，切换那一帧不卡。
 /// 补进来的带 data-backfill，不播新消息浮上来的动画。补的时候保持离底部的距离，人看着的地方不动。
 /// 先画的几条还没一屏高时立刻补到满，免得上面空一块、补完又整体下移。
+/// 往上补旧消息后让屏上那条留在原处：按它的实际位移补偿；浏览器自带的滚动锚定已经补过就不再动，免得两边重复修正。
+function holdAnchor(box: HTMLElement, anchor: Element | null | undefined, before: number) {
+  if (!anchor?.isConnected) return;
+  const shift = anchor.getBoundingClientRect().top - before;
+  if (Math.abs(shift) >= 0.5) box.scrollTop += shift;
+}
+
 function backfillMessages(box: HTMLElement, older: Message[], head: string, includeDetails: boolean) {
   const token = ++backfillToken;
   const drawn = new Set([...box.children].map(node => (node as HTMLElement).dataset.messageId));
@@ -916,9 +923,9 @@ function backfillMessages(box: HTMLElement, older: Message[], head: string, incl
     end = start;
     const nodes = [...template.content.children] as HTMLElement[];
     nodes.forEach(node => { node.dataset.backfill = ''; });
-    const fromBottom = box.scrollHeight - box.scrollTop;
+    const anchor = box.firstElementChild, before = anchor?.getBoundingClientRect().top ?? 0;
     box.prepend(template.content);
-    box.scrollTop = box.scrollHeight - fromBottom;
+    holdAnchor(box, anchor, before);
     nodes.forEach(restoreOpenedDetails);
     if (!end) syncChatQuestions();
     return end > 0;
@@ -1631,7 +1638,7 @@ function teamBackfillStep(host: HTMLElement): boolean {
     budget -= html.length;
   }
   const entries = [...host.children].filter((node): node is HTMLElement => node instanceof HTMLElement && !!node.dataset.timelineAt);
-  const fromBottom = host.scrollHeight - host.scrollTop;
+  const anchor = entries[entries.length - 1], before = anchor?.getBoundingClientRect().top ?? 0;
   for (const { message, node } of batch) {
     const key = teamKey(node);
     let low = 0, high = entries.length;
@@ -1641,7 +1648,7 @@ function teamBackfillStep(host: HTMLElement): boolean {
     node.dataset.content = message.content;
     node.dataset.backfill = '';
   }
-  host.scrollTop = host.scrollHeight - fromBottom;
+  holdAnchor(host, anchor, before);
   return teamPending.length > 0;
 }
 

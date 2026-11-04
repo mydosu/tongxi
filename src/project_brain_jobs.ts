@@ -413,7 +413,7 @@ export function bindPlanFlow(root: ParentNode, key: string) {
 export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter: string, planPick: number | null, planShow: number | null) {
   lazy.clear();
   const head = `<header class="chat-header"><div><h1>主脑任务</h1><p>${escape(project)} · 主脑的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
-  if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty">正在读取…</p></div>`;
+  if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty wait-pill">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
   const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>主脑${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 项任务进行中` : '暂无进行中的任务'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答待送达主脑` : ''}</small></section>`;
   const body = live.length

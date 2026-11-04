@@ -869,3 +869,32 @@ html:not([data-hud]) .agent-handoff-entry:has([data-tone="err"]) { border-left-c
 .handoff-task, .handoff-branch { font-family: 'Cascadia Code', Consolas, monospace; font-size: 11.5px; }
 .handoff-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-height: 1.85; }
+
+/* ---------- 桌面：成员与服务、绑定项目、等待态跟上薄玻璃（手机布局另见 mobile.css，不动） ---------- */
+@media (min-width: 601px) {
+  html:not([data-hud]) .service-card { background: rgb(255 255 255 / .46); border: 1px solid rgb(255 255 255 / .72); border-radius: var(--r-l); box-shadow: 0 6px 22px rgb(86 92 150 / .06); }
+  html:not([data-hud]) .service-facts { background: rgb(255 255 255 / .38); border-color: rgb(255 255 255 / .6); }
+  html:not([data-hud]) .setup-center { background: linear-gradient(135deg, rgb(236 232 252 / .5), rgb(226 238 251 / .5)); border-color: rgb(255 255 255 / .7); box-shadow: 0 6px 22px rgb(86 92 150 / .06); }
+  html:not([data-hud]) .self-avatar-row { background: rgb(255 255 255 / .42); border-color: rgb(255 255 255 / .66); }
+  /* 标题行和卡片底部的次要按钮：不描边不投影，淡底，悬停才实一点 */
+  html:not([data-hud]) :is(.header-actions, .service-actions, .service-more, .setup-actions, .workspace-row) .secondary { background: rgb(255 255 255 / .4); border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) :is(.header-actions, .service-actions, .service-more, .setup-actions, .workspace-row) .secondary:hover:not(:disabled) { background: rgb(255 255 255 / .78); color: var(--ink-2); }
+  html:not([data-hud]) :is(.service-actions, .service-more) .secondary:not(:hover) { background: transparent; }
+  html:not([data-hud]) .service-more > button span { display: inline-block; line-height: 1; translate: 0 -.32em; }
+  /* 勾选框：淡紫圆角小方块，勾上是渐变底白勾 */
+  html:not([data-hud]) input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: none; box-sizing: border-box; width: 16px; height: 16px; margin: 0; padding: 0; border-radius: 5px; border: 1px solid rgb(165 152 216 / .6); background: rgb(255 255 255 / .7); cursor: pointer; transition: background .15s, border-color .15s; display: inline-grid; place-content: center; }
+  html:not([data-hud]) input[type="checkbox"]:hover { border-color: var(--accent-2); }
+  html:not([data-hud]) input[type="checkbox"]:checked { background: linear-gradient(135deg, #9d92d6, var(--accent-2)); border-color: transparent; }
+  html:not([data-hud]) input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border: 2px solid #fff; border-top: 0; border-right: 0; rotate: -45deg; translate: 0 -1px; }
+  /* 绑定项目：目录标签和下面的开关拉开，开关和说明合成一块 */
+  html:not([data-hud]) .registered-project { margin-bottom: 14px; }
+  html:not([data-hud]) #registered-project-info:not(:empty) { background: rgb(255 255 255 / .42); border-color: rgb(255 255 255 / .7); }
+  html:not([data-hud]) #project-form .summary-toggle { display: flex; align-items: center; margin: 0; padding: 10px 12px 4px; border-radius: var(--r-m) var(--r-m) 0 0; background: rgb(255 255 255 / .38); }
+  html:not([data-hud]) #project-form .summary-toggle + .model-setting-note { margin: 0 0 6px; padding: 2px 12px 10px 36px; border-radius: 0 0 var(--r-m) var(--r-m); background: rgb(255 255 255 / .38); }
+  /* 等待：页面中间一枚小玻璃胶囊，左边一圈转着的淡紫环 */
+  html:not([data-hud]) .wait-pill { display: flex; align-items: center; gap: 9px; width: fit-content; margin: auto; padding: 8px 16px 8px 12px; border-radius: 999px; font-size: 13px; color: var(--muted);
+    background: var(--glass); border: 1px solid var(--glass-edge); box-shadow: var(--glass-shadow); animation: fog-in .3s var(--ease) .15s both; }
+  html:not([data-hud]) .wait-pill::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(165 152 216 / .25); border-top-color: var(--accent-2); animation: wait-spin .8s linear infinite; }
+  html:not([data-hud]) :is(.project-agent-chat, .brain-jobs-content) > .wait-pill { margin: 48px auto; }
+  @keyframes wait-spin { to { rotate: 1turn; } }
+}
