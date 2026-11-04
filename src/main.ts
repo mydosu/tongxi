@@ -969,12 +969,45 @@ function pinToBottom(box: Element | null) {
 
 /// 输入框从一行起随内容长高（主窗口最多 200px、HUD 里 96px），和 Hermes 的输入栏一样。
 function resizeComposer(input: HTMLTextAreaElement) {
-  const cap = document.documentElement.dataset.hud === '1' ? 96 : 200;
+  const cap = document.documentElement.dataset.hud === '1' ? 96 : Math.max(200, composerHeight);
   // 空输入框回到样式表的默认高度（HUD 里是单行），只在有内容时随内容长高。
   if (!input.value) { input.style.height = ''; return; }
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, cap)}px`;
 }
+
+/// 桌面上拖输入框顶上那条分隔线改输入框高度（双击恢复）：拖出来的高度当文本框的最小高度，记在本机。
+/// 分隔线的点击区是输入框的 ::before（theme.css），事件落在输入框自己身上，按指针离顶边多远判断。
+const COMPOSER_HEIGHT = 'hub.composerHeight';
+let composerHeight = Number((() => { try { return localStorage.getItem(COMPOSER_HEIGHT); } catch { return null; } })()) || 0;
+const applyComposerHeight = () => composerHeight ? document.documentElement.style.setProperty('--composer-h', `${composerHeight}px`) : document.documentElement.style.removeProperty('--composer-h');
+applyComposerHeight();
+const composerEdge = (event: MouseEvent) => {
+  const box = (event.target as HTMLElement).closest?.<HTMLElement>('.composer, .project-agent-chat-composer');
+  if (!box || event.target !== box || document.documentElement.dataset.hud || !matchMedia('(min-width: 601px)').matches) return null;
+  return event.clientY - box.getBoundingClientRect().top < 6 ? box : null;
+};
+document.addEventListener('pointerdown', event => {
+  const box = composerEdge(event);
+  const input = box?.querySelector<HTMLTextAreaElement>('textarea');
+  if (!box || !input || event.button !== 0) return;
+  event.preventDefault();
+  const startY = event.clientY, startH = input.getBoundingClientRect().height;
+  const move = (e: PointerEvent) => {
+    composerHeight = Math.round(Math.min(window.innerHeight * .6, Math.max(24, startH + startY - e.clientY)));
+    applyComposerHeight();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    try { localStorage.setItem(COMPOSER_HEIGHT, String(composerHeight)); } catch {}
+  };
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+});
+document.addEventListener('dblclick', event => {
+  if (!composerEdge(event)) return;
+  composerHeight = 0; applyComposerHeight();
+  try { localStorage.removeItem(COMPOSER_HEIGHT); } catch {}
+});
 
 function renderMessage(message: Message, includeDetails = true) {
   const own = message.sender_id === 'user';

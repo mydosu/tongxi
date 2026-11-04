@@ -941,6 +941,12 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none; }
   html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
+  /* 拖分隔线改输入框高度（main.ts 按指针离顶边多远判断）：上下各 3px 的点击区，悬停时线变按钮色。 */
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; height: 9px; cursor: ns-resize; z-index: 1; }
+  html:not([data-hud]) :is(.composer textarea, .project-agent-chat-composer textarea) { min-height: var(--composer-h, 0px); }
+  /* 停止按钮也扁平：去掉描边和底色，只留红字，悬停才有一层淡红底。 */
+  html:not([data-hud]) :is(.stop-reply, #cancel-discussion) { background: transparent; border-color: transparent; box-shadow: none; color: #b4473a; }
+  html:not([data-hud]) :is(.stop-reply, #cancel-discussion):hover:not(:disabled) { background: rgb(180 71 58 / .08); border-color: transparent; }
   html:not([data-hud]) .attachment-picker { background: transparent; border-color: transparent; }
   html:not([data-hud]) .attachment-picker:hover { background: rgb(255 255 255 / .7); border-color: transparent; }
   html:not([data-hud]) .composer .tool-chip { background: rgb(255 255 255 / .35); border-color: transparent; box-shadow: none; }
