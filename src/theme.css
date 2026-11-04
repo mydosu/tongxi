@@ -149,7 +149,7 @@ html:not([data-hud]) .agent-message .bubble, html:not([data-hud]) .project-team-
 html:not([data-hud]) .project-team-message.own .bubble { border-radius: 16px 4px 16px 16px; background: linear-gradient(135deg, rgb(229 224 250 / .58), rgb(219 233 249 / .58)); }
 /* 私聊像项目成员会话一样：回复直接排在底板上，不套气泡；自己的话留一块很淡的底色好分清。群聊讨论仍用气泡区分谁在说。 */
 html:not([data-hud]) .messages.direct .agent-message .bubble { background: transparent; border-color: transparent; box-shadow: none; padding-inline: 2px; }
-html:not([data-hud]) .messages.direct .message.own .bubble { background: rgb(255 255 255 / .34); border-color: rgb(255 255 255 / .55); box-shadow: none; }
+html:not([data-hud]) .messages.direct .message.own .bubble { background: linear-gradient(135deg, rgb(229 224 250 / .5), rgb(219 233 249 / .5)); border-color: rgb(255 255 255 / .55); box-shadow: none; }
 html:not([data-hud]) .project-team-message.system .bubble { background: rgb(255 255 255 / .26); }
 html:not([data-hud]) .composer, html:not([data-hud]) .project-agent-chat-composer { border-radius: var(--r-l); background: rgb(255 255 255 / .78); border-color: rgb(255 255 255 / .94); box-shadow: 0 12px 34px rgb(90 96 160 / .13);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); transition: box-shadow .2s, border-color .2s; }
@@ -849,3 +849,23 @@ html:not([data-hud]) .live-settings :is(select, input) { width: 100%; max-width:
 /* 用标准属性：Chromium 不会因为父元素悬停变化重绘 ::-webkit-scrollbar 伪元素。 */
 html:not([data-hud]) .conversation-list { scrollbar-width: thin; scrollbar-color: transparent transparent; transition: scrollbar-color .2s; }
 html:not([data-hud]) .conversation-list:hover { scrollbar-color: rgb(150 146 196 / .4) transparent; }
+
+/* ---------- 成员会话里的三种「用户侧」消息 ----------
+   你亲手打的：靠右一块淡紫，和私聊里你的话同一个样子。
+   主脑派活、同席通知：靠左一道淡紫竖线，正文按 Markdown 排。
+   成员交回：一张薄卡，卡片头是状态、任务号、分支，状态色也染在左边线上。 */
+html:not([data-hud]) .agent-user-entry .agent-turn-text { white-space: normal; }
+html:not([data-hud]) .agent-user-entry.own { align-self: flex-end; max-width: min(78%, 720px); border-left: 0; border-radius: 14px 4px 14px 14px; padding: 10px 16px;
+  background: linear-gradient(135deg, rgb(229 224 250 / .5), rgb(219 233 249 / .5)); }
+html:not([data-hud]) .agent-user-entry.own .agent-turn-meta { justify-content: flex-end; }
+html:not([data-hud]) .agent-user-entry.own .agent-turn-text { white-space: pre-wrap; color: #3f4762; }
+html:not([data-hud]) .agent-handoff-entry { border: 1px solid rgb(255 255 255 / .7); border-left: 3px solid var(--ok); border-radius: 6px var(--r-m) var(--r-m) 6px; padding: 12px 18px 14px; background: rgb(255 255 255 / .36); }
+html:not([data-hud]) .agent-handoff-entry:has([data-tone="warn"]) { border-left-color: var(--warn); }
+html:not([data-hud]) .agent-handoff-entry:has([data-tone="err"]) { border-left-color: var(--err); }
+.handoff-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; font-size: 12px; color: var(--faint); }
+.handoff-state { padding: 1px 9px; border-radius: 999px; font-weight: 600; color: var(--ok); background: rgb(74 159 123 / .12); }
+.handoff-state[data-tone="warn"] { color: var(--warn); background: rgb(181 135 58 / .12); }
+.handoff-state[data-tone="err"] { color: var(--err); background: rgb(176 99 79 / .12); }
+.handoff-task, .handoff-branch { font-family: 'Cascadia Code', Consolas, monospace; font-size: 11.5px; }
+.handoff-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-height: 1.85; }

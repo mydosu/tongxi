@@ -1,6 +1,7 @@
 import { entryBusy, settledSame, type AgentEntry } from './agent_timeline';
 import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
+import { handoffHtml, parseHandoff } from './handoff';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { attachmentHtml, attachmentText } from './attachments';
 import { plainThought, thoughtFlow, type FlowPart } from './thought_flow';
@@ -139,6 +140,7 @@ export class AgentTranscript {
     const busy = entryBusy(entry.status);
     if (entry.messageId) node.dataset.messageId = entry.messageId;
     const label = entry.author === 'user' ? '你' : name(entry.author);
+    node.classList.toggle('own', entry.kind === 'user' && entry.author === 'user');
     node.querySelector('[data-entry-label]')!.textContent = label;
     node.querySelector('time')!.textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(entry.at);
     node.querySelector<HTMLElement>('[data-entry-label]')!.title = [entry.model, entry.effort].filter(Boolean).join(' · ');
@@ -167,7 +169,12 @@ export class AgentTranscript {
     const text = node.querySelector<HTMLElement>(':scope > .agent-turn-text')!;
     const output = flow?.length ? '' : attachmentText(entry.kind==='user'?entry.body:visibleQuestionReply(entry.body,busy)) || (busy && !entry.thought && !entry.tools.length ? '正在等待原生输出…' : '');
     if (text.dataset.output !== output) {
-      if (entry.kind === 'agent') text.innerHTML = agentMarkdown(output, escape); else text.textContent = output;
+      // 只有你亲手打的话按原文显示；派活、交回、同席通知都是成员或同席写的 Markdown，照回复一样渲染，交回再加一行卡片头。
+      const handoff = entry.kind === 'user' && entry.author !== 'user' ? parseHandoff(output) : null;
+      node.classList.toggle('agent-handoff-entry', !!handoff);
+      if (handoff) text.innerHTML = handoffHtml(handoff, agentMarkdown(handoff.body, escape), escape);
+      else if (entry.kind === 'agent' || entry.author !== 'user') text.innerHTML = agentMarkdown(output, escape);
+      else text.textContent = output;
       text.dataset.output = output;
     }
     text.hidden = !output;
