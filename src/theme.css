@@ -956,3 +956,18 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .attachment-picker:hover { background: rgb(255 255 255 / .7); border-color: transparent; }
   html:not([data-hud]) .composer .tool-chip { background: rgb(255 255 255 / .35); border-color: transparent; box-shadow: none; }
 }
+/* 弹窗里的成员勾选行扁平：不再是一张张描边卡片，平时透明、悬停淡白，选中只铺一层按钮色的淡底。
+   文本框、下拉框聚焦不再套 2px 粗描边（鼠标点进文本框也算 focus-visible），只把边框换成按钮色；按钮的键盘聚焦环照旧。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .member-option { border-color: transparent; background: transparent; transition: background-color .15s; }
+  html:not([data-hud]) .member-option:hover { background: rgb(255 255 255 / .5); }
+  html:not([data-hud]) .member-option:has(input:checked) { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); border-color: transparent; }
+  /* 主题卡片：去掉白底描边和悬停投影，悬停淡白；选中铺按钮色淡底加一圈细边。卡上的「立绘」「×」只留字，悬停才有底。 */
+  html:not([data-hud]) .theme-card { background: transparent; border-color: transparent; transition: background-color .15s; }
+  html:not([data-hud]) .theme-card:hover { transform: none; box-shadow: none; background: rgb(255 255 255 / .5); }
+  html:not([data-hud]) .theme-card.selected { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); box-shadow: inset 0 0 0 1.5px var(--btn, hsl(248 34% 64%)); }
+  html:not([data-hud]) :is(.theme-mode, .theme-remove) { background: transparent; border-color: transparent; }
+  html:not([data-hud]) .theme-mode:hover { background: rgb(255 255 255 / .8); border-color: transparent; }
+  html:not([data-hud]) .theme-remove:hover { background: rgb(255 243 240); border-color: transparent; }
+  html:not([data-hud]) :is(input:not([type="checkbox"]):not([type="radio"]), select, .modal textarea):focus-visible { outline: none; border-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
+}
