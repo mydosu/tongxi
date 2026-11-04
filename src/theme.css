@@ -1031,3 +1031,8 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / .52), rgb(255 255 255 / .4) 55%, rgb(255 255 255 / .2)); }
   html:not([data-bg-mode="figure"]):not([data-hud]) .main { background: rgb(255 255 255 / .52); }
 }
+
+/* 成员交回卡不要左边的状态色竖线：卡片头的状态标签已经是同一个颜色，竖线重复还让左边圆角变怪。跟其他块一样无描边淡底、四角同圆角。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .agent-handoff-entry, html:not([data-hud]) .agent-handoff-entry:has([data-tone]) { border: 0; border-radius: var(--r-m); background: rgb(255 255 255 / .3); }
+}
