@@ -830,7 +830,9 @@ html:not([data-hud]) select:not([multiple]):disabled { cursor: default; opacity:
 }
 
 /* ---------- 会话设置浮层：标签在上、控件在下，三列网格；成员、模型整行，底部一行放状态和按钮 ---------- */
-.live-settings.tool-pop.open:not([hidden]) { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 12px; width: min(560px, 100%); padding: 14px 16px 10px; }
+/* 排版不挂在 .open 上：收起淡出时 .open 已经摘掉，排版要是跟着退回默认（720px 宽、单行），浮层会在淡出那一下突然变大。 */
+.live-settings.tool-pop:not([hidden]) { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 12px; width: min(560px, 100%); padding: 14px 16px 10px; }
+.live-settings.tool-pop.open:not([hidden]) { display: grid !important; }
 html:not([data-hud]) .live-settings label { flex-direction: column; align-items: stretch; gap: 5px; font-size: 12px; color: var(--muted); white-space: normal; }
 .live-settings label > span { padding-left: 2px; }
 .live-settings .live-wide { grid-column: 1 / -1; }
@@ -927,4 +929,14 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .project-controls { background: transparent; border-color: transparent; box-shadow: none; padding: 4px 4px 4px 6px; }
   html:not([data-hud]) .project-controls.quiet { display: none; }
   html:not([data-hud]) .project-controls.bound :is(#bind-project, #share-project-summary, [data-project-configure]) { display: none; }
+}
+/* 输入框扁平：去掉浮起的投影和聚焦时的光晕，只留一层半透明底和细边；聚焦时边框换成按钮色（跟着背景图走）。
+   回复进行中的流光边框是状态提示，保留，只去掉它外面的光晕。里面的附件钮、模型条也去掉描边和底色。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer) { background: rgb(255 255 255 / .62); border-color: rgb(255 255 255 / .75); box-shadow: none; }
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: rgb(255 255 255 / .74); border-color: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 60%, transparent); box-shadow: none; }
+  html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
+  html:not([data-hud]) .attachment-picker { background: transparent; border-color: transparent; }
+  html:not([data-hud]) .attachment-picker:hover { background: rgb(255 255 255 / .7); border-color: transparent; }
+  html:not([data-hud]) .composer .tool-chip { background: rgb(255 255 255 / .35); border-color: transparent; box-shadow: none; }
 }

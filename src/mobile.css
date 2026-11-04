@@ -98,6 +98,6 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
 }
 @media (max-width: 600px) {
   /* 会话设置浮层：窄屏一列一个。 */
-  .live-settings.tool-pop.open:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+  .live-settings.tool-pop:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
   .live-settings .live-model-field:not(.live-wide) { grid-column: auto; }
 }

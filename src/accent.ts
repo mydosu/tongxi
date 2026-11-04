@@ -1,5 +1,5 @@
 /// 从背景图取按钮色：只取色相，饱和度、明暗压在固定窄范围里，换哪张图都不刺眼、白字都读得清。
-/// 按饱和度给每个像素的色相投票；接近白/灰的不算。立绘里最艳的往往是脸颊和皮肤（红到桃），这一段只算一成，
+/// 按饱和度给每个像素的色相投票；接近白/灰的不算。立绘里最艳的往往是脸颊、红晕和皮肤（洋红到桃），这一段只算一成，
 /// 不然每张图的按钮都成了肉粉色；头发、眼睛、饰品的颜色才是一张图的气质。
 export const DEFAULT_HUE = 248; // 同席原来的淡紫
 export function hueOf(rgba: ArrayLike<number>): number {
@@ -11,7 +11,7 @@ export function hueOf(rgba: ArrayLike<number>): number {
     if (chroma < .08 || rgba[i + 3] < 128) continue;
     let hue = max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
     hue = (hue * 60 + 360) % 360;
-    const weight = chroma * (hue >= 340 || hue < 45 ? .1 : 1);
+    const weight = chroma * (hue >= 315 || hue < 45 ? .1 : 1);
     bins[Math.floor(hue / 10)] += weight; total += weight;
   }
   if (total < rgba.length / 4 * .01) return DEFAULT_HUE; // 几乎全是白和灰：用默认
