@@ -931,11 +931,12 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .project-controls.bound :is(#bind-project, #share-project-summary, [data-project-configure]) { display: none; }
 }
 /* 输入框不再是浮着的白卡片，融进会话区成为底部一条磨砂带：左右、底边贴满会话区（外层容器两边 20px、底 14px 内边距用负边距抵掉），
-   顶上一条细分隔线和标题栏的底线对称；底色比消息区稍实，消息滚到后面时不和正在输入的字混在一起。
+   顶上一条细分隔线和标题栏的底线对称；底色只比消息区稍实一点，透得出背景。
    聚焦时分隔线换成按钮色（跟着背景图走），回复进行中的流光改在这条线上走。里面的附件钮、模型条也去掉描边和底色。 */
 @media (min-width: 601px) {
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer) { margin: 6px -20px -14px; padding: 12px 24px 14px; border: 0; border-top: 1px solid var(--glass-line); border-radius: 0;
-    background: rgb(255 255 255 / .34); box-shadow: none; transition: border-color .2s, background-color .2s; }
+    background: rgb(255 255 255 / .34); box-shadow: none; transition: border-color .2s, background-color .2s;
+    backdrop-filter: none; -webkit-backdrop-filter: none; } /* 带子在消息列表下面、不压着消息，自己再磨一层只会把背景抹匀提亮成一块白 */
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: rgb(255 255 255 / .44); border-top-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none; }
