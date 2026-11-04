@@ -223,6 +223,8 @@ function brainJobsClick(event: MouseEvent) {
   // 点摘要展开之前先把内容补上，展开动画才量得到高度。
   const summary = target.closest('summary'), fold = summary?.parentElement;
   if (fold instanceof HTMLDetailsElement && fold.dataset.jobFold && !fold.open) fillFold(fold);
+  // 比一屏还长的块（如「已结束」）收起时不播动画：高度逐帧缩，滚动位置跟着被逐帧拽，整页一顿一顿往下掉。
+  else if (fold instanceof HTMLDetailsElement && fold.dataset.jobFold && fold.offsetHeight > main.clientHeight) { event.preventDefault(); openInstantly(fold, false); }
   let el: HTMLElement | null;
   if (hit('data-project-return-team')) void selectProjectModule(selectedId, 'team');
   else if ((el = hit('data-open-seat'))) void selectProjectModule(selectedId, el.dataset.openSeat!);
@@ -978,6 +980,24 @@ function resizeComposer(input: HTMLTextAreaElement) {
 
 /// 桌面上拖输入框顶上那条分隔线（.composer-resizer，悬停浮出小把手）改输入框高度，双击恢复。
 /// 拖出来的高度当文本框的最小高度，记在本机；拖的时候整页锁成上下箭头、不选中文字，消息列表原本在底部就一直贴着底部。
+// 下拉框长选项要省略号：base-select 的选中文字排在浏览器内部按钮里，样式够不着，overflow 也被锁成 visible。
+// 给每个下拉框补一个规范允许的 <button><selectedcontent>，选中项会自动抄进去，省略号在 theme.css 里排。
+if (CSS.supports('appearance', 'base-select')) {
+  const fit = (select: HTMLSelectElement) => {
+    if (select.multiple || select.firstElementChild?.tagName === 'BUTTON') return;
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'select-face';
+    button.append(document.createElement('selectedcontent'));
+    select.prepend(button);
+  };
+  const scan = (node: Node) => {
+    if (!(node instanceof Element)) return;
+    const select = node.closest('select');
+    if (select) fit(select); else node.querySelectorAll('select').forEach(fit);
+  };
+  scan(document.body);
+  new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(scan))).observe(document.body, { childList: true, subtree: true });
+}
 const COMPOSER_HEIGHT = 'hub.composerHeight';
 let composerHeight = Number((() => { try { return localStorage.getItem(COMPOSER_HEIGHT); } catch { return null; } })()) || 0;
 const applyComposerHeight = () => composerHeight ? document.documentElement.style.setProperty('--composer-h', `${composerHeight}px`) : document.documentElement.style.removeProperty('--composer-h');

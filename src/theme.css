@@ -812,6 +812,9 @@ html:not([data-hud]) select:not([multiple]):disabled { cursor: default; opacity:
   html:not([data-hud]) select:not([multiple]), html:not([data-hud]) select:not([multiple])::picker(select) { appearance: base-select; }
   html:not([data-hud]) select:not([multiple]) { align-items: center; }
   html:not([data-hud]) select:not([multiple])::picker-icon { display: none; }
+  /* main.ts 给每个下拉框补的 <button><selectedcontent>：清掉全局按钮样式，只负责把选中文字排成一行、放不下打省略号。 */
+  html:not([data-hud]) select > .select-face { all: unset; display: block; flex: 1; min-width: 0; }
+  html:not([data-hud]) select > .select-face > selectedcontent { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   html:not([data-hud]) select:not([multiple]):open { border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
   html:not([data-hud]) select:not([multiple])::picker(select) {
     min-width: anchor-size(width); max-height: min(380px, 60vh); margin-block: 4px; padding: 5px; overflow-y: auto;
@@ -1013,4 +1016,18 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) select:not([multiple]) { contain: paint; }
   html:not([data-hud]) :is(.members-panel, .tool-pop, dialog.modal, .services-content) :is(select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"])) { background-color: rgb(255 255 255 / .45); border-color: var(--glass-line); box-shadow: none; }
   html:not([data-hud]) :is(.members-panel, .tool-pop, dialog.modal, .services-content) :is(select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"])):focus-visible { border-color: var(--btn, hsl(248 34% 64%)); }
+}
+
+/* 滚动条平时不露，鼠标移到哪块才在哪块浮出（侧栏原本就是这样）。成员面板浮在消息列表上，原来面板里一条、面板外缝里消息列表又一条。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(.members-body, .messages, .project-agent-chat-messages, .agent-transcript-list) { scrollbar-width: thin; scrollbar-color: transparent transparent; transition: scrollbar-color .2s; }
+  html:not([data-hud]) :is(.members-body, .messages, .project-agent-chat-messages, .agent-transcript-list):hover { scrollbar-color: rgb(150 146 196 / .4) transparent; }
+}
+
+/* 侧栏和主面板接缝处同一种白：原来侧栏 .42 白、饱和 1.45 偏粉偏暗，主面板 .5（立绘主题左缘 .64）、饱和 1.25 偏白，一条线两边色差明显。
+   现在两边同饱和度，侧栏和主面板左缘都是 .52，立绘主题再往右渐渐透出人物。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .sidebar { background: rgb(255 255 255 / .52); backdrop-filter: blur(26px) saturate(1.25); -webkit-backdrop-filter: blur(26px) saturate(1.25); }
+  html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / .52), rgb(255 255 255 / .4) 55%, rgb(255 255 255 / .2)); }
+  html:not([data-bg-mode="figure"]):not([data-hud]) .main { background: rgb(255 255 255 / .52); }
 }
