@@ -29,6 +29,9 @@ import './mobile.css';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const icons: Record<string, string> = {
   plus: '<path d="M12 5v14M5 12h14"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 2"/>',
+  external: '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
+  terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   chat: '<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-9.5A8.5 8.5 0 0 1 10.5 4h2A8.5 8.5 0 0 1 21 11.5Z"/>',
   group: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/>',
@@ -328,8 +331,7 @@ app.innerHTML = `
   ${backdropHtml}
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand" id="window-drag-region" title="拖动窗口，双击最大化">${brand}<div><strong>同席</strong><span>AGENT HUB</span></div><button type="button" class="version" id="app-version" title="检查更新">…</button></div>
-      <div class="sidebar-top"><span class="eyebrow">会话</span><button id="new-conversation" class="icon-button filled" aria-label="新建会话" title="新建会话">${icon('plus')}</button></div>
+      <div class="brand" id="window-drag-region" title="拖动窗口，双击最大化">${brand}<div><strong>同席</strong><span>AGENT HUB</span></div><button type="button" class="version" id="app-version" title="检查更新">…</button><button id="new-conversation" class="icon-button filled" aria-label="新建会话" title="新建会话">${icon('plus')}</button></div>
       <label class="search">${icon('search')}<input id="search" placeholder="搜索会话或消息" aria-label="搜索会话或消息" maxlength="120"><kbd>Ctrl K</kbd></label>
       <div class="filters" aria-label="会话类型"><button data-filter="all" class="selected">全部</button><button data-filter="direct">私聊</button><button data-filter="group">群聊</button></div>
       <div class="list-label"><span id="list-label">最近会话</span><button id="archive-filter" title="查看归档">${icon('archive')}<span>归档</span></button></div>
@@ -577,9 +579,9 @@ function renderList() {
     const expanded = conversation.id === expandedProjectGroup && rooms.length > 0;
     const active = screen === 'chat' && conversation.id === selectedId;
     const row = `<button class="conversation ${active ? 'active' : ''}" data-conversation="${escape(conversation.id)}">
-      ${agent ? avatar(agent) : groupFace(conversation.id)}
+      ${agent ? avatar(agent) : groupFace(conversation.id, '', conversation.members)}
       <span class="conversation-text"><span class="conversation-title">${escape(conversation.title)}</span><span class="conversation-preview">${escape(attachmentText(visibleQuestionReply(conversation.preview,true)) || (conversation.kind === 'group' ? `${conversation.members.length} 位成员 · 新的讨论` : agent!.subtitle))}</span></span>
-<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span><small>${conversation.message_count}</small>` : '<span class="new-dot"></span>'}</span>
+<span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
     const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>主脑任务</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 项任务进行中">${liveBrainJobs.get(conversation.id)} 进行中</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
@@ -1219,7 +1221,7 @@ function updateRuntimeControls() {
   const selectedRun = runIn(currentRuntime(), selectedId);
   const currentRun = liveRun(selectedRun);
   const badge = main.querySelector('.connection-badge');
-  if (badge) badge.innerHTML = `<span class="status-dot ${isNative && currentRuntime().connection === 'connected' ? '' : 'muted'}"></span>${isNative ? connectionLabel() : '待接入'}`;
+  if (badge) paintBadge(badge, isNative && currentRuntime().connection === 'connected', isNative ? connectionLabel() : '待接入');
   main.querySelectorAll('.member-card').forEach((card, index) => {
     const snapshot = runtimes[detail!.conversation.members[index]];
     if (snapshot) card.querySelector('small')!.innerHTML = `<span class="status-dot ${snapshot.connection === 'connected' ? '' : 'muted'}"></span>${snapshot.connection === 'connected' ? '接口已连接' : snapshot.connection === 'connecting' ? '正在连接' : '未连接'} · ${escape(member(detail!.conversation.members[index]).location)}`;
@@ -1238,7 +1240,7 @@ function updateRuntimeControls() {
   if (cancel) { cancel.hidden = !currentRun; cancel.disabled = selectedRun?.status === 'cancelling'; cancel.innerHTML = selectedRun?.status === 'cancelling' ? '正在停止…' : '<span class="stop-glyph" aria-hidden="true"></span>停止'; cancel.title = '停止当前回复（Esc）'; }
   const cliButton = main.querySelector<HTMLButtonElement>('#open-cli');
   const cli = handedOff(currentAgentId(), selectedId);
-  if (cliButton) cliButton.textContent = cli ? '收回到同席' : '在 CLI 中打开';
+  if (cliButton) { cliButton.title = cliButton.ariaLabel = cli ? '收回到同席' : '在 CLI 中打开'; cliButton.classList.toggle('active', cli); }
   const note = main.querySelector('#runtime-note');
   if (note && isNative && cli) note.textContent = `这条会话已交给 ${member(currentAgentId()).name} 的 CLI，同席暂停使用；关闭 CLI 窗口或点“收回到同席”后继续。`;
   else if (note && isNative) note.textContent = currentRuntime().error || (currentRun ? (selectedRun?.status === 'starting' ? '正在准备原生会话…' : selectedRun?.status === 'cancelling' ? '等待原生停止确认…' : `正在接收 ${member(currentAgentId()).name} 回复… 可直接输入插话${NATIVE_STEER.has(currentAgentId()) ? '引导，不会打断' : '，发送时会先停止当前回复'} · Esc 停止`) : currentRuntime().connection === 'connected' ? (currentAgentId() === 'albion-wsl' ? `${member(currentAgentId()).name} 已连接。` : `${member(currentAgentId()).name} 已连接；原生工具和问答可用。`) : currentRuntime().connection === 'connecting' ? `正在连接 ${member(currentAgentId()).name}…` : `${member(currentAgentId()).name} 未连接；连接后才能发送。`);
@@ -1490,14 +1492,12 @@ function updateDiscussionControls() {
     }
     const projectInput = main.querySelector<HTMLTextAreaElement>('#message-input');
     if (projectInput) projectInput.placeholder = '说说要做什么…';
-    const composerHint = main.querySelector('.composer-bottom > span');
-    if (composerHint) composerHint.textContent = 'Enter 发送 · Shift+Enter 换行';
     const save = main.querySelector<HTMLButtonElement>('#save-message');
     if (save) save.disabled = detail.conversation.archived || sending;
     const note = main.querySelector('#runtime-note');
     if (note) note.textContent = available ? '项目群聊 · 你的话交给主脑，这里只看主脑和成员的进展摘要；细节在各自的会话里。' : '项目里还没有成员。';
     const badge = main.querySelector('.connection-badge');
-    if (badge) badge.innerHTML = `<span class="status-dot ${connected ? '' : 'muted'}"></span>${connected ? '项目组已连接' : '请连接项目成员'}`;
+    if (badge) paintBadge(badge, connected, connected ? '项目组已连接' : '请连接项目成员');
     return;
   }
   if (host) host.hidden = false;
@@ -1524,7 +1524,13 @@ function updateDiscussionControls() {
   // 群聊状态已经在标题栏的徽标里，这一行说明不再常驻。
   if (note) (note.parentElement as HTMLElement).hidden = true;
   const badge = main.querySelector('.connection-badge');
-  if (badge) badge.innerHTML = `<span class="status-dot ${allReady ? '' : 'muted'}"></span>${busy ? '正在讨论' : allReady ? '可开始讨论' : '请连接参与成员'}`;
+  if (badge) paintBadge(badge, allReady, busy ? '正在讨论' : allReady ? '可开始讨论' : '请连接参与成员');
+}
+
+/// 标题旁的连接状态只留一个圆点，文字放进悬停提示。
+function paintBadge(badge: Element, on: boolean, text: string) {
+  badge.innerHTML = `<span class="status-dot ${on ? '' : 'muted'}"></span>`;
+  badge.setAttribute('title', text); badge.setAttribute('aria-label', text);
 }
 
 async function connectDiscussion() {
@@ -1935,12 +1941,12 @@ function renderConversationChat() {
   // 同一会话重画时成员面板原样留着（正在填的表单不丢）；换会话就收起。
   if (shownConversation !== conversation.id) membersOpen = false;
   const keptPanel = membersOpen ? main.querySelector('.members-panel') : null;
-  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id), '换群聊头像')}<div><h1>${escape(conversation.title)}</h1><p>${escape(directAgent ? directAgent.subtitle : detail.project ? `项目群 · ${detail.project_agent_chats.filter(chat => !isBrain(chat.agent_id)).length} 个成员会话` : `${roster.length} 位成员 · 群聊讨论`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions"><span class="connection-badge"><span class="status-dot muted"></span>待接入</span>${conversation.kind === 'direct' ? `<button id="native-sessions" class="secondary" title="查看该成员自己的历史会话（只读，不会改动它）">原生会话</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="secondary" title="打开这位成员自己的客户端">打开客户端</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
-    <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"${detail.project ? ' hidden' : ''}><span class="status-dot" aria-hidden="true"></span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="secondary" title="在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话">在 CLI 中打开</button>` : ''}</div>
-      <div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div>${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">还没绑定项目目录</strong></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">成员与会话</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
+  main.innerHTML = `<header class="chat-header"><div class="chat-heading">${directAgent ? avatar(directAgent) : avatarPicker(`conversation:${conversation.id}`, groupFace(conversation.id, '', conversation.members), '换群聊头像')}<div><h1>${escape(conversation.title)}<span class="connection-badge"><span class="status-dot muted"></span></span></h1><p>${escape(directAgent ? directAgent.subtitle : detail.project ? `项目群 · ${detail.project_agent_chats.filter(chat => !isBrain(chat.agent_id)).length} 个成员会话` : `${roster.length} 位成员 · 群聊讨论`)}${conversation.archived ? ' · 已归档' : ''}</p></div></div><div class="header-actions">${conversation.kind === 'direct' ? `<button id="native-sessions" class="icon-button" title="原生会话：查看该成员自己的历史会话（只读，不会改动它）" aria-label="原生会话">${icon('history')}</button>` : ''}${isNative && key !== 'albion' ? `<button id="open-cli" type="button" class="icon-button" title="在 CLI 中打开：在新终端里用 ${escape(name)} 自己的 CLI 续上这条原生会话" aria-label="在 CLI 中打开">${icon('terminal')}</button>` : ''}${conversation.kind === 'direct' && clientAgents.includes(conversation.members[0]) ? `<button id="open-client" class="icon-button" title="打开这位成员自己的客户端" aria-label="打开客户端">${icon('external')}</button>` : ''}<button id="toggle-members" class="member-stack" aria-pressed="${membersOpen}" title="${membersOpen ? '收起成员面板' : '展开成员面板'}">${roster.slice(0, 5).map(agent => `<span class="stack-item" data-stack-agent="${escape(agent.id)}">${avatar(agent)}<i class="stack-dot"></i></span>`).join('')}${icon('panel', 'stack-toggle')}</button><button id="conversation-menu" class="icon-button" aria-label="会话操作" title="会话操作">${icon('more')}</button></div></header>
+    <div class="chat-layout${membersOpen ? ' members-open' : ''}"><section class="chat-content"><div class="milestone-note"${detail.project ? ' hidden' : ''}><span class="status-dot" aria-hidden="true"></span><span id="runtime-note">四位成员真实接入，私聊与群聊使用独立上下文。</span>${isNative ? `<button id="connect-${key}" class="secondary">连接 ${escape(name)}</button>` : ''}</div>
+      ${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">还没绑定项目目录</strong></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">成员与会话</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages" aria-label="聊天消息">
       ${detail.messages.length ? `${split ? '' : dateDivider}${tailHtml}` : `<div class="welcome">${face ? `<div class="albion-hero small" style="background-image:url('${face}')" aria-hidden="true"></div>` : ''}<h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天吧。' : `和 ${escape(directAgent.name)} 说点什么。`) : detail.project ? '说说这次要做什么。' : '抛个问题，大家一起想。'}</h2>${directAgent?.id === 'albion-wsl' ? `<div class="suggestions">${['记录今天的开发进展', '聊聊今天发生的事情'].map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div>` : ''}</div>`}
       </div>
-      <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><span>${conversation.archived ? '归档会保留全部历史' : isNative ? 'Enter 发送 · Shift+Enter 换行' : detail.project ? 'Enter 发送 · Shift+Enter 换行' : 'Enter 发送 · Shift+Enter 换行'}</span><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
+      <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
     </section><aside class="members-panel" aria-label="成员面板"><div class="panel-title"><span>${detail.project ? '项目成员与会话' : isGroup ? '群聊成员' : '会话与工作区'}</span><button type="button" class="icon-button" id="close-members" aria-label="收起成员面板" title="收起（Esc）">${icon('close')}</button></div><div class="members-body"></div></aside></div>`;
   if (keptPanel) main.querySelector('.members-panel')!.replaceWith(keptPanel); else if (membersOpen) void fillMembersPanel();
@@ -2032,13 +2038,13 @@ const clientAgents = ['hermes-win', 'codex-win', 'dsh-win', 'claude-win'];
 async function openClient(agentId: string) {
   const agent = member(agentId);
   const button = main.querySelector<HTMLButtonElement>('#open-client');
-  if (button) { button.disabled = true; button.textContent = '正在打开…'; }
+  if (button) button.disabled = true;
   try {
     toast(await invoke<string>('open_agent_client', { agentId }));
   } catch (error) {
     toast(`${agent.name}：${errorText(error)}`);
   } finally {
-    if (button) { button.disabled = false; button.textContent = '打开客户端'; }
+    if (button) button.disabled = false;
   }
 }
 
@@ -2883,8 +2889,11 @@ function customFace(value: string | null | undefined, inner: string, size = '', 
 function ownFace(size = '') {
   return customFace(ownAvatars.user, '你', size) || (size ? `<span class="avatar own-avatar ${size}" aria-hidden="true">你</span>` : '<span class="system-avatar">你</span>');
 }
-function groupFace(id: string, size = '') {
-  return customFace(ownAvatars.conversations[id], icon('group'), size, 'group-avatar') || `<span class="avatar group-avatar ${size}">${icon('group')}</span>`;
+function groupFace(id: string, size = '', members: string[] = []) {
+  // 没自定头像的群：前两位成员的头像叠在一起，比灰色通用图标认得出是谁。
+  const pair = members.slice(0, 2).map(globalMember).filter(Boolean);
+  const fallback = pair.length === 2 ? `<span class="avatar group-avatar paired ${size}">${pair.map(agent => avatar(agent!)).join('')}</span>` : `<span class="avatar group-avatar ${size}">${icon('group')}</span>`;
+  return customFace(ownAvatars.conversations[id], icon('group'), size, 'group-avatar') || fallback;
 }
 
 /// 改成员名（全局）：卡片标题就地变输入框，回车或点开保存，Esc 放弃，清空恢复默认名。

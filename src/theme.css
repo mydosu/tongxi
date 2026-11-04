@@ -70,16 +70,18 @@ html:not([data-hud]) .window-controls #window-close:hover { background: #d0656b;
 html:not([data-hud]) .window-controls #hud-toggle.active { color: var(--accent-2); }
 
 /* ---------- 侧栏 ---------- */
-html:not([data-hud]) .brand { padding: 2px 6px 18px; gap: 10px; }
+html:not([data-hud]) .brand { padding: 2px 6px 16px; gap: 10px; }
+html:not([data-hud]) .brand #new-conversation { margin-left: 2px; width: 32px; height: 32px; flex-shrink: 0; }
 html:not([data-hud]) .brand-mark { width: 34px; height: 34px; }
 html:not([data-hud]) .brand strong { font-size: 19px; letter-spacing: 3px; background: linear-gradient(120deg, #4f587f, #8a7cc0); -webkit-background-clip: text; background-clip: text; color: transparent; }
-html:not([data-hud]) .brand div > span { font-size: 8.5px; }
+html:not([data-hud]) .brand div > span { font-size: 8.5px; white-space: nowrap; }
+html:not([data-hud]) .brand > div { flex: 1; min-width: 0; }
 html:not([data-hud]) .version { border-color: var(--glass-line); background: rgb(255 255 255 / .4); font-size: 11px; }
 html:not([data-hud]) .sidebar-top { padding: 0 6px 10px; }
 html:not([data-hud]) .search { padding: 8px 10px; border-radius: var(--r-m); background: rgb(255 255 255 / .6); border-color: var(--glass-edge); box-shadow: inset 0 1px 2px rgb(90 96 150 / .06); transition: border-color .15s, box-shadow .15s; }
 html:not([data-hud]) .search:focus-within { border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .18); }
-html:not([data-hud]) .filters { margin-top: 10px; border-radius: 11px; background: rgb(255 255 255 / .34); border: 1px solid rgb(255 255 255 / .55); }
-html:not([data-hud]) .filters button { font-size: 12px; border-radius: var(--r-s); }
+html:not([data-hud]) .filters { margin-top: 8px; padding: 3px; border-radius: 11px; background: rgb(255 255 255 / .34); border: 1px solid rgb(255 255 255 / .55); }
+html:not([data-hud]) .filters button { padding: 4px; font-size: 12px; border-radius: var(--r-s); }
 html:not([data-hud]) .filters button.selected { background: rgb(255 255 255 / .92); color: var(--ink-2); box-shadow: 0 2px 8px rgb(96 100 160 / .12); }
 html:not([data-hud]) .list-label { margin: 18px 6px 8px; font-size: 12px; }
 html:not([data-hud]) .conversation { position: relative; padding: 10px; border-radius: var(--r-m); margin-bottom: 3px; transition: background .18s, box-shadow .18s, transform .18s var(--ease); }
@@ -110,7 +112,16 @@ html:not([data-hud]) .chat-header h1 { font-size: 17px; }
 html:not([data-hud]) .chat-header p { margin-top: 4px; font-size: 12px; }
 html:not([data-hud]) .header-actions { gap: 8px; }
 html:not([data-hud]) .header-actions .secondary { padding: 7px 12px; border-radius: var(--r-s); }
-html:not([data-hud]) .connection-badge { font-size: 12px; padding: 0 4px; }
+html:not([data-hud]) .connection-badge { display: inline-flex; vertical-align: middle; margin-left: 9px; padding: 0; cursor: default; }
+html:not([data-hud]) .connection-badge .status-dot { width: 7px; height: 7px; background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .16); }
+html:not([data-hud]) .connection-badge .status-dot.muted { background: #c6c9d8; box-shadow: none; }
+/* 标题行的操作只留图标，悬停才显出底色。 */
+html:not([data-hud]) .header-actions .icon-button { width: 34px; height: 34px; border-radius: var(--r-s); color: var(--muted); background: transparent; border: 0; }
+html:not([data-hud]) .header-actions .icon-button:hover { background: rgb(255 255 255 / .75); color: var(--ink-2); }
+html:not([data-hud]) .header-actions .icon-button.active { color: var(--warn); }
+html:not([data-hud]) .header-actions .icon-button .icon { width: 18px; height: 18px; }
+/* 状态行只在需要你处理时出现（没连上、连接中、出错、交给了 CLI）；连上和回复中由标题旁的圆点与停止按钮表示。 */
+html:not([data-hud]) .milestone-note:is([data-state="ready"], [data-state="busy"]) { display: none; }
 .member-stack { display: inline-flex; align-items: center; padding: 3px 7px 3px 10px; border-radius: 999px; background: rgb(255 255 255 / .5); border: 1px solid rgb(255 255 255 / .85); }
 .member-stack:hover, .member-stack[aria-pressed="true"] { background: rgb(255 255 255 / .9); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
 .stack-item { position: relative; margin-left: -7px; transition: margin .2s var(--ease); }
@@ -141,6 +152,13 @@ html:not([data-hud]) .composer, html:not([data-hud]) .project-agent-chat-compose
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); transition: box-shadow .2s, border-color .2s; }
 html:not([data-hud]) .composer:focus-within, html:not([data-hud]) .project-agent-chat-composer:focus-within { border-color: rgb(165 152 216 / .6); box-shadow: 0 12px 34px rgb(90 96 160 / .15), 0 0 0 3px rgb(165 152 216 / .16); }
 html:not([data-hud]) .composer-top { font-size: 11px; }
+/* 模型与讨论胶囊住在输入框底栏，浮层朝上开，锚在整个输入框上。 */
+html:not([data-hud]) .composer { position: relative; }
+html:not([data-hud]) .composer .chat-tools { position: static; flex: 1; min-width: 0; padding: 0; flex-wrap: nowrap; }
+html:not([data-hud]) .composer .tool-chip { padding: 4px 9px 4px 10px; background: rgb(255 255 255 / .4); }
+/* 输入框自己带磨砂，里面的浮层模糊不到外面的消息，所以底色要几乎不透。 */
+html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { top: auto; bottom: calc(100% + 8px); left: 0; transform-origin: 0 100%; translate: 0 6px; background: rgb(251 251 255 / .985); }
+html:not([data-hud]) .composer .chat-tools > .tool-pop.open:not([hidden]) { translate: 0; }
 html:not([data-hud]) .composer textarea { font-size: 13px; }
 html:not([data-hud]) .composer-bottom > span { font-size: 11px; }
 html:not([data-hud]) .chat-footer { display: none; }
@@ -631,7 +649,10 @@ html:not([data-hud]) .project-expand:hover { background: rgb(255 255 255 / .9); 
 html:not([data-hud]) .project-expand[aria-expanded="true"] { color: var(--accent-2); background: rgb(165 152 216 / .14); }
 html:not([data-hud]) .project-expand:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(165 152 216 / .32); }
 html:not([data-hud]) .conversation { gap: 9px; padding-inline: 9px; }
-html:not([data-hud]) .conversation-branch-row > .conversation { padding-right: 38px; }
+html:not([data-hud]) .conversation-branch-row > .conversation { padding-right: 10px; }
+/* 展开钮平时不占地方：悬停或展开时才出现，替掉右侧的时间。 */
+html:not([data-hud]) .conversation-branch-row:not(:hover, :focus-within) .project-expand[aria-expanded="false"] { opacity: 0; }
+html:not([data-hud]) .conversation-branch-row:is(:hover, :focus-within) .conversation-meta, html:not([data-hud]) .conversation-branch.expanded .conversation-meta { opacity: 0; }
 html:not([data-hud]) .question-sidebar-badge { padding: 0 6px; border-radius: 999px; background: rgb(181 135 58 / .13); color: var(--warn); font-size: 11px; line-height: 17px; }
 html:not([data-hud]) .project-module-row { min-height: 32px; color: #5f6787; }
 html:not([data-hud]) .project-module-row.active { color: var(--ink); font-weight: 500; box-shadow: 0 2px 10px rgb(96 100 160 / .1); }
@@ -814,3 +835,11 @@ html:not([data-hud]) .live-settings :is(select, input) { width: 100%; max-width:
   background-color: rgb(255 255 255 / .78); border: 1px solid rgb(205 205 228 / .8); border-radius: var(--r-s); }
 .live-settings .live-foot { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
 .live-settings .live-foot #live-setting-status { flex: 1; min-width: 0; }
+
+/* 群聊默认头像：前两位成员一前一后叠着。 */
+.avatar.group-avatar.paired { position: relative; background: transparent; overflow: visible; }
+.avatar.group-avatar.paired > .avatar { position: absolute; width: 68%; height: 68%; font-size: 10px; border-radius: 30%; box-shadow: 0 0 0 2px rgb(255 255 255 / .95); }
+.avatar.group-avatar.paired > .avatar:first-child { left: 0; top: 0; }
+.avatar.group-avatar.paired > .avatar:last-child { right: 0; bottom: 0; }
+/* 会话列表的滚动条悬停才出现。 */
+html:not([data-hud]) .conversation-list:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
