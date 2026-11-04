@@ -1036,3 +1036,9 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
 @media (min-width: 601px) {
   html:not([data-hud]) .agent-handoff-entry, html:not([data-hud]) .agent-handoff-entry:has([data-tone]) { border: 0; border-radius: var(--r-m); background: rgb(255 255 255 / .3); }
 }
+
+/* 主脑派活、同席通知也不要左边淡紫竖线，和交回卡同一种无描边淡底；Markdown 引用块不要左边灰线，换一块淡底圆角，靠灰字和底色跟正文分开。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .agent-user-entry:not(.own) { border-left: 0; border-radius: var(--r-m); background: rgb(255 255 255 / .3); }
+  html:not([data-hud]) :is(.agent-turn-text, .bubble.markdown) blockquote { border-left: 0; padding: 8px 14px; border-radius: var(--r-s, 8px); background: rgb(255 255 255 / .35); }
+}
