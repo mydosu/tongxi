@@ -899,9 +899,12 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   @keyframes wait-spin { to { rotate: 1turn; } }
   /* 接入成员卡：去掉渐变和投影，和下面的卡同一层薄玻璃 */
   html:not([data-hud]) .setup-center { background: rgb(255 255 255 / .42); border-color: rgb(255 255 255 / .66); box-shadow: none; }
-  /* 主按钮：淡紫渐变、轻投影，不再是深色块 */
-  html:not([data-hud]) .primary { background: linear-gradient(135deg, #a69cdb, #8b80c8); border-color: transparent; box-shadow: 0 3px 10px rgb(120 110 190 / .2); }
-  html:not([data-hud]) .primary:hover:not(:disabled) { background: linear-gradient(135deg, #9a8fd4, #7f74bf); box-shadow: 0 4px 14px rgb(120 110 190 / .26); }
+  /* 主按钮取阿尔比恩头饰蝶翼的颜色：薰衣草到淡粉的浅渐变、紫字，不压深色块 */
+  html:not([data-hud]) :is(.primary, #connect-project-members:not(.ready):not([hidden])) { background: linear-gradient(135deg, #e6dcfa, #f8def5); border: 1px solid rgb(200 182 236 / .55); color: #6a5aa8; box-shadow: 0 2px 8px rgb(170 150 220 / .14); }
+  html:not([data-hud]) :is(.primary, #connect-project-members:not(.ready):not([hidden])):hover:not(:disabled) { background: linear-gradient(135deg, #dccff7, #f3d2ef); color: #5b4b9c; box-shadow: 0 3px 12px rgb(170 150 220 / .22); }
+  html:not([data-hud]) .primary:disabled { opacity: .55; }
+  html:not([data-hud]) input[type="checkbox"]:checked { background: linear-gradient(135deg, #c3b4ee, #e2b6e4); }
+  html:not([data-hud]) .seat-badge { background: linear-gradient(135deg, #b9abea, #dcaee0); }
   /* 项目条：平铺成一行细字，不再是浮起的卡；绑好且成员都连着就收起，没连上时只留项目名和「连接项目成员」 */
   html:not([data-hud]) .project-controls { background: transparent; border-color: transparent; box-shadow: none; padding: 4px 4px 4px 6px; }
   html:not([data-hud]) .project-controls.quiet { display: none; }
