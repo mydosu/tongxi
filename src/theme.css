@@ -971,3 +971,14 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .theme-remove:hover { background: rgb(255 243 240); border-color: transparent; }
   html:not([data-hud]) :is(input:not([type="checkbox"]):not([type="radio"]), select, .modal textarea):focus-visible { outline: none; border-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
 }
+/* 协作三页：主脑任务的「计划」「计划与任务书」两块不再是白边卡片，只留一层很淡的底；
+   「已结束」「已回答」的展开箭头换成和「用量」「项目总账」同一种小箭头（原来是浏览器默认的大黑三角）。
+   已回答的每条也去掉白描边，和成员勾选行一样平。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .brain-plans { background: rgb(255 255 255 / .28); border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) :is(.inquiry-answered, .brain-jobs-ended) > summary { display: flex; align-items: center; gap: 10px; list-style: none; }
+  html:not([data-hud]) :is(.inquiry-answered, .brain-jobs-ended) > summary::-webkit-details-marker { display: none; }
+  html:not([data-hud]) :is(.inquiry-answered, .brain-jobs-ended) > summary::before { content: '▸'; color: var(--faint); transition: transform .15s; }
+  html:not([data-hud]) :is(.inquiry-answered, .brain-jobs-ended)[open] > summary::before { transform: rotate(90deg); }
+  html:not([data-hud]) .inquiry-answered li { background: rgb(255 255 255 / .3); border-color: transparent; }
+}
