@@ -733,17 +733,13 @@ impl Store {
             }
             let title = format!("{} · {}", project.name, label);
             let chat = self.create(&title, "direct", &[agent.clone()])?;
-            let saved_settings: (Option<String>, Option<String>) = self.connection.query_row(
-                "SELECT s.model,s.reasoning_effort FROM sessions s JOIN conversations c ON c.id=s.conversation_id WHERE s.agent_id=?1 AND c.kind='direct' AND c.id<>?2 ORDER BY c.updated_at DESC LIMIT 1",
-                params![agent, chat.id], |row| Ok((row.get(0)?,row.get(1)?)),
-            ).optional().map_err(|_| "Agent 会话设置读取失败")?.unwrap_or((None,None));
             let tx = self
                 .connection
                 .transaction()
                 .map_err(|_| "Agent 会话创建失败")?;
             tx.execute(
-                "UPDATE sessions SET native_cwd=?1,model=?2,reasoning_effort=?3 WHERE conversation_id=?4 AND agent_id=?5",
-                params![project.root,saved_settings.0,saved_settings.1,chat.id,agent],
+                "UPDATE sessions SET native_cwd=?1 WHERE conversation_id=?2 AND agent_id=?3",
+                params![project.root,chat.id,agent],
             ).map_err(|_| "Agent 项目目录绑定失败")?;
             tx.execute(
                 "INSERT INTO project_agent_chats(project_id,group_conversation_id,agent_id,conversation_id,created_at) VALUES(?1,?2,?3,?4,?5)",

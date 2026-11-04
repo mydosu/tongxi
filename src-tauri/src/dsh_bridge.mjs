@@ -185,8 +185,10 @@ try {
       .map(([id, packageName]) => plugin(id, packageName)).filter(Boolean));
   // 默认模型：DSH 自己设的默认 → 第一个自定义服务商的第一个模型 → 官方 deepseek-v4-flash。会话里随时能换。
   const [customId, custom] = Object.entries(customProviders).find(([, provider]) => provider?.models?.length) || [];
-  const startModel = ownSettings.acp?.provider && ownSettings.acp?.model
-    ? { provider: ownSettings.acp.provider, model: ownSettings.acp.model }
+  // 新版 DSH（及 magpie 写进去的）默认模型在 agent-default-model 段，旧版在 acp 段。
+  const own = [ownSettings['agent-default-model'], ownSettings.acp].find(item => item?.provider && item?.model);
+  const startModel = own
+    ? { provider: own.provider, model: own.model }
     : custom ? { provider: customId, model: custom.models[0].id }
     : { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
   entries.push({ id: 'acp', name: requireNative.resolve('@deepseek-ai/dsh-acp'), inject: ['agentLoop'], config: startModel });

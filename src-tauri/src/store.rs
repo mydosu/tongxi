@@ -666,8 +666,8 @@ impl Store {
         valid_members(kind, members)?;
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         let id = Self::insert_conversation(&tx, &title, kind, members)?;
-        // 新私聊沿用用户上次给这位成员选的模型与思考强度。
-        if kind == "direct" {
+        // 新会话（私聊、群聊、项目席位）沿用用户上次给这位成员选的模型与思考强度；没选过就跟随成员自己的默认。
+        {
             tx.execute(
                 "UPDATE sessions SET model=substr(m.value,1,instr(m.value,char(9))-1),reasoning_effort=nullif(substr(m.value,instr(m.value,char(9))+1),'')                  FROM metadata m WHERE m.key='direct_choice:'||sessions.agent_id AND sessions.conversation_id=?1",
                 [&id],
@@ -995,8 +995,8 @@ impl Store {
             return Err("不支持的思考强度".into());
         }
         self.connection.execute("UPDATE sessions SET model=?1,reasoning_effort=?2 WHERE conversation_id=?3 AND agent_id=?4", params![model,reasoning_effort,id,agent_id]).map_err(|e| e.to_string())?;
-        // 用户在私聊里的选择记作这位成员的上次选择（模型	强度；选回默认就清掉）；项目席位会话不算。
-        if conversation.kind == "direct" && crate::project_brain::access(&self.connection, id).is_none() {
+        // 用户在任何会话里的选择都记作这位成员的上次选择（模型	强度；选回默认就清掉）。主脑派活指定的模型不走这里，不算。
+        {
             let key = format!("direct_choice:{agent_id}");
             match &model {
                 Some(model) => self.connection.execute(
@@ -1921,6 +1921,10 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    fn direct_with(store: &mut Store, agent: &str) -> Session {
+        let chat = store.create("私", "direct", &[agent.into()]).unwrap();
+        store.detail(&chat.id).unwrap().sessions.remove(0)
+    }
     #[test]
     fn new_direct_chat_reuses_last_model_choice() {
         let mut store = memory();
@@ -1934,7 +1938,13 @@ mod tests {
         let session = &store.detail(&fresh.id).unwrap().sessions[0];
         assert_eq!((session.model.as_deref(), session.reasoning_effort.as_deref()), (Some("gpt-y"), None));
         let group = store.create("群", "group", &["codex-win".into(), "dsh-win".into()]).unwrap();
-        assert!(store.detail(&group.id).unwrap().sessions.iter().all(|session| session.model.is_none()));
+        let models: Vec<_> = store.detail(&group.id).unwrap().sessions.into_iter().map(|session| (session.agent_id, session.model)).collect();
+        assert!(models.contains(&("codex-win".into(), Some("gpt-y".into()))) && models.contains(&("dsh-win".into(), None)));
+        // 群里改的也记住；选回默认就清掉，之后跟随成员自己的默认。
+        store.set_session_settings(&group.id, "dsh-win", Some("ds".into()), None).unwrap();
+        assert_eq!(direct_with(&mut store, "dsh-win").model.as_deref(), Some("ds"));
+        store.set_session_settings(&group.id, "dsh-win", None, None).unwrap();
+        assert_eq!(direct_with(&mut store, "dsh-win").model, None);
     }
     #[test]
     fn session_profile_is_per_conversation_and_unbinds_on_change() {
