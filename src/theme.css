@@ -941,10 +941,10 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none; }
   html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
-  /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 7px 的点击区；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
-  html:not([data-hud]) .composer-resizer { display: block; position: absolute; left: 0; right: 0; top: -8px; height: 15px; z-index: 2; cursor: ns-resize; touch-action: none; }
-  html:not([data-hud]) .composer-resizer::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; transition: opacity .15s; }
-  html:not([data-hud]) .composer-resizer::after { content: ""; position: absolute; left: 50%; top: 5px; width: 36px; height: 5px; translate: -50% 0; border-radius: 3px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; scale: .7; transition: opacity .15s, scale .15s; }
+  /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 4px 的点击区（光标靠近就会变，不用做得更宽）；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
+  html:not([data-hud]) .composer-resizer { display: block; position: absolute; left: 0; right: 0; top: -5px; height: 9px; z-index: 2; cursor: ns-resize; touch-action: none; }
+  html:not([data-hud]) .composer-resizer::before { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; transition: opacity .15s; }
+  html:not([data-hud]) .composer-resizer::after { content: ""; position: absolute; left: 50%; top: 2px; width: 36px; height: 5px; translate: -50% 0; border-radius: 3px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; scale: .7; transition: opacity .15s, scale .15s; }
   html:not([data-hud]) :is(.composer-resizer:hover, .resizing > .composer-resizer)::before { opacity: 1; }
   html:not([data-hud]) :is(.composer-resizer:hover, .resizing > .composer-resizer)::after { opacity: 1; scale: 1; }
   html.composer-resizing, html.composer-resizing * { cursor: ns-resize !important; user-select: none !important; }

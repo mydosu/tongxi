@@ -976,7 +976,7 @@ function resizeComposer(input: HTMLTextAreaElement) {
   input.style.height = `${Math.min(input.scrollHeight, cap)}px`;
 }
 
-/// 桌面上拖输入框顶上那条分隔线（.composer-resizer，上下各 7px 的点击区，悬停浮出小把手）改输入框高度，双击恢复。
+/// 桌面上拖输入框顶上那条分隔线（.composer-resizer，悬停浮出小把手）改输入框高度，双击恢复。
 /// 拖出来的高度当文本框的最小高度，记在本机；拖的时候整页锁成上下箭头、不选中文字，消息列表原本在底部就一直贴着底部。
 const COMPOSER_HEIGHT = 'hub.composerHeight';
 let composerHeight = Number((() => { try { return localStorage.getItem(COMPOSER_HEIGHT); } catch { return null; } })()) || 0;
