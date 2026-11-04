@@ -1,5 +1,6 @@
 import { invoke, isRemote } from './transport';
 import { loadImage } from './image_file';
+import { buttonColors, DEFAULT_HUE, hueOf } from './accent';
 
 // 主题背景：内置一套不含任何角色的公用背景；个人图片由用户自己导入（压缩后存在本机库里，只有这台电脑看得到）。
 // 竖图默认放在右侧当立绘（白底正片叠底融进底色），横图铺满窗口再罩一层薄纱；「浓淡」只调那层纱，免得背景抢了内容。
@@ -93,6 +94,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   if (current !== choice) return; // 读图期间又换了主题
   const root = document.documentElement;
   root.dataset.bgMode = theme.mode;
+  paintAccent(image);
   const veil = VEILS[choice.veil];
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
@@ -114,6 +116,23 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   next.classList.add('visible');
   if (previous !== next) previous.classList.remove('visible');
   if (animate) front = 1 - front;
+}
+
+/// 按钮色跟着背景图走（色相取自图，深浅固定，见 accent.ts）。图读不出像素就用默认淡紫。
+function paintAccent(image: string | undefined) {
+  const set = (hue: number) => { const { base, hover } = buttonColors(hue); document.documentElement.style.setProperty('--btn', base); document.documentElement.style.setProperty('--btn-hover', hover); };
+  if (!image) return set(DEFAULT_HUE);
+  const picture = new Image();
+  picture.onload = () => {
+    try {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 48;
+      const context = canvas.getContext('2d', { willReadFrequently: true })!;
+      context.drawImage(picture, 0, 0, 48, 48);
+      if (picture.src === image) set(hueOf(context.getImageData(0, 0, 48, 48).data));
+    } catch { set(DEFAULT_HUE); }
+  };
+  picture.onerror = () => set(DEFAULT_HUE);
+  picture.src = image;
 }
 
 /// 读图片 → 压成 webp（长边 ≤ 2400）+ 360×240 缩略图。竖图默认当立绘，横图铺满。
