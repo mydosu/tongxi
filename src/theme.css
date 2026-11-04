@@ -930,12 +930,16 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .project-controls.quiet { display: none; }
   html:not([data-hud]) .project-controls.bound :is(#bind-project, #share-project-summary, [data-project-configure]) { display: none; }
 }
-/* 输入框扁平：去掉浮起的投影和聚焦时的光晕，只留一层半透明底和细边；聚焦时边框换成按钮色（跟着背景图走）。
-   回复进行中的流光边框是状态提示，保留，只去掉它外面的光晕。里面的附件钮、模型条也去掉描边和底色。 */
+/* 输入框不再是浮着的白卡片，融进会话区成为底部一条磨砂带：左右、底边贴满会话区（外层容器两边 20px、底 14px 内边距用负边距抵掉），
+   顶上一条细分隔线和标题栏的底线对称；底色比消息区稍实，消息滚到后面时不和正在输入的字混在一起。
+   聚焦时分隔线换成按钮色（跟着背景图走），回复进行中的流光改在这条线上走。里面的附件钮、模型条也去掉描边和底色。 */
 @media (min-width: 601px) {
-  html:not([data-hud]) :is(.composer, .project-agent-chat-composer) { background: rgb(255 255 255 / .62); border-color: rgb(255 255 255 / .75); box-shadow: none; }
-  html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: rgb(255 255 255 / .74); border-color: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 60%, transparent); box-shadow: none; }
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer) { margin: 6px -20px -14px; padding: 12px 24px 14px; border: 0; border-top: 1px solid var(--glass-line); border-radius: 0;
+    background: rgb(255 255 255 / .34); box-shadow: none; transition: border-color .2s, background-color .2s; }
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: rgb(255 255 255 / .44); border-top-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none; }
+  html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
   html:not([data-hud]) .attachment-picker { background: transparent; border-color: transparent; }
   html:not([data-hud]) .attachment-picker:hover { background: rgb(255 255 255 / .7); border-color: transparent; }
   html:not([data-hud]) .composer .tool-chip { background: rgb(255 255 255 / .35); border-color: transparent; box-shadow: none; }
