@@ -1053,3 +1053,11 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .filters { background: transparent; border-color: transparent; }
   html:not([data-hud]) .filters button.selected { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); box-shadow: none; }
 }
+
+/* 成员与服务页本身：页内的次级按钮（重新扫描、保存、切换、复制访问地址、重置令牌）和标题栏一样常态透明、悬停浮淡底，
+   和成员卡底部「断开/更新/更多」那排纯文字一致；成员卡里「安装/连接/更新」不再在淡底卡里再叠一层淡底，只留几行字、左边和卡片内容对齐。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .services-content .secondary { background: transparent; border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) .services-content .secondary:hover:not(:disabled) { background: rgb(255 255 255 / .55); border-color: transparent; }
+  html:not([data-hud]) .service-facts { background: transparent; padding-inline: 0; }
+}
