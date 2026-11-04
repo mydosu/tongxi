@@ -8,9 +8,9 @@
 
 <br />
 
-<img src="docs/images/demo-en.gif" width="100%" alt="Demo: one sentence in the project group, the lead splits it into a plan, Codex and DSH work in parallel in their own worktrees, the lead reviews and merges, then the ledger shows how much splitting saved versus running everything on the lead model" />
+<img src="docs/images/demo.gif" width="100%" alt="Real recording: create a project group (lead Claude, members DSH and Claude), bind a small pomodoro repo, say one sentence; the lead plans, the two members each build a feature and review each other, and the lead merges and reports back" />
 
-<sub>Illustration: one sentence → the lead plans → members work in parallel → hand back &amp; merge → the savings ledger. Amounts are examples.</sub>
+<sub>Real recording (custom theme, Chinese UI): new project group → bind a repo → one sentence → the lead plans, two members work in parallel → cross-review → merge and report. Waiting is sped up 16×; <a href="docs/images/demo.mp4">full-quality MP4</a>.</sub>
 
 </div>
 
@@ -30,7 +30,24 @@ There is also a seat for your own companion, if you have one.
 
 <br />
 
-## ✨ Highlights
+## A look around
+
+All screenshots come from the same real task (adding pause/resume and a "done today" counter to a pomodoro timer), with a custom theme.
+
+| Team chat | Lead's tasks |
+| :---: | :---: |
+| <img src="docs/images/ui-team.webp" alt="Team chat: the lead delegates, members hand back, the final progress report" /> | <img src="docs/images/ui-tasks.webp" alt="Lead's tasks: the plan as a flow chart, usage and the project ledger" /> |
+| Delegations, hand-backs and the final report in one stream | The plan as a flow chart: who does each step and how far it got |
+| **Member room** | **Members & services** |
+| <img src="docs/images/ui-room-dsh.webp" alt="DSH's project session: review notes and merge advice" /> | <img src="docs/images/ui-services.webp" alt="Members & services: members found on this machine, connection and update status" /> |
+| Each member works in its own native session; open it any time and chime in | Finds the agents installed on this machine; connect, update and diagnose here |
+| **Themes** | **New conversation** |
+| <img src="docs/images/ui-themes.webp" alt="Themes: built-in soft backgrounds and imported artwork" /> | <img src="docs/images/ui-create.webp" alt="New conversation: direct or group, pick members" /> |
+| Built-in soft backgrounds, or import your own art as a side figure or full backdrop | Chat with one member, or put one to five in a group |
+
+<br />
+
+## Highlights
 
 <img src="docs/images/highlights-en.svg" width="100%" alt="One table, native sessions, a lead agent, parallel members, step in anytime, local data" />
 
@@ -204,7 +221,7 @@ npm run desktop                                 # run in dev mode
 npm run desktop:build                           # build release/Agent Hub.exe
 ```
 
-Building needs Rust (MSVC), Node and WebView2 — see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). The demo GIFs above are rebuilt with `python scripts/build_demo_gif.py` (Playwright + ffmpeg).
+Building needs Rust (MSVC), Node and WebView2 — see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 The full changelog is in the [Chinese README](README.zh-CN.md#版本记录).
 
