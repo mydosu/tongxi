@@ -13,14 +13,19 @@ let envs: AgentEnv[] = [];
 export const autoConnectEnabled = () => { try { return localStorage.getItem(AUTO) !== '0'; } catch { return true; } };
 export const setAutoConnect = (on: boolean) => { try { localStorage.setItem(AUTO, on ? '1' : '0'); } catch { /* 偏好存不下就算了 */ } };
 export const scanned = () => envs;
+/// 记住你亲手连上或断开的成员（id → 连着/断开），下次启动照着办：可选成员连过就自动连，默认成员断开过就不再自动连。
+const PICKS = 'hub.autoConnectPicks';
+const picks = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(PICKS) || '{}'); } catch { return {}; } };
+export const rememberPick = (id: string, on: boolean) => { try { localStorage.setItem(PICKS, JSON.stringify({ ...picks(), [id]: on })); } catch { /* 存不下就照默认 */ } };
 export async function scanAgents() { envs = await invoke<AgentEnv[]>('scan_agents'); return envs; }
 
 /// 启动时：扫一遍，已安装但没连上的成员逐个静默连接；陪伴配好了也连。失败不弹错，留给服务页显示。
 export async function autoConnect(connected: (id: string) => boolean, connect: (id: string) => Promise<void>) {
   if (!autoConnectEnabled()) return;
   const found = await scanAgents().catch(() => []);
-  // OpenCode、Antigravity 是可选成员：装了也不自动连，用时手动连或由主脑派活时连。
-  for (const env of found) if (env.installed && !['opencode-win', 'antigravity-win'].includes(env.id) && !connected(env.id)) await connect(env.id).catch(() => {});
+  // OpenCode、Antigravity 是可选成员：默认不自动连，你连过一次之后才自动连；任何成员你断开过就不再自动连。
+  const pick = picks();
+  for (const env of found) if (env.installed && (pick[env.id] ?? !['opencode-win', 'antigravity-win'].includes(env.id)) && !connected(env.id)) await connect(env.id).catch(() => {});
   const companion = await invoke<CompanionView>('companion_config').catch(() => null);
   if (companion?.configured && !connected('albion-wsl')) await connect('albion-wsl').catch(() => {});
 }

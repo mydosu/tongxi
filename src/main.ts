@@ -16,7 +16,7 @@ import { installMessageMenu } from './message_menu';
 import { projectSettings } from './project_settings';
 import { applyTheme, backdropHtml, themePicker } from './theme_picker';
 import { baseAgent, isBrain, isSeat, seatSlot } from './seats';
-import { autoConnect, companionDialog, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
+import { autoConnect, companionDialog, rememberPick, confirmInstall, runSetup, scanAgents, scanned, setAutoConnect, setupBanner, setupLine, shrink } from './agent_setup';
 import { answerDialog, questionCard, visibleQuestionReply } from './chat_questions';
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { mountAnswerFiles, mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
@@ -29,6 +29,7 @@ import './mobile.css';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const icons: Record<string, string> = {
   plus: '<path d="M12 5v14M5 12h14"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 2"/>',
   external: '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
   terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/>',
@@ -1339,11 +1340,11 @@ main.addEventListener('click', event => {
 });
 
 async function connectAgent(agentId = currentAgentId()) {
-  try { adoptRuntime(await invoke<RuntimeSnapshot>(`connect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 原生接口已连接`); }
+  try { adoptRuntime(await invoke<RuntimeSnapshot>(`connect_${harnessKey(agentId)}`), agentId); rememberPick(baseAgent(agentId), true); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 原生接口已连接`); }
   catch (error) { toast(errorText(error), true); }
 }
 async function disconnectAgent(agentId = currentAgentId()) {
-  try { adoptRuntime(await invoke<RuntimeSnapshot>(`disconnect_${harnessKey(agentId)}`), agentId); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 已断开`); }
+  try { adoptRuntime(await invoke<RuntimeSnapshot>(`disconnect_${harnessKey(agentId)}`), agentId); rememberPick(baseAgent(agentId), false); updateRuntimeControls(); if (screen === 'services') renderServices(); toast(`${globalMember(baseAgent(agentId)).name} 已断开`); }
   catch (error) { toast(errorText(error), true); }
 }
 
@@ -1731,7 +1732,10 @@ function updateProjectControls() {
   const title = main.querySelector('#project-title');
   if (title) title.textContent = detail.project ? detail.project.name : eligible ? '还没绑定项目目录' : '项目协作至少需要一位 Windows 成员';
   if (title instanceof HTMLElement) title.title = detail.project ? `项目目录：${detail.project.root.replace(/^\\\\\?\\/, '')}` : '';
-  main.querySelector('#project-controls')?.classList.toggle('bound', !!detail.project);
+  const controls = main.querySelector('#project-controls');
+  controls?.classList.toggle('bound', !!detail.project);
+  // 绑好了、成员都连着就整条收起（换目录、开发摘要在「···」会话设置里）；有成员没连上才露出来。
+  controls?.classList.toggle('quiet', !!detail.project && !!connect?.classList.contains('ready') && !groupConnecting);
   const share = main.querySelector<HTMLButtonElement>('#share-project-summary');
   if (share) {
     const project = detail.project;
@@ -2369,6 +2373,16 @@ function showConversationActions() {
     button.innerHTML = `${icon('group')}<span>管理群聊成员</span><small>${conversation.members.length} 位成员</small>`;
     button.addEventListener('click', () => { modal.close(); setMembersOpen(true); });
     modal.querySelector('#archive-action')!.before(button);
+    const bind = main.querySelector<HTMLButtonElement>('#bind-project');
+    if (bind) {
+      const project = detail.project;
+      const item = document.createElement('button');
+      item.className = 'settings-action';
+      item.disabled = bind.disabled;
+      item.innerHTML = `${icon('folder')}<span>${project ? '项目目录与开发摘要' : '选择项目目录'}</span><small>${project ? `${escape(project.name)} · 摘要${project.summary_enabled ? '已共享' : '未共享'}` : '还没绑定'}</small>`;
+      item.addEventListener('click', () => { modal.close(); void showProjectBinding(); });
+      button.before(item);
+    }
   }
   form.addEventListener('submit', async event => {
     event.preventDefault();

@@ -897,4 +897,13 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) .wait-pill::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(165 152 216 / .25); border-top-color: var(--accent-2); animation: wait-spin .8s linear infinite; }
   html:not([data-hud]) :is(.project-agent-chat, .brain-jobs-content) > .wait-pill { margin: 48px auto; }
   @keyframes wait-spin { to { rotate: 1turn; } }
+  /* 接入成员卡：去掉渐变和投影，和下面的卡同一层薄玻璃 */
+  html:not([data-hud]) .setup-center { background: rgb(255 255 255 / .42); border-color: rgb(255 255 255 / .66); box-shadow: none; }
+  /* 主按钮：淡紫渐变、轻投影，不再是深色块 */
+  html:not([data-hud]) .primary { background: linear-gradient(135deg, #a69cdb, #8b80c8); border-color: transparent; box-shadow: 0 3px 10px rgb(120 110 190 / .2); }
+  html:not([data-hud]) .primary:hover:not(:disabled) { background: linear-gradient(135deg, #9a8fd4, #7f74bf); box-shadow: 0 4px 14px rgb(120 110 190 / .26); }
+  /* 项目条：平铺成一行细字，不再是浮起的卡；绑好且成员都连着就收起，没连上时只留项目名和「连接项目成员」 */
+  html:not([data-hud]) .project-controls { background: transparent; border-color: transparent; box-shadow: none; padding: 4px 4px 4px 6px; }
+  html:not([data-hud]) .project-controls.quiet { display: none; }
+  html:not([data-hud]) .project-controls.bound :is(#bind-project, #share-project-summary, [data-project-configure]) { display: none; }
 }
