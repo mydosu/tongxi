@@ -947,9 +947,7 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 4px 的点击区（光标靠近就会变，不用做得更宽）；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
   html:not([data-hud]) .composer-resizer { display: block; position: absolute; left: 0; right: 0; top: -5px; height: 9px; z-index: 2; cursor: ns-resize; touch-action: none; }
   html:not([data-hud]) .composer-resizer::before { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; transition: opacity .15s; }
-  html:not([data-hud]) .composer-resizer::after { content: ""; position: absolute; left: 50%; top: 2px; width: 36px; height: 5px; translate: -50% 0; border-radius: 3px; background: var(--btn, hsl(248 34% 64%)); opacity: 0; scale: .7; transition: opacity .15s, scale .15s; }
   html:not([data-hud]) :is(.composer-resizer:hover, .resizing > .composer-resizer)::before { opacity: 1; }
-  html:not([data-hud]) :is(.composer-resizer:hover, .resizing > .composer-resizer)::after { opacity: 1; scale: 1; }
   html.composer-resizing, html.composer-resizing * { cursor: ns-resize !important; user-select: none !important; }
   html:not([data-hud]) :is(.composer textarea, .project-agent-chat-composer textarea) { min-height: var(--composer-h, 0px); }
   /* 停止按钮也扁平：去掉描边和底色，只留红字，悬停才有一层淡红底。 */
@@ -1075,3 +1073,5 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .kind-switch button { transition: color .2s ease; }
   html:not([data-hud]) .kind-switch button.selected { background: transparent; box-shadow: none; }
 }
+/* 桌面侧栏贴满窗口后不再是卡片：去掉投影和顶边那道白高光（手机端不动）。 */
+@media (min-width: 601px) { html:not([data-hud]) .sidebar { box-shadow: none; } }
