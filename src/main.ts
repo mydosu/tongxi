@@ -1,3 +1,4 @@
+import { holdAnchor } from './anchor';
 import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, onRemoteReconnect, REPAIR_URL } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Agent, BrainOverview, ProjectTeamMessage, ChatQuestion, Inquiry, PendingChatQuestion, AppInfo, Conversation, ConversationDetail, Discussion, Message, NativeSession, Project, RemoteGatewayStatus, RunRecord, RuntimeSnapshot, ServiceCheckResult, ServiceInfo, ServiceUpdateStatus } from './types';
@@ -905,13 +906,6 @@ let backfillToken = 0;
 /// 把更早的消息从近到远、每次几条补到列表最上面：换页动画放完、浏览器空闲时才做，切换那一帧不卡。
 /// 补进来的带 data-backfill，不播新消息浮上来的动画。补的时候保持离底部的距离，人看着的地方不动。
 /// 先画的几条还没一屏高时立刻补到满，免得上面空一块、补完又整体下移。
-/// 往上补旧消息后让屏上那条留在原处：按它的实际位移补偿；浏览器自带的滚动锚定已经补过就不再动，免得两边重复修正。
-function holdAnchor(box: HTMLElement, anchor: Element | null | undefined, before: number) {
-  if (!anchor?.isConnected) return;
-  const shift = anchor.getBoundingClientRect().top - before;
-  if (Math.abs(shift) >= 0.5) box.scrollTop += shift;
-}
-
 function backfillMessages(box: HTMLElement, older: Message[], head: string, includeDetails: boolean) {
   const token = ++backfillToken;
   const drawn = new Set([...box.children].map(node => (node as HTMLElement).dataset.messageId));

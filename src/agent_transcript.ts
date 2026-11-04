@@ -1,3 +1,4 @@
+import { holdAnchor } from './anchor';
 import { entryBusy, settledSame, type AgentEntry } from './agent_timeline';
 import { visibleQuestionReply } from './chat_questions';
 import { agentMarkdown } from './agent_markdown';
@@ -118,7 +119,7 @@ export class AgentTranscript {
     }
     this.seeded = true;
     if (!entries.length) this.list.innerHTML = this.format.empty;
-    if (anchor && anchor.isConnected) this.viewport.scrollTop += anchor.getBoundingClientRect().top - offset;
+    holdAnchor(this.viewport, anchor || null, offset);
     this.follow();
     // 一批不满一屏时没有滚动事件，也接着往前补。
     // 视口不可见（手机在列表页，高度 0）时不接着补：不然每个流式事件都在背后把整段历史一批批补完。
