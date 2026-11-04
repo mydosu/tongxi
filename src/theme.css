@@ -982,3 +982,14 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) :is(.inquiry-answered, .brain-jobs-ended)[open] > summary::before { transform: rotate(90deg); }
   html:not([data-hud]) .inquiry-answered li { background: rgb(255 255 255 / .3); border-color: transparent; }
 }
+
+/* 侧栏选中也扁平：不再是浮起的白卡片加投影，改铺一层按钮色淡底，左边细条也换成按钮色；滑块跟着一起换，滑行和停下看起来是同一块。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(.conversation.active, .nav-glider.card, .project-module-row.active, .nav-glider.module) { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) :is(.conversation.active, .nav-glider.card)::before { background: var(--btn, hsl(248 34% 64%)); }
+}
+
+/* 换主题时按钮色渐变过去，不是一下跳色：把 --btn 注册成颜色才能过渡。初值和各处 var() 的兜底色一致。 */
+@property --btn { syntax: '<color>'; inherits: true; initial-value: hsl(248 34% 64%); }
+@property --btn-hover { syntax: '<color>'; inherits: true; initial-value: hsl(248 34% 58%); }
+html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(--ease); }
