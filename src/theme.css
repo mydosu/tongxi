@@ -216,7 +216,8 @@ html:not([data-hud]) .secondary { background: rgb(255 255 255 / .55); border-col
 html:not([data-hud]) .secondary:hover:not(:disabled) { background: rgb(255 255 255 / .9); }
 html:not([data-hud]) .stop-reply { color: #b4473a; border-color: #ecc8c3; }
 html:not([data-hud]) .icon-button:hover { background: rgb(255 255 255 / .6); }
-html:not([data-hud]) .icon-button.filled { background: linear-gradient(135deg, #8b80c4, #7ea6d4); color: #fff; box-shadow: 0 4px 12px rgb(126 116 190 / .3); }
+html:not([data-hud]) .icon-button.filled { background: rgb(255 255 255 / .55); color: var(--accent-2); border: 1px solid rgb(165 152 216 / .32); box-shadow: none; }
+html:not([data-hud]) .icon-button.filled:hover { background: rgb(255 255 255 / .9); border-color: rgb(165 152 216 / .55); }
 html:not([data-hud]) button:focus-visible, html:not([data-hud]) input:focus-visible, html:not([data-hud]) textarea:focus-visible { outline-color: var(--accent-2); }
 
 /* ---------- 卡片 ---------- */
