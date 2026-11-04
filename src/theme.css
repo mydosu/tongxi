@@ -1042,3 +1042,14 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .agent-user-entry:not(.own) { border-left: 0; border-radius: var(--r-m); background: rgb(255 255 255 / .3); }
   html:not([data-hud]) :is(.agent-turn-text, .bubble.markdown) blockquote { border-left: 0; padding: 8px 14px; border-radius: var(--r-s, 8px); background: rgb(255 255 255 / .35); }
 }
+
+/* 侧栏顶部和标题栏的按钮扁平：版本号、新建「+」、标题栏的次级按钮常态透明无边，悬停才浮出淡底；
+   搜索框只留很淡的底表示能输入，聚焦换按钮色边；全部/私聊/群聊去外框，选中项和侧栏选中同一种按钮色淡底。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(#app-version, #new-conversation, .chat-header .header-actions .secondary, .chat-header .secondary) { background: transparent; border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) :is(#app-version, #new-conversation, .chat-header .header-actions .secondary, .chat-header .secondary):hover:not(:disabled) { background: rgb(255 255 255 / .55); border-color: transparent; }
+  html:not([data-hud]) .search { background: rgb(255 255 255 / .35); border-color: transparent; box-shadow: none; transition: border-color .15s; }
+  html:not([data-hud]) .search:focus-within { border-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
+  html:not([data-hud]) .filters { background: transparent; border-color: transparent; }
+  html:not([data-hud]) .filters button.selected { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); box-shadow: none; }
+}
