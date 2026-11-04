@@ -976,38 +976,47 @@ function resizeComposer(input: HTMLTextAreaElement) {
   input.style.height = `${Math.min(input.scrollHeight, cap)}px`;
 }
 
-/// 桌面上拖输入框顶上那条分隔线改输入框高度（双击恢复）：拖出来的高度当文本框的最小高度，记在本机。
-/// 分隔线的点击区是输入框的 ::before（theme.css），事件落在输入框自己身上，按指针离顶边多远判断。
+/// 桌面上拖输入框顶上那条分隔线（.composer-resizer，上下各 7px 的点击区，悬停浮出小把手）改输入框高度，双击恢复。
+/// 拖出来的高度当文本框的最小高度，记在本机；拖的时候整页锁成上下箭头、不选中文字，消息列表原本在底部就一直贴着底部。
 const COMPOSER_HEIGHT = 'hub.composerHeight';
 let composerHeight = Number((() => { try { return localStorage.getItem(COMPOSER_HEIGHT); } catch { return null; } })()) || 0;
 const applyComposerHeight = () => composerHeight ? document.documentElement.style.setProperty('--composer-h', `${composerHeight}px`) : document.documentElement.style.removeProperty('--composer-h');
+const saveComposerHeight = () => { try { composerHeight ? localStorage.setItem(COMPOSER_HEIGHT, String(composerHeight)) : localStorage.removeItem(COMPOSER_HEIGHT); } catch {} };
 applyComposerHeight();
-const composerEdge = (event: MouseEvent) => {
-  const box = (event.target as HTMLElement).closest?.<HTMLElement>('.composer, .project-agent-chat-composer');
-  if (!box || event.target !== box || document.documentElement.dataset.hud || !matchMedia('(min-width: 601px)').matches) return null;
-  return event.clientY - box.getBoundingClientRect().top < 6 ? box : null;
-};
+const composerResizer = (event: Event) => (event.target as HTMLElement).closest?.<HTMLElement>('[data-composer-resize]');
 document.addEventListener('pointerdown', event => {
-  const box = composerEdge(event);
+  const grip = composerResizer(event);
+  const box = grip?.parentElement;
   const input = box?.querySelector<HTMLTextAreaElement>('textarea');
-  if (!box || !input || event.button !== 0) return;
+  if (!grip || !box || !input || event.button !== 0) return;
   event.preventDefault();
+  grip.setPointerCapture(event.pointerId);
+  const list = [...(box.parentElement?.querySelectorAll<HTMLElement>('.messages, .project-agent-chat-messages, .agent-transcript-list') || [])].find(el => el.scrollHeight > el.clientHeight);
+  const pinned = !!list && list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   const startY = event.clientY, startH = input.getBoundingClientRect().height;
-  const move = (e: PointerEvent) => {
-    composerHeight = Math.round(Math.min(window.innerHeight * .6, Math.max(24, startH + startY - e.clientY)));
+  const max = () => Math.max(60, Math.round(window.innerHeight * .6));
+  let frame = 0, lastY = startY;
+  document.documentElement.classList.add('composer-resizing'); box.classList.add('resizing');
+  const paint = () => {
+    frame = 0;
+    composerHeight = Math.round(Math.min(max(), Math.max(24, startH + startY - lastY)));
     applyComposerHeight();
+    if (pinned && list) list.scrollTop = list.scrollHeight;
   };
-  const up = () => {
-    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
-    try { localStorage.setItem(COMPOSER_HEIGHT, String(composerHeight)); } catch {}
+  const move = (e: PointerEvent) => { lastY = e.clientY; frame ||= requestAnimationFrame(paint); };
+  const end = () => {
+    grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', end); grip.removeEventListener('pointercancel', end);
+    if (frame) { cancelAnimationFrame(frame); paint(); }
+    document.documentElement.classList.remove('composer-resizing'); box.classList.remove('resizing');
+    saveComposerHeight();
   };
-  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end);
 });
 document.addEventListener('dblclick', event => {
-  if (!composerEdge(event)) return;
-  composerHeight = 0; applyComposerHeight();
-  try { localStorage.removeItem(COMPOSER_HEIGHT); } catch {}
+  if (!composerResizer(event)) return;
+  composerHeight = 0; applyComposerHeight(); saveComposerHeight();
 });
+const composerResizerHtml = '<div class="composer-resizer" data-composer-resize title="拖动调整输入框高度，双击恢复" aria-hidden="true"></div>';
 
 function renderMessage(message: Message, includeDetails = true) {
   const own = message.sender_id === 'user';
@@ -1990,7 +1999,7 @@ function renderConversationChat() {
       ${isGroup ? '<div id="project-controls" class="project-controls"><div class="project-entry-copy"><strong id="project-title">还没绑定项目目录</strong></div><div class="project-entry-actions"><button id="bind-project" type="button" class="secondary">选择项目目录</button><button data-project-configure class="secondary">成员与会话</button><button id="connect-project-members" type="button" class="secondary" hidden>连接项目成员</button><button id="share-project-summary" type="button" class="text-button" aria-pressed="false" hidden>开发摘要：未共享</button></div></div>' : ''}<div id="messages" class="messages${isGroup ? '' : ' direct'}" aria-label="聊天消息">
       ${detail.messages.length ? `${split ? '' : dateDivider}${tailHtml}` : `<div class="welcome">${face ? `<div class="albion-hero small" style="background-image:url('${face}')" aria-hidden="true"></div>` : ''}<h2>${directAgent ? (directAgent.id === 'albion-wsl' ? '聊聊今天吧。' : `和 ${escape(directAgent.name)} 说点什么。`) : detail.project ? '说说这次要做什么。' : '抛个问题，大家一起想。'}</h2>${directAgent?.id === 'albion-wsl' ? `<div class="suggestions">${['记录今天的开发进展', '聊聊今天发生的事情'].map(text => `<button data-suggestion="${escape(text)}">${escape(text)}${icon('arrow')}</button>`).join('')}</div>` : ''}</div>`}
       </div>
-      <form id="composer" class="composer"><span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
+      <form id="composer" class="composer">${composerResizerHtml}<span class="hud-grip" data-hud-grip title="按住拖动 HUD" aria-hidden="true">⠿</span><div class="composer-top"><span>${conversation.archived ? '会话已归档' : isNative ? `${name} 私聊 · 原生工具已接入` : detail.project ? '项目群聊 · 讨论与开发共用同一空间' : '群聊讨论'}</span><span>${roster.map(agent => escape(agent.name)).join(' · ')}</span></div><textarea id="message-input" maxlength="16000" rows="1" aria-label="消息内容" placeholder="${conversation.archived ? '恢复会话后，可以继续记录。' : detail.project ? '描述目标、讨论方案，或让项目组推进实现…' : '写下你的需求、问题，或今天的想法…'}" ${conversation.archived ? 'disabled' : ''}></textarea><div class="composer-bottom"><div class="chat-tools" id="chat-tools"><button type="button" class="tool-chip" id="live-summary" data-tool-toggle="live-settings" aria-expanded="false" title="模型与思考强度"></button>${isGroup ? '<button type="button" class="tool-chip" id="discussion-summary" data-tool-toggle="discussion-controls" aria-expanded="false" title="参与讨论的成员与轮次"></button>' : ''}<div id="live-settings" class="live-settings tool-pop" aria-label="当前会话模型与思考强度"></div>${isGroup ? '<div id="discussion-controls" class="discussion-controls tool-pop" aria-label="群聊设置"></div>' : ''}</div><div class="composer-actions"><button id="hud-model" type="button" class="icon-button" title="模型与思考强度" aria-label="模型与思考强度">⌄</button><button id="hud-exit" data-hud-exit type="button" class="icon-button" aria-label="退出 HUD" title="退出 HUD（回到主窗口）">×</button>${isNative ? `<button id="cancel-${key}" type="button" class="secondary stop-reply" hidden title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>` : `<button id="cancel-discussion" type="button" class="secondary" hidden>停止讨论</button>`}<button id="save-message" type="button" class="secondary" ${conversation.archived ? 'disabled' : ''}>保存草稿</button>${isNative ? `<button id="send-${key}" class="primary" disabled>发送给 ${escape(name)}${icon('arrow')}</button>` : `<button id="send-discussion" class="primary" disabled>${detail.project ? '发送给项目组' : '开始群聊'}${icon('arrow')}</button>`}</div></div></form>
       <footer class="chat-footer">本地保存，独立会话。你的私聊不会自动进入群聊。</footer>
     </section><aside class="members-panel" aria-label="成员面板"><div class="panel-title"><span>${detail.project ? '项目成员与会话' : isGroup ? '群聊成员' : '会话与工作区'}</span><button type="button" class="icon-button" id="close-members" aria-label="收起成员面板" title="收起（Esc）">${icon('close')}</button></div><div class="members-body"></div></aside></div>`;
   if (keptPanel) main.querySelector('.members-panel')!.replaceWith(keptPanel); else if (membersOpen) void fillMembersPanel();

@@ -382,7 +382,7 @@ html[data-hud] .composer-actions { display: flex; align-items: center; gap: 4px;
 /* 浮窗里不需要「发送给 XXX」：Enter 就是发送（和 Hermes 一样，输入栏只留图标）。 */
 html[data-hud] .composer-actions .primary { display: none; }
 html[data-hud] .composer-top { display: none; }
-.hud-grip { display: none; }
+.hud-grip, .composer-resizer { display: none; }
 html[data-hud] .hud-grip { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 26px; margin-left: -2px; border-radius: 6px; color: #8d939c; font-size: 15px; line-height: 1; cursor: grab; user-select: none; }
 html[data-hud] .hud-grip:hover { background: #eef0f2; color: #4b5059; }
 html[data-hud] .hud-grip:active { cursor: grabbing; }
