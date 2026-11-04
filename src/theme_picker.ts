@@ -110,7 +110,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
     next.style.backgroundImage = image ? `url("${image}")` : 'none';
     next.style.setProperty('--bg-img', image ? `url("${image}")` : 'none'); // 手机上横图的底衬/前景用伪元素画，同一个 url 不会多解码一份
     // 手机上横图按宽度居中完整显示，前景那块的高度要靠宽高比定，边缘才能渐隐进模糊衬底。
-    if (theme.mode === 'cover' && !theme.pastel && image) { const probe = new Image(); const ready = () => next.classList.add('measured'); probe.onload = () => { if (probe.naturalWidth && probe.naturalHeight) next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); ready(); }; probe.onerror = ready; probe.src = image; }
+    if (theme.mode !== 'plain' && !theme.pastel && image) { const probe = new Image(); const ready = () => next.classList.add('measured'); probe.onload = () => { if (probe.naturalWidth && probe.naturalHeight) next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); ready(); }; probe.onerror = ready; probe.src = image; }
     next.style.backgroundPosition = theme.mode === 'cover' ? theme.position || 'center' : '';
   }
   next.classList.add('visible');

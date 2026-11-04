@@ -906,10 +906,12 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) input[type="checkbox"]:checked { background: var(--btn, hsl(248 34% 64%)); }
   html:not([data-hud]) .seat-badge { background: var(--btn, hsl(248 34% 64%)); }
   /* 竖图立绘：水平居中在右侧会话区正中（侧栏 252px，会话区中线 = 50% + 126px），侧栏下面渐隐，底边照旧渐隐。
-     原来贴右下角，窄图会整个挤在最右边。 */
-  html:not([data-hud]) .bg-layer.figure { background-position: calc(50% + 126px) bottom;
-    -webkit-mask-image: linear-gradient(to right, transparent 160px, #000 440px), linear-gradient(to top, transparent, #000 16%);
-    mask-image: linear-gradient(to right, transparent 160px, #000 440px), linear-gradient(to top, transparent, #000 16%); }
+     原来贴右下角，窄图会整个挤在最右边。图比会话区还宽（接近方形的立绘）时不许越过右边缘，退成贴右，不然人物被裁掉。 */
+  /* 只画到半身、接近方形的图按窗口高度铺会比会话区还宽，人被放得很大：按宽高比（--bg-ar，theme_picker 量）把宽度也限在会话区里。
+     顶边也渐隐一点，图比窗口矮时不露出一条硬边。 */
+  html:not([data-hud]) .bg-layer.figure { background-size: auto min(96vh, 1100px, calc((100vw - 280px) / (var(--bg-ar, 1 / 2)))); background-position: min(calc(50% + 126px), 100%) bottom;
+    -webkit-mask-image: linear-gradient(to right, transparent 160px, #000 440px), linear-gradient(to top, transparent, #000 16%, #000 92%, transparent);
+    mask-image: linear-gradient(to right, transparent 160px, #000 440px), linear-gradient(to top, transparent, #000 16%, #000 92%, transparent); }
   /* 横图：和手机版同一个办法——整张按窗口宽度完整显示、竖直居中；窗口比图高时上下空出来的地方用同一张图放大模糊补，
      边缘渐隐进去。原来 cover 铺满，窗口窄一点人物两边就被裁掉。宽高比量到前（--bg-ar）不画前景，免得先按 16:9 画一条再跳。 */
   html:not([data-hud]) .bg-layer.cover:not(.pastel) { background-image: none !important; filter: none; inset: 0; }
