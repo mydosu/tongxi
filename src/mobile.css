@@ -32,7 +32,8 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
      平时不开：一次插入几百个这样的节点浏览器会逐个重排。 */
   html[data-live]:not([data-hud]) :is(#messages, .agent-transcript-list) > * { content-visibility: auto; contain-intrinsic-size: auto 240px; }
 
-  html:not([data-hud]) .shell, html:not([data-hud]) body.maximized .shell { grid-template-columns: minmax(0, 1fr); padding: calc(8px + env(safe-area-inset-top, 0px)) 8px 8px; gap: 0; }
+  html:not([data-hud]) .shell, html:not([data-hud]) body.maximized .shell { grid-template-columns: minmax(0, 1fr); padding: env(safe-area-inset-top, 0px) 0 0; gap: 0; }
+  html:not([data-hud]) .sidebar { border-right: 0; }
   html:not([data-hud])[data-mview="list"] .main, html:not([data-hud])[data-mview="chat"] .sidebar { display: none; }
   html:not([data-hud]) .sidebar { padding-top: 14px; }
   /* 切会话：详情回来前上一个会话的整列消息不参与排版（main.ts selectConversation 打 data-switching）。 */

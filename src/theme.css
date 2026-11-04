@@ -52,19 +52,18 @@ html[data-hud] .theme-backdrop { display: none; }
 .bg-veil { position: absolute; inset: 0; background: rgb(246 245 252 / var(--veil)); transition: background-color .4s ease; }
 
 /* ---------- 外框 ---------- */
-html:not([data-hud]) .shell { position: relative; z-index: 1; padding: 10px; gap: 10px; grid-template-columns: 252px minmax(0, 1fr); }
-html:not([data-hud]) body.maximized .shell { padding: 6px; gap: 6px; }
-html:not([data-hud]) .sidebar { background: var(--glass); border: 1px solid var(--glass-edge); border-radius: var(--r-l); box-shadow: var(--glass-shadow);
+/* 扁平一层：侧栏和主面板贴满窗口、不再是浮在底板上的两张卡，中间一道细线分开；磨砂仍在各自身上。 */
+html:not([data-hud]) .shell { position: relative; z-index: 1; padding: 0; gap: 0; grid-template-columns: 252px minmax(0, 1fr); }
+html:not([data-hud]) .sidebar { background: rgb(255 255 255 / .42); border-right: 1px solid var(--glass-line);
   backdrop-filter: blur(26px) saturate(1.45); -webkit-backdrop-filter: blur(26px) saturate(1.45); padding: 16px 12px 0; }
-html:not([data-hud]) .main { border: 1px solid var(--glass-edge); border-radius: var(--r-l); box-shadow: var(--glass-shadow); position: relative;
+html:not([data-hud]) .main { position: relative;
   background: rgb(255 255 255 / .5); backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); -webkit-backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); }
 /* 立绘主题：主面板左实右虚，透过磨砂还认得出她。 */
 html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / .64), rgb(255 255 255 / .44) 55%, rgb(255 255 255 / .2));
   backdrop-filter: blur(8px) saturate(1.25); -webkit-backdrop-filter: blur(8px) saturate(1.25); }
 
 /* 窗口按钮并进标题行（右上角），不再单独占一条。 */
-html:not([data-hud]) .window-controls { top: 26px; right: 22px; height: 32px; gap: 2px; }
-html:not([data-hud]) body.maximized .window-controls { top: 22px; right: 18px; }
+html:not([data-hud]) .window-controls { top: 18px; right: 12px; height: 32px; gap: 2px; }
 html:not([data-hud]) .window-controls button { width: 32px; height: 32px; border-radius: var(--r-s); font-size: 15px; color: var(--muted); }
 html:not([data-hud]) .window-controls button:hover { background: rgb(255 255 255 / .75); }
 html:not([data-hud]) .window-controls #window-close:hover { background: #d0656b; color: #fff; }
