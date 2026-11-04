@@ -999,3 +999,18 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .service-facts { background: rgb(255 255 255 / .3); border-color: transparent; }
   html:not([data-hud]) .sidebar-actions #service-link.active { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); box-shadow: none; }
 }
+
+/* 第二轮扁平：
+   · 平铺在页面上的块（团队对话气泡、交接条、成员与服务各卡片、成员面板里的分组）去白描边和投影，只留一层淡底；
+   · 浮在内容上的层（成员面板、换模型浮层、弹窗）还得和底下分得开，所以保留磨砂底，大投影换成一条细线加一点点影；
+   · 里面的下拉框、输入框不再是一块块白砖，淡底细线，聚焦再换按钮色。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(.project-team-message .bubble, .relay-text, .service-card, .self-avatar-row, .storage-card, .setup-center,
+    .project-coordinator-settings, .project-member-settings-row, .project-roster) { background: rgb(255 255 255 / .3); border-color: transparent; box-shadow: none; }
+  html:not([data-hud]) :is(.members-panel, .tool-pop, dialog.modal) { border-color: var(--glass-line); box-shadow: 0 8px 28px rgb(80 86 140 / .07); }
+  html:not([data-hud]) .members-panel { box-shadow: none; }
+  /* base-select 的选中文字不受 overflow 管（浏览器自带样式锁着），长选项会溢出到隔壁框里，以前靠隔壁的白底盖住，底色变淡后就露出来了。弹出列表在顶层，不受这条裁剪；contain: paint 也不裁它自己的聚焦光圈。 */
+  html:not([data-hud]) select:not([multiple]) { contain: paint; }
+  html:not([data-hud]) :is(.members-panel, .tool-pop, dialog.modal, .services-content) :is(select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"])) { background-color: rgb(255 255 255 / .45); border-color: var(--glass-line); box-shadow: none; }
+  html:not([data-hud]) :is(.members-panel, .tool-pop, dialog.modal, .services-content) :is(select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"])):focus-visible { border-color: var(--btn, hsl(248 34% 64%)); }
+}
