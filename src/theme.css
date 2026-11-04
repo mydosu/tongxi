@@ -1061,3 +1061,17 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .services-content .secondary:hover:not(:disabled) { background: rgb(255 255 255 / .55); border-color: transparent; }
   html:not([data-hud]) .service-facts { background: transparent; padding-inline: 0; }
 }
+/* 小弹窗：滑条只在悬停时浮出；新建会话把成员列表单独做成滚动区，弹窗本身不再出滑条；私聊/群聊的选中底色是一块滑过去的胶囊。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(dialog.modal, dialog.modal *) { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  html:not([data-hud]) :is(dialog.modal, dialog.modal *):hover { scrollbar-color: rgb(150 146 196 / .4) transparent; }
+  html:not([data-hud]) dialog.modal[open]:has(> #create-form) { display: flex; flex-direction: column; overflow: hidden; }
+  html:not([data-hud]) #create-form { display: flex; flex-direction: column; min-height: 0; }
+  html:not([data-hud]) #create-form .member-options { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+  html:not([data-hud]) .kind-switch { position: relative; isolation: isolate; }
+  html:not([data-hud]) .kind-switch::before { content: ''; position: absolute; z-index: -1; inset: 4px auto 4px 4px; width: calc(50% - 6px); border-radius: 6px;
+    background: rgb(255 255 255 / .92); box-shadow: 0 2px 6px rgb(70 74 130 / .08); transition: translate .32s var(--ease); }
+  html:not([data-hud]) .kind-switch:has([data-kind="group"].selected)::before { translate: calc(100% + 4px) 0; }
+  html:not([data-hud]) .kind-switch button { transition: color .2s ease; }
+  html:not([data-hud]) .kind-switch button.selected { background: transparent; box-shadow: none; }
+}

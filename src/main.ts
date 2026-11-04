@@ -2376,7 +2376,7 @@ function showModelSettings(initialAgent?: string) {
     modelInput.innerHTML = modelOptionsHtml(catalog, selectedProviderId, null, escape, `沿用本机默认${inherited ? ` · ${catalog.find(item => item.id === inherited)?.name || inherited}` : ''}`);
     updateEfforts('');
   });
-  form.querySelector('#settings-agent')!.addEventListener('change', event => { modal.close(); showModelSettings((event.target as HTMLSelectElement).value); });
+  form.querySelector('#settings-agent')!.addEventListener('change', event => { showModelSettings((event.target as HTMLSelectElement).value); });
   form.querySelector('#reset-model')!.addEventListener('click', () => { modelInput.value = ''; updateEfforts(''); });
   form.querySelector('#model-connect')?.addEventListener('click', async () => {
     // 连接会返回快照（含模型目录），回来重开这个弹窗，模型下拉就有选项了。
@@ -2400,14 +2400,22 @@ function showModelSettings(initialAgent?: string) {
 
 function showCreate(initialKind: 'direct' | 'group' = 'group') {
   openModal('新建会话', '选择对话成员，为这个话题留一个独立空间。', `<form id="create-form"><div class="kind-switch"><button type="button" data-kind="direct" class="${initialKind === 'direct' ? 'selected' : ''}">${icon('chat')}私聊</button><button type="button" data-kind="group" class="${initialKind === 'group' ? 'selected' : ''}">${icon('group')}群聊</button></div><label class="field">会话名称<input name="title" required maxlength="80" placeholder="例如：框架开发 / 今天的想法" autocomplete="off"></label><span class="field-label">${initialKind === 'group' ? '选择一至五位成员（同一成员在项目里多开的会话也算成员）' : '选择一位成员'}</span><div class="member-options">${memberOptions(initialKind === 'group' ? ['hermes-win', 'codex-win', 'dsh-win'] : ['codex-win'], initialKind === 'group' ? 'checkbox' : 'radio')}</div><p class="form-error" role="alert"></p><div class="modal-footer"><span>现有会话与私人记忆保持独立</span><button class="primary" type="submit">创建会话${icon('arrow')}</button></div></form>`);
-  modal.querySelectorAll<HTMLButtonElement>('[data-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); showCreate(button.dataset.kind as 'direct' | 'group'); }));
   const form = modal.querySelector<HTMLFormElement>('#create-form')!;
+  let kind = initialKind;
+  // 原地切换私聊/群聊：不关弹窗重开，标题输入框保留、切换按钮的底色能过渡。
+  form.querySelectorAll<HTMLButtonElement>('[data-kind]').forEach(button => button.addEventListener('click', () => {
+    if (button.dataset.kind === kind) return;
+    kind = button.dataset.kind as 'direct' | 'group';
+    form.querySelectorAll('[data-kind]').forEach(other => other.classList.toggle('selected', other === button));
+    form.querySelector('.field-label')!.textContent = kind === 'group' ? '选择一至五位成员（同一成员在项目里多开的会话也算成员）' : '选择一位成员';
+    form.querySelector('.member-options')!.innerHTML = memberOptions(kind === 'group' ? ['hermes-win', 'codex-win', 'dsh-win'] : ['codex-win'], kind === 'group' ? 'checkbox' : 'radio');
+  }));
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const data = new FormData(form);
     const button = form.querySelector<HTMLButtonElement>('[type=submit]')!; button.disabled = true;
     try {
-      const conversation = await invoke<Conversation>('create_conversation', { title: String(data.get('title') || ''), kind: initialKind, members: data.getAll('member').map(String) });
+      const conversation = await invoke<Conversation>('create_conversation', { title: String(data.get('title') || ''), kind, members: data.getAll('member').map(String) });
       modal.close(); setMobileView('chat'); archived = false; search = ''; filter = 'all'; document.querySelector<HTMLInputElement>('#search')!.value = '';
       await refreshList(); await selectConversation(conversation.id); toast('新的会话已创建');
     } catch (error) { form.querySelector('.form-error')!.textContent = errorText(error); }

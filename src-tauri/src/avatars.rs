@@ -1,5 +1,5 @@
 //! 成员头像：用户换过就用用户的；否则用成员的原生图标——Hermes、DSH 从本机安装里读，
-//! Claude 用 Claude Code 的像素小螃蟹 Clawd，Codex 用 Codex 应用图标，Antigravity 用它的彩色拱门标（都来自 LobeHub 图标库，MIT）；
+//! Claude 用 Claude Code 的像素小螃蟹 Clawd，Codex 用 Codex 应用图标，Antigravity 用它的彩色拱门标，OpenCode 用它的方框标（都来自 LobeHub 图标库，MIT）；
 //! 都没有就退回字母头像（由界面画）。
 //! 陪伴没有原生图标，头像就是它配置里的那张。
 use crate::store::Store;
@@ -12,6 +12,7 @@ type Result<T> = std::result::Result<T, String>;
 const CODEX: &str = include_str!("native_avatars/codex-color.svg");
 const CLAUDE: &str = include_str!("native_avatars/claudecode-color.svg");
 const ANTIGRAVITY: &str = include_str!("native_avatars/antigravity-color.svg");
+const OPENCODE: &str = include_str!("native_avatars/opencode.svg");
 
 /// 头像值：图片（data URL，≤300KB）或纯色 `color:#rrggbb`（界面用它画「纯色底 + 名字首字」）。
 pub fn valid(avatar: &str) -> bool {
@@ -51,6 +52,7 @@ pub fn native(agent: &str, data: Option<&Path>) -> Option<String> {
         "codex-win" => Some(svg_url(CODEX)),
         "claude-win" => Some(on_tile(&svg_url(CLAUDE))),
         "antigravity-win" => Some(on_tile(&svg_url(ANTIGRAVITY))),
+        "opencode-win" => Some(on_tile(&svg_url(OPENCODE))),
         "hermes-win" => {
             let python = crate::acp_transport::Target::windows_python()?;
             let repo = python.parent()?.parent()?.parent()?;
@@ -193,6 +195,7 @@ mod tests {
     fn bundled_icons_are_svg_and_custom_avatars_override_them() {
         assert!(super::native("codex-win", None).unwrap().starts_with("data:image/svg+xml;base64,"));
         assert!(super::native("antigravity-win", None).unwrap().starts_with("data:image/svg+xml;base64,"));
+        assert!(super::native("opencode-win", None).unwrap().starts_with("data:image/svg+xml;base64,"));
         assert!(super::native("claude-win", None).is_some());
         assert!(super::native("albion-wsl", None).is_none(), "陪伴没有原生图标");
         assert_eq!(super::without_style("<svg><style>p{}</style><path/></svg>"), "<svg><path/></svg>");
