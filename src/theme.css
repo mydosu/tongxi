@@ -1025,9 +1025,11 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
 /* 侧栏和主面板接缝处同一种白：原来侧栏 .42 白、饱和 1.45 偏粉偏暗，主面板 .5（立绘主题左缘 .64）、饱和 1.25 偏白，一条线两边色差明显。
    现在两边同饱和度，侧栏和主面板左缘都是 .52，立绘主题再往右渐渐透出人物。 */
 @media (min-width: 601px) {
-  html:not([data-hud]) .sidebar { background: rgb(255 255 255 / .52); backdrop-filter: blur(26px) saturate(1.25); -webkit-backdrop-filter: blur(26px) saturate(1.25); }
-  html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / .52), rgb(255 255 255 / .4) 55%, rgb(255 255 255 / .2)); }
-  html:not([data-bg-mode="figure"]):not([data-hud]) .main { background: rgb(255 255 255 / .52); }
+  /* 白底和磨砂跟着主题的「浓淡」档走（theme_picker 写 --panel-alpha / --panel-blur）：淡雅 .56、适中 .44、清晰 .28（和手机清晰档一样）。 */
+  html:not([data-hud]) .sidebar { background: rgb(255 255 255 / var(--panel-alpha, .44)); backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); -webkit-backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); }
+  html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / var(--panel-alpha, .44)), rgb(255 255 255 / calc(var(--panel-alpha, .44) * .77)) 55%, rgb(255 255 255 / calc(var(--panel-alpha, .44) * .38)));
+    backdrop-filter: blur(calc(var(--panel-blur, 12px) * .67)) saturate(1.25); -webkit-backdrop-filter: blur(calc(var(--panel-blur, 12px) * .67)) saturate(1.25); }
+  html:not([data-bg-mode="figure"]):not([data-hud]) .main { background: rgb(255 255 255 / var(--panel-alpha, .44)); }
 }
 
 /* 成员交回卡不要左边的状态色竖线：卡片头的状态标签已经是同一个颜色，竖线重复还让左边圆角变怪。跟其他块一样无描边淡底、四角同圆角。 */
@@ -1075,3 +1077,11 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
 }
 /* 桌面侧栏贴满窗口后不再是卡片：去掉投影和顶边那道白高光（手机端不动）。 */
 @media (min-width: 601px) { html:not([data-hud]) .sidebar { box-shadow: none; } }
+/* 你的消息也扁平：不要渐变和白描边，铺一层按钮色淡底（跟着主题走），靠右和这层底色跟成员回复区分。
+   私聊布局跟项目成员会话一致：成员回复铺满整行，不在右边空一截。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) :is(.messages.direct .message.own .bubble, .message.own .bubble, .project-team-message.own .bubble, .agent-user-entry.own) {
+    background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 20%, rgb(255 255 255 / .55)); border-color: transparent; box-shadow: none; border-radius: var(--r-m); }
+  html:not([data-hud]) .messages.direct .agent-message { max-width: none; }
+  html:not([data-hud]) .messages.direct .message.own { max-width: min(78%, 720px); }
+}

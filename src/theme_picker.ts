@@ -19,11 +19,11 @@ const BUILTIN: Backdrop[] = [
   { id: 'plain', name: '素净', mode: 'plain' },
 ];
 // cover/figure：薄纱透明度；blur：场景主题下主面板的磨砂强度（越清晰越薄）。内置柔光背景本身就淡，纱减半。
-// photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
-const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; photo: number }> = {
-  soft: { name: '淡雅', cover: .66, figure: .42, blur: 18, photo: 4 },
-  medium: { name: '适中', cover: .34, figure: .16, blur: 9, photo: 2 },
-  clear: { name: '清晰', cover: .24, figure: 0, blur: 5, photo: 0 },
+// panel：桌面侧栏和主面板的白底（清晰档和手机清晰档同为 .28）。photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
+const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; panel: number; photo: number }> = {
+  soft: { name: '淡雅', cover: .66, figure: .42, blur: 20, panel: .56, photo: 4 },
+  medium: { name: '适中', cover: .34, figure: .16, blur: 12, panel: .44, photo: 2 },
+  clear: { name: '清晰', cover: .24, figure: 0, blur: 3, panel: .28, photo: 0 },
 };
 const KEY = 'hub.theme';
 interface Choice { id: string; veil: Veil; }
@@ -100,6 +100,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
   root.dataset.veil = choice.veil;
   root.style.setProperty('--panel-blur', `${veil.blur}px`);
+  root.style.setProperty('--panel-alpha', String(veil.panel));
   root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
   const layers = [...document.querySelectorAll<HTMLElement>('.theme-backdrop .bg-layer')];
   if (layers.length < 2) return;
