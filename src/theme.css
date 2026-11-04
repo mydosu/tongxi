@@ -1085,3 +1085,14 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   html:not([data-hud]) .messages.direct .agent-message { max-width: none; }
   html:not([data-hud]) .messages.direct .message.own { max-width: min(78%, 720px); }
 }
+/* 会话里的问答卡片也扁平：去掉浅蓝描边卡，平时一层淡白底；还在等你回答的那张铺按钮色淡底、圆点也换按钮色，一眼能找到。顶上的「有问题待回答」提示条同样处理。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .chat-question-card { border: 0; border-radius: var(--r-m); background: rgb(255 255 255 / .32); padding: 14px 18px; }
+  html:not([data-hud]) .chat-question-card:has(.chat-question-actions) { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, rgb(255 255 255 / .45)); }
+  html:not([data-hud]) .chat-question-card header { color: var(--muted); }
+  html:not([data-hud]) .chat-question-card .question-dot { background: var(--faint); }
+  html:not([data-hud]) .chat-question-card:has(.chat-question-actions) .question-dot { background: var(--btn, hsl(248 34% 64%)); }
+  html:not([data-hud]) .chat-question-card p { color: var(--ink-2); }
+  html:not([data-hud]) .chat-question-answered { color: var(--faint); }
+  html:not([data-hud]) .question-notice { border: 0; border-radius: var(--r-m); color: var(--ink-2); background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, rgb(255 255 255 / .45)); }
+}
