@@ -993,3 +993,9 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
 @property --btn { syntax: '<color>'; inherits: true; initial-value: hsl(248 34% 64%); }
 @property --btn-hover { syntax: '<color>'; inherits: true; initial-value: hsl(248 34% 58%); }
 html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(--ease); }
+
+/* 成员与服务：卡片里的「安装 / 连接 / 更新」不再是卡中卡，去白边只留一层更淡的底；侧栏底部「成员与服务」选中和会话选中同一种淡底。 */
+@media (min-width: 601px) {
+  html:not([data-hud]) .service-facts { background: rgb(255 255 255 / .3); border-color: transparent; }
+  html:not([data-hud]) .sidebar-actions #service-link.active { background: color-mix(in srgb, var(--btn, hsl(248 34% 64%)) 14%, transparent); box-shadow: none; }
+}
