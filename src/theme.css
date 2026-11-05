@@ -688,8 +688,6 @@ html:not([data-hud]) .session-bind-who small, html:not([data-hud]) .session-bind
 @property --spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes spin { to { --spin: 360deg; } }
 @keyframes flow-line { to { background-position-x: 100vw; } }
-@property --flow-h { syntax: '<number>'; inherits: false; initial-value: -30; }
-@keyframes flow-hue { to { --flow-h: 30; } }
 html:not([data-hud]) .composer, html:not([data-hud]) .project-agent-chat-composer { position: relative; }
 html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { content: ''; position: absolute; inset: -1px; padding: 2px; border-radius: inherit; pointer-events: none; opacity: 0;
   background: conic-gradient(from var(--spin), transparent 0 8%, #9384e2 22%, #6fa7e6 38%, transparent 52% 58%, #e3a2cc 72%, transparent 86%);
@@ -958,15 +956,14 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
     backdrop-filter: none; -webkit-backdrop-filter: none; } /* 带子在消息列表下面、不压着消息，自己再磨一层只会把背景抹匀提亮成一块白 */
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: transparent; border-top-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
-  /* 细线上用圆锥渐变只会左右两半各取一个颜色交替闪；改成一颗彗星沿线平移（块宽 100vw，平移整块正好无缝）。
-     颜色取主题按钮色、提亮提纯，色相在 ±30° 间慢慢来回漂；整条线铺一层同色淡底，彗星带一圈同色微光。 */
+  /* 细线上用圆锥渐变只会左右两半各取一个颜色交替闪；改成沿线平移的线性渐变（块宽 100vw，首尾同色，平移整块正好无缝）。
+     三个颜色都从主题按钮色出发：提亮提纯，色相各偏 -35°、0、+35°。 */
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 1px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none;
-    --c: oklch(from var(--btn, hsl(248 34% 64%)) calc(l + .06) calc(c + .07) calc(h + var(--flow-h)));
-    background:
-      linear-gradient(90deg, transparent 35%, color-mix(in oklch, var(--c) 12%, transparent) 55%, color-mix(in oklch, var(--c) 70%, transparent) 76%, color-mix(in oklch, var(--c), white 65%) 79.5%, transparent 81%) 0 0 / 100vw 100% repeat-x,
-      linear-gradient(color-mix(in oklch, var(--c) 22%, transparent) 0 0);
-    filter: drop-shadow(0 0 2px color-mix(in oklch, var(--c) 70%, transparent));
-    animation: flow-line 3s linear infinite paused, flow-hue 5s ease-in-out infinite alternate paused; }
+    --a: oklch(from var(--btn, hsl(248 34% 64%)) calc(l + .06) calc(c + .07) calc(h - 35));
+    --b: oklch(from var(--btn, hsl(248 34% 64%)) calc(l + .06) calc(c + .07) h);
+    --d: oklch(from var(--btn, hsl(248 34% 64%)) calc(l + .06) calc(c + .07) calc(h + 35));
+    background: linear-gradient(90deg, var(--a), var(--b), var(--d), var(--b), var(--a)) 0 0 / 100vw 100% repeat-x;
+    animation: flow-line 6s linear infinite paused; }
   html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
   /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 4px 的点击区（光标靠近就会变，不用做得更宽）；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
   html:not([data-hud]) .composer-resizer { display: block; position: absolute; left: 0; right: 0; top: -5px; height: 9px; z-index: 2; cursor: ns-resize; touch-action: none; }
