@@ -19,11 +19,11 @@ const BUILTIN: Backdrop[] = [
   { id: 'plain', name: '素净', mode: 'plain' },
 ];
 // cover/figure：薄纱透明度；blur：场景主题下主面板的磨砂强度（越清晰越薄）。内置柔光背景本身就淡，纱减半。
-// panel：桌面侧栏和主面板的白底（清晰档和手机清晰档同为 .28）。photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
+// panel：桌面侧栏和主面板的白底（桌面和手机清晰档同值）。photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
 const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; panel: number; photo: number }> = {
   soft: { name: '淡雅', cover: .66, figure: .42, blur: 20, panel: .56, photo: 4 },
   medium: { name: '适中', cover: .34, figure: .16, blur: 12, panel: .44, photo: 2 },
-  clear: { name: '清晰', cover: .24, figure: 0, blur: 3, panel: .28, photo: 0 },
+  clear: { name: '清晰', cover: .12, figure: 0, blur: 0, panel: .12, photo: 0 },
 };
 /// 浓淡是 0（淡雅）～100（清晰）的滑条，50 是适中；中间各项参数在相邻两档间线性插值。
 const STOPS: Record<Veil, number> = { soft: 0, medium: 50, clear: 100 };
@@ -109,7 +109,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   const veil = veilAt(choice.veil);
   // 暗图上深色字读不清：图越暗，面板白底越厚、磨砂越重，滑条拉到最清晰也保住可读性。
   const dark = theme.pastel ? 0 : Math.min(1, Math.max(0, (.62 - (look?.light ?? 1)) / .37));
-  veil.panel = Math.max(veil.panel, .28 + .32 * dark); veil.blur = Math.max(veil.blur, 3 + 9 * dark);
+  veil.panel = Math.max(veil.panel, .12 + .48 * dark); veil.blur = Math.max(veil.blur, 12 * dark);
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
   root.dataset.veil = choice.veil >= 75 ? 'clear' : choice.veil < 25 ? 'soft' : 'medium'; // 手机清晰档的面板白底按最近的档位切

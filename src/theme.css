@@ -1041,7 +1041,7 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
 /* 侧栏和主面板接缝处同一种白：原来侧栏 .42 白、饱和 1.45 偏粉偏暗，主面板 .5（立绘主题左缘 .64）、饱和 1.25 偏白，一条线两边色差明显。
    现在两边同饱和度，侧栏和主面板左缘都是 .52，立绘主题再往右渐渐透出人物。 */
 @media (min-width: 601px) {
-  /* 白底和磨砂跟着主题的「浓淡」档走（theme_picker 写 --panel-alpha / --panel-blur）：淡雅 .56、适中 .44、清晰 .28（和手机清晰档一样）。 */
+  /* 白底和磨砂跟着主题的「浓淡」档走（theme_picker 写 --panel-alpha / --panel-blur）：淡雅 .56、适中 .44、清晰 .12（和手机清晰档一样）。 */
   html:not([data-hud]) .sidebar { background: rgb(255 255 255 / var(--panel-alpha, .44)); backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); -webkit-backdrop-filter: blur(var(--panel-blur, 12px)) saturate(1.25); }
   html[data-bg-mode="figure"]:not([data-hud]) .main { background: linear-gradient(90deg, rgb(255 255 255 / var(--panel-alpha, .44)), rgb(255 255 255 / calc(var(--panel-alpha, .44) * .77)) 55%, rgb(255 255 255 / calc(var(--panel-alpha, .44) * .38)));
     backdrop-filter: blur(calc(var(--panel-blur, 12px) * .67)) saturate(1.25); -webkit-backdrop-filter: blur(calc(var(--panel-blur, 12px) * .67)) saturate(1.25); }
