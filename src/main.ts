@@ -25,6 +25,7 @@ import { fogOut, glide, measure, watchArrivals } from './motion';
 import './styles.css';
 import './agent_transcript.css';
 import './theme.css';
+import './tooltip';
 import './mobile.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
