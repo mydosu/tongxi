@@ -960,12 +960,12 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
   /* 细线上用圆锥渐变只会左右两半各取一个颜色交替闪；改成一颗彗星沿线平移（块宽 100vw，平移整块正好无缝）。
      颜色取主题按钮色、提亮提纯，色相在 ±30° 间慢慢来回漂；整条线铺一层同色淡底，彗星带一圈同色微光。 */
-  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none;
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 1px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none;
     --c: oklch(from var(--btn, hsl(248 34% 64%)) calc(l + .06) calc(c + .07) calc(h + var(--flow-h)));
     background:
       linear-gradient(90deg, transparent 35%, color-mix(in oklch, var(--c) 12%, transparent) 55%, color-mix(in oklch, var(--c) 70%, transparent) 76%, color-mix(in oklch, var(--c), white 65%) 79.5%, transparent 81%) 0 0 / 100vw 100% repeat-x,
       linear-gradient(color-mix(in oklch, var(--c) 22%, transparent) 0 0);
-    filter: drop-shadow(0 0 3px color-mix(in oklch, var(--c) 80%, transparent));
+    filter: drop-shadow(0 0 2px color-mix(in oklch, var(--c) 70%, transparent));
     animation: flow-line 3s linear infinite paused, flow-hue 5s ease-in-out infinite alternate paused; }
   html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
   /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 4px 的点击区（光标靠近就会变，不用做得更宽）；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
