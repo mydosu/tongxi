@@ -43,6 +43,8 @@ function childEnv() {
   for (const key of Object.keys(env)) {
     if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_SSE') || key.startsWith('AGENT_HUB_')) delete env[key];
   }
+  // 如实报自己的入口名，覆盖继承来的值：默认的 sdk-cli 扣 5h 额度约是交互式的 2 倍（anthropics/claude-code#97074）。
+  env.CLAUDE_CODE_ENTRYPOINT = 'tongxi';
   return env;
 }
 
