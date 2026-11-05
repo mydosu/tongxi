@@ -117,6 +117,8 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   root.style.setProperty('--panel-alpha', String(veil.panel));
   root.style.setProperty('--fill-blur', `${veil.fill}px`);
   root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
+  const fill = image && !theme.pastel && theme.mode !== 'plain' ? await fillOf(image, theme.mode) : null;
+  if (current !== choice) return;
   const layers = [...document.querySelectorAll<HTMLElement>('.theme-backdrop .bg-layer')];
   if (layers.length < 2) return;
   const next = layers[animate ? 1 - front : front], previous = layers[animate ? front : 1 - front];
@@ -130,6 +132,8 @@ export async function applyTheme(choice: Choice = current, animate = true) {
     if (theme.mode !== 'plain' && !theme.pastel && image) { const probe = new Image(); const ready = () => next.classList.add('measured'); probe.onload = () => { if (probe.naturalWidth && probe.naturalHeight) next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); next.classList.toggle('soft', theme.mode === 'cover' && probe.naturalWidth < innerWidth * devicePixelRatio * .6); ready(); }; probe.onerror = ready; probe.src = image; }
   }
   next.style.backgroundPosition = theme.mode === 'cover' ? focusOf(theme) : '';
+  next.classList.toggle('filled', !!fill);
+  if (fill) next.style.setProperty('--fill-src', `url("${fill}")`); else next.style.removeProperty('--fill-src');
   next.classList.add('visible');
   if (previous !== next) previous.classList.remove('visible');
   if (animate) front = 1 - front;
@@ -163,6 +167,64 @@ function inspect(image: string) {
     picture.src = image;
   }));
   return looks.get(image)!;
+}
+
+/// 主图四周空出来的地方：不再拿整张图放大模糊去垫（主图一清晰，后面那个放大的她就像重影），
+/// 改成把主图最外一圈的颜色往外延伸（横图拉上下沿、立绘拉左右沿），边缘太杂时用整张图的取色渐变。只是颜色，不出现第二遍画面。
+const fills = new Map<string, Promise<string | null>>();
+function fillOf(image: string, mode: 'cover' | 'figure') {
+  const key = `${mode}|${image}`;
+  if (!fills.has(key)) fills.set(key, new Promise(resolve => {
+    const picture = new Image();
+    picture.onload = () => { try { resolve(edgeFill(picture, mode)); } catch { resolve(null); } };
+    picture.onerror = () => resolve(null);
+    picture.src = image;
+  }));
+  return fills.get(key)!;
+}
+function paletteFill(picture: HTMLImageElement) {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 3;
+  canvas.getContext('2d')!.drawImage(picture, 0, 0, 3, 3);
+  return canvas.toDataURL();
+}
+/// 沿边取 16 段颜色（每段是边缘内侧 3% 那条带子的平均，避开描边和签名；段少一点，边上一个小物件不会被拉成一道长条），
+/// 叠在取色渐变上：贴着主图的地方是纯边缘色，越往窗口外沿越淡、过渡成取色渐变。画外看着像画布延伸出去，人物不会出现第二次。
+/// 立绘在会话区中间（整窗约 40%～80%），横图上下各一条带。边缘颜色起伏太大（拉出来是一道道杂纹）就只用取色渐变。
+function edgeFill(picture: HTMLImageElement, mode: 'cover' | 'figure') {
+  const w = picture.naturalWidth, h = picture.naturalHeight, n = 16, band = .03, cover = mode === 'cover';
+  const strip = (sx: number, sy: number, sw: number, sh: number) => {
+    const canvas = document.createElement('canvas'); canvas.width = cover ? n : 1; canvas.height = cover ? 1 : n;
+    canvas.getContext('2d', { willReadFrequently: true })!.drawImage(picture, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  };
+  const [a, b] = cover
+    ? [strip(0, 0, w, h * band), strip(0, h * (1 - band), w, h * band)]
+    : [strip(0, 0, w * band, h), strip(w * (1 - band), 0, w * band, h)];
+  if (Math.max(roughness(a), roughness(b)) > EDGE_BUSY) return paletteFill(picture);
+  const out = document.createElement('canvas'); out.width = cover ? n : 8; out.height = cover ? 8 : n;
+  const context = out.getContext('2d')!;
+  const palette = document.createElement('canvas'); palette.width = palette.height = 3;
+  palette.getContext('2d')!.drawImage(picture, 0, 0, 3, 3);
+  context.drawImage(palette, 0, 0, out.width, out.height);
+  // 8 格里每格边缘色的浓度：立绘左沿色铺在 1～3 格、右沿色在 4～7 格；横图上沿色在 0～3 行、下沿色在 4～7 行，最外一格淡一半。
+  const weights = cover ? [.5, 1, 1, 1, 1, 1, 1, .5] : [0, .5, 1, 1, 1, 1, 1, .5];
+  weights.forEach((alpha, i) => {
+    if (!alpha) return;
+    context.globalAlpha = alpha;
+    const source = i < 4 ? a : b;
+    if (cover) context.drawImage(source, 0, i, n, 1); else context.drawImage(source, i, 0, 1, n);
+  });
+  context.globalAlpha = 1;
+  return out.toDataURL();
+}
+/// 相邻两段的平均亮度差（0～1）：纯色边 ≈0，渐变边很小，花纹、窗格、杂物边就大。
+const EDGE_BUSY = .08;
+function roughness(canvas: HTMLCanvasElement) {
+  const data = canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height).data;
+  const luma = (i: number) => (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+  let sum = 0;
+  for (let i = 4; i < data.length; i += 4) sum += Math.abs(luma(i) - luma(i - 4));
+  return sum / (data.length / 4 - 1);
 }
 
 /// 按钮色跟着背景图走（色相取自图，深浅固定，见 accent.ts）。图读不出像素就用默认淡紫。

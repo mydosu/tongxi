@@ -1120,3 +1120,5 @@ html:not([data-hud]) { transition: --btn .45s var(--ease), --btn-hover .45s var(
   box-shadow: 0 8px 24px rgb(80 86 140 / .16), inset 0 1px 0 #fff; color: var(--ink-2); font-size: 12px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere;
   pointer-events: none; opacity: 0; transition: opacity .14s; }
 .hover-tip.visible { opacity: 1; }
+/* 四周补位用合成图（主图边缘延伸，太杂时取色渐变；theme_picker 写 --fill-src）：小图拉伸到整窗，稍微柔化掉条纹；不跟浓淡滑条走，它只是颜色不是画面。 */
+html:not([data-hud]) .bg-layer:is(.cover, .figure).filled:not(.pastel)::before { background-image: var(--fill-src); background-size: 100% 100%; filter: blur(16px); }
