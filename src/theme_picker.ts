@@ -5,7 +5,7 @@ import { buttonColors, DEFAULT_HUE, hueOf } from './accent';
 // 主题背景：内置一套不含任何角色的公用背景；个人图片由用户自己导入（压缩后存在本机库里，只有这台电脑看得到）。
 // 竖图默认放在右侧当立绘（白底正片叠底融进底色），横图铺满窗口再罩一层薄纱；「浓淡」只调那层纱，免得背景抢了内容。
 type Escape = (value: string | number) => string;
-export type Veil = 'soft' | 'medium' | 'clear';
+type Veil = 'soft' | 'medium' | 'clear';
 type Mode = 'figure' | 'cover' | 'plain';
 interface Backdrop { id: string; name: string; mode: Mode; image?: string; thumb?: string; position?: string; pastel?: boolean; custom?: boolean; }
 
@@ -25,8 +25,15 @@ const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: n
   medium: { name: '适中', cover: .34, figure: .16, blur: 12, panel: .44, photo: 2 },
   clear: { name: '清晰', cover: .24, figure: 0, blur: 3, panel: .28, photo: 0 },
 };
+/// 浓淡是 0（淡雅）～100（清晰）的滑条，50 是适中；中间各项参数在相邻两档间线性插值。
+const STOPS: Record<Veil, number> = { soft: 0, medium: 50, clear: 100 };
+function veilAt(value: number) {
+  const [a, b, t] = value <= 50 ? [VEILS.soft, VEILS.medium, value / 50] : [VEILS.medium, VEILS.clear, (value - 50) / 50];
+  const mix = (key: 'cover' | 'figure' | 'blur' | 'panel' | 'photo') => a[key] + (b[key] - a[key]) * t;
+  return { cover: mix('cover'), figure: mix('figure'), blur: mix('blur'), panel: mix('panel'), photo: mix('photo') };
+}
 const KEY = 'hub.theme';
-interface Choice { id: string; veil: Veil; }
+interface Choice { id: string; veil: number; }
 interface Stored { id: string; name: string; mode: 'cover' | 'figure'; thumb: string; }
 
 let custom: Backdrop[] = [];
@@ -35,10 +42,12 @@ const all = () => [...BUILTIN, ...custom];
 
 function saved(): Choice {
   try {
-    const value = JSON.parse(localStorage.getItem(KEY) || 'null') as Choice | null;
-    if (value && typeof value.id === 'string' && value.veil in VEILS) return value;
+    const value = JSON.parse(localStorage.getItem(KEY) || 'null') as { id?: unknown; veil?: unknown } | null;
+    // 旧版存的是档位名，按档位换成滑条位置。
+    const veil = typeof value?.veil === 'number' ? value.veil : STOPS[value?.veil as Veil];
+    if (value && typeof value.id === 'string' && Number.isFinite(veil)) return { id: value.id, veil: Math.min(100, Math.max(0, veil)) };
   } catch { /* 读不到就用默认 */ }
-  return { id: 'chenwu', veil: 'medium' };
+  return { id: 'chenwu', veil: 50 };
 }
 let current = saved();
 // 手机浏览器的 localStorage 是空的：第一次用桌面上导入的第一张自定义主题，没有再用默认。
@@ -95,10 +104,10 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   const root = document.documentElement;
   root.dataset.bgMode = theme.mode;
   paintAccent(image);
-  const veil = VEILS[choice.veil];
+  const veil = veilAt(choice.veil);
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
-  root.dataset.veil = choice.veil;
+  root.dataset.veil = choice.veil >= 75 ? 'clear' : choice.veil < 25 ? 'soft' : 'medium'; // 手机清晰档的面板白底按最近的档位切
   root.style.setProperty('--panel-blur', `${veil.blur}px`);
   root.style.setProperty('--panel-alpha', String(veil.panel));
   root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
@@ -160,7 +169,7 @@ export async function themePicker(host: { escape: Escape; open: (title: string, 
   await loadCustom();
   const card = (theme: Backdrop) => `<div class="theme-card${theme.id === current.id ? ' selected' : ''}" data-theme-id="${escape(theme.id)}" role="button" tabindex="0" aria-pressed="${theme.id === current.id}"><span class="theme-thumb${theme.mode === 'plain' ? ' plain' : ''}"${theme.thumb ? ` style="background-image:url('${theme.thumb}')"` : ''}></span><span class="theme-name">${escape(theme.name)}<small>${theme.custom && !isRemote ? `<button type="button" class="theme-mode" data-theme-mode="${escape(theme.id)}" title="切换显示方式">${theme.mode === 'figure' ? '立绘' : '铺满'}</button><button type="button" class="theme-remove" data-theme-remove="${escape(theme.id)}" title="删除这张背景" aria-label="删除这张背景">×</button>` : theme.custom ? '自定义' : theme.mode === 'plain' ? '纯色' : '内置'}</small></span></div>`;
   const grid = () => `${all().map(card).join('')}${isRemote ? '' : '<label class="theme-card theme-import" title="导入你自己的图片（可多选），只保存在这台设备上"><input type="file" accept="image/*" multiple hidden data-theme-import><span class="theme-thumb plus">＋</span><span class="theme-name">导入图片<small>可多选</small></span></label>'}`;
-  host.open('主题背景', '点一下立即生效。导入的图片只保存在这台设备上，竖图默认当立绘、横图铺满，可以在卡片上切换。', `<div class="theme-picker"><div class="theme-grid">${grid()}</div><div class="theme-veil"><span>背景浓淡</span><div class="segmented" role="radiogroup" aria-label="背景浓淡">${(Object.keys(VEILS) as Veil[]).map(id => `<button type="button" role="radio" data-veil="${id}" aria-checked="${id === current.veil}" class="${id === current.veil ? 'selected' : ''}">${VEILS[id].name}</button>`).join('')}</div></div><div class="modal-footer"><span>内置背景不含任何人物，适合所有人</span><button type="button" class="primary" data-theme-done>完成</button></div></div>`);
+  host.open('主题背景', '点一下立即生效。导入的图片只保存在这台设备上，竖图默认当立绘、横图铺满，可以在卡片上切换。', `<div class="theme-picker"><div class="theme-grid">${grid()}</div><div class="theme-veil"><span>背景浓淡</span><div class="veil-slider"><small>${VEILS.soft.name}</small><input type="range" min="0" max="100" step="1" value="${Math.round(current.veil)}" style="--fill:${Math.round(current.veil)}%" data-veil-range aria-label="背景浓淡，0 淡雅、100 清晰"><small>${VEILS.clear.name}</small></div></div><div class="modal-footer"><span>内置背景不含任何人物，适合所有人</span><button type="button" class="primary" data-theme-done>完成</button></div></div>`);
   const root = host.modal.querySelector<HTMLElement>('.theme-picker')!;
   const repaint = () => { root.querySelector('.theme-grid')!.innerHTML = grid(); };
   root.addEventListener('change', async event => {
@@ -200,16 +209,16 @@ export async function themePicker(host: { escape: Escape; open: (title: string, 
       repaint(); return;
     }
     const theme = target.closest<HTMLElement>('[data-theme-id]');
-    const veil = target.closest<HTMLElement>('[data-veil]');
     if (theme && theme.dataset.themeId !== current.id) {
       await applyTheme({ ...current, id: theme.dataset.themeId! });
       repaint();
     }
-    if (veil) {
-      await applyTheme({ ...current, veil: veil.dataset.veil as Veil }, false);
-      root.querySelectorAll<HTMLElement>('[data-veil]').forEach(item => { item.classList.toggle('selected', item === veil); item.setAttribute('aria-checked', String(item === veil)); });
-    }
     if (target.closest('[data-theme-done]')) host.modal.close();
+  });
+  root.querySelector<HTMLInputElement>('[data-veil-range]')!.addEventListener('input', event => {
+    const input = event.target as HTMLInputElement;
+    input.style.setProperty('--fill', `${input.value}%`);
+    void applyTheme({ ...current, veil: Number(input.value) }, false);
   });
   root.addEventListener('keydown', event => {
     const theme = (event.target as HTMLElement).closest<HTMLElement>('[data-theme-id]');

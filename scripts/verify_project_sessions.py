@@ -245,11 +245,11 @@ def main() -> int:
                 check(f"theme {theme} applied", len(visible) == 1 and visible[0].startswith(f"{theme}|"), visible)
             shot(f"theme-{theme}")
         page.locator("#theme-link").click()
-        page.locator('[data-veil="clear"]').click()
+        page.locator('[data-veil-range]').fill("100")
         veil = page.evaluate("() => getComputedStyle(document.documentElement).getPropertyValue('--veil').trim()")
         check("veil control adjusts the backdrop", veil == "0", veil)
         page.locator('[data-theme-id="chenwu"]').click()
-        page.locator('[data-veil="medium"]').click()
+        page.locator('[data-veil-range]').fill("50")
         page.locator("[data-theme-done]").click()
         check("no page errors", not sd.errors, sd.errors)
     finally:

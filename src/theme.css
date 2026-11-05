@@ -308,9 +308,15 @@ html:not([data-hud]) details.instant::details-content { transition: none; }
 .theme-name { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; padding: 0 3px 2px; font-size: 12px; color: var(--ink-2); }
 .theme-name small { font-size: 11px; color: #959bb6; }
 .theme-veil { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; font-size: 12px; color: var(--muted); }
-.segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: rgb(255 255 255 / .45); border: 1px solid rgb(255 255 255 / .8); }
-.segmented button { padding: 6px 16px; border-radius: var(--r-s); font-size: 12px; color: var(--muted); }
-.segmented button.selected { background: rgb(255 255 255 / .96); color: var(--ink-2); box-shadow: 0 2px 6px rgb(90 96 160 / .14); }
+.veil-slider { display: flex; align-items: center; gap: 10px; flex: 1; max-width: 340px; margin-left: 16px; }
+.veil-slider small { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.veil-slider input { flex: 1; min-width: 0; height: 18px; margin: 0; background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none; }
+/* 细轨浅色：左段是主题按钮色调淡的那一截，右段近乎透明；--fill 由 theme_picker 随滑条位置写入。 */
+.veil-slider input::-webkit-slider-runnable-track { height: 2px; border-radius: 1px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--btn, var(--accent)) 55%, #fff) var(--fill, 50%), rgb(118 126 172 / .14) var(--fill, 50%)); }
+.veil-slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; margin-top: -5px; border-radius: 50%;
+  background: #fff; border: 1.5px solid color-mix(in srgb, var(--btn, var(--accent)) 70%, #fff); box-shadow: 0 1px 4px rgb(80 86 140 / .18); transition: transform .12s; }
+.veil-slider input:hover::-webkit-slider-thumb { transform: scale(1.15); }
 
 /* ---------- 项目会话绑定 ---------- */
 .session-bind-section { display: grid; gap: 10px; border: 1px solid rgb(255 255 255 / .85); border-radius: var(--r-m); padding: 12px 14px 14px; margin: 0 0 16px; background: rgb(255 255 255 / .45); }
