@@ -19,18 +19,18 @@ const BUILTIN: Backdrop[] = [
   { id: 'plain', name: '素净', mode: 'plain' },
 ];
 // cover/figure：薄纱透明度；blur：场景主题下主面板的磨砂强度（越清晰越薄）。内置柔光背景本身就淡，纱减半。
-// panel：桌面侧栏和主面板的白底（桌面和手机清晰档同值）。photo：手机上背景图本身的模糊（px）。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
-const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; panel: number; photo: number }> = {
-  soft: { name: '淡雅', cover: .66, figure: .42, blur: 20, panel: .56, photo: 4 },
-  medium: { name: '适中', cover: .34, figure: .16, blur: 12, panel: .44, photo: 2 },
-  clear: { name: '清晰', cover: .12, figure: 0, blur: 0, panel: .12, photo: 0 },
+// panel：桌面侧栏和主面板的白底（桌面和手机清晰档同值）。photo：手机上背景图本身的模糊（px）。fill：主图四周用同图放大补位那层的模糊，越清晰越清楚，但留一点虚免得和主图抢。手机没有实时磨砂，这一档就是背景的虚实；清晰档不糊。
+const VEILS: Record<Veil, { name: string; cover: number; figure: number; blur: number; panel: number; photo: number; fill: number }> = {
+  soft: { name: '淡雅', cover: .66, figure: .42, blur: 20, panel: .56, photo: 4, fill: 28 },
+  medium: { name: '适中', cover: .34, figure: .16, blur: 12, panel: .44, photo: 2, fill: 22 },
+  clear: { name: '清晰', cover: .12, figure: 0, blur: 0, panel: .12, photo: 0, fill: 10 },
 };
 /// 浓淡是 0（淡雅）～100（清晰）的滑条，50 是适中；中间各项参数在相邻两档间线性插值。
 const STOPS: Record<Veil, number> = { soft: 0, medium: 50, clear: 100 };
 function veilAt(value: number) {
   const [a, b, t] = value <= 50 ? [VEILS.soft, VEILS.medium, value / 50] : [VEILS.medium, VEILS.clear, (value - 50) / 50];
-  const mix = (key: 'cover' | 'figure' | 'blur' | 'panel' | 'photo') => a[key] + (b[key] - a[key]) * t;
-  return { cover: mix('cover'), figure: mix('figure'), blur: mix('blur'), panel: mix('panel'), photo: mix('photo') };
+  const mix = (key: 'cover' | 'figure' | 'blur' | 'panel' | 'photo' | 'fill') => a[key] + (b[key] - a[key]) * t;
+  return { cover: mix('cover'), figure: mix('figure'), blur: mix('blur'), panel: mix('panel'), photo: mix('photo'), fill: mix('fill') };
 }
 const KEY = 'hub.theme';
 interface Choice { id: string; veil: number; }
@@ -115,6 +115,7 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   root.dataset.veil = choice.veil >= 75 ? 'clear' : choice.veil < 25 ? 'soft' : 'medium'; // 手机清晰档的面板白底按最近的档位切
   root.style.setProperty('--panel-blur', `${veil.blur}px`);
   root.style.setProperty('--panel-alpha', String(veil.panel));
+  root.style.setProperty('--fill-blur', `${veil.fill}px`);
   root.style.setProperty('--bg-filter', veil.photo ? `blur(${veil.photo}px)` : 'none');
   const layers = [...document.querySelectorAll<HTMLElement>('.theme-backdrop .bg-layer')];
   if (layers.length < 2) return;

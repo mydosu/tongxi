@@ -13,7 +13,7 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud]) .bg-layer.figure { background-size: cover; background-position: center; -webkit-mask-image: none; mask-image: none; }
   html:not([data-hud]) .bg-layer.cover:not(.pastel) { background-image: none !important; filter: none; }
   html:not([data-hud]) .bg-layer.cover:not(.pastel)::before, html:not([data-hud]) .bg-layer.cover:not(.pastel)::after { content: ""; position: absolute; background: var(--bg-img, none) no-repeat center; }
-  html:not([data-hud]) .bg-layer.cover:not(.pastel)::before { inset: -40px; background-size: cover; filter: blur(28px); }
+  html:not([data-hud]) .bg-layer.cover:not(.pastel)::before { inset: -40px; background-size: cover; filter: blur(var(--fill-blur, 28px)); }
   html:not([data-hud]) .bg-layer.cover:not(.pastel)::after { left: 0; width: 100%; top: 50%; translate: 0 -50%; aspect-ratio: var(--bg-ar, 16 / 9); background-size: 100% 100%; opacity: 0; transition: opacity .3s; filter: var(--bg-filter, none);
     -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24%, #000 76%, transparent); mask-image: linear-gradient(to bottom, transparent, #000 24%, #000 76%, transparent); }
   html:not([data-hud]) .bg-layer.cover.measured:not(.pastel)::after { opacity: 1; } /* 宽高比量到前才不画，免得先按 16:9 画出一条带再跳 */
@@ -25,7 +25,8 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud]) :is(button, input, textarea, select, summary, [tabindex], [role="button"]):focus-visible { outline: none; }
   html:not([data-hud]) :is(input, select):focus-visible { border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
   /* 「清晰」档：面板的白纱也跟着薄下来，背景图才看得清（默认 .5 上下的白底会把图洗淡）。 */
-  html:not([data-hud])[data-veil="clear"] :is(.sidebar, .main) { background: rgb(255 255 255 / var(--panel-alpha, .28)); } /* 暗图时 theme_picker 会把它加厚 */
+  html:not([data-hud])[data-veil="clear"] .main { background: rgb(255 255 255 / var(--panel-alpha, .28)); } /* 暗图时 theme_picker 会把它加厚 */
+  html:not([data-hud])[data-veil="clear"] .sidebar { background: rgb(255 255 255 / max(var(--panel-alpha, .28), .32)); } /* 会话列表全是小字，手机又没磨砂，不跟着透到底 */
 
   /* 长会话里改一个节点（流式回复每一帧）手机上都要把整列几千个节点重新排版（真机实测每次 28ms）。
      回复进行中（main.ts 的 markLive 打 data-live）屏幕外的消息跳过排版和绘制；auto 记着算出来的真实高度，滚动位置不乱。
