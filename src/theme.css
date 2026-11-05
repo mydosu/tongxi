@@ -687,6 +687,7 @@ html:not([data-hud]) .session-bind-who small, html:not([data-hud]) .session-bind
 /* ---------- 有人在回复：输入框沿着边缘流过一圈淡紫到冰蓝的光 ---------- */
 @property --spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes spin { to { --spin: 360deg; } }
+@keyframes flow-line { to { background-position-x: 100vw; } }
 html:not([data-hud]) .composer, html:not([data-hud]) .project-agent-chat-composer { position: relative; }
 html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { content: ''; position: absolute; inset: -1px; padding: 2px; border-radius: inherit; pointer-events: none; opacity: 0;
   background: conic-gradient(from var(--spin), transparent 0 8%, #9384e2 22%, #6fa7e6 38%, transparent 52% 58%, #e3a2cc 72%, transparent 86%);
@@ -955,7 +956,10 @@ html:not([data-hud]) .handoff-body { color: var(--ink); font-size: 14px; line-he
     backdrop-filter: none; -webkit-backdrop-filter: none; } /* 带子在消息列表下面、不压着消息，自己再磨一层只会把背景抹匀提亮成一块白 */
   html:not([data-hud]) :is(.composer, .project-agent-chat-composer):focus-within { background: transparent; border-top-color: var(--btn, hsl(248 34% 64%)); box-shadow: none; }
   html:not([data-hud]) :is(.composer:has(.stop-reply:not([hidden])), .chat-content:has(#cancel-discussion:not([hidden])) .composer, .project-agent-chat:has([data-stop-project-chat-run]) .project-agent-chat-composer) { box-shadow: none; }
-  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none; }
+  /* 细线上用圆锥渐变只会左右两半各取一个颜色交替闪；改成一段光沿线平移，块宽 100vw 平移整块正好无缝循环 */
+  html:not([data-hud]) :is(.composer, .project-agent-chat-composer)::after { inset: -1px 0 auto; height: 2px; padding: 0; border-radius: 0; -webkit-mask: none; mask: none;
+    background: linear-gradient(90deg, transparent 0 30%, #9384e2 45%, #6fa7e6 55%, #e3a2cc 65%, transparent 80%) 0 0 / 100vw 100% repeat-x;
+    animation: flow-line 3.6s linear infinite paused; }
   html:not([data-hud]) .composer .chat-tools > .tool-pop:not([hidden]) { left: 16px; }
   /* 拖分隔线改输入框高度（main.ts）：分隔线上下各 4px 的点击区（光标靠近就会变，不用做得更宽）；悬停时线变按钮色、正中浮出一个小把手，拖动中保持。 */
   html:not([data-hud]) .composer-resizer { display: block; position: absolute; left: 0; right: 0; top: -5px; height: 9px; z-index: 2; cursor: ns-resize; touch-action: none; }

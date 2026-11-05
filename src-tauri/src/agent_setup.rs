@@ -50,7 +50,8 @@ const RECIPES: [Recipe; 6] = [
         install: "irm https://claude.ai/install.ps1 | iex",
         setup: "claude",
         docs: "https://code.claude.com/docs/en/setup",
-        needs_node: None,
+        // Claude 本身是原生 exe，但同席接它的桥是 Node 脚本。
+        needs_node: Some((18, 0)),
     },
     Recipe {
         id: "hermes-win",

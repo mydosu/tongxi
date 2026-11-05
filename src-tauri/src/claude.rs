@@ -40,7 +40,6 @@ pub struct Runtime {
     app: tauri::AppHandle,
     store: Arc<Mutex<Store>>,
     directory: PathBuf,
-    node: Option<PathBuf>,
     inner: Mutex<Inner>,
     revision: AtomicU64,
 }
@@ -116,10 +115,9 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 impl Runtime {
     fn bridge(&self, data: &Path) -> Result<Command> {
-        let node = self
-            .node
-            .as_ref()
-            .ok_or("未找到 Node 运行时，请检查 PATH 或 AGENT_HUB_CLAUDE_NODE")?;
+        // 每次连接现查：用户装完 Node 不用重启同席。
+        let node = discover_node()
+            .ok_or("同席连 Claude 需要 Node.js：请在「成员」页点安装，或装好 Node.js 后重新连接")?;
         let executable = discover_executable()
             .ok_or("未找到 Claude Code，请检查 PATH 或 AGENT_HUB_CLAUDE_EXE")?;
         let mut command = Command::new(node);
@@ -151,7 +149,6 @@ impl Runtime {
             app,
             store,
             directory,
-            node: discover_node(),
             revision: AtomicU64::new(1),
             inner: Mutex::new(Inner {
                 connection: "disconnected".into(),
