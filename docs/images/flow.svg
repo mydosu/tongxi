@@ -39,15 +39,16 @@
   </defs>
   <rect width="1280" height="500" rx="28" fill="url(#bg)"/>
   <text class="h" x="40" y="58">项目协作，一句话交给主脑</text>
-  <text class="s" x="40" y="88">主脑把活拆成几步、派给成员并行做。派活页上就是这样一张图：在做的描着流光，等你的轻轻呼吸，指到一步亮出它的整条链。</text>
+  <text class="s" x="40" y="88">主脑把活拆成几步、派给成员并行做。「主脑任务」里就是这样一张图：在做的描着流光，等你的轻轻呼吸，指到一步亮出它的整条链。</text>
 
-  <!-- 图例：卡片颜色就是状态 -->
+  <!-- 图例：卡片颜色对应真实状态分类 -->
   <g class="k">
-    <circle cx="904" cy="54" r="4" fill="#4a9f7b"/><text x="914" y="59">在做</text>
-    <circle cx="970" cy="54" r="4" fill="#6c86b6"/><text x="980" y="59">待审</text>
-    <circle cx="1036" cy="54" r="4" fill="#b5873a"/><text x="1046" y="59">等你</text>
-    <circle cx="1102" cy="54" r="4" fill="#9ea3bd"/><text x="1112" y="59">没做</text>
-    <circle cx="1168" cy="54" r="4" fill="#7f74b4"/><text x="1178" y="59">做完</text>
+    <circle cx="760" cy="54" r="4" fill="#4a9f7b"/><text x="770" y="59">进行中</text>
+    <circle cx="840" cy="54" r="4" fill="#6c86b6"/><text x="850" y="59">待审核</text>
+    <circle cx="920" cy="54" r="4" fill="#b5873a"/><text x="930" y="59">待你处理</text>
+    <circle cx="1015" cy="54" r="4" fill="#8f95b2"/><text x="1025" y="59">等待中</text>
+    <circle cx="1095" cy="54" r="4" fill="#9ea3bd"/><text x="1105" y="59">未开始</text>
+    <circle cx="1175" cy="54" r="4" fill="#7f74b4"/><text x="1185" y="59">已完成</text>
   </g>
 
   <!-- 点阵画布 -->
@@ -96,7 +97,7 @@
     <rect x="-1" y="-1" width="198" height="82" rx="15" fill="none" stroke="url(#spin)" stroke-width="2.2"/>
     <circle cx="26" cy="28" r="9.5" fill="#e0efe9"/><circle cx="26" cy="28" r="3.4" fill="#4a9f7b"/>
     <text class="t" x="44" y="34">补测试</text>
-    <text class="f" x="18" y="62">克大姐 · 工作树 · 8 分钟</text>
+    <text class="f" x="18" y="62">Claude 1号 · 工作树 · 8 分钟</text>
   </g>
 
   <!-- 等你：轻轻呼吸 -->
@@ -105,7 +106,7 @@
     <rect width="196" height="80" rx="14" fill="url(#t-you)" stroke="#fff" filter="url(#card)"/>
     <circle cx="26" cy="28" r="9.5" fill="#f2ebdd"/><rect x="22.6" y="24.4" width="2.2" height="7.2" rx="1" fill="#b5873a"/><rect x="27.2" y="24.4" width="2.2" height="7.2" rx="1" fill="#b5873a"/>
     <text class="t" x="44" y="34">等你拍板</text>
-    <text class="f" x="18" y="62">在问答面板回答就行</text>
+    <text class="f" x="18" y="62">在协作问答回答就行</text>
   </g>
 
   <!-- 没做 -->
@@ -115,7 +116,7 @@
     <text class="t" x="44" y="34">主脑把关</text>
     <text class="f" x="18" y="62">看交回的结果</text>
     <rect x="124" y="49" width="60" height="20" rx="10" fill="#b0634f" fill-opacity=".1"/>
-    <text x="154" y="63" text-anchor="middle" font-size="12" fill="#b0634f">拖住 1 件</text>
+    <text x="154" y="63" text-anchor="middle" font-size="12" fill="#b0634f">阻塞 1 项</text>
   </g>
   <g transform="translate(1032 240)">
     <rect width="196" height="80" rx="14" fill="url(#t-todo)" stroke="#fff" filter="url(#card)"/>
