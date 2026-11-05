@@ -38,16 +38,17 @@
     </style>
   </defs>
   <rect width="1280" height="500" rx="28" fill="url(#bg)"/>
-  <text class="h" x="40" y="58">Project mode: one sentence to the lead</text>
-  <text class="s" x="40" y="88">The lead splits the work into steps for members to run in parallel. The dispatch page draws this map: running steps shimmer, waiting ones breathe.</text>
+  <text class="h" x="40" y="58">Project collaboration: one sentence to the lead</text>
+  <text class="s" x="40" y="88">The lead splits the work into steps for members to run in parallel. In "Brain jobs" this map appears: running steps shimmer, waiting ones breathe.</text>
 
-  <!-- 图例：卡片颜色就是状态 -->
+  <!-- 图例：卡片颜色对应真实状态分类 -->
   <g class="k">
-    <circle cx="904" cy="54" r="4" fill="#4a9f7b"/><text x="914" y="59">Doing</text>
-    <circle cx="970" cy="54" r="4" fill="#6c86b6"/><text x="980" y="59">Review</text>
-    <circle cx="1036" cy="54" r="4" fill="#b5873a"/><text x="1046" y="59">You</text>
-    <circle cx="1102" cy="54" r="4" fill="#9ea3bd"/><text x="1112" y="59">To do</text>
-    <circle cx="1168" cy="54" r="4" fill="#7f74b4"/><text x="1178" y="59">Done</text>
+    <circle cx="610" cy="54" r="4" fill="#4a9f7b"/><text x="620" y="59">In progress</text>
+    <circle cx="725" cy="54" r="4" fill="#6c86b6"/><text x="735" y="59">Needs review</text>
+    <circle cx="845" cy="54" r="4" fill="#b5873a"/><text x="855" y="59">Needs you</text>
+    <circle cx="945" cy="54" r="4" fill="#8f95b2"/><text x="955" y="59">Waiting</text>
+    <circle cx="1035" cy="54" r="4" fill="#9ea3bd"/><text x="1045" y="59">Not started</text>
+    <circle cx="1145" cy="54" r="4" fill="#7f74b4"/><text x="1155" y="59">Completed</text>
   </g>
 
   <!-- 点阵画布 -->
@@ -96,7 +97,7 @@
     <rect x="-1" y="-1" width="198" height="82" rx="15" fill="none" stroke="url(#spin)" stroke-width="2.2"/>
     <circle cx="26" cy="28" r="9.5" fill="#e0efe9"/><circle cx="26" cy="28" r="3.4" fill="#4a9f7b"/>
     <text class="t" x="44" y="34">Add tests</text>
-    <text class="f" x="18" y="62">Claude · worktree · 8 min</text>
+    <text class="f" x="18" y="62">Claude 1 · worktree · 8 min</text>
   </g>
 
   <!-- 等你：轻轻呼吸 -->
@@ -105,7 +106,7 @@
     <rect width="196" height="80" rx="14" fill="url(#t-you)" stroke="#fff" filter="url(#card)"/>
     <circle cx="26" cy="28" r="9.5" fill="#f2ebdd"/><rect x="22.6" y="24.4" width="2.2" height="7.2" rx="1" fill="#b5873a"/><rect x="27.2" y="24.4" width="2.2" height="7.2" rx="1" fill="#b5873a"/>
     <text class="t" x="44" y="34">Your call</text>
-    <text class="f" x="18" y="62">Answer in the Q&amp;A panel</text>
+    <text class="f" x="18" y="62">Answer in Inquiries</text>
   </g>
 
   <!-- 没做 -->

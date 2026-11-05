@@ -1,236 +1,234 @@
 <div align="center">
 
-<img src="docs/images/hero-en.svg" width="100%" alt="Tongxi · Agent Hub: seat the AI coding agents already on your machine at one table" />
-
-[![Release](https://img.shields.io/github/v/release/mydosu/tongxi?style=flat-square&color=a598d8)](https://github.com/mydosu/tongxi/releases/latest) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-8fd3b6?style=flat-square)](#quick-start) [![Tauri](https://img.shields.io/badge/Tauri-2-f0b8a0?style=flat-square)](https://v2.tauri.app/) [![License](https://img.shields.io/github/license/mydosu/tongxi?style=flat-square&color=b6bbd6)](LICENSE)
-
-**[Download](https://github.com/mydosu/tongxi/releases/latest)** · [Quick start](#quick-start) · [Project mode](#project-mode) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
+<img src="docs/images/hero-en.svg" width="100%" alt="Tongxi · Agent Hub: seat the AI agents on your machine at one table" />
 
 <br />
 
-<img src="docs/images/demo.gif" width="100%" alt="Real recording: create a project group (lead Claude, members DSH and Claude), bind a small pomodoro repo, say one sentence; the lead plans, the two members each build a feature and review each other, and the lead merges and reports back" />
+[![Release](https://img.shields.io/github/v/release/mydosu/tongxi?style=flat-square&color=a598d8&label=Release)](https://github.com/mydosu/tongxi/releases/latest) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-8fd3b6?style=flat-square)](#quick-start) [![Tauri](https://img.shields.io/badge/Tauri-2-f0b8a0?style=flat-square)](https://v2.tauri.app/) [![License](https://img.shields.io/github/license/mydosu/tongxi?style=flat-square&color=b6bbd6&label=License)](LICENSE)
 
-<sub>Real recording (custom theme, Chinese UI): new project group → bind a repo → one sentence → the lead plans, two members work in parallel → cross-review → merge and report. Waiting is sped up 16×; <a href="docs/images/demo.mp4">full-quality MP4</a>.</sub>
+**[Download latest release](https://github.com/mydosu/tongxi/releases/latest)** · **[📖 Quickstart tutorial (Chinese)](docs/上手教程.md)** · [Quick start](#quick-start) · [Supported members](#supported-members) · [Project collaboration](#project-collaboration) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
+
+<br />
+
+<img src="docs/images/demo.gif" width="100%" alt="Recording: create a project group, bind a repo, lead plans and delegates" />
+
+<sub>Recording: create project group → bind repo → state requirement → lead plans, members develop in parallel → review and merge. (Waiting sped up; <a href="docs/images/demo.mp4">watch high-res MP4</a>)</sub>
 
 </div>
 
-<br />
-
-Tongxi (同席, "sharing a table") is a Windows desktop app that brings the agent CLIs you already use — **Codex, Claude Code, Hermes, DSH, OpenCode and Antigravity** — into one workspace:
-
-- Chat with any of them one-on-one.
-- Pull several into a group chat.
-- Bind a code repository and let one of them lead the others through the work.
-
-There is also a seat for your own companion, if you have one.
-
-> Tongxi is only the table. Models, keys, tools, MCP servers and plugins all stay in each CLI's own config; Tongxi does not change them.
-
-**Why not just open a few terminals?** Three reasons: you can hand over real work (a lead agent plans, delegates, reviews and merges, inside the permissions you set), you can see what it cost (every task is priced and compared with doing it all on the expensive model), and it keeps up with CLI upgrades (verified versions, diagnostics, isolated updates).
+> **Note**: The UI is in Chinese for now.
 
 <br />
 
-## A look around
+## What is Tongxi?
 
-All screenshots come from the same real task (adding pause/resume and a "done today" counter to a pomodoro timer), with a custom theme.
+Tongxi (同席 / Agent Hub) is a Windows desktop application (single exe, portable, ~9 MB). It brings the AI agent command-line interfaces (CLIs) already installed on your PC into a single window:
 
-| Team chat | Lead's tasks |
+- **1:1 chat**: Have one-on-one conversations with any member, with full visibility into native reasoning processes and tool calls.
+- **Group chat**: Bring together 2–5 members to discuss topics round-robin (1–3 rounds).
+- **Project collaboration**: Bind a local code repository to a group, appoint a "lead agent" (主脑) to divide work, let members write code in parallel across isolated Git worktrees, and have the lead review and merge.
+- **Companion**: A fifth dedicated seat connecting to any OpenAI-compatible endpoint (self-hosted, local Ollama, or cloud models).
+
+> **Scope & boundaries**: Tongxi is only a desktop interface for these agents. Models, API keys, MCP servers, and plugins are managed entirely by each CLI's own configuration; Tongxi does not modify or take them over. All conversations and data are stored strictly on your local machine.
+
+<br />
+
+## Interface overview
+
+| Team chat（团队对话） | Brain jobs（主脑任务） |
 | :---: | :---: |
-| <img src="docs/images/ui-team.webp" alt="Team chat: the lead delegates, members hand back, the final progress report" /> | <img src="docs/images/ui-tasks.webp" alt="Lead's tasks: the plan as a flow chart, usage and the project ledger" /> |
-| Delegations, hand-backs and the final report in one stream | The plan as a flow chart: who does each step and how far it got |
-| **Member room** | **Members & services** |
-| <img src="docs/images/ui-room-dsh.webp" alt="DSH's project session: review notes and merge advice" /> | <img src="docs/images/ui-services.webp" alt="Members & services: members found on this machine, connection and update status" /> |
-| Each member works in its own native session; open it any time and chime in | Finds the agents installed on this machine; connect, update and diagnose here |
-| **Themes** | **New conversation** |
-| <img src="docs/images/ui-themes.webp" alt="Themes: built-in soft backgrounds and imported artwork" /> | <img src="docs/images/ui-create.webp" alt="New conversation: direct or group, pick members" /> |
-| Built-in soft backgrounds, or import your own art as a side figure or full backdrop | Chat with one member, or put one to five in a group |
+| <img src="docs/images/ui-team.webp" alt="Team chat: lead delegates, members report back, progress summaries" /> | <img src="docs/images/ui-tasks.webp" alt="Brain jobs: plan flow chart, token usage, and project ledger" /> |
+| Delegations, hand-backs, and progress reports in one stream | Plans drawn as flow charts: see who does what and status at a glance |
+| **Member room（成员房间）** | **Members & services（成员与服务）** |
+| <img src="docs/images/ui-room-dsh.webp" alt="Member room: member working in its native session" /> | <img src="docs/images/ui-services.webp" alt="Members & services: members found on machine, connection, and update status" /> |
+| Members work in their native sessions; jump in any time to inspect or chime in | Scans local CLIs automatically; connect, update, and diagnose here |
+| **Themes（主题背景）** | **New session（新建会话）** |
+| <img src="docs/images/ui-themes.webp" alt="Themes: built-in backgrounds and imported artwork" /> | <img src="docs/images/ui-create.webp" alt="New session: 1:1 or group chat, select members" /> |
+| 6 built-in backgrounds, or import your own image as a figure portrait or full cover | Chat 1:1 with an agent, or pick multiple members for a group chat |
+
+<sub>Screenshot background: Albion fan art by FymriE</sub>
 
 <br />
 
 ## Highlights
 
-<img src="docs/images/highlights-en.svg" width="100%" alt="One table, native sessions, a lead agent, parallel members, step in anytime, local data" />
+<img src="docs/images/highlights-en.svg" width="100%" alt="Tongxi highlights: one table, native sessions, lead agent, parallel members, step in anytime, local data" />
 
 <br />
 
 ## Quick start
 
-| Step | What to do |
+For a step-by-step walkthrough with screenshots, see **[📖 Quickstart tutorial (Chinese)](docs/上手教程.md)**.
+
+| Step | Description |
 |:---:|---|
-| **1** | Windows 10 / 11 with the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (built into Windows 11). |
-| **2** | Download `Agent-Hub-vX.Y.Z.exe` from [Releases](https://github.com/mydosu/tongxi/releases/latest) and run it. No installer, no admin rights. |
-| **3** | On start Tongxi scans the machine and connects every member it finds. If none are installed it takes you to **Members & services → Add members** for one-click installs. |
-| **4** | Pick a chat in the sidebar, or press **＋** for a new chat or group. |
-
-The UI is in Chinese for now.
+| **1. Prerequisites** | Windows 10 / 11, requires [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Windows 11). Ensure runtime environments (e.g. Node.js) for desired agent CLIs are installed. |
+| **2. Download & Run** | Download the portable `Agent-Hub-vX.Y.Z.exe` from [Releases](https://github.com/mydosu/tongxi/releases/latest), place it in a **folder where you have write permissions** (e.g. `D:\Tools\` or user home directory; do not place in `C:\Program Files` so auto-updates work). Double-click to run. |
+| **3. Connect Members** | On launch, Tongxi automatically scans for installed agents. For uninstalled members, click "Install" (下载安装) under "Members & services（成员与服务）", or install manually using the table below. |
+| **4. Start Chatting** | Click "＋ New session（新建会话）" at the top of the sidebar to start a 1:1 or group chat; in a group, click "Select project folder（选择项目目录）" to start project collaboration. |
 
 <br />
 
-## Members
+## Supported members
 
-Open **Members & services** at the bottom of the sidebar. For a member that isn't installed, click **Install**: Tongxi shows the official command first and runs it in a new terminal after you confirm, then walks you through login.
+Open **Members & services（成员与服务）** at the bottom of the sidebar. For uninstalled members, click "Install" (下载安装) to run the official command in a terminal, or install manually in PowerShell.
 
-| Member | Install | First setup | Needs | Docs |
+| Member | Integration | Dependencies | Official Recommended Install | First-time Login / Setup |
 |---|---|---|---|---|
-| **Codex** | `npm install -g @openai/codex` | `codex login` | Node.js 18+ | [openai/codex](https://github.com/openai/codex) |
-| **Claude Code** | `irm https://claude.ai/install.ps1 \| iex` | run `claude` once to log in | — | [Setup](https://code.claude.com/docs/en/setup) |
-| **Hermes** | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | the installer's wizard, later `hermes setup` | its own Python | [Windows guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native) |
-| **DSH** | `npm install -g @deepseek-ai/dsh` | `dsh web` (enter a DeepSeek key) | Node.js 22.19+ | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
-| **OpenCode** (optional) | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
-| **Antigravity** (optional) | `irm https://antigravity.google/cli/install.ps1 \| iex` | `agy` (sign in on first run) | Node.js 18+ | [antigravity.google](https://antigravity.google/) |
+| **Codex** | CLI driver | Node.js 18+ | `npm install -g @openai/codex` | `codex login` |
+| **Claude Code** | Bridge script | Node.js + Claude CLI | `irm https://claude.ai/install.ps1 \| iex` | Run `claude` once to log in (requires Node.js on machine) |
+| **Hermes** | CLI driver | Bundled Python | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | Follow setup wizard, or run `hermes setup` |
+| **DSH** | CLI driver | Node.js 22.19+ | `npm install -g @deepseek-ai/dsh` | Run `dsh web` to enter DeepSeek API Key |
+| **OpenCode** | CLI driver | Node.js | `npm install -g opencode-ai` | `opencode auth login` |
+| **Antigravity** | CLI driver | Node.js 18+ | `irm https://antigravity.google/cli/install.ps1 \| iex` | Run `agy` on first launch to sign in |
+| **Companion** | Direct API | None | Dedicated seat, no install needed | Enter any OpenAI-compatible Base URL & Key |
 
-If Node.js is missing or too old, the install script installs Node.js LTS first (winget, or the official Node.js installer when winget isn't available). Node managed by nvm / fnm / Volta is found too. Installed somewhere unusual? Point Tongxi at it with `AGENT_HUB_CODEX_EXE`, `AGENT_HUB_CLAUDE_EXE`, `AGENT_HUB_HERMES_PYTHON`, `AGENT_HUB_DSH_INSTALLATION` or `AGENT_HUB_DSH_NODE`.
-
-Each member card shows the connection, the running and installed versions, and an **unverified version** badge when your CLI version hasn't been tested with Tongxi yet. Click **Update** on a card (or **Update all** at the top) and the member is brought to its latest version and reconnected to Tongxi. Codex and DSH updates are installed into an isolated slot, verified, then switched over — with one-click rollback; Claude Code, OpenCode, Antigravity and Hermes run their own updater.
-
-<br />
-
-## Everyday use
-
-| | |
-|---|---|
-| **Chats** | Several independent chats per member. Thinking, tool calls and text are shown in the order they happen. |
-| **Interjecting** | Keep typing while a member is replying: Codex and Claude take it in mid-turn without being interrupted; the others get it right after. Esc stops the reply. |
-| **Native sessions** | Continue a member's own existing session, or hand the chat to its CLI with **Open in CLI** — when the CLI closes, Tongxi picks the new turns back up. |
-| **Groups** | One to five members. Private chats are never carried into groups. |
-| **Model & effort** | The model pill above the composer switches model and reasoning effort for this chat only. |
-| **Attachments** | Drag files in, paste images, or use **＋**. |
-| **HUD** | Ctrl+Shift+H opens a floating input bar for quick questions while you code. |
+> **Note**: For Node.js-based members, Tongxi automatically checks for Node; if missing, it guides installation via `winget` or the official installer. Tongxi's Claude Code bridge relies on Node.js runtime, so ensure Node is installed on your machine.
 
 <br />
 
-## Project mode
+## Project collaboration
 
-In a group, choose **Select project folder** to bind a directory, then just say what you want in the group. If the folder isn't a Git repo yet, Tongxi initialises one locally with a safety baseline commit and never pushes it anywhere.
+In a group chat, click **Select project folder（选择项目目录）** to bind a local code repository. If the folder is not yet a Git repository, Tongxi initializes one locally with a safety baseline commit, and never pushes anywhere without authorization.
 
-<img src="docs/images/flow-en.svg" width="100%" alt="Project flow: you say one sentence, the lead plans, two members work in parallel, one step waits for your call, then the lead reviews and merges, and the next task picks up from the brief and plan" />
+<img src="docs/images/flow-en.svg" width="100%" alt="Project collaboration flow: you say one sentence, lead plans, two members work in parallel, one step waits for your call, then lead reviews and merges, and next task picks up from brief and plan" />
 
-### The lead
-
-Every project has a **lead** — the project member you pick (a strong model is recommended). It has its own session at the top of the project sidebar.
-
-- **Talking in the group is talking to the lead.** The group only gets progress summaries: who was given what, and what came back.
-- **One thing at a time, members in parallel.** New requests queue behind the current one unless you say otherwise.
-- **Task briefs and a plan.** For long or hard work the lead writes a brief in `.tongxi/任务书/` and ticks it off as it goes; lasting decisions go into `.tongxi/计划.md`, which you can edit too. That folder is never committed.
-- **One round, one session.** After a round the lead writes `.tongxi/交接.md` (a handoff) and the next message starts a fresh session from it — unless the prompt cache is still warm.
-- **Lead tasks page.** Every delegated task with its member, model, worktree, status and result; the lead's plan drawn as a flowchart; the lead's token usage and context size.
-
-### The lead's tools
-
-| Tool | What it does |
-|---|---|
-| `hub_delegate` | Give a concrete task to a member session, optionally with a model and effort. Code changes get their own Git worktree. |
-| Hand-back | When a member finishes, its final `## 交回` (hand-back) section comes back to the lead as a new message. |
-| `hub_team` / `hub_member` | Who is available, their models, how busy they are, quota left, and how each model has done on each kind of task over 30 days. |
-| `hub_tell_member` / `hub_stop_member` | Correct a member's course, or stop it. |
-| `hub_finish_worktree` | Merge a worktree back after review, or discard it. The lead resolves conflicts itself. |
-| `hub_ask_user` | Ask you — only about *what* to do, or about irreversible outside actions you haven't authorised. Questions wait in the project's Q&A panel, not in the chat. |
-| `hub_broadcast` | Post a progress note to the group. |
-
-The rule of thumb in the lead's prompt: expensive models think, judge and wrap up; cheaper models do the legwork. Per-model notes live in `src-tauri/prompts/models.md` — edit them to match your experience.
-
-### Cost, limits and permissions
-
-- **Savings ledger.** Every turn's tokens are priced at API rates (a daily-updated price table with a built-in fallback; subscription lines are priced the same way and labelled as such; unknown models show "price unknown" instead of a guess). Each task and plan step shows what it cost and what it would have cost on the lead's model. The project ledger totals it by day, member and model.
-- **Daily spend caps.** Set a per-member dollar cap per project. Once a member hits it, the lead stops giving it new work and tells you in the Q&A panel; running work is not killed.
-- **Permission tiers.** *Full* (default), *worktree only* (members may change the project and their worktrees but not push, release or merge PRs; you see the diff before a merge), or *read only*. Claude switches permission mode, Codex and DSH use their sandboxes; Hermes is limited by prompt only.
-- **Standing grants.** Write a sentence in project settings, e.g. "allowed to commit and push main". The lead and members treat it as your own words.
-
-### Sessions, worktrees and memory
-
-- Up to four sessions of the same member per project, treated as separate members.
-- Members can continue **their own existing native sessions**.
-- Code changes happen on their own branch and worktree, so members can change code in parallel.
-- **Project memory**: shared and private notes per member. With OpenViking installed (set `AGENT_HUB_OPENVIKING_PYTHON` or put `ov` on PATH) notes go there; otherwise they are markdown files under `.tongxi/记忆/` in the project. Same rules either way, and anything that looks like a credential is refused.
+- **Lead agent coordination**: Each project is driven by one lead agent (主脑, a strong model is recommended) that takes your requirements, writes task briefs and plans, and delegates concrete steps to capable members.
+- **Parallel Git worktrees**: Code changes run in parallel across isolated Git worktrees (独立工作树); members do not conflict with each other, and the lead reviews and merges them back once verified.
+- **Interjection & steering**: While members work, you can send new messages in their session at any time to adjust direction (Codex and Claude support native mid-turn steering; other agents stop the prior turn and apply your new input).
+- **Human-in-the-loop decisions**: For architectural decisions or unauthorized actions, the lead posts a question in the "Inquiries（协作问答）" panel and proceeds only after your decision.
 
 <br />
 
-## Your companion
-
-The fifth seat is for your own companion. Any **OpenAI-compatible endpoint** works (`GET /v1/models` and streaming `POST /v1/chat/completions`): your own service, Ollama, LM Studio, DeepSeek, OpenAI… Give it a name, avatar, URL, key (none, typed in and encrypted with Windows DPAPI, an environment variable, or a `.env` file), an optional model and an optional persona. Companions only join private chats.
-
-<br />
-
-## Data & privacy
-
-- **Local only.** Chats, messages and settings live in a local SQLite database at `%LOCALAPPDATA%\local.personal.agenthub\hub.db`, backed up before upgrades.
-- **Member credentials untouched.** Tongxi does not read or store the CLIs' logins and doesn't change their config.
-- **Pushes need your say-so.** Tongxi itself never pushes. Pushes and deploys only happen when you authorise them.
-- **Signed self-updates.** Tongxi checks GitHub Releases on start. Updates are only applied if the manifest's Ed25519 signature and the file's size and SHA-256 all match.
-- **Diagnostics.** **Export diagnostics** on the members page writes a redacted text report (versions, connections, recent failure reasons — no chat content) to your Downloads folder.
-
-<br />
-
-## FAQ
+---
 
 <details>
-<summary><b>A member is installed but Tongxi says it isn't</b></summary>
+<summary><b>🛠️ Lead Agent Tools (MCP)</b></summary>
 
-<br />Click <b>Rescan</b>. For unusual install locations, use the environment variables listed under <a href="#members">Members</a>.
+<br />
+
+The lead agent coordinates the team during project collaboration using dedicated MCP tools:
+
+| Tool | Description |
+|---|---|
+| `hub_delegate` | **Delegate tasks**: Assign specific tasks to designated member sessions, optionally specifying model and reasoning effort. Automatically creates an isolated Git worktree when modifying code. |
+| `hub_plan` | **Plans & flowcharts**: Write or update long-term plans and step dependencies, directly driving the flowchart in "Brain jobs（主脑任务）". |
+| `hub_finish_worktree` | **Merge / discard**: Inspect code changes in a worktree, merge back into the main branch upon verification, or discard changes. |
+| `hub_tell_member` | **Steer / guide**: Send steering input to an active member session mid-flight without restarting. |
+| `hub_stop_member` | **Abort task**: Forcibly stop a member's ongoing subtask. |
+| `hub_ask_user` | **Inquiries**: Ask the user for critical decisions or sensitive operation permissions in the "Inquiries（协作问答）" panel, avoiding noisy chat spam. |
+| `hub_withdraw_question` | **Withdraw inquiry**: Proactively withdraw a pending question if the lead has resolved it through other means. |
+| `hub_broadcast` | **Group broadcast**: Send a concise milestone progress summary to the project group chat. |
+| `hub_team` / `hub_member` | **Team status**: Query availability, available models, remaining quotas, and recent work history across all member seats. |
+| `hub_add_seat` / `hub_rename_seat` / `hub_remove_seat` | **Seat management**: Dynamically add, rename, or remove member seats in a project (up to 4 seats per member type). |
+| `hub_memory_read` / `write` / `search` / `list` / `share` | **Project memory**: Read/write shared project notes and private memory. Stored in OpenViking if installed, or as Markdown files under `.tongxi/记忆/`. |
+
 </details>
 
 <details>
-<summary><b>DSH connects but messages fail</b></summary>
-
-<br />Usually there is no key yet. Use <b>Login / first setup</b> on the DSH card, enter a key in <code>dsh web</code>, then reconnect.
-</details>
-
-<details>
-<summary><b>A member hit its usage limit</b></summary>
-
-<br />The lead sees each provider's 5-hour and weekly quotas before delegating, gets the failure reason when a member hits a limit, and can hand the work to someone else. Codex work that hit a limit resumes automatically when the window resets.
-</details>
-
-<details>
-<summary><b>Something breaks after a CLI update</b></summary>
-
-<br />Check the member card for an <b>unverified version</b> badge, then use <b>Export diagnostics</b> and attach the file to an issue.
-</details>
+<summary><b>⚙️ Environment Variables & Manual Paths</b></summary>
 
 <br />
 
-## Tech stack
+When a CLI or runtime is not installed in default paths, or to override default behaviors, the following environment variables can be set:
 
-A native Windows app: hand-written TypeScript UI (no framework) and a Rust core, running in Tauri 2.
-
-| Layer | Tech |
+| Variable | Description |
 |---|---|
-| Shell | [Tauri 2](https://v2.tauri.app/) · WebView2 |
-| UI | TypeScript 5 · [Vite 6](https://vite.dev/) · plain DOM + CSS · [KaTeX](https://katex.org/) |
-| Core | Rust · `serde` · `rusqlite` (SQLite) · `ureq` · `ring` · `windows-sys` (DPAPI, Job Objects) |
+| `AGENT_HUB_DATA_DIR` | Custom data storage directory (defaults to `%LOCALAPPDATA%\local.personal.agenthub\`). |
+| `AGENT_HUB_AUTOCONNECT` | Set to `0` to disable automatic detection and silent connection on startup. |
+| `AGENT_HUB_CODEX_EXE` | Absolute path to the native `codex.exe` executable. |
+| `AGENT_HUB_CODEX_INSTALLATION` | Installation slot directory for managed Codex. |
+| `AGENT_HUB_CLAUDE_EXE` | Absolute path to the native Claude Code executable. |
+| `AGENT_HUB_CLAUDE_NODE` | Path to `node.exe` used to run the Claude bridge script. |
+| `AGENT_HUB_HERMES_PYTHON` | Path to `python.exe` used to run the Hermes ACP bridge. |
+| `AGENT_HUB_HERMES_SESSION_DB` | Custom path for Hermes isolated SessionDB. |
+| `AGENT_HUB_DSH_INSTALLATION` | Installation directory for DSH (where `@deepseek-ai/dsh` resides). |
+| `AGENT_HUB_DSH_NODE` | Path to `node.exe` used to run DSH and its bridge script. |
+| `AGENT_HUB_DSH_HOME` | Home configuration directory for DSH. |
+| `AGENT_HUB_OPENCODE` | Absolute path to the OpenCode executable. |
+| `AGENT_HUB_ANTIGRAVITY` | Absolute path to the Antigravity CLI executable (`agy.exe`). |
+| `AGENT_HUB_OPENVIKING_PYTHON` | Path to the Python interpreter used by the OpenViking memory system. |
 
-| Member | How it connects |
-|---|---|
-| Codex | `codex app-server`, JSON-RPC over stdio |
-| Claude Code | `claude_bridge.mjs` turns ACP into `claude -p --output-format stream-json`, resuming the same native session |
-| Hermes | `hermes_bridge.py` extends the installed Hermes ACP in-process |
-| DSH | `dsh_bridge.mjs` loads the installed DeepSeek harness over ACP |
-| OpenCode | its built-in ACP (`opencode acp`) |
-| Antigravity | `antigravity_bridge.mjs` turns ACP into one `agy -p= --output-format stream-json` run per turn, resuming the same agy conversation; Tongxi's project tools reach it through a per-session `--add-dir` folder holding `.agents/mcp_config.json` |
-| Companion | any OpenAI-compatible endpoint |
+</details>
+
+<details>
+<summary><b>📂 Data Storage & Privacy Security</b></summary>
 
 <br />
 
-## Development
+- **All data stays local**: All sessions, chat transcripts, and project configs are stored in a local SQLite database (`%LOCALAPPDATA%\local.personal.agenthub\hub.db`). Backups (`hub-schema-v{n}-{uuid}.db`) are generated in `backups/` only prior to database schema migrations.
+- **Login credentials untouched**: Tongxi never reads or uploads official authentication tokens or config files created by agent CLIs (`~/.claude`, `~/.codex`, etc. remain completely separate).
+- **Companion API keys**: Keys entered directly are encrypted with Windows DPAPI. Environment variables and `.env` references only store their path and are read at runtime. The key is only sent to your specified endpoint.
+- **External actions require authorization**: Lead agent actions that affect external environments (such as Git push or deployments) respect the permission tier and standing grants configured in project settings; unauthorized actions will prompt you first in the Inquiries panel.
+- **`.tongxi/` ignored in Git**: Project-local `.tongxi/` files generated by the lead (including briefs, plans, handoffs, and local memory) are never committed.
+
+</details>
+
+<details>
+<summary><b>🏗️ Architecture & Local Build</b></summary>
+
+<br />
+
+Tongxi is built with **Tauri 2 + Native TypeScript + Rust**:
+- **Desktop Shell**: Tauri 2 + system WebView2, providing borderless windowing, system tray, OS-level Job Object (terminating child processes on app exit), and global `Ctrl+Shift+H` HUD mode.
+- **Frontend UI**: TypeScript 5 + Vite 6, native DOM and CSS; Markdown and math formulas rendered via custom renderer and KaTeX.
+- **Backend Core**: Rust 2021 + SQLite (rusqlite, statically compiled), handling process lifecycle, protocol bridging, and Git worktree management.
+
+**Local development commands**:
 
 ```powershell
 npm ci --no-audit --no-fund
-npm run build                                   # type-check and bundle the UI
-cargo test --manifest-path src-tauri/Cargo.toml # backend tests
-npm run desktop                                 # run in dev mode
-npm run desktop:build                           # build release/Agent Hub.exe
+npm run build                                   # Frontend type-check & bundle
+cargo test --manifest-path src-tauri/Cargo.toml # Backend Rust tests
+npm run desktop                                 # Start local dev mode
+npm run desktop:build                           # Build release single-exe and archive
 ```
 
-Building needs Rust (MSVC), Node and WebView2 — see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+</details>
 
-The full changelog is in the [Chinese README](README.zh-CN.md#版本记录).
+## FAQ
 
 <br />
 
-## Credits
+<details>
+<summary><b>❓ Frequently Asked Questions (FAQ)</b></summary>
 
-The Claude and Codex avatars come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT). Hermes and DSH avatars are read at runtime from their own installs and aren't redistributed. All marks belong to their owners and are only used to identify the matching member.
+<br />
 
-## License
+**Q: First launch triggers "Windows protected your PC" (SmartScreen)?**
+> Tongxi is an open-source portable application without a commercial code-signing certificate. Click "More info" in the dialog, then click "Run anyway" to start.
 
-[MIT](LICENSE)
+**Q: Just installed a member CLI in terminal, but Tongxi shows "Not installed"?**
+> The Tongxi process captures a PATH snapshot at launch time. Go to "Members & services（成员与服务）" and click "Rescan" (重新扫描) at the top. If using environment managers activated only inside specific shell sessions (such as `fnm`), restart Tongxi.
+
+**Q: Claude Code is installed, but clicking connect gives "Node runtime not found"?**
+> Tongxi connects to Claude Code via a Node-driven bridge script. Using Tongxi requires Node.js (18+ recommended) on your machine. Install Node.js on your computer, then click "Rescan".
+
+**Q: DSH shows connected, but errors on sending a message?**
+> DSH uses its own configuration. In "Members & services（成员与服务）", find the DSH card, click "More ⌄" → "Login / Initial Setup", enter your DeepSeek API Key (or add compatible providers) in the opened `dsh web` page, save, and return to Tongxi.
+
+**Q: Why does "Stop & send" interrupt the prior reply for some members?**
+> Only Codex and Claude natively support injecting prompts mid-reply (native steering, button shows "Steer" / 插话引导). Hermes, DSH, OpenCode, and Antigravity stop the previous response before sending your new input (button shows "Stop & send" / 停止并发送). To cancel immediately, press `Esc` or click the red "Stop" button.
+
+**Q: Auto-update says "Cannot write new version into app directory"?**
+> Tongxi's auto-updater renames the currently running executable and writes the new one in place. If placed in protected system directories like `C:\Program Files`, write permissions may be denied. Move the executable to a user directory (such as `D:\Tools\`) and try again.
+
+**Q: Companion connection test returns 401 or 404?**
+> A 404 error usually means the endpoint URL lacks the version suffix; most compatible services require `/v1` (e.g. `http://127.0.0.1:11434/v1`). A 401/403 error means the key is invalid or unset; if using environment variables, restart Tongxi after setting them.
+
+</details>
+
+<details>
+<summary><b>📝 Changelog Summary</b></summary>
+
+<br />
+
+- **v3.8.15** (2026-11-05): Empty areas around the main backdrop image no longer use an enlarged copy of the full image; instead, edge colors extend outward with fading gradients, falling back to a full-image color extraction when edges are busy.
+- **v3.8.14** (2026-11-05): Added a "Select…" button next to bound project directory, member workspace, and default working folder to open the system folder picker; when background intensity is set to "Clear", the main image becomes more translucent, filler background becomes sharper, and the sidebar retains light frosted glass for readability.
+- **v3.8.13** (2026-11-04): Background intensity changed to a continuous slider; dark wallpapers thicken panel backdrops, colorful figure art avoids dark border compression, full-bleed images allow positioning adjustments, imported art preserves up to 4K resolution with alerts for HEIC/GIF; installer upgrades outdated Node first, falls back to official packages when winget is missing, recognizes Node managed by nvm/fnm/Volta and custom Hermes installs, and displays member version numbers; prompts where to install WebView2 when missing.
+- **v3.8.12** (2026-11-04): Button hover tooltips updated from default OS black boxes to theme-matched frosted glass tooltips that flip upward when near the window bottom.
+- **v3.8.11** (2026-11-04): DSH default model follows DSH's own settings; model changes made in group or project chats are remembered and reused in new sessions; theme cards no longer stack titles vertically in narrow windows; README updated with actual screen recordings and UI region screenshots.
+- **v3.8.10**: User messages flattened (removed gradients and white borders, aligned right with subtle button tint; inquiry cards removed thick borders, highlighting pending items with soft background); 1:1 chats span full width; white panel background and frosted glass scale with intensity setting.
+- **v3.8.9**: Removed top white accent line and purple handle.
+
+</details>
