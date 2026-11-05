@@ -2080,6 +2080,7 @@ dependencies = [
  "tiny_http",
  "ureq",
  "uuid",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

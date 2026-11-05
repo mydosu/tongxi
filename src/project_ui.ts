@@ -3,6 +3,7 @@ import type { Conversation, Project, ProjectTeamMessage, RoleChoice } from './ty
 import { defaultCoordinator, mountSessionPicker, PROJECT_AGENTS, type PickerHost } from './project_sessions';
 import { attachmentHtml, attachmentText } from './attachments';
 import { agentMarkdown } from './agent_markdown';
+import { folderButton } from './folder_picker';
 
 type Escape = (value: string | number) => string;
 interface DialogHost extends PickerHost { globalName?: (id: string) => string; modal: HTMLDialogElement; open: (title: string, subtitle: string, body: string) => void; saved: (id: string) => Promise<void>; coordinator: RoleChoice | null; }
@@ -37,7 +38,7 @@ export async function bindingDialog(room: Conversation, current: Project | null,
   const { escape, modal } = host;
   const members = room.members.filter(id => PROJECT_AGENTS.includes(id));
   let coordinator = defaultCoordinator(members, host.coordinator?.agent);
-  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<input id="project-root" placeholder="D:\\Projects\\my-app" autocomplete="off"></label></div><div class="registered-project"><p id="registered-project-info" class="model-setting-note"></p><button type="button" class="text-button" id="release-project" hidden title="把这个项目从目录上解开、从列表里拿掉；归档群的聊天和协作历史保留">解除登记</button></div><fieldset id="session-bind-section" class="session-bind-section"><legend>各成员的会话</legend><label class="field">主脑由谁当<select id="coordinator-choice">${members.map(id => `<option value="${escape(id)}" ${id === coordinator ? 'selected' : ''}>${escape((host.globalName ?? host.name)(id))}</option>`).join('')}</select></label><div class="session-bind-list"></div><small class="model-setting-note">可以让成员（含主脑）续接它们自己已有的原生会话；保持「新建会话」则由成员新开。点「＋」给同一成员再开一个平行的会话（模型可同可不同），主脑会把它们当作不同成员派活。项目开始后也能在成员面板里切换。</small></fieldset><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给${escape(host.name('albion-wsl'))}</label><p class="model-setting-note">默认关闭。开启后只共享主脑在项目群里发的进展摘要，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
+  host.open('绑定项目', '为当前群聊选择唯一项目目录。若目录还没有 Git 仓库，同席会创建本地仓库和安全基线提交，不会推送。绑定后直接在群里交流与开发。', `<form id="project-form"><label class="field">已登记项目<select id="project-choice"><option value="">登记新项目</option>${projects.map(project => `<option value="${escape(project.id)}" ${project.id === current?.id ? 'selected' : ''}>${escape(project.name)}</option>`).join('')}</select></label><div id="new-project-fields"><label class="field">项目名称<input id="project-name" maxlength="80" placeholder="例如：个人工具箱"></label><label class="field">项目目录<div class="folder-field"><input id="project-root" placeholder="点「选择…」挑一个文件夹，或粘贴路径" autocomplete="off">${folderButton('选择项目目录')}</div></label></div><div class="registered-project"><p id="registered-project-info" class="model-setting-note"></p><button type="button" class="text-button" id="release-project" hidden title="把这个项目从目录上解开、从列表里拿掉；归档群的聊天和协作历史保留">解除登记</button></div><fieldset id="session-bind-section" class="session-bind-section"><legend>各成员的会话</legend><label class="field">主脑由谁当<select id="coordinator-choice">${members.map(id => `<option value="${escape(id)}" ${id === coordinator ? 'selected' : ''}>${escape((host.globalName ?? host.name)(id))}</option>`).join('')}</select></label><div class="session-bind-list"></div><small class="model-setting-note">可以让成员（含主脑）续接它们自己已有的原生会话；保持「新建会话」则由成员新开。点「＋」给同一成员再开一个平行的会话（模型可同可不同），主脑会把它们当作不同成员派活。项目开始后也能在成员面板里切换。</small></fieldset><label class="field summary-toggle"><input id="project-summary" type="checkbox"${current?.summary_enabled ? ' checked' : ''}>将此项目开发摘要共享给${escape(host.name('albion-wsl'))}</label><p class="model-setting-note">默认关闭。开启后只共享主脑在项目群里发的进展摘要，从之后的消息开始生效；已经说过或已经提交的内容不会被撤回。</p><p class="form-error" role="alert"></p><div class="modal-footer">${current ? '<button type="button" id="unbind-project" class="secondary">解除绑定</button>' : '<span>同群历史只作背景，本次消息定义当前目标</span>'}<button class="primary" type="submit">绑定项目</button></div></form>`);
   const form = modal.querySelector<HTMLFormElement>('#project-form')!;
   const choice = form.querySelector<HTMLSelectElement>('#project-choice')!;
   const summary = form.querySelector<HTMLInputElement>('#project-summary')!;
@@ -60,6 +61,11 @@ export async function bindingDialog(room: Conversation, current: Project | null,
     summary.checked = !!selected?.summary_enabled;
   };
   choice.addEventListener('change', update); update();
+  // 选好目录、项目名还空着时，用文件夹名当项目名。
+  form.querySelector<HTMLInputElement>('#project-root')!.addEventListener('input', event => {
+    const name = form.querySelector<HTMLInputElement>('#project-name')!;
+    if (!name.value.trim()) name.value = (event.target as HTMLInputElement).value.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+  });
   // 解除登记：点两下确认。解开后把目录填进「登记新项目」，可以马上换个名字重新绑定。
   form.querySelector<HTMLButtonElement>('#release-project')!.addEventListener('click', async event => {
     const button = event.currentTarget as HTMLButtonElement;

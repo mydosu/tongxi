@@ -22,6 +22,7 @@ import { answerDialog, questionCard, visibleQuestionReply } from './chat_questio
 import { toolActivity, toolLine, captureToolState, restoreToolState } from './tool_activity';
 import { mountAnswerFiles, mountAttachments, hydrateAttachments, composeMessage, submittedAttachments, attachmentText, attachmentHtml, attachmentsBusy } from './attachments';
 import { fogOut, glide, measure, watchArrivals } from './motion';
+import { folderButton } from './folder_picker';
 import './styles.css';
 import './agent_transcript.css';
 import './theme.css';
@@ -1953,7 +1954,7 @@ async function fillMembersPanel() {
   }
   const agent = member(conversation.members[0]);
   const session = detail.sessions.find(item => item.agent_id === agent.id);
-  body.innerHTML = `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small>${escape(agent.location)}</small></div></div><section class="panel-block"><h3>原生会话</h3><div class="native-session-list"></div></section>${agent.id === 'albion-wsl' ? '' : `<section class="panel-block"><h3>工作文件夹</h3><form id="cwd-form" class="cwd-form"><input name="cwd" value="${escape(session?.native_cwd || '')}" placeholder="未指定 · 用同席默认工作文件夹" spellcheck="false" aria-label="工作文件夹"><div class="panel-footer"><button type="button" class="secondary" data-cwd-reset>恢复默认</button><button class="primary">保存</button></div></form><small class="members-note">换文件夹后，下一条消息在新文件夹里开新会话，旧会话可从上面接回。</small></section>`}`;
+  body.innerHTML = `<div class="member-card">${avatar(agent)}<div><strong>${escape(agent.name)}</strong><span>${escape(agent.subtitle)}</span><small>${escape(agent.location)}</small></div></div><section class="panel-block"><h3>原生会话</h3><div class="native-session-list"></div></section>${agent.id === 'albion-wsl' ? '' : `<section class="panel-block"><h3>工作文件夹</h3><form id="cwd-form" class="cwd-form"><div class="folder-field"><input name="cwd" value="${escape(session?.native_cwd || '')}" placeholder="未指定 · 用同席默认工作文件夹" spellcheck="false" aria-label="工作文件夹">${folderButton('选择工作文件夹')}</div><div class="panel-footer"><button type="button" class="secondary" data-cwd-reset>恢复默认</button><button class="primary">保存</button></div></form><small class="members-note">换文件夹后，下一条消息在新文件夹里开新会话，旧会话可从上面接回。</small></section>`}`;
   void showNativeSessions(agent.id, body);
   const form = body.querySelector<HTMLFormElement>('#cwd-form');
   const saveCwd = async (cwd: string | null) => {
@@ -2718,7 +2719,7 @@ function renderServices() {
   // 已在服务页里重画（连接、断开、安装后）保住滚动位置，别弹回顶部。
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; setMobileView('chat'); renderList(); enterView('services');
-  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹"><button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button><button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button><button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹">${folderButton('选择默认工作文件夹')}<button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。

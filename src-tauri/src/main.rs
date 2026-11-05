@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod folder_picker;
 mod quota;
 mod state_events;
 mod project_inquiries;
@@ -1630,6 +1631,7 @@ fn main() {
             backgrounds::add_background,
             backgrounds::set_background_mode,
             backgrounds::set_background_focus,
+            folder_picker::pick_folder,
             backgrounds::remove_background,
             agent_setup::install_agent,
             agent_setup::setup_agent,

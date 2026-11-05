@@ -211,6 +211,9 @@ html:not([data-hud]) .chat-layout.members-open .members-panel { opacity: 1; tran
 .panel-block .native-session-list { display: flex; flex-direction: column; gap: 6px; }
 .workspace-row > div { flex: 1; min-width: 0; }
 .workspace-row input { width: 260px; flex-shrink: 1; min-width: 0; }
+.folder-field { display: flex; gap: 6px; align-items: flex-start; }
+.folder-field input { flex: 1; min-width: 0; }
+.folder-pick { flex-shrink: 0; white-space: nowrap; }
 .cwd-form input, .workspace-row input { box-sizing: border-box; height: 36px; margin-bottom: 4px; padding: 6px 10px; border: 1px solid rgb(205 205 228 / .8); border-radius: var(--r-s); background: rgb(255 255 255 / .85); color: var(--ink-2); font: inherit; font-size: 12px; }
 .members-note { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--glass-line); color: var(--faint); font-size: 12px; line-height: 1.8; }
 
