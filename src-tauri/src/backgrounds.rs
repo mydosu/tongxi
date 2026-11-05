@@ -12,7 +12,16 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            id TEXT PRIMARY KEY,name TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('cover','figure')),
            image TEXT NOT NULL,thumb TEXT NOT NULL,created_at INTEGER NOT NULL);",
     )
-    .map_err(|_| "背景表迁移失败".into())
+    .map_err(|_| "背景表迁移失败")?;
+    // 铺满时画面竖直方向露哪一段（0 顶、100 底）；空着就由界面按图的比例自己定。
+    let has_focus = tx
+        .prepare("SELECT 1 FROM pragma_table_info('backgrounds') WHERE name='focus'")
+        .and_then(|mut statement| statement.exists([]))
+        .map_err(|_| "背景表迁移失败")?;
+    if !has_focus {
+        tx.execute_batch("ALTER TABLE backgrounds ADD COLUMN focus REAL;").map_err(|_| "背景表迁移失败")?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -21,6 +30,7 @@ pub struct Background {
     pub name: String,
     pub mode: String,
     pub thumb: String,
+    pub focus: Option<f64>,
 }
 
 fn image(data: &str, limit: usize) -> Result<()> {
@@ -34,10 +44,10 @@ impl Store {
     pub fn backgrounds(&self) -> Result<Vec<Background>> {
         let mut statement = self
             .connection
-            .prepare("SELECT id,name,mode,thumb FROM backgrounds ORDER BY created_at,id")
+            .prepare("SELECT id,name,mode,thumb,focus FROM backgrounds ORDER BY created_at,id")
             .map_err(|_| "背景读取失败")?;
         let rows = statement
-            .query_map([], |row| Ok(Background { id: row.get(0)?, name: row.get(1)?, mode: row.get(2)?, thumb: row.get(3)? }))
+            .query_map([], |row| Ok(Background { id: row.get(0)?, name: row.get(1)?, mode: row.get(2)?, thumb: row.get(3)?, focus: row.get(4)? }))
             .map_err(|_| "背景读取失败")?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|_| "背景读取失败".into())
     }
@@ -101,6 +111,21 @@ pub fn set_background_mode(state: tauri::State<'_, crate::AppState>, id: String,
 }
 
 #[tauri::command]
+pub fn set_background_focus(state: tauri::State<'_, crate::AppState>, id: String, focus: Option<f64>) -> Result<()> {
+    if focus.is_some_and(|value| !(0.0..=100.0).contains(&value)) {
+        return Err("位置无效".into());
+    }
+    state
+        .store
+        .lock()
+        .map_err(|_| "本地数据暂不可用")?
+        .connection
+        .execute("UPDATE backgrounds SET focus=?1 WHERE id=?2", params![focus, id])
+        .map(|_| ())
+        .map_err(|_| "背景保存失败".into())
+}
+
+#[tauri::command]
 pub fn remove_background(state: tauri::State<'_, crate::AppState>, id: String) -> Result<()> {
     state
         .store
@@ -121,6 +146,6 @@ mod tests {
         assert!(store.add_background("x", "tiled", "data:image/webp;base64,AA", "data:image/webp;base64,AA").is_err());
         let id = store.add_background("窗边", "figure", "data:image/webp;base64,AAAA", "data:image/webp;base64,AA").unwrap();
         let list = store.backgrounds().unwrap();
-        assert_eq!((list.len(), list[0].id.as_str(), list[0].mode.as_str()), (1, id.as_str(), "figure"));
+        assert_eq!((list.len(), list[0].id.as_str(), list[0].mode.as_str(), list[0].focus), (1, id.as_str(), "figure", None));
     }
 }

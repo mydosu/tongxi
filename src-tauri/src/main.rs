@@ -1296,7 +1296,30 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 没装 WebView2 运行时（老的 Win10、精简系统）窗口根本建不起来，进程会静默退出：
+/// 先弹个框说明原因，点「是」打开微软的下载页。
+#[cfg(windows)]
+fn webview2_missing() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO};
+    if tauri::webview_version().is_ok() {
+        return false;
+    }
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let text = wide("同席需要 Microsoft Edge WebView2 运行时，这台电脑上还没有安装。
+
+点「是」打开微软官方下载页（选 Evergreen Bootstrapper），装好后重新打开同席。");
+    let title = wide("同席");
+    if unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_YESNO | MB_ICONWARNING) } == IDYES {
+        let _ = std::process::Command::new("explorer.exe").arg("https://developer.microsoft.com/microsoft-edge/webview2/").spawn();
+    }
+    true
+}
+
 fn main() {
+    #[cfg(windows)]
+    if webview2_missing() {
+        return;
+    }
     // 不把启动同席那个环境里的 OpenViking 身份（例如从 Claude Code 里重启同席时继承的
     // OPENVIKING_API_KEY）传给成员：Codex 等插件以环境变量为先，会把记忆写成那个 agent。
     // 各成员只读自己的 ovcli.conf 配置。
@@ -1606,6 +1629,7 @@ fn main() {
             backgrounds::background_image,
             backgrounds::add_background,
             backgrounds::set_background_mode,
+            backgrounds::set_background_focus,
             backgrounds::remove_background,
             agent_setup::install_agent,
             agent_setup::setup_agent,

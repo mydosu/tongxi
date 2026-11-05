@@ -77,7 +77,7 @@
 | **OpenCode**（可选） | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
 | **Antigravity**（可选） | `irm https://antigravity.google/cli/install.ps1 \| iex` | `agy`（首次运行登录） | Node.js 18+ | [antigravity.google](https://antigravity.google/) |
 
-需要 Node.js 而本机没有时，安装脚本会先用 `winget install OpenJS.NodeJS.LTS` 装好。
+需要 Node.js 而本机没有或版本太旧时，安装脚本会先装 Node.js LTS（优先 winget，没有 winget 就用 Node.js 官方安装包）。用 nvm / fnm / Volta 管理 Node 的，同席也能找到当前版本。
 
 <details>
 <summary><b>成员卡片上能做什么</b></summary>
@@ -223,8 +223,9 @@
 - **内置背景**：晨雾、薄荷、杏光、海盐、暮紫、素净，都是不含人物的柔光背景。
 - **导入图片**：
   - 可以一次选多张，图片压缩后只存在本机。
-  - 竖图默认当「立绘」放在右侧，横图默认铺满窗口。
-- **背景浓淡**：淡雅、适中、清晰三档，同时调整背景上的薄纱和面板的磨砂程度。
+  - 白底竖图默认当「立绘」放在右侧，其他图默认铺满窗口；彩底的立绘不做正片叠底，四周渐隐。
+  - 铺满的图可以拖「画面位置」决定露出上面还是下面；分辨率保留到 4K，HEIC 请先转成 JPG / PNG。
+- **背景浓淡**：一根滑条从淡雅拉到清晰，同时调整背景上的薄纱和面板的磨砂程度。图偏暗时面板会自动加厚，保证字看得清。
 
 界面是浅色磨砂玻璃风格：换页时旧页面像玻璃起雾一样淡出、新页面从雾里清晰；侧栏选中的底色滑到新位置；有成员在回复时，输入框描一圈慢慢转的流光。系统开启「减少动态效果」时，这些动效都会关掉。
 

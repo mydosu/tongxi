@@ -46,6 +46,10 @@ html[data-hud] .theme-backdrop { display: none; }
 .bg-layer.figure { background-position: right bottom; background-size: auto min(96vh, 1100px); mix-blend-mode: multiply;
   -webkit-mask-image: linear-gradient(to right, transparent 26%, #000 58%), linear-gradient(to top, transparent, #000 16%); -webkit-mask-composite: source-in;
   mask-image: linear-gradient(to right, transparent 26%, #000 58%), linear-gradient(to top, transparent, #000 16%); mask-composite: intersect; }
+/* 彩底/深底的立绘：不叠底（会压成暗方框），左、下、上三边都渐隐。 */
+.bg-layer.figure.tinted { mix-blend-mode: normal;
+  -webkit-mask-image: linear-gradient(to right, transparent 26%, #000 58%), linear-gradient(to top, transparent, #000 16%), linear-gradient(to bottom, transparent, #000 18%); -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right, transparent 26%, #000 58%), linear-gradient(to top, transparent, #000 16%), linear-gradient(to bottom, transparent, #000 18%); mask-composite: intersect; }
 /* 横图：铺满窗口。分辨率低的图稍微虚一点，放大后不显颗粒。 */
 .bg-layer.cover { background-size: cover; }
 .bg-layer.cover.soft { inset: -10px; filter: blur(3px); }

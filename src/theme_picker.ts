@@ -7,7 +7,7 @@ import { buttonColors, DEFAULT_HUE, hueOf } from './accent';
 type Escape = (value: string | number) => string;
 type Veil = 'soft' | 'medium' | 'clear';
 type Mode = 'figure' | 'cover' | 'plain';
-interface Backdrop { id: string; name: string; mode: Mode; image?: string; thumb?: string; position?: string; pastel?: boolean; custom?: boolean; }
+interface Backdrop { id: string; name: string; mode: Mode; image?: string; thumb?: string; focus?: number | null; pastel?: boolean; custom?: boolean; }
 
 const builtin = (id: string, name: string, image: string, thumb: string): Backdrop => ({ id, name, mode: 'cover', pastel: true, image, thumb });
 const BUILTIN: Backdrop[] = [
@@ -34,7 +34,7 @@ function veilAt(value: number) {
 }
 const KEY = 'hub.theme';
 interface Choice { id: string; veil: number; }
-interface Stored { id: string; name: string; mode: 'cover' | 'figure'; thumb: string; }
+interface Stored { id: string; name: string; mode: 'cover' | 'figure'; thumb: string; focus: number | null; }
 
 let custom: Backdrop[] = [];
 const images = new Map<string, string>();
@@ -59,7 +59,7 @@ export const backdropHtml = '<div class="theme-backdrop" aria-hidden="true"><div
 
 async function loadCustom() {
   try {
-    custom = (await invoke<Stored[]>('list_backgrounds')).map(item => ({ id: `custom:${item.id}`, name: item.name, mode: item.mode, thumb: item.thumb, custom: true }));
+    custom = (await invoke<Stored[]>('list_backgrounds')).map(item => ({ id: `custom:${item.id}`, name: item.name, mode: item.mode, thumb: item.thumb, focus: item.focus, custom: true }));
     pruneImages();
   } catch { custom = []; }
 }
@@ -101,10 +101,15 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   const theme = all().find(item => item.id === choice.id) || BUILTIN[0];
   const image = await imageOf(theme).catch(() => undefined);
   if (current !== choice) return; // 读图期间又换了主题
+  const look = image ? await inspect(image) : null;
+  if (current !== choice) return;
   const root = document.documentElement;
   root.dataset.bgMode = theme.mode;
-  paintAccent(image);
+  paintAccent(look?.hue ?? DEFAULT_HUE);
   const veil = veilAt(choice.veil);
+  // 暗图上深色字读不清：图越暗，面板白底越厚、磨砂越重，滑条拉到最清晰也保住可读性。
+  const dark = theme.pastel ? 0 : Math.min(1, Math.max(0, (.62 - (look?.light ?? 1)) / .37));
+  veil.panel = Math.max(veil.panel, .28 + .32 * dark); veil.blur = Math.max(veil.blur, 3 + 9 * dark);
   const base = theme.mode === 'cover' ? veil.cover : theme.mode === 'figure' ? veil.figure : 0;
   root.style.setProperty('--veil', String(theme.pastel ? base / 2 : base));
   root.dataset.veil = choice.veil >= 75 ? 'clear' : choice.veil < 25 ? 'soft' : 'medium'; // 手机清晰档的面板白底按最近的档位切
@@ -115,51 +120,76 @@ export async function applyTheme(choice: Choice = current, animate = true) {
   if (layers.length < 2) return;
   const next = layers[animate ? 1 - front : front], previous = layers[animate ? front : 1 - front];
   if (next.dataset.theme !== `${theme.id}|${theme.mode}`) {
-    next.className = `bg-layer ${theme.mode}${theme.pastel ? ' pastel' : ''}`; next.style.removeProperty('--bg-ar'); // pastel：内置柔光图，手机上照常铺满，不走「整张居中+模糊衬底」
+    // tinted：立绘的底不是白的，正片叠底会压成一块暗色方框，改成普通叠放、上沿也渐隐。
+    next.className = `bg-layer ${theme.mode}${theme.pastel ? ' pastel' : ''}${theme.mode === 'figure' && look && !look.whiteEdges ? ' tinted' : ''}`; next.style.removeProperty('--bg-ar'); // pastel：内置柔光图，手机上照常铺满，不走「整张居中+模糊衬底」
     next.dataset.theme = `${theme.id}|${theme.mode}`;
     next.style.backgroundImage = image ? `url("${image}")` : 'none';
     next.style.setProperty('--bg-img', image ? `url("${image}")` : 'none'); // 手机上横图的底衬/前景用伪元素画，同一个 url 不会多解码一份
     // 手机上横图按宽度居中完整显示，前景那块的高度要靠宽高比定，边缘才能渐隐进模糊衬底。
-    if (theme.mode !== 'plain' && !theme.pastel && image) { const probe = new Image(); const ready = () => next.classList.add('measured'); probe.onload = () => { if (probe.naturalWidth && probe.naturalHeight) next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); ready(); }; probe.onerror = ready; probe.src = image; }
-    next.style.backgroundPosition = theme.mode === 'cover' ? theme.position || 'center' : '';
+    if (theme.mode !== 'plain' && !theme.pastel && image) { const probe = new Image(); const ready = () => next.classList.add('measured'); probe.onload = () => { if (probe.naturalWidth && probe.naturalHeight) next.style.setProperty('--bg-ar', `${probe.naturalWidth} / ${probe.naturalHeight}`); next.classList.toggle('soft', theme.mode === 'cover' && probe.naturalWidth < innerWidth * devicePixelRatio * .6); ready(); }; probe.onerror = ready; probe.src = image; }
   }
+  next.style.backgroundPosition = theme.mode === 'cover' ? focusOf(theme) : '';
   next.classList.add('visible');
   if (previous !== next) previous.classList.remove('visible');
   if (animate) front = 1 - front;
 }
 
-/// 按钮色跟着背景图走（色相取自图，深浅固定，见 accent.ts）。图读不出像素就用默认淡紫。
-function paintAccent(image: string | undefined) {
-  const set = (hue: number) => { const { base, hover } = buttonColors(hue); document.documentElement.style.setProperty('--btn', base); document.documentElement.style.setProperty('--btn-hover', hover); };
-  if (!image) return set(DEFAULT_HUE);
-  const picture = new Image();
-  picture.onload = () => {
-    try {
-      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 48;
-      const context = canvas.getContext('2d', { willReadFrequently: true })!;
-      context.drawImage(picture, 0, 0, 48, 48);
-      if (picture.src === image) set(hueOf(context.getImageData(0, 0, 48, 48).data));
-    } catch { set(DEFAULT_HUE); }
-  };
-  picture.onerror = () => set(DEFAULT_HUE);
-  picture.src = image;
+/// 铺满时竖直方向露哪一段：用户拖过就用他的；没拖过偏上 30%（人物的脸多在上半部分）。
+const focusOf = (theme: Backdrop) => theme.pastel ? 'center' : `center ${theme.focus ?? 30}%`;
+
+/// 缩到 48×48 看一眼：色相（按钮色）、整体明暗、左右上三边是不是白底（立绘能不能正片叠底）。
+interface Look { hue: number; light: number; whiteEdges: boolean; }
+function look(picture: CanvasImageSource): Look {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 48;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  context.drawImage(picture, 0, 0, 48, 48);
+  const data = context.getImageData(0, 0, 48, 48).data;
+  let light = 0, edge = 0, edges = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3] / 255, x = (i / 4) % 48, y = Math.floor(i / 4 / 48);
+    // 透明的地方露出的是浅色底，按白算。
+    light += (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255 * alpha + (1 - alpha);
+    if (x === 0 || x === 47 || y === 0) { edge += Math.min(data[i], data[i + 1], data[i + 2]) / 255 * alpha + (1 - alpha); edges++; }
+  }
+  return { hue: hueOf(data), light: light / (48 * 48), whiteEdges: edge / edges > .88 };
+}
+const looks = new Map<string, Promise<Look | null>>();
+function inspect(image: string) {
+  if (!looks.has(image)) looks.set(image, new Promise(resolve => {
+    const picture = new Image();
+    picture.onload = () => { try { resolve(look(picture)); } catch { resolve(null); } };
+    picture.onerror = () => resolve(null);
+    picture.src = image;
+  }));
+  return looks.get(image)!;
 }
 
-/// 读图片 → 压成 webp（长边 ≤ 2400）+ 360×240 缩略图。竖图默认当立绘，横图铺满。
+/// 按钮色跟着背景图走（色相取自图，深浅固定，见 accent.ts）。图读不出像素就用默认淡紫。
+function paintAccent(hue: number) {
+  const { base, hover } = buttonColors(hue);
+  document.documentElement.style.setProperty('--btn', base); document.documentElement.style.setProperty('--btn-hover', hover);
+}
+
+/// 读图片 → 压成 webp（长边 ≤ 3840，4K 屏铺满不发虚；太大再降到 2560）+ 360×240 缩略图。
+/// 白底竖图默认当立绘，其余铺满（彩底竖图叠在右边会是一块方框）。
 async function compress(file: File) {
-  const picture = await loadImage(file);
+  const picture = await loadImage(file).catch(() => { throw new Error(/hei[cf]/i.test(file.type + file.name) ? 'HEIC 格式读不了，请先转成 JPG / PNG / WebP' : '这张图片无法解码，请换成 JPG / PNG / WebP'); });
   {
-    const scale = Math.min(1, 2400 / Math.max(picture.naturalWidth, picture.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(picture.naturalWidth * scale); canvas.height = Math.round(picture.naturalHeight * scale);
-    canvas.getContext('2d')!.drawImage(picture, 0, 0, canvas.width, canvas.height);
-    const image = canvas.toDataURL('image/webp', .82);
+    const encode = (edge: number) => {
+      const scale = Math.min(1, edge / Math.max(picture.naturalWidth, picture.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(picture.naturalWidth * scale); canvas.height = Math.round(picture.naturalHeight * scale);
+      canvas.getContext('2d')!.drawImage(picture, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/webp', .82);
+    };
+    let image = encode(3840);
+    if (image.length > 7_500_000) image = encode(2560); // 库里单张上限 8MB
     const thumb = document.createElement('canvas');
     thumb.width = 360; thumb.height = 240;
     const cover = Math.max(360 / picture.naturalWidth, 240 / picture.naturalHeight);
     const w = picture.naturalWidth * cover, h = picture.naturalHeight * cover;
     thumb.getContext('2d')!.drawImage(picture, (360 - w) / 2, (240 - h) * .3, w, h);
-    const mode = picture.naturalHeight > picture.naturalWidth * 1.15 ? 'figure' : 'cover';
+    const mode = picture.naturalHeight > picture.naturalWidth * 1.15 && look(picture).whiteEdges ? 'figure' : 'cover';
     return { image, thumb: thumb.toDataURL('image/webp', .75), mode };
   }
 }
@@ -169,22 +199,42 @@ export async function themePicker(host: { escape: Escape; open: (title: string, 
   await loadCustom();
   const card = (theme: Backdrop) => `<div class="theme-card${theme.id === current.id ? ' selected' : ''}" data-theme-id="${escape(theme.id)}" role="button" tabindex="0" aria-pressed="${theme.id === current.id}"><span class="theme-thumb${theme.mode === 'plain' ? ' plain' : ''}"${theme.thumb ? ` style="background-image:url('${theme.thumb}')"` : ''}></span><span class="theme-name">${escape(theme.name)}<small>${theme.custom && !isRemote ? `<button type="button" class="theme-mode" data-theme-mode="${escape(theme.id)}" title="切换显示方式">${theme.mode === 'figure' ? '立绘' : '铺满'}</button><button type="button" class="theme-remove" data-theme-remove="${escape(theme.id)}" title="删除这张背景" aria-label="删除这张背景">×</button>` : theme.custom ? '自定义' : theme.mode === 'plain' ? '纯色' : '内置'}</small></span></div>`;
   const grid = () => `${all().map(card).join('')}${isRemote ? '' : '<label class="theme-card theme-import" title="导入你自己的图片（可多选），只保存在这台设备上"><input type="file" accept="image/*" multiple hidden data-theme-import><span class="theme-thumb plus">＋</span><span class="theme-name">导入图片<small>可多选</small></span></label>'}`;
-  host.open('主题背景', '点一下立即生效。导入的图片只保存在这台设备上，竖图默认当立绘、横图铺满，可以在卡片上切换。', `<div class="theme-picker"><div class="theme-grid">${grid()}</div><div class="theme-veil"><span>背景浓淡</span><div class="veil-slider"><small>${VEILS.soft.name}</small><input type="range" min="0" max="100" step="1" value="${Math.round(current.veil)}" style="--fill:${Math.round(current.veil)}%" data-veil-range aria-label="背景浓淡，0 淡雅、100 清晰"><small>${VEILS.clear.name}</small></div></div><div class="modal-footer"><span>内置背景不含任何人物，适合所有人</span><button type="button" class="primary" data-theme-done>完成</button></div></div>`);
+  host.open('主题背景', '点一下立即生效。导入的图片只保存在这台设备上，竖图默认当立绘、横图铺满，可以在卡片上切换。', `<div class="theme-picker"><div class="theme-grid">${grid()}</div><div class="theme-veil"><span>背景浓淡</span><div class="veil-slider"><small>${VEILS.soft.name}</small><input type="range" min="0" max="100" step="1" value="${Math.round(current.veil)}" style="--fill:${Math.round(current.veil)}%" data-veil-range aria-label="背景浓淡，0 淡雅、100 清晰"><small>${VEILS.clear.name}</small></div></div><div class="theme-veil" data-focus-row hidden><span>画面位置</span><div class="veil-slider"><small>偏上</small><input type="range" min="0" max="100" step="1" data-focus-range aria-label="铺满时画面露出的位置，0 最上、100 最下"><small>偏下</small></div></div><div class="modal-footer"><span>内置背景不含任何人物，适合所有人</span><button type="button" class="primary" data-theme-done>完成</button></div></div>`);
   const root = host.modal.querySelector<HTMLElement>('.theme-picker')!;
-  const repaint = () => { root.querySelector('.theme-grid')!.innerHTML = grid(); };
+  // 只有自定义的铺满图才有「画面位置」：内置柔光图没有主体，立绘贴着右下角。
+  const focusRow = root.querySelector<HTMLElement>('[data-focus-row]')!, focusInput = root.querySelector<HTMLInputElement>('[data-focus-range]')!;
+  const syncFocus = () => {
+    const theme = custom.find(item => item.id === current.id);
+    focusRow.hidden = isRemote || theme?.mode !== 'cover';
+    const value = String(Math.round(theme?.focus ?? 30));
+    focusInput.value = value; focusInput.style.setProperty('--fill', `${value}%`);
+  };
+  const repaint = () => { root.querySelector('.theme-grid')!.innerHTML = grid(); syncFocus(); };
+  syncFocus();
+  focusInput.addEventListener('input', () => {
+    const theme = custom.find(item => item.id === current.id);
+    if (!theme) return;
+    theme.focus = Number(focusInput.value); focusInput.style.setProperty('--fill', `${focusInput.value}%`);
+    void applyTheme(current, false);
+  });
+  focusInput.addEventListener('change', () => {
+    const theme = custom.find(item => item.id === current.id);
+    if (theme) invoke('set_background_focus', { id: theme.id.slice('custom:'.length), focus: theme.focus }).catch(error => host.toast(String(error), true));
+  });
   root.addEventListener('change', async event => {
     const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-theme-import]');
     if (!input?.files?.length) return;
     const files = [...input.files];
-    let last = '';
+    let last = '', ok = 0, still = 0;
     for (const file of files) {
       try {
         const { image, thumb, mode } = await compress(file);
         last = await invoke<string>('add_background', { name: file.name.replace(/\.[^.]+$/, ''), mode, image, thumb });
-      } catch (error) { host.toast(`${file.name}：${String(error)}`, true); }
+        ok++; if (file.type === 'image/gif') still++;
+      } catch (error) { host.toast(`${file.name}：${error instanceof Error ? error.message : String(error)}`, true); }
     }
     await loadCustom(); repaint();
-    if (last) { await applyTheme({ ...current, id: `custom:${last}` }); repaint(); host.toast(`已导入 ${files.length} 张图片`); }
+    if (last) { await applyTheme({ ...current, id: `custom:${last}` }); repaint(); if (ok === files.length) host.toast(`已导入 ${ok} 张图片${still ? `（动图只保留第一帧）` : ''}`); }
   });
   root.addEventListener('click', async event => {
     const target = event.target as HTMLElement;

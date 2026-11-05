@@ -79,7 +79,7 @@ Open **Members & services** at the bottom of the sidebar. For a member that isn'
 | **OpenCode** (optional) | `npm install -g opencode-ai` | `opencode auth login` | Node.js | [opencode.ai](https://opencode.ai/docs) |
 | **Antigravity** (optional) | `irm https://antigravity.google/cli/install.ps1 \| iex` | `agy` (sign in on first run) | Node.js 18+ | [antigravity.google](https://antigravity.google/) |
 
-If Node.js is missing, the install script gets it first with `winget install OpenJS.NodeJS.LTS`. Installed somewhere unusual? Point Tongxi at it with `AGENT_HUB_CODEX_EXE`, `AGENT_HUB_CLAUDE_EXE`, `AGENT_HUB_HERMES_PYTHON`, `AGENT_HUB_DSH_INSTALLATION` or `AGENT_HUB_DSH_NODE`.
+If Node.js is missing or too old, the install script installs Node.js LTS first (winget, or the official Node.js installer when winget isn't available). Node managed by nvm / fnm / Volta is found too. Installed somewhere unusual? Point Tongxi at it with `AGENT_HUB_CODEX_EXE`, `AGENT_HUB_CLAUDE_EXE`, `AGENT_HUB_HERMES_PYTHON`, `AGENT_HUB_DSH_INSTALLATION` or `AGENT_HUB_DSH_NODE`.
 
 Each member card shows the connection, the running and installed versions, and an **unverified version** badge when your CLI version hasn't been tested with Tongxi yet. Click **Update** on a card (or **Update all** at the top) and the member is brought to its latest version and reconnected to Tongxi. Codex and DSH updates are installed into an isolated slot, verified, then switched over — with one-click rollback; Claude Code, OpenCode, Antigravity and Hermes run their own updater.
 

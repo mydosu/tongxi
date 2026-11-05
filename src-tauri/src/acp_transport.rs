@@ -79,20 +79,21 @@ impl Target {
     /// Windows Hermes 的 Python：官方安装器装在 `%LOCALAPPDATA%\hermes\hermes-agent\.venv`。
     /// 每次连接都重新找一遍——同席运行中刚装好的 Hermes 不用重启就能接上。
     pub fn windows_python() -> Option<PathBuf> {
-        std::env::var_os("AGENT_HUB_HERMES_PYTHON")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("LOCALAPPDATA").map(|root| {
-                    PathBuf::from(root).join("hermes/hermes-agent/.venv/Scripts/python.exe")
-                })
-            })
-            .filter(|path| {
-                path.is_absolute()
-                    && path.is_file()
-                    && path
-                        .file_name()
-                        .is_some_and(|name| name.eq_ignore_ascii_case("python.exe"))
-            })
+        let valid = |path: &PathBuf| {
+            path.is_absolute()
+                && path.is_file()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("python.exe"))
+        };
+        if let Some(path) = std::env::var_os("AGENT_HUB_HERMES_PYTHON") {
+            return Some(PathBuf::from(path)).filter(valid);
+        }
+        std::env::var_os("LOCALAPPDATA")
+            .map(|root| PathBuf::from(root).join("hermes/hermes-agent/.venv/Scripts/python.exe"))
+            .filter(valid)
+            // 装在别处（自定义目录、pip / uv 装进某个虚拟环境）：从 PATH 上的 hermes.exe 找它旁边的 python.exe。
+            .or_else(|| crate::service_install::on_path_find(&["hermes.exe"], |shell| Some(shell.parent()?.join("python.exe")).filter(valid)))
     }
     #[allow(dead_code, reason = "ACP 回退分支，MVP 已换 OpenAI 通路")]
     pub fn albion() -> Self {
