@@ -432,7 +432,8 @@ if (isTauri()) {
     void listen<{ id: string }>('hud:select', event => { if (event.payload?.id) void selectConversation(event.payload.id); });
     void emit('hud:ready');
     // 窗口创建时先不显示（参考 Hermes 的 show:false + reveal）：皮肤套上之后再露脸，避免白闪。
-    void window.show();
+    // 建窗时的 skip_taskbar 只对可见窗口生效：隐藏状态建出来、这里再显示，任务栏就又冒出来，所以显示后再设一次。
+    void window.show().then(() => window.setSkipTaskbar(true));
     // 「光标在输入框里」才亮起正文画布（Hermes 的 data-hud-typing 同理）。要查询 :focus 而不是
     // 读 activeElement——切到别的 App 时窗口失焦但 activeElement 不动，查询才不会把画布一直点亮。
     const applyTyping = () => document.documentElement.toggleAttribute('data-hud-typing', !!(document.querySelector('#message-input:focus,[data-project-agent-chat-input]:focus') || (modal.open && modal.contains(document.activeElement))));
