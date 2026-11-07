@@ -1,4 +1,4 @@
-import { invoke } from './transport';
+import { invoke, isRemote } from './transport';
 
 export interface Attachment { id: string; name: string; mime: string; bytes: number; path: string; }
 type Escape = (value: string | number) => string;
@@ -80,8 +80,9 @@ export function mountAttachments(input: HTMLTextAreaElement, room: string, escap
   input.addEventListener('paste', event => {
     const files = [...event.clipboardData?.files || []];
     if (files.length) { event.preventDefault(); void receive(files); }
-    else if (!event.clipboardData?.getData('text/plain')) {
+    else if (!isRemote && !event.clipboardData?.getData('text/plain')) {
       // Explorer's copied files use native CF_HDROP, absent from WebView's FileList.
+      // 手机上没有桌面剪贴板可读，不往网关发 paste_clipboard_files（网关也不放开）。
       pending.set(room, (pending.get(room) || 0) + 1);
       void invoke<Attachment[]>('paste_clipboard_files', { conversationId: room }).then(items => { if (read(room).length + items.length > 20) throw new Error('一条消息最多20个附件'); if (items.length) write(room, [...read(room), ...items]); }).catch(failure => error(String(failure))).finally(() => { pending.set(room, Math.max(0, (pending.get(room) || 1) - 1)); refresh(room); });
     }
@@ -105,7 +106,7 @@ export function mountAnswerFiles(input: HTMLTextAreaElement, room: string, error
   input.addEventListener('paste', event => {
     const files = [...event.clipboardData?.files || []];
     if (files.length) { event.preventDefault(); void stage(files); }
-    else if (!event.clipboardData?.getData('text/plain')) void invoke<Attachment[]>('paste_clipboard_files', { conversationId: room }).then(append).catch(failure => error(String(failure)));
+    else if (!isRemote && !event.clipboardData?.getData('text/plain')) void invoke<Attachment[]>('paste_clipboard_files', { conversationId: room }).then(append).catch(failure => error(String(failure)));
   });
   input.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
   input.addEventListener('drop', event => { const files = [...event.dataTransfer?.files || []]; if (files.length) { event.preventDefault(); event.stopPropagation(); void stage(files); } });

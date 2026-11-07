@@ -61,8 +61,9 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   /* 右上角按钮点击区也不小于 44px（视觉大小不变的用透明外扩：这里直接加大盒子）。 */
   html:not([data-hud]) .chat-header :is(button, summary):not(.mobile-back) { min-height: 44px; min-width: 44px; }
   html:not([data-hud]) #new-conversation { width: 44px; height: 44px; }
-  /* 打开客户端是桌面动作，原生会话在抽屉里也有。 */
-  html:not([data-hud]) .connection-badge, html:not([data-hud]) #open-client, html:not([data-hud]) #native-sessions, html:not([data-hud]) #open-cli { display: none; }
+  /* 打开客户端是桌面动作，原生会话在抽屉里也有。「在 CLI 中打开」也是桌面动作（要在这台电脑上开终端），
+     但会话已经交给 CLI 时它是「收回到同席」（.active）——那个手机上要做，否则这条会话一直发不出消息。 */
+  html:not([data-hud]) .connection-badge, html:not([data-hud]) #open-client, html:not([data-hud]) #native-sessions, html:not([data-hud]) #open-cli:not(.active) { display: none; }
 
   html:not([data-hud]) .chat-content { padding: 10px 10px 0; }
   html:not([data-hud]) .messages { padding: 12px 2px; }

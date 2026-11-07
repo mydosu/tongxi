@@ -1,5 +1,9 @@
-//! 手机遥控网关（第 0 期，只读）：只绑 Tailscale 地址，Bearer token 鉴权，
-//! `POST /rpc/<command>` 走只读白名单，其余 GET 回打包进 exe 的前端资源。
+//! 手机遥控网关：只绑 Tailscale 地址，Bearer token 鉴权，`POST /rpc/<command>` 走命令白名单，
+//! 其余 GET 回打包进 exe 的前端资源。
+//!
+//! 手机上跑的是同一份前端，所以桌面版能做的事手机上也要能做：前端 invoke 的命令除桌面专属的
+//! 那几个（系统对话框、资源管理器、本机程序、桌面窗口 / HUD、桌面剪贴板，以及网关自身的开关与
+//! 令牌）外全部放行。桌面专属的那些在前端按 `isRemote` 把入口藏起来，用户看不到也点不到。
 use crate::AppState;
 use flate2::{write::GzEncoder, Compression};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -26,7 +30,16 @@ fn gateway_port() -> u16 {
 }
 const MAX_BODY: u64 = 1 << 20;
 /// 附件走 stage_attachment：前端单个附件上限 32 MiB，base64 后约 43 MB，留一点余量。
+/// 导入背景图走 add_background：前端把图压到 base64 不超过 7.5 MB 再发，同样是大块 base64。
 const MAX_ATTACHMENT_BODY: u64 = 48 << 20;
+
+/// 请求体上限：只有这两类命令带大块 base64，其余都很小。
+fn body_limit(command: &str) -> u64 {
+    match command {
+        "stage_attachment" | "add_background" => MAX_ATTACHMENT_BODY,
+        _ => MAX_BODY,
+    }
+}
 const MAX_EVENT_CLIENTS: usize = 16;
 const PING_EVERY: Duration = Duration::from_secs(15);
 
@@ -51,7 +64,7 @@ const EVENTS: &[&str] = &[
 const COALESCED: &[&str] = &["codex-state", "hermes-state", "dsh-state", "claude-state", "opencode-state", "antigravity-state", "albion-state", "discussion-state"];
 const COALESCE_EVERY: Duration = Duration::from_millis(100);
 
-/// 远程只读白名单：都只读数据，不改库、不起子进程、不碰文件系统和配置。
+/// 远程只读白名单：只读数据或只读探测（版本、安装状态、更新检查），不改库、不改配置。
 /// （get_conversation 会按需补建项目成员私聊的空行，和桌面打开项目时一样，不改已有内容。）
 const READ_COMMANDS: &[&str] = &[
     "list_agents",
@@ -77,10 +90,25 @@ const READ_COMMANDS: &[&str] = &[
     "opencode_status",
     "antigravity_status",
     "albion_status",
+    // 会话、项目、成员、服务与设置页在手机上要读的状态。
+    "native_sessions",
+    "project_session_bindings",
+    "default_workspace",
+    "hermes_profiles",
+    "companion_config",
+    "scan_agents",
+    "service_inventory",
+    "check_service_update",
+    "service_update_status",
+    "check_app_update",
 ];
 
-/// 手机上要能做的写操作：发消息、插话、停止、答问、传附件、新建会话。
-/// 不含：删除/归档/改名、头像、主题、项目目录、成员接入与断开、服务更新安装、设置类、读桌面剪贴板。
+/// 手机上要能做的写操作：和桌面版一样，前端会调的写命令都放开。
+/// 桌面专属、手机上没意义的不在这里：pick_folder（系统选文件夹）、reveal_file（资源管理器 / 本机程序
+/// 打开文件）、paste_clipboard_files（桌面剪贴板）、open_agent_client / open_in_cli（在本机开客户端 /
+/// 终端窗口）、set_hud_enabled / set_hud_bounds（桌面窗口与 HUD）、export_diagnostics（写文件并在
+/// 资源管理器里选中）、remote_gateway_status / set_remote_gateway / reset_remote_gateway_token
+/// （网关自身的开关与令牌：手机上改等于自己拔自己的网线，只在桌面窗口里做）。
 const WRITE_COMMANDS: &[&str] = &[
     "send_codex_message",
     "send_hermes_message",
@@ -107,6 +135,68 @@ const WRITE_COMMANDS: &[&str] = &[
     "start_discussion",
     "cancel_discussion",
     "save_local_message",
+    // 会话：改名、排序、归档、删除、删单条记录、改群成员、把成员回复分享到团队、接原生会话、会话设置。
+    "rename_conversation",
+    "set_conversation_order",
+    "archive_conversation",
+    "delete_conversation",
+    "remove_conversation_item",
+    "update_group_members",
+    "share_project_agent_message",
+    "attach_native_session",
+    "set_session_cwd",
+    "set_session_settings",
+    "set_session_profile",
+    // 收回交给桌面 CLI 的会话（taskkill 掉那个窗口，不是开窗）：手机上要把会话拿回来继续发消息。
+    "reclaim_cli_session",
+    // 成员接入 / 断开：手机和桌面一样能连、能断。
+    "connect_codex",
+    "connect_hermes",
+    "connect_dsh",
+    "connect_claude",
+    "connect_opencode",
+    "connect_antigravity",
+    "connect_albion",
+    "disconnect_codex",
+    "disconnect_hermes",
+    "disconnect_dsh",
+    "disconnect_claude",
+    "disconnect_opencode",
+    "disconnect_antigravity",
+    "disconnect_albion",
+    // 头像、改名、主题背景增删。
+    "set_own_avatar",
+    "set_agent_avatar",
+    "rename_agent",
+    "add_background",
+    "remove_background",
+    "set_background_mode",
+    "set_background_focus",
+    // 项目目录与项目设置（选文件夹本身要桌面对话框，手机上填路径）。
+    "register_project",
+    "release_project",
+    "bind_project",
+    "set_project_summary",
+    "set_project_coordinator",
+    "add_project_seat",
+    "remove_project_seat",
+    "rename_project_seat",
+    "set_project_permission",
+    "set_project_grants",
+    "set_project_spend_cap",
+    "bind_project_sessions",
+    // 陪伴配置、成员安装 / 初次配置、服务更新与软件更新。
+    "save_companion",
+    "test_companion",
+    "install_agent",
+    "setup_agent",
+    "restart_service",
+    "update_service",
+    "rollback_service_update",
+    "apply_app_update",
+    // 其它设置。
+    "set_default_workspace",
+    "set_hermes_profile",
 ];
 
 fn allowed(command: &str) -> bool {
@@ -384,6 +474,17 @@ fn arg_strings(args: &Value, key: &str) -> Result<Vec<String>, RpcError> {
         .ok_or_else(|| RpcError::BadRequest(format!("缺少参数 {key}")))
 }
 
+/// 可省略的字符串参数：没传、传 null 都算 None（和 Tauri 的 `Option<String>` 一致）。
+fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// 结构化参数（CompanionInput、RoleChoice、BindingChoice、Update 这些按结构体反序列化的）。
+fn arg_json<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, RpcError> {
+    let value = args.get(key).cloned().filter(|value| !value.is_null()).ok_or_else(|| RpcError::BadRequest(format!("缺少参数 {key}")))?;
+    serde_json::from_value(value).map_err(|e| RpcError::BadRequest(format!("参数 {key} 不合法：{e}")))
+}
+
 fn out<T: Serialize>(result: Result<T, String>) -> Result<Value, RpcError> {
     let value = result.map_err(RpcError::Failed)?;
     serde_json::to_value(value).map_err(|e| RpcError::Failed(e.to_string()))
@@ -419,6 +520,17 @@ fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Result<Value, RpcEr
         "albion_status" => out(Ok(crate::albion::albion_status(app.state::<crate::albion::Runtime>()))),
         "list_backgrounds" => out(crate::backgrounds::list_backgrounds(state())),
         "background_image" => out(crate::backgrounds::background_image(state(), arg_str(args, "id")?)),
+        // 会话、项目、成员、服务与设置页要读的状态。
+        "native_sessions" => out(tauri::async_runtime::block_on(crate::native_sessions(app.clone(), state(), arg_str(args, "agentId")?, arg_opt_str(args, "conversationId")))),
+        "project_session_bindings" => out(crate::project_sessions::project_session_bindings(state(), arg_str(args, "conversationId")?)),
+        "default_workspace" => out(crate::default_workspace(state())),
+        "hermes_profiles" => out(Ok(crate::hermes_profiles())),
+        "companion_config" => out(crate::companion::companion_config(state())),
+        "scan_agents" => out(Ok(crate::agent_setup::scan_agents(app.clone()))),
+        "service_inventory" => out(Ok(crate::services::service_inventory(app.clone()))),
+        "check_service_update" => out(tauri::async_runtime::block_on(crate::services::check_service_update(app.clone(), arg_str(args, "serviceId")?))),
+        "service_update_status" => out(crate::services::service_update_status(app.clone(), arg_str(args, "serviceId")?)),
+        "check_app_update" => out(tauri::async_runtime::block_on(crate::updater::check_app_update())),
         _ => dispatch_write(app, command, args),
     }
 }
@@ -429,6 +541,8 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
     let state = || app.state::<AppState>();
     let room = || arg_str(args, "conversationId");
     let (message, content) = (|| arg_str(args, "messageId"), || arg_str(args, "content"));
+    // 连接 / 断开和桌面按钮走同一把维护锁：维护动作在途时不会两个同时跑。
+    let lock = || app.state::<crate::services::MaintenanceLock>();
     match command {
         "send_codex_message" => out(crate::send_codex_message(app.state::<Arc<codex::Runtime>>(), room()?, message()?, content()?)),
         "send_hermes_message" => out(crate::send_hermes_message(app.state::<Arc<hermes::Runtime>>(), room()?, message()?, content()?)),
@@ -470,6 +584,96 @@ fn dispatch_write(app: &AppHandle, command: &str, args: &Value) -> Result<Value,
         "cancel_discussion" => out(tauri::async_runtime::block_on(crate::discussion::cancel_discussion(app.state::<Arc<crate::discussion::Runtime>>(), arg_str(args, "id")?))),
         "save_local_message" => out(crate::save_local_message(state(), room()?, message()?, content()?)),
         "create_conversation" => out(crate::create_conversation(state(), arg_str(args, "title")?, arg_str(args, "kind")?, arg_strings(args, "members")?)),
+        // 会话：改名、排序、归档、删除、删单条记录、改群成员、分享成员回复、接原生会话、会话设置。
+        "rename_conversation" => out(crate::rename_conversation(state(), arg_str(args, "id")?, arg_str(args, "title")?)),
+        "set_conversation_order" => out(crate::set_conversation_order(state(), arg_strings(args, "ids")?)),
+        "archive_conversation" => out(crate::archive_conversation(
+            app.state::<albion::Runtime>(),
+            app.state::<Arc<dsh::Runtime>>(),
+            app.state::<Arc<claude::Runtime>>(),
+            app.state::<Arc<codex::Runtime>>(),
+            app.state::<Arc<hermes::Runtime>>(),
+            app.state::<opencode::Runtime>(),
+            app.state::<antigravity::Runtime>(),
+            arg_str(args, "id")?,
+            arg_bool(args, "archived")?,
+        )),
+        "delete_conversation" => out(crate::delete_conversation(
+            app.state::<albion::Runtime>(),
+            app.state::<Arc<dsh::Runtime>>(),
+            app.state::<Arc<claude::Runtime>>(),
+            app.state::<Arc<codex::Runtime>>(),
+            app.state::<Arc<hermes::Runtime>>(),
+            app.state::<opencode::Runtime>(),
+            app.state::<antigravity::Runtime>(),
+            arg_str(args, "id")?,
+        )),
+        "update_group_members" => out(crate::update_group_members(
+            app.state::<albion::Runtime>(),
+            app.state::<Arc<dsh::Runtime>>(),
+            app.state::<Arc<claude::Runtime>>(),
+            app.state::<Arc<codex::Runtime>>(),
+            app.state::<Arc<hermes::Runtime>>(),
+            app.state::<opencode::Runtime>(),
+            app.state::<antigravity::Runtime>(),
+            arg_str(args, "id")?,
+            arg_strings(args, "members")?,
+        )),
+        "remove_conversation_item" => out(crate::remove_conversation_item(state(), room()?, arg_str(args, "kind")?, arg_str(args, "id")?)),
+        "share_project_agent_message" => out(crate::share_project_agent_message(state(), arg_str(args, "groupId")?, arg_str(args, "agentChatId")?, arg_str(args, "messageId")?)),
+        "attach_native_session" => out(crate::attach_native_session(state(), room()?, arg_str(args, "agentId")?, arg_str(args, "nativeSessionId")?, arg_opt_str(args, "nativeCwd"), arg_opt_str(args, "title"))),
+        "reclaim_cli_session" => out(crate::reclaim_cli_session(state(), room()?, arg_str(args, "agentId")?)),
+        "set_session_cwd" => out(crate::set_session_cwd(state(), room()?, arg_str(args, "agentId")?, arg_opt_str(args, "cwd"))),
+        "set_session_settings" => out(crate::set_session_settings(state(), app.clone(), arg_str(args, "id")?, arg_str(args, "agentId")?, arg_opt_str(args, "model"), arg_opt_str(args, "reasoningEffort"))),
+        "set_session_profile" => out(crate::set_session_profile(state(), app.state::<Arc<hermes::Runtime>>(), arg_str(args, "id")?, arg_str(args, "agentId")?, arg_opt_str(args, "profile"))),
+        // 成员接入 / 断开。
+        "connect_codex" => out(tauri::async_runtime::block_on(crate::connect_codex(app.clone(), app.state::<Arc<codex::Runtime>>(), lock()))),
+        "connect_hermes" => out(tauri::async_runtime::block_on(crate::connect_hermes(app.clone(), app.state::<Arc<hermes::Runtime>>(), lock()))),
+        "connect_dsh" => out(tauri::async_runtime::block_on(crate::connect_dsh(app.clone(), app.state::<Arc<dsh::Runtime>>(), lock()))),
+        "connect_claude" => out(tauri::async_runtime::block_on(crate::connect_claude(app.clone(), app.state::<Arc<claude::Runtime>>(), lock()))),
+        "connect_opencode" => out(tauri::async_runtime::block_on(opencode::connect_opencode(app.clone(), app.state::<opencode::Runtime>(), lock()))),
+        "connect_antigravity" => out(tauri::async_runtime::block_on(antigravity::connect_antigravity(app.clone(), app.state::<antigravity::Runtime>(), lock()))),
+        "connect_albion" => out(tauri::async_runtime::block_on(albion::connect_albion(app.clone(), app.state::<albion::Runtime>(), lock()))),
+        "disconnect_codex" => out(tauri::async_runtime::block_on(crate::disconnect_codex(app.clone(), app.state::<Arc<codex::Runtime>>(), lock()))),
+        "disconnect_hermes" => out(tauri::async_runtime::block_on(crate::disconnect_hermes(app.clone(), app.state::<Arc<hermes::Runtime>>(), lock()))),
+        "disconnect_dsh" => out(tauri::async_runtime::block_on(crate::disconnect_dsh(app.clone(), app.state::<Arc<dsh::Runtime>>(), lock()))),
+        "disconnect_claude" => out(tauri::async_runtime::block_on(crate::disconnect_claude(app.clone(), app.state::<Arc<claude::Runtime>>(), lock()))),
+        "disconnect_opencode" => out(tauri::async_runtime::block_on(opencode::disconnect_opencode(app.clone(), app.state::<opencode::Runtime>(), lock()))),
+        "disconnect_antigravity" => out(tauri::async_runtime::block_on(antigravity::disconnect_antigravity(app.clone(), app.state::<antigravity::Runtime>(), lock()))),
+        "disconnect_albion" => out(tauri::async_runtime::block_on(albion::disconnect_albion(app.clone(), app.state::<albion::Runtime>(), lock()))),
+        // 头像、改名、主题背景增删。
+        "set_own_avatar" => out(crate::avatars::set_own_avatar(state(), arg_opt_str(args, "conversationId"), arg_opt_str(args, "avatar"))),
+        "set_agent_avatar" => out(crate::avatars::set_agent_avatar(state(), arg_str(args, "agentId")?, arg_opt_str(args, "avatar"))),
+        "rename_agent" => out(crate::project_sessions::rename_agent(state(), arg_str(args, "agentId")?, arg_str(args, "name")?)),
+        "add_background" => out(crate::backgrounds::add_background(state(), arg_str(args, "name")?, arg_str(args, "mode")?, arg_str(args, "image")?, arg_str(args, "thumb")?)),
+        "remove_background" => out(crate::backgrounds::remove_background(state(), arg_str(args, "id")?)),
+        "set_background_mode" => out(crate::backgrounds::set_background_mode(state(), arg_str(args, "id")?, arg_str(args, "mode")?)),
+        "set_background_focus" => out(crate::backgrounds::set_background_focus(state(), arg_str(args, "id")?, args.get("focus").and_then(Value::as_f64))),
+        // 项目目录与项目设置。
+        "register_project" => out(crate::projects::register_project(state(), arg_str(args, "name")?, arg_str(args, "root")?)),
+        "release_project" => out(crate::projects::release_project(state(), arg_str(args, "projectId")?)),
+        "bind_project" => out(crate::projects::bind_project(state(), room()?, arg_opt_str(args, "projectId"))),
+        "set_project_summary" => out(crate::projects::set_project_summary(state(), arg_str(args, "projectId")?, arg_bool(args, "enabled")?)),
+        "set_project_coordinator" => out(crate::projects::set_project_coordinator(app.clone(), state(), room()?, arg_json(args, "coordinator")?)),
+        "add_project_seat" => out(crate::project_sessions::add_project_seat(state(), room()?, arg_str(args, "agentId")?, arg_opt_str(args, "label"))),
+        "remove_project_seat" => out(crate::project_sessions::remove_project_seat(state(), room()?, arg_str(args, "seatId")?)),
+        "rename_project_seat" => out(crate::project_sessions::rename_project_seat(state(), room()?, arg_str(args, "seatId")?, arg_str(args, "label")?)),
+        "set_project_permission" => out(crate::projects::set_project_permission(state(), room()?, arg_str(args, "tier")?)),
+        "set_project_grants" => out(crate::projects::set_project_grants(state(), room()?, arg_str(args, "grants")?)),
+        "set_project_spend_cap" => out(crate::projects::set_project_spend_cap(state(), room()?, arg_json(args, "caps")?)),
+        "bind_project_sessions" => out(crate::project_sessions::bind_project_sessions(state(), room()?, arg_json(args, "bindings")?)),
+        // 陪伴配置、成员安装 / 初次配置、服务更新与软件更新。
+        "save_companion" => out(crate::companion::save_companion(state(), app.state::<albion::Runtime>(), arg_json(args, "config")?)),
+        "test_companion" => out(tauri::async_runtime::block_on(crate::companion::test_companion(state(), arg_json(args, "config")?))),
+        "install_agent" => out(crate::agent_setup::install_agent(arg_str(args, "agentId")?)),
+        "setup_agent" => out(crate::agent_setup::setup_agent(arg_str(args, "agentId")?)),
+        "restart_service" => out(tauri::async_runtime::block_on(crate::services::restart_service(app.clone(), arg_str(args, "serviceId")?))),
+        "update_service" => out(tauri::async_runtime::block_on(crate::services::update_service(app.clone(), arg_str(args, "serviceId")?))),
+        "rollback_service_update" => out(tauri::async_runtime::block_on(crate::services::rollback_service_update(app.clone(), arg_str(args, "serviceId")?))),
+        "apply_app_update" => out(tauri::async_runtime::block_on(crate::updater::apply_app_update(app.clone(), state(), arg_json(args, "update")?))),
+        // 其它设置。
+        "set_default_workspace" => out(crate::set_default_workspace(state(), arg_opt_str(args, "path"))),
+        "set_hermes_profile" => out(crate::set_hermes_profile(state(), app.state::<Arc<hermes::Runtime>>(), arg_opt_str(args, "profile"))),
         _ => Err(RpcError::Forbidden),
     }
 }
@@ -555,7 +759,7 @@ fn handle(app: &AppHandle, token: &Mutex<String>, events: &Events, mut request: 
         if !valid {
             return reply_text(request, 401, "未授权");
         }
-        let limit = if command == "stage_attachment" { MAX_ATTACHMENT_BODY } else { MAX_BODY };
+        let limit = body_limit(command);
         let mut body = String::new();
         if request.as_reader().take(limit + 1).read_to_string(&mut body).is_err() {
             return reply_text(request, 400, "请求体读取失败");
@@ -733,20 +937,122 @@ mod tests {
         assert!(!bearer_ok(None, "abc123"));
     }
 
+    /// 手机要能做桌面上的全部事：以前被拒的写命令现在都放行；只有桌面专属的仍然拒绝。
     #[test]
-    fn whitelist_rejects_writes_and_unknown_commands() {
-        for command in ["send_claude_message", "apply_app_update", "install_agent", "set_default_workspace", "save_companion", "delete_conversation", "remote_gateway_status", "reset_remote_gateway_token", "nope"] {
-            assert!(!READ_COMMANDS.contains(&command), "{command} 不该在白名单里");
+    fn whitelist_opens_desktop_commands_and_rejects_only_desktop_only_ones() {
+        for command in [
+            "connect_codex",
+            "connect_hermes",
+            "connect_dsh",
+            "connect_claude",
+            "connect_opencode",
+            "connect_antigravity",
+            "connect_albion",
+            "disconnect_codex",
+            "disconnect_dsh",
+            "add_background",
+            "remove_background",
+            "set_background_mode",
+            "set_background_focus",
+            "rename_conversation",
+            "archive_conversation",
+            "delete_conversation",
+            "remove_conversation_item",
+            "update_group_members",
+            "rename_agent",
+            "set_own_avatar",
+            "set_agent_avatar",
+            "set_conversation_order",
+            "attach_native_session",
+            "set_session_cwd",
+            "set_session_settings",
+            "set_session_profile",
+            "reclaim_cli_session",
+            "share_project_agent_message",
+            "register_project",
+            "release_project",
+            "bind_project",
+            "set_project_summary",
+            "set_project_coordinator",
+            "add_project_seat",
+            "remove_project_seat",
+            "rename_project_seat",
+            "set_project_permission",
+            "set_project_grants",
+            "set_project_spend_cap",
+            "bind_project_sessions",
+            "save_companion",
+            "test_companion",
+            "install_agent",
+            "setup_agent",
+            "restart_service",
+            "update_service",
+            "rollback_service_update",
+            "apply_app_update",
+            "set_default_workspace",
+            "set_hermes_profile",
+        ] {
+            assert!(WRITE_COMMANDS.contains(&command), "{command} 要在写表里");
+            assert!(allowed(command), "{command} 要能远程调用");
         }
+        for command in [
+            "native_sessions",
+            "project_session_bindings",
+            "default_workspace",
+            "hermes_profiles",
+            "companion_config",
+            "scan_agents",
+            "service_inventory",
+            "check_service_update",
+            "service_update_status",
+            "check_app_update",
+        ] {
+            assert!(READ_COMMANDS.contains(&command), "{command} 要在读表里");
+            assert!(allowed(command), "{command} 要能远程调用");
+        }
+        // 桌面专属：系统对话框 / 资源管理器 / 本机程序 / 桌面窗口与 HUD / 桌面剪贴板，以及网关自身的开关与令牌。
+        for command in [
+            "pick_folder",
+            "reveal_file",
+            "paste_clipboard_files",
+            "open_agent_client",
+            "open_in_cli",
+            "set_hud_enabled",
+            "set_hud_bounds",
+            "export_diagnostics",
+            "remote_gateway_status",
+            "set_remote_gateway",
+            "reset_remote_gateway_token",
+        ] {
+            assert!(!allowed(command), "{command} 是桌面专属，不该放开");
+        }
+        assert!(!allowed("nope"), "未知命令仍然拒绝");
+        // 两张表不重叠、也没有重复项。
         for command in WRITE_COMMANDS {
-            for danger in ["delete", "archive", "rename", "connect", "disconnect", "update", "install", "avatar", "paste", "attach_native", "set_", "remove", "remote_gateway", "open_", "register", "bind", "add_"] {
-                assert!(!command.contains(danger), "写表里不该有 {command}");
-            }
             assert!(!READ_COMMANDS.contains(command), "{command} 同时在读表和写表");
         }
-        assert!(allowed("send_claude_message") && allowed("stage_attachment") && !allowed("delete_conversation") && !allowed("connect_claude"));
+        for table in [READ_COMMANDS, WRITE_COMMANDS] {
+            for (index, command) in table.iter().enumerate() {
+                assert!(!table[index + 1..].contains(command), "{command} 在名单里重复了");
+            }
+        }
+        assert!(allowed("send_claude_message") && allowed("stage_attachment") && allowed("delete_conversation") && allowed("connect_dsh"));
         assert!(READ_COMMANDS.contains(&"list_conversations") && READ_COMMANDS.contains(&"dsh_status") && !READ_COMMANDS.contains(&"connect_dsh"));
-        assert!(READ_COMMANDS.contains(&"background_image") && !READ_COMMANDS.contains(&"add_background") && !READ_COMMANDS.contains(&"remove_background"));
+        assert!(READ_COMMANDS.contains(&"background_image") && WRITE_COMMANDS.contains(&"add_background") && WRITE_COMMANDS.contains(&"remove_background"));
+        // 背景图是 base64 大块数据，和附件一样放大请求体上限，否则手机上导入主题图会被 413 挡掉。
+        assert_eq!(body_limit("add_background"), MAX_ATTACHMENT_BODY);
+        assert_eq!(body_limit("stage_attachment"), MAX_ATTACHMENT_BODY);
+        assert_eq!(body_limit("set_own_avatar"), MAX_BODY);
+    }
+
+    /// 名单里每一条都要有分派代码：只加了白名单、忘了写 match 分支，请求会掉到「该命令不允许远程调用」。
+    /// 名单里的字面量是 `"cmd",`，分派是 `"cmd" => `，所以只按后者匹配不会误判。
+    #[test]
+    fn every_whitelisted_command_has_a_dispatch_arm() {
+        let source = include_str!("remote_gateway.rs");
+        for command in READ_COMMANDS.iter().chain(WRITE_COMMANDS) {
+            assert!(source.contains(&format!("\"{command}\" => ")), "{command} 在白名单里，但没有分派代码");
+        }
     }
 
     #[test]
