@@ -1,18 +1,22 @@
-/* 配对页：浅色玻璃感，配色跟桌面同席（src/styles.css）对齐——
-   #f8f9fb 底、#303844 字、#33383e 主色、#e3e5e8 分隔线、#848990 次要文字。 */
+/* 配对页 / 加载页：浅色玻璃感，配色跟桌面同席（src/theme.css）对齐——
+   近白底、#394057 字，主色用淡紫 #7f74b4 和冰蓝 #8db6de，圆角比桌面再大一点
+   （手机屏小，同样的圆角看着更尖）。 */
 :root {
   font-family: 'Noto Sans SC', 'MiSans', 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   font-size: 15px;
-  color: #303844;
-  background: #f8f9fb;
+  color: #394057;
+  background: #f7f8fd;
   color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
-  --accent: #33383e;
-  --line: #e3e5e8;
-  --muted: #848990;
+  --accent: #7f74b4;
+  --accent-2: #a598d8;
+  --ice: #8db6de;
+  --line: #e4e2f0;
+  --muted: #6d7391;
+  --r: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -22,13 +26,71 @@ body {
   min-height: 100dvh;
   /* 两团很淡的光斑，让玻璃卡片有个底 */
   background:
-    radial-gradient(circle at 18% 12%, #e9eefb 0%, transparent 46%),
-    radial-gradient(circle at 84% 88%, #f3ecf6 0%, transparent 50%),
-    #f8f9fb;
+    radial-gradient(circle at 18% 12%, #e7e4fb 0%, transparent 46%),
+    radial-gradient(circle at 84% 88%, #e3eefb 0%, transparent 50%),
+    #f7f8fd;
   display: flex;
   flex-direction: column;
 }
 
+.stage { flex: 1; display: flex; flex-direction: column; }
+
+/* 两块屏都在 DOM 里，靠 <html data-screen> 决定显示哪一块（首帧前由 index.html 的内联脚本写好）。 */
+[data-screen="loading"] .pair, [data-screen="pair"] .loading { display: none; }
+
+/* ---------- 加载页：图标 + 名字 + 「正在连接…」 ---------- */
+.loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: calc(28px + env(safe-area-inset-top)) 24px calc(26px + env(safe-area-inset-bottom));
+  text-align: center;
+}
+
+.loading .logo { width: 104px; height: 104px; animation: breathe 3.4s ease-in-out infinite; }
+.loading h1 { margin: 4px 0 0; font-size: 22px; font-weight: 650; letter-spacing: .04em; }
+
+.connecting {
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: .02em;
+}
+
+.dots { display: inline-flex; gap: 3px; margin-left: 5px; }
+.dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent-2); animation: dot 1.2s ease-in-out infinite; }
+.dots i:nth-child(2) { animation-delay: .15s; }
+.dots i:nth-child(3) { animation-delay: .3s; }
+
+/* 地址失效时不许卡死在这里：这个出口一直都在，8 秒还没跳走（<html data-slow>）才显出来。 */
+.relink {
+  margin-top: 14px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: #aab0c4;
+  text-decoration: none;
+  transition: color .2s, background .2s, border-color .2s;
+  -webkit-tap-highlight-color: transparent;
+}
+[data-slow] .relink {
+  color: var(--accent);
+  background: #ffffffcc;
+  border-color: var(--line);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@keyframes dot { 0%, 70%, 100% { opacity: .25; transform: scale(.8); } 35% { opacity: 1; transform: scale(1.1); } }
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.035); } }
+
+/* ---------- 配对页 ---------- */
 .pair {
   flex: 1;
   display: flex;
@@ -43,10 +105,10 @@ body {
 
 .card {
   display: grid;
-  gap: 14px;
+  gap: 15px;
   padding: 26px 22px 24px;
   border: 1px solid #ffffffc0;
-  border-radius: 22px;
+  border-radius: 26px;
   background: linear-gradient(170deg, #ffffffd9, #ffffff9c);
   box-shadow:
     0 22px 50px -28px #2b36481f,
@@ -57,25 +119,7 @@ body {
 }
 
 .brand { display: flex; align-items: center; gap: 13px; }
-
-.mark {
-  width: 42px;
-  height: 42px;
-  border-radius: 13px;
-  flex: none;
-  background: linear-gradient(150deg, #4a525e, #33383e 62%, #24282e);
-  box-shadow: 0 8px 18px -8px #33383e8c, inset 0 1px 0 #ffffff38;
-  position: relative;
-}
-/* 方块里挖一个「同席」的方桌意象：两笔叠出的方框 */
-.mark::after {
-  content: '';
-  position: absolute;
-  inset: 12px;
-  border: 1.6px solid #f8f9fb;
-  border-radius: 4px;
-  opacity: .92;
-}
+.brand .logo { width: 46px; height: 46px; flex: none; }
 
 h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: .02em; }
 .tagline { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
@@ -84,7 +128,7 @@ button {
   font: inherit;
   cursor: pointer;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--r);
   padding: 13px 16px;
   transition: transform .14s ease, background .15s ease, box-shadow .15s ease, opacity .15s;
   -webkit-tap-highlight-color: transparent;
@@ -93,14 +137,14 @@ button:active { transform: scale(.985); }
 button:disabled { opacity: .55; cursor: default; }
 
 .primary {
-  color: #f8f9fb;
-  background: linear-gradient(160deg, #414750, #33383e 70%);
-  box-shadow: 0 10px 22px -12px #33383eaa, inset 0 1px 0 #ffffff26;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 10px 22px -12px #6d63a8b3, inset 0 1px 0 #ffffff40;
   font-weight: 600;
 }
 
 .secondary {
-  color: #33383e;
+  color: var(--accent);
   background: #ffffffcc;
   border: 1px solid var(--line);
   font-weight: 600;
@@ -117,21 +161,21 @@ input {
   flex: 1;
   min-width: 0;
   font: inherit;
-  color: #303844;
+  color: #394057;
   background: #ffffffd0;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px 13px;
+  border-radius: var(--r);
+  padding: 12px 14px;
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
 input::placeholder { color: #b3b9c2; }
-input:focus { border-color: #b9c1cc; box-shadow: 0 0 0 3px #33383e12; }
+input:focus { border-color: #b5a9e0; box-shadow: 0 0 0 3px #7f74b41f; }
 
 .error {
   margin: 0;
   padding: 9px 12px;
-  border-radius: 10px;
+  border-radius: 14px;
   background: #fdf3f1;
   border: 1px solid #f2ddd8;
   color: #ab6659;
@@ -143,7 +187,7 @@ input:focus { border-color: #b9c1cc; box-shadow: 0 0 0 3px #33383e12; }
 .foot p { margin: 0; font-size: 11.5px; color: #a5abb5; }
 
 @media (max-width: 360px) {
-  .card { padding: 22px 16px 20px; border-radius: 18px; }
+  .card { padding: 22px 16px 20px; border-radius: 22px; }
   form { flex-wrap: wrap; }
   form button { flex: 1 1 100%; }
 }

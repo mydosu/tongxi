@@ -1,45 +1,66 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-screen="loading">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
     <title>同席</title>
+    <!-- 首帧之前就决定画哪一块：存过地址就直接进加载页（main.ts 随后整页跳过去），
+         没存过、或带 ?repair=1 才画配对表单。放在样式表前面，切的时候不会闪一下配对表单。 -->
+    <script>
+      (() => {
+        let saved = '';
+        try { saved = localStorage.getItem('tongxi.pair.url') || ''; } catch { /* 隐私模式下读不到，当没存过 */ }
+        const repair = new URLSearchParams(location.search).get('repair') === '1';
+        document.documentElement.dataset.screen = saved && !repair ? 'loading' : 'pair';
+      })();
+    </script>
     <link rel="stylesheet" href="/src/styles.css" />
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-    <main class="pair">
-      <section class="card">
-        <div class="brand">
-          <span class="mark" aria-hidden="true"></span>
-          <div>
-            <h1>同席</h1>
-            <p class="tagline">手机上接着用桌面那台电脑的同席</p>
-          </div>
-        </div>
-
-        <form id="paste-form" autocomplete="off">
-          <input
-            id="address"
-            type="url"
-            inputmode="url"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            placeholder="http://100.x.y.z:47680/?token=…"
-          />
-          <button type="submit" class="primary" id="connect">连接</button>
-        </form>
-
-        <p class="hint">在桌面同席「成员与服务 → 远程访问」里点「复制访问地址」，发到手机后粘贴到这里。</p>
-        <p class="error" id="error" role="alert" hidden></p>
+    <main class="stage">
+      <!-- 加载页：存过地址时先看到这一屏，页面正在整页跳到桌面网关。 -->
+      <section class="loading" aria-live="polite">
+        <img class="logo" src="/icon.png" alt="" width="104" height="104" />
+        <h1>同席</h1>
+        <p class="connecting">正在连接<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
+        <a class="relink" id="relink" href="?repair=1">换一台电脑 / 重新配对</a>
       </section>
 
-      <footer class="foot">
-        <p>这台手机要和电脑在同一个 Tailscale 网络里。</p>
-      </footer>
+      <!-- 配对页：粘贴桌面「远程访问」里那条带令牌的地址。 -->
+      <section class="pair">
+        <section class="card">
+          <div class="brand">
+            <img class="logo" src="/icon.png" alt="" width="46" height="46" />
+            <div>
+              <h1>同席</h1>
+              <p class="tagline">手机上接着用桌面那台电脑的同席</p>
+            </div>
+          </div>
+
+          <form id="paste-form" autocomplete="off">
+            <input
+              id="address"
+              type="url"
+              inputmode="url"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              placeholder="http://100.x.y.z:47680/?token=…"
+            />
+            <button type="submit" class="primary" id="connect">连接</button>
+          </form>
+
+          <p class="hint">在桌面同席「成员与服务 → 远程访问」里点「复制访问地址」，发到手机后粘贴到这里。</p>
+          <p class="error" id="error" role="alert" hidden></p>
+        </section>
+
+        <footer class="foot">
+          <p>这台手机要和电脑在同一个 Tailscale 网络里。</p>
+        </footer>
+      </section>
     </main>
   </body>
 </html>

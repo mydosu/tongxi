@@ -1,8 +1,13 @@
-// 同席手机薄壳的「配对」页：这一页只做一件事——拿到用户粘贴的桌面同席网关完整地址，
-// 存下来，然后整页跳过去。跳过去之后跑的是桌面那份前端（同一份 src/），薄壳不再插手。
+// 同席手机薄壳的两块屏（同一页里，靠 <html data-screen> 切）：
+//   加载页——存过地址就直接跳，先把「正在连接…」画出来，不让用户干瞪着配对表单；
+//   配对页——没存过地址、或带 ?repair=1 才出来，拿到粘贴的桌面同席网关完整地址后存下来。
+// 跳过去之后跑的是桌面那份前端（同一份 src/），薄壳不再插手。
 
 /// 存的就是桌面「远程访问」卡片里那条带令牌的 url，薄壳自己不解令牌、不发请求。
+/// index.html 的内联脚本读同一个键决定首帧画哪块屏，改键名要两边一起改。
 const STORAGE_KEY = 'tongxi.pair.url';
+/// 加载页停留这么久还没跳走，就把「重新配对」的出口显出来。
+const SLOW_AFTER = 8000;
 const NOT_PAIRING_CODE = '这不是同席的访问地址，请粘贴桌面「复制访问地址」得到的那条';
 
 const input = document.querySelector<HTMLInputElement>('#address')!;
@@ -90,6 +95,9 @@ function boot() {
   }
 
   if (previous) {
+    // 地址失效 / 不在同一个 Tailscale 网络时页面会一直停在加载页：8 秒后把「换一台电脑」
+    // 那个出口显出来。只改样式，不做探活——真去 ping 一次也判断不出是网关慢还是网络不通。
+    setTimeout(() => { document.documentElement.dataset.slow = '1'; }, SLOW_AFTER);
     connect(previous);
     return;
   }
