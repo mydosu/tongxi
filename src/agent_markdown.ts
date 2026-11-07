@@ -1,9 +1,25 @@
 import { renderMath, withMath } from './math';
+const LOCAL_LINK = /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z]:[\\/]|\\\\|file:\/\/\/)[^<>()\n]+?)>?\)/g;
 /** Small, escaped text renderer. Native output cannot insert HTML or scripts. */
 export function agentMarkdown(text: string, escape: (value: string | number) => string): string {
   const inline = (line: string) => line.split(/(`[^`]*`)/g).map(piece => piece.startsWith('`') && piece.endsWith('`')
     ? `<code>${escape(piece.slice(1, -1))}</code>`
-    : withMath(piece, plain => escape(plain).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>'))).join('');
+    : withMath(piece, localFiles)).join('');
+  const bold = (plain: string) => escape(plain).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  // 成员发图发文件：`![说明](本机绝对路径)` 显示图片，`[文件名](本机绝对路径)` 显示成可定位的文件。
+  function localFiles(plain: string) {
+    let html = '', last = 0;
+    for (const match of plain.matchAll(LOCAL_LINK)) {
+      let path = match[3].trim();
+      if (path.startsWith('file:///')) try { path = decodeURIComponent(path.slice(8)); } catch { path = path.slice(8); }
+      const label = match[2].trim() || path.split(/[\\/]/).pop() || path;
+      html += bold(plain.slice(last, match.index)) + (match[1]
+        ? `<img class="md-image" data-local-image="${escape(path)}" alt="${escape(label)}" title="${escape(path)}">`
+        : `<button type="button" class="md-file" data-local-file="${escape(path)}" title="${escape(path)}"><span aria-hidden="true">▤</span>${escape(label)}</button>`);
+      last = match.index! + match[0].length;
+    }
+    return html + bold(plain.slice(last));
+  }
   const output: string[] = [];
   let paragraph: string[] = [];
   let list: 'ul' | 'ol' | null = null;

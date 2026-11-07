@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
 pub const OPEN: &str = "```tongxi-question";
+pub const SEND_FILES: &str = "要给用户看图片或发文件：先把文件存到本机，回复里写 ![说明](绝对路径) 显示图片、[文件名](绝对路径) 发文件，同席会直接显示图片、文件可点开定位。";
 pub const GUIDANCE: &str = "同席支持向用户提问。仅在确实缺少用户信息或需要用户作关键取舍时使用：优先调用 hub_ask_user（或对应 MCP 工具），给出 question 和 options；工具不可用时，回复末尾输出一个 tongxi-question 代码块，内容为 JSON {\"question\":\"具体问题\",\"options\":[\"选项一\",\"选项二\"]}。选项可以为空。不需要原生终端选择器。提问后结束当前回复，等待用户实际回答，不猜答案、不擅自采用默认选项。普通工作自行推进，不为每个工具操作提问。问题与答案仅本私聊可见，除非用户明确要求分享，不广播也不写入项目共享记忆。";
 
 #[derive(Clone, Serialize)]

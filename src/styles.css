@@ -638,6 +638,11 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-job-text.markdown > :last-child { margin-bottom: 0; }
 .brain-job-text.markdown code { padding: 1px 4px; border-radius: 4px; background: rgb(255 255 255 / .8); font: .92em 'Cascadia Code', Consolas, monospace; }
 /* Markdown 表格：窄窗口下横向滚动，不撑破气泡 */
+.md-image { display: block; max-width: min(100%, 520px); max-height: 420px; margin: 6px 0; border-radius: 10px; object-fit: contain; cursor: pointer; }
+.md-image:not([src]) { min-width: 120px; min-height: 60px; background: rgb(0 0 0 / .05); }
+.md-image-missing { color: #9a6b6b; }
+.md-file { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 2px 0; padding: 3px 10px; border: 1px solid rgb(205 205 228 / .8); border-radius: 8px; background: rgb(255 255 255 / .6); color: inherit; font: inherit; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.md-file:hover { border-color: var(--accent, #8a7cff); }
 .md-table { max-width: 100%; margin: 6px 0 10px; overflow-x: auto; border-radius: 10px; border: 1px solid rgb(205 205 228 / .7); background: rgb(255 255 255 / .55); }
 .md-table:last-child { margin-bottom: 0; }
 .md-table table { border-collapse: collapse; min-width: 100%; font-size: .92em; line-height: 1.6; }

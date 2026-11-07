@@ -37,6 +37,12 @@ export function attachmentHtml(content: string, room: string, escape: Escape) {
   return items.length ? `<div class="message-attachments">${items.map(item => `<button type="button" class="attachment-file" data-attachment-download="${escape(item.id)}" data-attachment-conversation="${escape(room)}" data-attachment-name="${escape(item.name)}">${item.mime?.startsWith('image/') ? `<img data-attachment-preview="${escape(item.id)}" data-attachment-conversation="${escape(room)}" alt="${escape(item.name)}">` : '<span class="attachment-file-icon">▤</span>'}<span>${escape(item.name)}</span><small>${Math.ceil((item.bytes || 0) / 1024)} KB</small></button>`).join('')}</div>` : '';
 }
 export function hydrateAttachments(root: Element) {
+  for (const image of root.querySelectorAll<HTMLImageElement>('img[data-local-image]:not([data-loading])')) {
+    image.dataset.loading = 'true';
+    const path = image.dataset.localImage!, cacheKey = `local:${path}`;
+    if (!previews.has(cacheKey)) previews.set(cacheKey, invoke<string>('local_image', { path }).catch(error => { previews.delete(cacheKey); throw error; }));
+    void previews.get(cacheKey)!.then(src => { if (image.isConnected) image.src = src; }).catch(failure => { image.replaceWith(Object.assign(document.createElement('small'), { className: 'md-image-missing', textContent: `图片无法显示：${path}（${failure}）` })); });
+  }
   for (const image of root.querySelectorAll<HTMLImageElement>('img[data-attachment-preview]:not([data-loading])')) {
     image.dataset.loading = 'true';
     void preview(image.dataset.attachmentConversation!, image.dataset.attachmentPreview!).then(src => { if (image.isConnected) image.src = src; }).catch(() => { image.alt = '附件已不可用'; });
@@ -109,6 +115,9 @@ export function mountAnswerFiles(input: HTMLTextAreaElement, room: string, error
 for (const type of ['dragover', 'drop'] as const) document.addEventListener(type, event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
 
 document.addEventListener('click', event => {
+  const local = (event.target as Element).closest<HTMLElement>('[data-local-file],img[data-local-image]');
+  if (local && document.documentElement.dataset.remote) return;
+  if (local) { void invoke('reveal_file', { path: local.dataset.localFile || local.dataset.localImage }).catch(failure => alert(String(failure))); return; }
   const button = (event.target as Element).closest<HTMLElement>('[data-attachment-download]');
   if (!button) return;
   void preview(button.dataset.attachmentConversation!, button.dataset.attachmentDownload!).then(url => { const link = document.createElement('a'); link.href = url; link.download = button.dataset.attachmentName || '附件'; link.click(); }).catch(() => {});

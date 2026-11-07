@@ -966,6 +966,14 @@ fn attachment_data(
     })
 }
 #[tauri::command]
+fn local_image(path: String) -> Result<String, String> {
+    attachments::local_image(&path)
+}
+#[tauri::command]
+fn reveal_file(path: String) -> Result<(), String> {
+    attachments::reveal_file(&path)
+}
+#[tauri::command]
 fn paste_clipboard_files(
     state: State<'_, AppState>,
     conversation_id: String,
@@ -1550,6 +1558,8 @@ fn main() {
             cancel_chat_question,
             stage_attachment,
             attachment_data,
+            local_image,
+            reveal_file,
             paste_clipboard_files,
             project_inquiries,
             answer_project_inquiry,

@@ -470,3 +470,17 @@ fn private_station_hdrop_round_trip() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn local_image_only_reads_real_images() {
+    let dir = std::env::temp_dir().join(format!("tongxi-local-image-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("a.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nrest").unwrap();
+    let text = dir.join("fake.png");
+    std::fs::write(&text, b"secret").unwrap();
+    assert!(attachments::local_image(png.to_str().unwrap()).unwrap().starts_with("data:image/png;base64,"));
+    assert!(attachments::local_image(text.to_str().unwrap()).is_err());
+    assert!(attachments::local_image(dir.join("none.png").to_str().unwrap()).is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}

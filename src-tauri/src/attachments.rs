@@ -156,6 +156,33 @@ fn load(db: &Path, room: &str, id: &str) -> Result<Attachment> {
     }
     Ok(item)
 }
+/// 成员回复里 `![说明](本机路径)` 引用的图片：只认真图片（看文件头），读成 data URL 给界面显示。
+pub fn local_image(path: &str) -> Result<String> {
+    let metadata = std::fs::metadata(path).map_err(|_| "图片不存在")?;
+    if !metadata.is_file() || metadata.len() > MAX_BYTES as u64 {
+        return Err("只能显示不超过32 MiB的图片".into());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "无法读取图片")?;
+    let mime = image_mime(&bytes).ok_or("不是图片")?;
+    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+}
+/// 成员回复里 `[文件名](本机路径)` 引用的文件：在资源管理器里选中它，不直接运行（防止点开成员写的可执行文件）。
+pub fn reveal_file(path: &str) -> Result<()> {
+    if !Path::new(path).exists() {
+        return Err("文件不存在".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.replace('/', "\\")))
+            .spawn()
+            .map_err(|_| "无法打开资源管理器")?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    Err("仅 Windows 支持定位文件".into())
+}
 pub fn items(content: &str) -> Vec<Attachment> {
     content
         .rsplit_once(OPEN)
@@ -182,6 +209,12 @@ pub fn prompt(db: &Path, room: &str, content: &str, images: bool) -> Result<Vec<
         Some(Some(preamble)) => format!("{preamble}\n\n{}", text(content)),
         _ => text(content).to_owned(),
     };
+    if let Some(Some(_)) = &brain {
+        body.push_str("
+
+");
+        body.push_str(crate::chat_questions::SEND_FILES);
+    }
     if !items.is_empty() {
         body.push_str("\n\n用户附件已保存到本机，按需用原生工具读取。图片可用图片或视觉工具查看；若当前模型和工具无法查看，请如实说明，不猜测图像内容。\n");
         for item in &items {
@@ -191,6 +224,7 @@ pub fn prompt(db: &Path, room: &str, content: &str, images: bool) -> Result<Vec<
     if brain.is_none() {
         body.push_str("\n\n");
         body.push_str(crate::chat_questions::GUIDANCE);
+        body.push_str(crate::chat_questions::SEND_FILES);
     }
     let mut input = vec![json!({"type":"text","text":body})];
     if images {
