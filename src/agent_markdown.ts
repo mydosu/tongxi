@@ -1,4 +1,5 @@
 import { renderMath, withMath } from './math';
+import { isRemote } from './transport';
 const LOCAL_LINK = /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z]:[\\/]|\\\\|file:\/\/\/)[^<>()\n]+?)>?\)/g;
 /** Small, escaped text renderer. Native output cannot insert HTML or scripts. */
 export function agentMarkdown(text: string, escape: (value: string | number) => string): string {
@@ -15,7 +16,10 @@ export function agentMarkdown(text: string, escape: (value: string | number) => 
       const label = match[2].trim() || path.split(/[\\/]/).pop() || path;
       html += bold(plain.slice(last, match.index)) + (match[1]
         ? `<img class="md-image" data-local-image="${escape(path)}" alt="${escape(label)}" title="${escape(path)}">`
-        : `<button type="button" class="md-file" data-local-file="${escape(path)}" title="${escape(path)}"><span aria-hidden="true">▤</span>${escape(label)}</button>`);
+        // 手机上没有资源管理器：文件只显示名字，不给「在本机定位」的按钮（网关也不放开 reveal_file）。
+        : isRemote
+          ? `<span class="md-file" title="${escape(path)}"><span aria-hidden="true">▤</span>${escape(label)}</span>`
+          : `<button type="button" class="md-file" data-local-file="${escape(path)}" title="${escape(path)}"><span aria-hidden="true">▤</span>${escape(label)}</button>`);
       last = match.index! + match[0].length;
     }
     return html + bold(plain.slice(last));
