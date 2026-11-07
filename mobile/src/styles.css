@@ -1,21 +1,19 @@
-/* 配对页 / 加载页：浅色玻璃感，配色跟桌面同席（src/theme.css）对齐——
-   近白底、#394057 字，主色用淡紫 #7f74b4 和冰蓝 #8db6de，圆角比桌面再大一点
-   （手机屏小，同样的圆角看着更尖）。 */
+/* 配对页 / 加载页：浅色玻璃感，配色跟桌面同席（src/styles.css）对齐——
+   #f8f9fb 底、#303844 字、#33383e 主色、#e3e5e8 分隔线、#848990 次要文字；
+   圆角比桌面再大一点（手机屏小，同样的圆角看着更尖）。 */
 :root {
   font-family: 'Noto Sans SC', 'MiSans', 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   font-size: 15px;
-  color: #394057;
-  background: #f7f8fd;
+  color: #303844;
+  background: #f8f9fb;
   color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
-  --accent: #7f74b4;
-  --accent-2: #a598d8;
-  --ice: #8db6de;
-  --line: #e4e2f0;
-  --muted: #6d7391;
+  --accent: #33383e;
+  --line: #e3e5e8;
+  --muted: #848990;
   --r: 16px;
 }
 
@@ -26,9 +24,9 @@ body {
   min-height: 100dvh;
   /* 两团很淡的光斑，让玻璃卡片有个底 */
   background:
-    radial-gradient(circle at 18% 12%, #e7e4fb 0%, transparent 46%),
-    radial-gradient(circle at 84% 88%, #e3eefb 0%, transparent 50%),
-    #f7f8fd;
+    radial-gradient(circle at 18% 12%, #e9eefb 0%, transparent 46%),
+    radial-gradient(circle at 84% 88%, #f3ecf6 0%, transparent 50%),
+    #f8f9fb;
   display: flex;
   flex-direction: column;
 }
@@ -63,7 +61,7 @@ body {
 }
 
 .dots { display: inline-flex; gap: 3px; margin-left: 5px; }
-.dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent-2); animation: dot 1.2s ease-in-out infinite; }
+.dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: dot 1.2s ease-in-out infinite; }
 .dots i:nth-child(2) { animation-delay: .15s; }
 .dots i:nth-child(3) { animation-delay: .3s; }
 
@@ -105,7 +103,7 @@ body {
 
 .card {
   display: grid;
-  gap: 15px;
+  gap: 14px;
   padding: 26px 22px 24px;
   border: 1px solid #ffffffc0;
   border-radius: 26px;
@@ -137,14 +135,14 @@ button:active { transform: scale(.985); }
 button:disabled { opacity: .55; cursor: default; }
 
 .primary {
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 10px 22px -12px #6d63a8b3, inset 0 1px 0 #ffffff40;
+  color: #f8f9fb;
+  background: linear-gradient(160deg, #414750, #33383e 70%);
+  box-shadow: 0 10px 22px -12px #33383eaa, inset 0 1px 0 #ffffff26;
   font-weight: 600;
 }
 
 .secondary {
-  color: var(--accent);
+  color: #33383e;
   background: #ffffffcc;
   border: 1px solid var(--line);
   font-weight: 600;
@@ -161,16 +159,16 @@ input {
   flex: 1;
   min-width: 0;
   font: inherit;
-  color: #394057;
+  color: #303844;
   background: #ffffffd0;
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 12px 14px;
+  padding: 12px 13px;
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
 input::placeholder { color: #b3b9c2; }
-input:focus { border-color: #b5a9e0; box-shadow: 0 0 0 3px #7f74b41f; }
+input:focus { border-color: #b9c1cc; box-shadow: 0 0 0 3px #33383e12; }
 
 .error {
   margin: 0;
