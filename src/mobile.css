@@ -102,3 +102,35 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   .live-settings.tool-pop:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
   .live-settings .live-model-field:not(.live-wide) { grid-column: auto; }
 }
+@media (max-width: 600px) {
+  /* 手机屏幕小：只留标题、状态、错误和能点的东西，「解释这个功能是干嘛的」小字收起来。
+     状态行（model-setting-note 里的「正在读取／读取失败／等待你的回答」、milestone-note、remote-line）不在此列，照常显示。 */
+  html:not([data-hud]) .chat-header p,   /* 会话 / 主脑任务 / 协作问答 / 成员专属会话页标题下的副标题（项目名、成员数、页面说明） */
+  html:not([data-hud]) .modal:is(:has(.theme-picker), :has(#model-form), :has(#create-form), :has(#project-form)) .modal-heading p, /* 对话框副标题：主题背景、会话模型、新建会话、绑定项目的说明（「等待你的回答」这类副标题本身就是内容，不在此列） */
+  html:not([data-hud]) .service-role,    /* 成员与服务：成员的职责说明 */
+  html:not([data-hud]) .setup-copy .eyebrow, /* 成员与服务：接入横幅上的小标签 */
+  html:not([data-hud]) .setup-copy small, /* 成员与服务：「装好的成员自动连上；没装的点下载安装」 */
+  html:not([data-hud]) .self-avatar-row > div > span, /* 成员与服务：头像、默认工作文件夹的说明 */
+  html:not([data-hud]) .storage-card:not(.remote-card) > p, /* 成员与服务：本地数据说明（版本号和数据目录照旧显示；远程访问卡里的状态行 remote-line 要留） */
+  html:not([data-hud]) .remote-tip,      /* 成员与服务：远程访问怎么用的一段说明（状态行 remote-line 保留） */
+  html:not([data-hud]) :is(.project-coordinator-settings, .project-roster, .project-seat-settings, .project-grant-settings) > small { display: none; } /* 项目设置：主脑建议、成员/多开会话、权限档、长期授权、花费上限的整段说明（每个选项自己的小字保留） */
+
+  /* 手机屏大、圆角看着更小：面板 22 / 卡片与输入框 16 / 小件 12（胶囊按钮仍是 999px）。 */
+  html:not([data-hud]) { --r-l: 22px; --r-m: 16px; --r-s: 12px; }
+  /* styles.css 里写死小圆角的件跟着放大：卡片、输入框、弹层用 --r-m，行、按钮和小件用 --r-s。 */
+  html:not([data-hud]) :is(.service-card, .storage-card, .chat-question-card, .filters, .setup-line,
+    .plan-tip, .project-controls, .member-option, .suggestions button) { border-radius: var(--r-m); }
+  html:not([data-hud]) :is(.native-session, .rename-agent, .roster-option .avatar,
+    .composer .primary, .project-chat-composer-bottom .primary) { border-radius: var(--r-s); }
+  /* 私聊/群聊切换：外框 --r-m、滑动的白块和按钮 --r-s，两层圆角差保持 4px，滑块不会顶出来。 */
+  html:not([data-hud]) .kind-switch { border-radius: var(--r-m); }
+  html:not([data-hud]) .kind-switch button, html:not([data-hud]) .kind-switch::before { border-radius: var(--r-s); }
+  html:not([data-hud]) .chat-tools > .tool-pop:not([hidden]) { border-radius: var(--r-l); }
+  /* 气泡一侧的小圆角按比例放到 8px，还是一侧收口。 */
+  html:not([data-hud]) .bubble { border-radius: 20px 8px 20px 20px; }
+  html:not([data-hud]) .agent-message .bubble, html:not([data-hud]) .project-team-message .bubble { border-radius: 8px 20px 20px 20px; }
+  html:not([data-hud]) .project-team-message.own .bubble { border-radius: 20px 8px 20px 20px; }
+  html:not([data-hud]) .relay-text { border-radius: 8px var(--r-m) var(--r-m) var(--r-m); }
+  html:not([data-hud]) .agent-user-entry { border-radius: 8px var(--r-m) var(--r-m) 8px; }
+  html:not([data-hud]) .agent-user-entry.own { border-radius: var(--r-m) 8px var(--r-m) var(--r-m); }
+}
