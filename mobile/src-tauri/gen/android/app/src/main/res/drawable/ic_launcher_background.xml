@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标的底板：与 brand.svg 里 tile 的渐变一致（315° 左上到右下），不画描边。
-     前景是 build_android_icon.py 出的透明菱形图，底板只负责这层颜色。 -->
+<!-- 自适应图标的底板：315° 左上到右下，不画描边。颜色比 brand.svg 的 tile 更浅：
+     启动器只露出画布中间一块、还会整体压暗一点，照 tile 原值摆上去看着比电脑图标偏灰，
+     这组落屏后才接近电脑那版的底板色。前景是 build_android_icon.py 出的透明菱形图。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <gradient
         android:type="linear"
         android:angle="315"
-        android:startColor="#fdfcff"
-        android:centerColor="#f1effb"
-        android:endColor="#e3eefa" />
+        android:startColor="#ffffff"
+        android:centerColor="#fbfaff"
+        android:endColor="#f1f5fd" />
 </shape>
