@@ -16,6 +16,12 @@ __pycache__/
 .env
 *.key
 
+# 安卓签名密钥与口令（实际放在 ~/.tongxi/，这里再兜一层，任何情况下都不进仓库）
+*.jks
+*.keystore
+keystore.properties
+android-keystore.properties
+
 # 本机构建产物与冻结版本
 release/
 

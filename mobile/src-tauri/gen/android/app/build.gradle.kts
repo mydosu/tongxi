@@ -14,6 +14,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// release 签名：密钥与口令放在用户目录下（~/.tongxi/android-keystore.properties），不进仓库。
+// 按 Tauri 官方安卓签名文档的写法用 System.getProperty("user.home") 定位；
+// 文件不存在（比如别人 clone 下来没配签名）时 release 就保持未签名，不报错，debug 不受影响。
+val releaseKeystoreProperties = Properties().apply {
+    val propFile = file(System.getProperty("user.home") + "/.tongxi/android-keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = !releaseKeystoreProperties.getProperty("storeFile").isNullOrBlank()
+
 android {
     compileSdk = 37
     namespace = "local.personal.agenthub.mobile"
@@ -25,6 +36,16 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystoreProperties.getProperty("storeFile"))
+                storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -42,6 +63,9 @@ android {
         getByName("release") {
             optimization {
                enable = true
+            }
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
             }
             proguardFiles(
                 *fileTree(".") {

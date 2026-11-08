@@ -1,7 +1,7 @@
 {
   "name": "tongxi-mobile",
   "private": true,
-  "version": "0.1.0",
+  "version": "3.8.19",
   "type": "module",
   "description": "同席手机薄壳：粘贴访问地址后整页打开桌面同席的网关地址",
   "scripts": {
@@ -10,8 +10,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "android:init": "tauri android init --ci",
-    "android:apk": "pwsh -NoProfile -File scripts/android-build.ps1 -Debug -Target aarch64",
-    "android:apk:x86_64": "pwsh -NoProfile -File scripts/android-build.ps1 -Debug -Target x86_64"
+    "android:apk": "pwsh -NoProfile -File scripts/android-build.ps1 -Target aarch64",
+    "android:apk:x86_64": "pwsh -NoProfile -File scripts/android-build.ps1 -Target x86_64",
+    "android:apk:release": "pwsh -NoProfile -File scripts/android-build.ps1 -Release -Target aarch64"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"
