@@ -84,7 +84,7 @@
 > [!NOTE]
 > - **自动连接规则**：Codex、Claude、Hermes、DSH 默认自动接入；OpenCode 与 Antigravity 为可选成员，首次需手动点击「连接」，之后才会自动连；被手动断开的成员不再自动连。可用 `AGENT_HUB_AUTOCONNECT=0` 完全关闭。
 > - **插话与打断**：成员回复中途可随时插话。Codex 和 Claude 原生支持直接追加（按钮显示为「插话引导」）；Hermes、DSH、OpenCode、Antigravity 会先停止当前轮次再发送新消息（按钮显示为「停止并发送」）。按 `Esc` 或点红色的「停止」可随时中止当前输出。
-> - **手机远程访问**：在「成员与服务」底部勾选「允许手机访问」，在同个 Tailscale 内网下即可用手机浏览器打开带令牌的网址使用同席。
+> - **手机远程访问**：在「成员与服务」底部勾选「允许手机访问」，在同个 Tailscale 内网下即可用手机浏览器打开带令牌的网址使用同席。安卓手机也可以从 [Releases](https://github.com/mydosu/tongxi/releases/latest) 下载 `Agent-Hub-vX.Y.Z-android-arm64.apk` 装成 App（粘贴一次地址，以后直接打开），iPhone 没有 App，用手机浏览器打开同一条网址即可。详见[上手教程第 10 节](docs/上手教程.md#10-进阶用手机远程访问电脑上的同席)。
 
 <br />
 
