@@ -28,6 +28,7 @@ const windowSize = () => matchMedia('(max-width: 600px)').matches ? { first: 8, 
 export class AgentTranscript {
   private list: HTMLElement;
   private following = true;
+  private lastTop = 0;
   private observer: ResizeObserver;
   private jump: HTMLButtonElement;
   private frame = 0;
@@ -51,7 +52,11 @@ export class AgentTranscript {
   }
   private scroll = () => {
     this.wantMore();
-    if (this.viewport.scrollHeight - this.viewport.scrollTop - this.viewport.clientHeight < 64) this.following = true;
+    const box = this.viewport;
+    // 只有「往下翻到底」才恢复跟随：内容长高、窗口补旧条目都会让离底部变近甚至变 0，
+    // 那不是人在往下翻；按「离底部近」判会把正在往上翻历史的人一把拽回底部。
+    if (box.scrollTop > this.lastTop && box.scrollHeight - box.scrollTop - box.clientHeight < 64) this.following = true;
+    this.lastTop = box.scrollTop;
     this.jump.hidden = this.following;
   };
   private pause = () => { this.following = false; this.jump.hidden = false; };

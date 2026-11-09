@@ -28,10 +28,10 @@ html[data-remote] .window-controls, html[data-remote] .resize-edge { display: no
   html:not([data-hud])[data-veil="clear"] .main { background: rgb(255 255 255 / var(--panel-alpha, .28)); } /* 暗图时 theme_picker 会把它加厚 */
   html:not([data-hud])[data-veil="clear"] .sidebar { background: rgb(255 255 255 / max(var(--panel-alpha, .28), .32)); } /* 会话列表全是小字，手机又没磨砂，不跟着透到底 */
 
-  /* 长会话里改一个节点（流式回复每一帧）手机上都要把整列几千个节点重新排版（真机实测每次 28ms）。
-     回复进行中（main.ts 的 markLive 打 data-live）屏幕外的消息跳过排版和绘制；auto 记着算出来的真实高度，滚动位置不乱。
-     平时不开：一次插入几百个这样的节点浏览器会逐个重排。 */
-  html[data-live]:not([data-hud]) :is(#messages, .agent-transcript-list) > * { content-visibility: auto; contain-intrinsic-size: auto 240px; }
+  /* 别在流式回复期间给 #messages / .agent-transcript-list 的子节点加 content-visibility: auto：
+     屏外条目拿不到真实高度，退回 contain-intrinsic-size 的 240px 占位，整列高度一下从两万多塌到两千，
+     滚动位置被夹回顶上、离底部又变得够近，正在往上翻历史的人会被整段甩走（真机实测一次上拉里甩了 4 次，见 agent_transcript.ts 的跟随判断）。
+     真机上滚动位置对不对比省那几毫秒重要。 */
 
   html:not([data-hud]) .shell, html:not([data-hud]) body.maximized .shell { grid-template-columns: minmax(0, 1fr); padding: env(safe-area-inset-top, 0px) 0 0; gap: 0; }
   html:not([data-hud]) .sidebar { border-right: 0; }

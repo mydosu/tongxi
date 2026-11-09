@@ -1166,7 +1166,6 @@ function syncProjectAgentChat(host: HTMLElement, agentId: string, chat: Conversa
   syncChatQuestions();
   const stop = host.querySelector<HTMLButtonElement>('[data-stop-project-chat-run]');
   if (busyIn(runtimes[agentId], chat.conversation.id)) {
-    markLive();
     if (!stop) host.querySelector('.project-agent-chat-heading')?.insertAdjacentHTML('beforeend', '<button type="button" class="text-button stop-reply" data-stop-project-chat-run title="停止当前回复（Esc）"><span class="stop-glyph" aria-hidden="true"></span>停止</button>');
   } else stop?.remove();
   // 本会话自己的回复进行中时不锁输入框，Enter 即插话；其他会话占用成员时才锁。
@@ -1325,20 +1324,10 @@ function updateRuntimeControls() {
   if (!liveFrame) liveFrame = requestAnimationFrame(() => { liveFrame = 0; paintLiveMessages(); });
 }
 
-/// 流式回复每一帧都改一个节点，手机上整列几千个节点要重新排版；这段时间让屏幕外的消息跳过排版（mobile.css 的 html[data-live]）。
-/// 只在回复进行时开：整列一次插入很多个 content-visibility 节点，浏览器会逐个重排（实测 700 条要 5 秒）。
-let liveTimer = 0;
-function markLive() {
-  document.documentElement.dataset.live = '1';
-  window.clearTimeout(liveTimer);
-  liveTimer = window.setTimeout(() => { delete document.documentElement.dataset.live; }, 2000);
-}
-
 function paintLiveMessages() {
   if (!detail || !selectedId) return;
   for (const snapshot of Object.values(runtimes)) for (const active of runsOf(snapshot)) {
     if (active.conversation_id !== selectedId || (!liveRun(active) && !detail.messages.some(message => message.id === active.assistant_message_id))) continue;
-    if (liveRun(active)) markLive();
     const messages = main.querySelector('#messages');
     if (!messages) return;
     const old = messages.querySelector<HTMLElement>(`[data-message-id="${active.assistant_message_id}"]`);
@@ -1392,8 +1381,9 @@ main.addEventListener('scroll', event => {
   const list = event.target;
   if (!(list instanceof HTMLElement) || list.id !== 'messages') return;
   const gap = list.scrollHeight - list.scrollTop - list.clientHeight;
+  // 只有「往下翻到底」才恢复跟随：内容长高、补旧消息也会让离底部变近，那不是人在往下翻。
   if (list.scrollTop < listTop && gap > 4) listPaused = true;
-  else if (gap <= 4 && list.scrollTop >= listTop) listPaused = false;
+  else if (list.scrollTop > listTop && gap <= 4) listPaused = false;
   listTop = list.scrollTop;
 }, { capture: true, passive: true });
 main.addEventListener('click', event => {
