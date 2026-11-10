@@ -21,7 +21,7 @@ body { margin: 0; }
 .project-coordinator-settings { display: grid; gap: 10px; border: 1px solid #dbe5ef; border-radius: 12px; padding: 12px 14px 16px; margin: 2px 0 18px; background: #f4f7fb; }
 .project-coordinator-settings legend { font-weight: 600; color: #4b657f; font-size: 14px; padding: 0 5px; }
 .project-coordinator-settings label { display: grid; gap: 6px; color: #78879b; font-size: 11px; min-width: 0; }
-.project-coordinator-settings select { width: 100%; min-width: 0; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; background: #fff; padding: 6px 8px; color: #46566b; }
+.project-coordinator-settings select, .project-coordinator-settings input[data-leader-name] { width: 100%; min-width: 0; height: 38px; border: 1px solid #dce3ec; border-radius: 7px; background: #fff; padding: 6px 8px; color: #46566b; }
 .project-coordinator-settings [data-coordinator-model-controls] { display: flex; flex-wrap: wrap; gap: 10px; }
 .project-coordinator-settings [data-coordinator-model-controls] label { flex: 1 1 130px; }
 .project-coordinator-settings small { color: #8a9bb0; font-size: 11px; line-height: 1.6; }
