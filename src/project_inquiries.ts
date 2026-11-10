@@ -1,3 +1,4 @@
+import { ld } from './leader';
 import type { Inquiry } from './types';
 
 type Escape = (value: string | number) => string;
@@ -12,7 +13,7 @@ function ago(at: number) {
 
 function openCard(item: Inquiry, escape: Escape, name: (agent: string) => string) {
   const meanwhile = item.reversible
-    ? item.default_choice ? `回答前默认按「${escape(item.default_choice)}」推进，可回退` : '回答前按主脑的判断推进，可回退'
+    ? item.default_choice ? `回答前默认按「${escape(item.default_choice)}」推进，可回退` : `回答前按${ld(1, 1)}的判断推进，可回退`
     : '不可逆，回答前相关任务暂缓执行';
   const options = item.options.map(option => `<button type="button" class="inquiry-option" data-inquiry-option="${escape(option)}">${escape(option)}</button>`).join('');
   return `<article class="inquiry-card ${item.reversible ? '' : 'held'}" data-inquiry-id="${escape(item.id)}">
@@ -25,7 +26,7 @@ function openCard(item: Inquiry, escape: Escape, name: (agent: string) => string
 }
 
 function answeredRow(item: Inquiry, escape: Escape) {
-  return `<li><strong>${escape(item.question)}</strong><span>${escape(item.answer === IGNORED_ANSWER ? '已忽略' : item.answer || '')}</span><small>${item.answered_at ? escape(ago(item.answered_at)) : ''}${item.seen ? ' · 主脑已收到' : ' · 待送达主脑'}</small></li>`;
+  return `<li><strong>${escape(item.question)}</strong><span>${escape(item.answer === IGNORED_ANSWER ? '已忽略' : item.answer || '')}</span><small>${item.answered_at ? escape(ago(item.answered_at)) : ''}${item.seen ? ` · ${ld(0, 1)}已收到` : ` · 待送达${ld(1, 0)}`}</small></li>`;
 }
 
 /// 协作问答：主脑要你确认的事。没答的在上面，答过的收在下面。
@@ -37,7 +38,7 @@ export function inquiryPage(project: string, items: Inquiry[], escape: Escape, n
   const answered = items.filter(item => item.status === 'answered');
   const body = open.length
     ? open.map(item => openCard(item, escape, name)).join('')
-    : '<p class="inquiry-empty">暂无待确认事项。主脑提出的问题集中显示在此处，不会出现在群聊中。</p>';
-  return `<header class="chat-header"><div><h1>协作问答</h1><p>${escape(project)} · 主脑需要你确认的事项，可随时回答</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button></div></header>
+    : `<p class="inquiry-empty">暂无待确认事项。${ld(0, 1)}提出的问题集中显示在此处，不会出现在群聊中。</p>`;
+  return `<header class="chat-header"><div><h1>协作问答</h1><p>${escape(project)} · ${ld(0, 1)}需要你确认的事项，可随时回答</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button></div></header>
   <div class="project-progress-content inquiry-content">${body}${answered.length ? `<details class="inquiry-answered" data-keep="answered"><summary>已回答（${answered.length}）</summary><ul>${answered.map(item => answeredRow(item, escape)).join('')}</ul></details>` : ''}</div>`;
 }

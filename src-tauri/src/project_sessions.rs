@@ -230,9 +230,38 @@ impl Store {
         Ok(self.member_name(agent))
     }
 
+    /// 主脑在界面上的称呼（全局，用户可改，默认 Leader）。提示词和落库的消息格式里仍叫「主脑」。
+    pub fn leader_name(&self) -> String {
+        self.connection
+            .query_row("SELECT value FROM metadata WHERE key='leader_name'", [], |row| row.get(0))
+            .unwrap_or_else(|_| "Leader".into())
+    }
+
+    /// 空名字＝恢复默认；各项目主脑会话的标题跟着改。
+    pub fn set_leader_name(&mut self, name: &str) -> Result<String> {
+        // 前端把称呼直接拼进 HTML，这里去掉 HTML 特殊字符。
+        let name: String = name.trim().chars().filter(|c| !c.is_control() && !"<>&\"'`".contains(*c)).take(20).collect();
+        if name.is_empty() {
+            self.connection.execute("DELETE FROM metadata WHERE key='leader_name'", []).map_err(|_| "改名失败")?;
+        } else {
+            self.connection
+                .execute("INSERT INTO metadata(key,value) VALUES('leader_name',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&name])
+                .map_err(|_| "改名失败")?;
+        }
+        let name = self.leader_name();
+        self.connection
+            .execute(
+                "UPDATE conversations SET title=(SELECT p.name FROM projects p JOIN project_agent_chats c ON c.project_id=p.id WHERE c.conversation_id=conversations.id)||' · '||?1
+                 WHERE id IN (SELECT conversation_id FROM project_agent_chats WHERE agent_id LIKE '%-brain')",
+                [&name],
+            )
+            .map_err(|_| "改名失败")?;
+        Ok(name)
+    }
+
     pub fn seat_name(&self, room: &str, seat: &str) -> String {
         if crate::project_store::is_brain(seat) {
-            return "主脑".into();
+            return self.leader_name();
         }
         let base = base_agent(seat);
         let custom: Option<String> = if base == seat {
@@ -369,6 +398,16 @@ pub fn remove_project_seat(
     let mut store = state.store.lock().map_err(|_| "本地数据暂不可用")?;
     store.remove_project_seat(&conversation_id, &seat_id)?;
     store.detail(&conversation_id)
+}
+
+/// 主脑的称呼（全局）：带 name 就改，返回当前称呼。
+#[tauri::command]
+pub fn leader_name(state: tauri::State<'_, crate::AppState>, name: Option<String>) -> Result<String> {
+    let mut store = state.store.lock().map_err(|_| "本地数据暂不可用")?;
+    match name {
+        Some(name) => store.set_leader_name(&name),
+        None => Ok(store.leader_name()),
+    }
 }
 
 /// 改成员名（全局）。
@@ -540,6 +579,9 @@ mod tests {
         assert!(store.rename_project_seat(&room, "dsh-win", "外人").is_err(), "不在群里的成员不能起名");
         store.rename_member("codex-win", "").unwrap();
         assert_eq!(store.member_name("codex-win"), "Codex", "清空成员名恢复默认");
+        assert_eq!(store.set_leader_name(" 队长 ").unwrap(), "队长");
+        assert_eq!(store.seat_name(&room, "claude-win-brain"), "队长", "主脑的称呼全局可改");
+        assert_eq!(store.set_leader_name("").unwrap(), "Leader", "清空恢复默认");
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -576,7 +618,7 @@ mod tests {
         store.add_project_seat(&room, "claude-win", Some("审稿")).unwrap();
         let chats = store.ensure_project_agent_chats(&room).unwrap();
         let names: Vec<_> = chats.iter().map(|chat| chat.name.as_str()).collect();
-        assert_eq!(names, ["主脑", "Claude 1号", "审稿"], "主脑排第一；两个会话就是两位成员");
+        assert_eq!(names, ["Leader", "Claude 1号", "审稿"], "主脑排第一；两个会话就是两位成员");
         let _ = std::fs::remove_dir_all(base);
     }
 }

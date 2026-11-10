@@ -1648,6 +1648,7 @@ fn main() {
             project_sessions::remove_project_seat,
             project_sessions::rename_project_seat,
             project_sessions::rename_agent,
+            project_sessions::leader_name,
             avatars::set_agent_avatar,
             avatars::own_avatars,
             avatars::set_own_avatar,

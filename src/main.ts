@@ -1,3 +1,4 @@
+import { ld, relabel, setLeader } from './leader';
 import { holdAnchor } from './anchor';
 import { emit, hasRemoteToken, invoke, isRemote, isShell, isTauri, listen, onRemoteReconnect, REPAIR_URL } from './transport';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -256,7 +257,7 @@ async function stopBrainJob(button: HTMLButtonElement) {
   button.disabled = true;
   try {
     await invoke('stop_brain_job', { conversationId: selectedId, jobId: button.dataset.stopJob });
-    toast('已停下，主脑会收到说明');
+    toast(`已停下，${ld(0, 1)}会收到说明`);
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }
@@ -282,7 +283,7 @@ function renderProjectInquiries() {
       try {
         await invoke('answer_project_inquiry', { conversationId: selectedId, inquiryId: id, answer });
         box.value = '';
-        toast(answer === IGNORED_ANSWER ? '已忽略，主脑会按自己的判断处理' : '已回答，主脑会收到你的回答');
+        toast(answer === IGNORED_ANSWER ? `已忽略，${ld(0, 1)}会按自己的判断处理` : `已回答，${ld(0, 1)}会收到你的回答`);
       } catch (error) {
         toast(errorText(error), true);
         form.querySelectorAll('button').forEach(button => { button.disabled = false; });
@@ -545,7 +546,7 @@ if (isTauri()) {
 function toast(text: string, error = false) {
   const element = document.querySelector<HTMLDivElement>('#toast')!;
   clearTimeout(toastTimer);
-  element.textContent = text;
+  element.textContent = relabel(text);
   element.className = `toast visible ${error ? 'error' : ''}`;
   toastTimer = setTimeout(() => element.classList.remove('visible'), 4200);
 }
@@ -562,7 +563,7 @@ function member(id: string): Agent {
 }
 function globalMember(id: string): Agent {
   const owner = isSeat(id) ? agents.find(agent => agent.id === baseAgent(id)) : null;
-  if (owner) return { ...owner, id, name: isBrain(id) ? '主脑' : `${owner.name} ${seatSlot(id)}号` };
+  if (owner) return { ...owner, id, name: isBrain(id) ? ld() : `${owner.name} ${seatSlot(id)}号` };
   return agents.find(agent => agent.id === id) || { id, name: id, subtitle: '', role: '', location: '', accent: '', status: 'not_connected' };
 }
 function time(timestamp: number) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(timestamp); }
@@ -592,7 +593,7 @@ function renderList() {
 <span class="conversation-meta">${pendingQuestions.some(q=>q.conversation_id===conversation.id||q.group_id===conversation.id)?'<span class="question-sidebar-badge">待回答</span>':!expanded&&openInquiries.get(conversation.id)?`<span class="question-sidebar-badge" title="协作问答里有 ${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)} 问</span>`:''}${conversation.message_count ? `<span>${time(conversation.updated_at)}</span>` : '<span class="new-dot"></span>'}</span>
     </button>`;
     if (!rooms.length) return `<div class="conversation-item" data-order-id="${escape(conversation.id)}">${row}</div>`;
-    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>主脑任务</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 项任务进行中">${liveBrainJobs.get(conversation.id)} 进行中</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
+    const children = `<button class="project-module-row ${active && activeProjectModule === 'team' ? 'active' : ''}" data-project-module="team" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">☷</span><span>团队对话</span></button><button class="project-module-row ${active && activeProjectModule === 'inquiries' ? 'active' : ''}" data-project-module="inquiries" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">?</span><span>协作问答</span>${openInquiries.get(conversation.id) ? `<span class="question-sidebar-badge" title="${openInquiries.get(conversation.id)} 个问题待你确认">${openInquiries.get(conversation.id)}</span>` : ''}</button><button class="project-module-row ${active && activeProjectModule === 'brain-jobs' ? 'active' : ''}" data-project-module="brain-jobs" data-group-id="${escape(conversation.id)}"><span class="project-module-icon">⇄</span><span>${ld(0, 1)}任务</span>${liveBrainJobs.get(conversation.id) ? `<span class="brain-jobs-badge" title="${liveBrainJobs.get(conversation.id)} 项任务进行中">${liveBrainJobs.get(conversation.id)} 进行中</span>` : ''}</button>${rooms.map(chat => `<button class="project-module-row ${active && activeProjectModule === chat.agent_id ? 'active' : ''}" data-project-module="${escape(chat.agent_id)}" data-group-id="${escape(conversation.id)}">${avatar(member(chat.agent_id), 'project-module-avatar')}<span>${escape(chat.name || globalMember(chat.agent_id).name)}</span>${pendingQuestions.some(q=>q.group_id===conversation.id&&q.agent_id===chat.agent_id)?'<span class="question-sidebar-badge">待答</span>':busyIn(runtimes[baseAgent(chat.agent_id)], chat.conversation_id) ? '<i class="project-active-dot"></i>' : ''}</button>`).join('')}`;
     // 展开钮在卡片外面（按钮不能套按钮）：点卡片只选中，点它才展开、收起子栏。
     const toggle = `<button class="project-expand" data-project-expand="${escape(conversation.id)}" aria-expanded="${expanded}" aria-controls="project-subnav-${escape(conversation.id)}" aria-label="${expanded ? '收起' : '展开'}${escape(conversation.title)}" title="${expanded ? '收起' : '展开'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>`;
     return `<div class="conversation-item conversation-branch ${expanded ? 'expanded' : ''}" data-order-id="${escape(conversation.id)}"><div class="conversation-branch-row">${row}${toggle}</div><div class="project-subnav" id="project-subnav-${escape(conversation.id)}" ${expanded ? '' : 'hidden'}>${children}</div></div>`;
@@ -1140,7 +1141,7 @@ function bindProjectChatHost(host: HTMLElement, agentId: string, chatId: string)
         if (!wrapping) { wrappingBrains.delete(chatId); return stop(); }
         wrappingBrains.add(chatId);
         target.disabled = false;
-        toast('主脑先写交接再停，最多等两分钟；要立即停再点一次停止');
+        toast(`${ld(0, 1)}先写交接再停，最多等两分钟；要立即停再点一次停止`);
         window.setTimeout(() => { if (wrappingBrains.delete(chatId)) void stop().catch(() => {}); }, 120_000);
       })
       .catch(error => { target.disabled = false; toast(errorText(error), true); });
@@ -1558,7 +1559,7 @@ function updateDiscussionControls() {
     const save = main.querySelector<HTMLButtonElement>('#save-message');
     if (save) save.disabled = detail.conversation.archived || sending;
     const note = main.querySelector('#runtime-note');
-    if (note) note.textContent = available ? '项目群聊 · 你的话交给主脑，这里只看主脑和成员的进展摘要；细节在各自的会话里。' : '项目里还没有成员。';
+    if (note) note.textContent = available ? `项目群聊 · 你的话交给${ld(1, 0)}，这里只看${ld(1, 1)}和成员的进展摘要；细节在各自的会话里。` : '项目里还没有成员。';
     const badge = main.querySelector('.connection-badge');
     if (badge) paintBadge(badge, connected, connected ? '项目组已连接' : '请连接项目成员');
     return;
@@ -1624,8 +1625,8 @@ async function sendGroupMessage() {
   if (detail.project) {
     // 项目群里说的话直接交给主脑；群里只看主脑和成员的进展摘要。
     const brain = detail.project_agent_chats.find(chat => isBrain(chat.agent_id));
-    if (!brain) { toast('项目里还没有能当主脑的成员', true); return; }
-    if (content !== attachmentText(content)) { toast('附件请到主脑会话里发', true); return; }
+    if (!brain) { toast(`项目里还没有能当${ld(1, 1)}的成员`, true); return; }
+    if (content !== attachmentText(content)) { toast(`附件请到${ld(1, 1)}会话里发`, true); return; }
     const agent = baseAgent(brain.agent_id);
     if (runtimes[agent]?.connection !== 'connected') { toast(`请先连接${globalMember(agent).name}`, true); return; }
     sending = true; updateRuntimeControls();
@@ -1933,7 +1934,7 @@ async function fillMembersPanel() {
   if (detail.project) {
     body.innerHTML = '<p class="model-setting-note">正在读取项目成员…</p>';
     const refresh = async () => { projectAgentChatDetails.clear(); await selectConversation(selectedId); await fillMembersPanel(); };
-    try { await projectSettings(body, detail, { escape, picker: pickerHost, close: () => setMembersOpen(false), snapshot: id => runtimes[id], name: id => member(id).name, saved: async () => { await refresh(); toast('已保存，下一轮生效'); }, reopen: refresh, busy: discussionBusy(currentDiscussion()), toast, avatar: id => avatar(globalMember(id), '', false), renamed: (seat, label) => { for (const chat of detail?.project_agent_chats || []) if (chat.agent_id === seat) chat.name = label; if (detail) projectRoomsByGroup.set(detail.conversation.id, detail.project_agent_chats); renderList(); toast(`已改名为「${label}」`); }, globalName: id => globalMember(id).name }); }
+    try { await projectSettings(body, detail, { escape, picker: pickerHost, close: () => setMembersOpen(false), snapshot: id => runtimes[id], name: id => member(id).name, saved: async () => { await refresh(); toast('已保存，下一轮生效'); }, reopen: refresh, reload: reloadAgents, busy: discussionBusy(currentDiscussion()), toast, avatar: id => avatar(globalMember(id), '', false), renamed: (seat, label) => { for (const chat of detail?.project_agent_chats || []) if (chat.agent_id === seat) chat.name = label; if (detail) projectRoomsByGroup.set(detail.conversation.id, detail.project_agent_chats); renderList(); toast(`已改名为「${label}」`); }, globalName: id => globalMember(id).name }); }
     catch (error) { body.innerHTML = `<p class="model-setting-note">读取失败：${escape(errorText(error))}</p>`; }
     return;
   }
@@ -2202,7 +2203,7 @@ async function checkUpdate(quiet = false) {
 }
 
 function openUpdate(update: AppUpdate) {
-  openModal(`更新到 v${update.version}`, `当前 v${update.current}。下载新版、核对校验值后替换并重启同席。`, `<pre class="update-notes">${escape(update.notes || '这一版没有写更新说明。')}</pre><p class="form-error" role="alert"></p><div class="modal-footer"><span>有成员在回复或主脑的活没结束时不会更新</span><button class="primary" id="apply-update">下载并重启${icon('arrow')}</button></div>`);
+  openModal(`更新到 v${update.version}`, `当前 v${update.current}。下载新版、核对校验值后替换并重启同席。`, `<pre class="update-notes">${escape(update.notes || '这一版没有写更新说明。')}</pre><p class="form-error" role="alert"></p><div class="modal-footer"><span>有成员在回复或${ld(1, 1)}的活没结束时不会更新</span><button class="primary" id="apply-update">下载并重启${icon('arrow')}</button></div>`);
   const button = modal.querySelector<HTMLButtonElement>('#apply-update')!;
   button.addEventListener('click', async () => {
     button.disabled = true; button.textContent = '正在下载…';
@@ -3042,7 +3043,7 @@ function wireSetup() {
 
 /// 陪伴改了名字、头像后重新取成员名单，侧栏与当前页一起更新。
 async function reloadAgents() {
-  agents = await invoke<Agent[]>('list_agents');
+  [agents] = await Promise.all([invoke<Agent[]>('list_agents'), invoke<string>('leader_name').then(setLeader)]);
   await refreshList();
   if (screen === 'services') renderServices(); else if (selectedId) await selectConversation(selectedId);
 }
@@ -3106,7 +3107,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         }
       });
       // 主脑派活、成员交回：项目群的进展摘要跟着刷新。
-      await listen<number>('brain-wrap-up', () => toast('主脑正在写交接，写完自动退出（最多两分钟）；要立即退出再关一次'));
+      await listen<number>('brain-wrap-up', () => toast(`${ld(0, 1)}正在写交接，写完自动退出（最多两分钟）；要立即退出再关一次`));
       await listen<string>('brain-state', event => {
         scheduleInquiryRefresh(event.payload);
         scheduleBrainJobsRefresh(event.payload);
@@ -3125,6 +3126,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
       invoke<AppInfo>('app_info'),
       invoke<{ conversation_id: string; agent_id: string }[]>('cli_handoffs'),
       loadOwnAvatars(),
+      invoke<string>('leader_name').then(setLeader),
     ]);
     harnesses.forEach((agentId, index) => adoptRuntime(snapshots[index], agentId));
     latestDiscussion = discussion; agents = agentList; info = appInfo;

@@ -1,3 +1,4 @@
+import { ld } from './leader';
 import type { BrainJob, BrainOverview, JobUsage, LedgerRow, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 import dagre from '@dagrejs/dagre';
@@ -48,7 +49,7 @@ const priced = (cost: number | null) => cost == null ? '价格未知' : `≈ ${m
 /// 一件活的账：花了多少，同样用量交给主脑的模型要多少。
 function jobBill(usage: JobUsage) {
   const u = usage.usage, sum = { turns: 1, input: u.inputTokens || 0, cache_read: u.cachedReadTokens || 0, cache_write: u.cachedWriteTokens || 0, output: u.outputTokens || 0, cost: usage.cost };
-  const compare = usage.cost != null && usage.brain_cost != null ? `，主脑做 ≈ ${money(usage.brain_cost)}${usage.brain_cost > usage.cost ? `，省 ${money(usage.brain_cost - usage.cost)}` : ''}` : '';
+  const compare = usage.cost != null && usage.brain_cost != null ? `，${ld(0, 1)}做 ≈ ${money(usage.brain_cost)}${usage.brain_cost > usage.cost ? `，省 ${money(usage.brain_cost - usage.cost)}` : ''}` : '';
   return `${usageText(sum)} · ${priced(usage.cost)}${compare}`;
 }
 
@@ -76,10 +77,10 @@ function usageSection(usage: BrainOverview['usage'], jobs: BrainJob[], open: Set
   // 只比两边都有价的活，不然「省了」会把没价的那件当成 0 算进去。
   const both = jobs.map(job => job.usage).filter((usage): usage is JobUsage => usage?.cost != null && usage.brain_cost != null);
   const spent = both.reduce((total, usage) => total + usage.cost!, 0), brain = both.reduce((total, usage) => total + usage.brain_cost!, 0);
-  const members = both.length ? `<p><strong>成员累计</strong><span>${both.length} 件活 ≈ ${money(spent)}，全交给主脑的模型 ≈ ${money(brain)}${brain > spent ? `，分活省了 ${money(brain - spent)}` : ''}（按 API 价折算）</span></p>` : '';
+  const members = both.length ? `<p><strong>成员累计</strong><span>${both.length} 件活 ≈ ${money(spent)}，全交给${ld(1, 1)}的模型 ≈ ${money(brain)}${brain > spent ? `，分活省了 ${money(brain - spent)}` : ''}（按 API 价折算）</span></p>` : '';
   // 平时收起来只看今日和累计的钱，点开才看 token 明细。
   const key = 'usage|brain', glance = (label: string, sum: UsageSum) => `${label} ${sum.turns ? priced(sum.cost) : '暂无'}`;
-  return `<details class="brain-plan brain-usage-fold" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><strong>用量</strong><small>${glance('主脑今日', usage.brain_today)} · ${glance('累计', usage.brain_total)}</small></summary>${folded(key, open, () => `<section class="brain-usage">${row('主脑今日', usage.brain_today)}${row('主脑累计', usage.brain_total)}${members}${usage.context ? `<p><strong>主脑上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`)}</details>`;
+  return `<details class="brain-plan brain-usage-fold" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><strong>用量</strong><small>${glance(`${ld(0, 1)}今日`, usage.brain_today)} · ${glance('累计', usage.brain_total)}</small></summary>${folded(key, open, () => `<section class="brain-usage">${row(`${ld(0, 1)}今日`, usage.brain_today)}${row(`${ld(0, 1)}累计`, usage.brain_total)}${members}${usage.context ? `<p><strong>${ld(0, 1)}上下文</strong><span>${tokens(usage.context)}（截至最近一回合结束）</span></p>` : ''}</section>`)}</details>`;
 }
 
 export const jobLive = (job: BrainJob) => job.status === 'pending' || job.status === 'running';
@@ -133,7 +134,7 @@ function planDoc(doc: PlanDoc, escape: Escape, open: Set<string>) {
 
 function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
   const body = plans.length ? plans.map(doc => planDoc(doc, escape, open)).join('')
-    : '<p class="inquiry-empty">主脑尚未制定计划。较长或较复杂的任务，主脑会先在 .tongxi/任务书/ 中编写任务书并随进度勾选，需要长期保留的内容写入 .tongxi/计划.md，均显示在此处。</p>';
+    : `<p class="inquiry-empty">${ld(0, 1)}尚未制定计划。较长或较复杂的任务，${ld(0, 1)}会先在 .tongxi/任务书/ 中编写任务书并随进度勾选，需要长期保留的内容写入 .tongxi/计划.md，均显示在此处。</p>`;
   return `<section class="brain-plans"><h2>计划与任务书</h2>${body}</section>`;
 }
 
@@ -144,7 +145,7 @@ const STEP_LOOK: Record<string, [string, string]> = { doing: ['●', '进行中'
 const stepKind = (step: PlanStep) => step.status === 'waiting' && (step.wait_key || step.owner === '你') ? 'you' : step.status;
 
 function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: string, pick: number | null, picker: string) {
-  if (!all.length) return picker ? `<section class="brain-plans plan-flow-section"><div class="plan-head"><h2>计划</h2>${picker}</div><p class="inquiry-empty">主脑当前没有计划，可切换查看以前的计划。</p></section>` : '';
+  if (!all.length) return picker ? `<section class="brain-plans plan-flow-section"><div class="plan-head"><h2>计划</h2>${picker}</div><p class="inquiry-empty">${ld(0, 1)}当前没有计划，可切换查看以前的计划。</p></section>` : '';
   // 不选分类时，做完又不卡任何没做完步骤的收起来；点「全部」或「做完」都摆出来；全做完了就都显示。
   const feeds = (step: PlanStep) => all.some(next => next.depends.includes(step.id) && next.status !== 'done');
   const folded = filter === 'all' || filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
@@ -182,7 +183,7 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
     const job = jobs.find(item => item.id === step.job);
     const who = step.name || step.owner || '';
     const line = kind === 'doing' ? `${who}${job ? ` · ${span(job.created_at, Date.now())}` : ''}`
-      : kind === 'review' ? `${who} 已提交，主脑审核中`
+      : kind === 'review' ? `${who} 已提交，${ld(0, 1)}审核中`
       : kind === 'you' ? (step.wait_key ? `待你在协作问答中回答${step.note ? `：${step.note}` : ''}` : `待你处理：${step.note || '—'}`)
       : kind === 'waiting' ? `等待：${step.note || '—'}`
       : step.note || who;
@@ -412,13 +413,13 @@ export function bindPlanFlow(root: ParentNode, key: string) {
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
 export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter: string, planPick: number | null, planShow: number | null) {
   lazy.clear();
-  const head = `<header class="chat-header"><div><h1>主脑任务</h1><p>${escape(project)} · 主脑的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">主脑会话</button>` : ''}</div></header>`;
+  const head = `<header class="chat-header"><div><h1>${ld(0, 1)}任务</h1><p>${escape(project)} · ${ld(0, 1)}的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">${ld(0, 1)}会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty wait-pill">正在读取…</p></div>`;
   const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
-  const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>主脑${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 项任务进行中` : '暂无进行中的任务'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答待送达主脑` : ''}</small></section>`;
+  const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>${ld(0, 1)}${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 项任务进行中` : '暂无进行中的任务'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答待送达${ld(1, 0)}` : ''}</small></section>`;
   const body = live.length
     ? live.map(job => card(job, escape, avatar, open)).join('')
-    : ended.length ? '' : '<p class="inquiry-empty">主脑尚未分配任务。在团队对话中提出需求后，主脑会将任务分配给成员，已分配的任务列在此处。</p>';
+    : ended.length ? '' : `<p class="inquiry-empty">${ld(0, 1)}尚未分配任务。在团队对话中提出需求后，${ld(0, 1)}会将任务分配给成员，已分配的任务列在此处。</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${folded('ended', open, () => ended.map(job => card(job, escape, avatar, open)).join(''))}</details>` : '';
   return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${usageSection(overview.usage, overview.jobs, open)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }
