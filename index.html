@@ -5,9 +5,16 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>同席 · Agent Hub</title>
+    <link rel="stylesheet" href="/src/splash.css" />
   </head>
   <body>
     <div id="app"></div>
+    <!-- 启动加载页：main.ts 的 boot() 跑完后淡出移除。 -->
+    <div id="splash" aria-live="polite">
+      <img src="/src/assets/brand.svg" alt="" width="88" height="88" />
+      <strong>同席</strong>
+      <p>正在打开工作空间<span aria-hidden="true"><i></i><i></i><i></i></span></p>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

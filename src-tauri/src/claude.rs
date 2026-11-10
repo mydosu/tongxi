@@ -183,6 +183,52 @@ impl Runtime {
     fn emit(&self) {
         let _ = self.app.emit("claude-state", crate::state_events::slim("claude-state", &self.snapshot()));
     }
+    /// 读一遍版本和模型目录，连接和「刷新模型」共用。桥在 initialize 里重读 CLI / 网关的目录，
+    /// 所以刷新就是再发一次 initialize；再开个空会话逐个问各模型的思考强度。
+    fn read_catalog(&self, client: &Client) -> Result<(Option<String>, Vec<ModelOption>, Option<String>)> {
+        let initialized = client.rpc_timeout("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}}), Duration::from_secs(90))?;
+        let cwd = self.directory.join("claude-workspaces").join("catalog");
+        std::fs::create_dir_all(&cwd).map_err(|_| "Claude 目录创建失败")?;
+        let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+        let default_model = crate::dsh::current_option(&catalog, "model");
+        let mut models = crate::dsh::models_from_response(&catalog);
+        let session_id = catalog["sessionId"]
+            .as_str()
+            .ok_or("Claude 未返回会话 ID")?;
+        for model in &mut models {
+            let response = client.rpc(
+                "session/set_config_option",
+                json!({"sessionId":session_id,"configId":"model","value":model.id}),
+            )?;
+            if let Some(capability) = crate::dsh::models_from_response(&response)
+                .into_iter()
+                .find(|entry| entry.id == model.id)
+            {
+                model.efforts = capability.efforts;
+                model.default_effort = capability.default_effort;
+            }
+        }
+        client.rpc("session/close", json!({"sessionId":session_id}))?;
+        let version = initialized["agentInfo"]["version"].as_str().map(String::from);
+        Ok((version, models, default_model))
+    }
+    /// 不断开、不动正在跑的会话，只把模型目录重读一遍（出了新模型时用）。
+    pub fn refresh_models(&self) -> Result<RuntimeSnapshot> {
+        let client = {
+            let inner = self.inner.lock().unwrap();
+            inner.client.clone().filter(|_| inner.connection == "connected").ok_or("Claude 未连接")?
+        };
+        let (version, models, default_model) = self.read_catalog(&client)?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            crate::pricing::remember(AGENT_ID, &models);
+            inner.version = version;
+            inner.models = models;
+            inner.default_model = default_model;
+        }
+        self.emit();
+        Ok(self.snapshot())
+    }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         let generation = Uuid::new_v4().to_string();
         {
@@ -220,36 +266,12 @@ impl Runtime {
                 },
             )?;
             self.inner.lock().unwrap().client = Some(client.clone());
-            let initialized = client.rpc_timeout("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}}), Duration::from_secs(90))?;
-            let cwd = self.directory.join("claude-workspaces").join("catalog");
-            std::fs::create_dir_all(&cwd).map_err(|_| "Claude 目录创建失败")?;
-            let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
-            let default_model = crate::dsh::current_option(&catalog, "model");
-            let mut models = crate::dsh::models_from_response(&catalog);
-            let session_id = catalog["sessionId"]
-                .as_str()
-                .ok_or("Claude 未返回会话 ID")?;
-            for model in &mut models {
-                let response = client.rpc(
-                    "session/set_config_option",
-                    json!({"sessionId":session_id,"configId":"model","value":model.id}),
-                )?;
-                if let Some(capability) = crate::dsh::models_from_response(&response)
-                    .into_iter()
-                    .find(|entry| entry.id == model.id)
-                {
-                    model.efforts = capability.efforts;
-                    model.default_effort = capability.default_effort;
-                }
-            }
-            client.rpc("session/close", json!({"sessionId":session_id}))?;
+            let (version, models, default_model) = self.read_catalog(&client)?;
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation || inner.connection != "connecting" {
                 return Err("Claude 连接已取消".into());
             }
-            inner.version = initialized["agentInfo"]["version"]
-                .as_str()
-                .map(String::from);
+            inner.version = version;
             crate::pricing::remember(AGENT_ID, &models);
             inner.models = models;
             inner.default_model = default_model;

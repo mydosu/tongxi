@@ -527,8 +527,10 @@ async function handle(message) {
     case 'initialize':
       const [cli, routed] = await Promise.all([readCatalog().catch(() => null), readGatewayCatalog().catch(() => null),
         readVersion().then(value => { version = value; })]);
-      catalog = mergeCatalogs(cli, routed);
-      if (!catalog?.length) throw new Error('Claude 模型目录读取失败');
+      // 「刷新模型」会再发一次 initialize：读不到就留着原来的目录，别把正在用的弄空。
+      const merged = mergeCatalogs(cli, routed);
+      if (!merged?.length) throw new Error('Claude 模型目录读取失败');
+      catalog = merged;
       return { protocolVersion: 1, agentInfo: { name: 'claude-code', title: 'Claude Code', version },
         agentCapabilities: { loadSession: true, promptCapabilities: { image: true, embeddedContext: true } }, authMethods: [] };
     case 'session/new':

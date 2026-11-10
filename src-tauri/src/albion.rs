@@ -121,6 +121,19 @@ impl Brain {
         }
     }
 
+    /// 只把模型目录重读一遍；读不到就原样报错，不改连接状态。
+    pub fn refresh_models(&self) -> Result<RuntimeSnapshot, String> {
+        let link = self.store.lock().unwrap().companion().link();
+        let models = link.and_then(|link| albion_openai::models(&link))?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.revision += 1;
+            inner.models = models;
+        }
+        self.emit();
+        Ok(self.snapshot())
+    }
+
     pub fn stop(&self) {
         {
             let mut inner = self.inner.lock().unwrap();

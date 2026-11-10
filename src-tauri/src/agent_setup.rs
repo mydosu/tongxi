@@ -361,7 +361,8 @@ pub fn setup(id: &str) -> Result<String> {
     Ok(format!("已在新终端里打开 {} 的初次配置", recipe.name))
 }
 
-#[tauri::command]
+// async：扫描要逐个跑各 CLI 的 --version，要几秒；同步命令跑在主线程上，启动时整个窗口会跟着没响应。
+#[tauri::command(async)]
 pub fn scan_agents(app: tauri::AppHandle) -> Vec<AgentEnv> {
     let data = crate::service_updates::data_directory(&app).ok();
     scan(data.as_deref())

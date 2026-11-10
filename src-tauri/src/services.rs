@@ -796,6 +796,26 @@ pub async fn restart_service(
         .map_err(|_| "重启任务未正常完成，请重试".to_string())?
 }
 
+/// 「刷新模型」：不重启、不占维护租约，只让运行时把模型目录重读一遍；正在跑的对话不受影响。
+#[tauri::command]
+pub async fn refresh_models(
+    app: tauri::AppHandle,
+    service_id: String,
+) -> Result<crate::codex::RuntimeSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || match service_id.as_str() {
+        "codex-win" => app.state::<Arc<crate::codex::Runtime>>().refresh_models(),
+        "hermes-win" => app.state::<Arc<crate::hermes::Runtime>>().refresh_models(),
+        "dsh-win" => app.state::<Arc<crate::dsh::Runtime>>().refresh_models(),
+        "claude-win" => app.state::<Arc<crate::claude::Runtime>>().refresh_models(),
+        "opencode-win" => app.state::<crate::opencode::Runtime>().0.refresh_models(),
+        "antigravity-win" => app.state::<crate::antigravity::Runtime>().0.refresh_models(),
+        "albion-wsl" => app.state::<crate::albion::Runtime>().0.refresh_models(),
+        _ => Err("未知的成员".to_string()),
+    })
+    .await
+    .map_err(|_| "刷新模型的任务未正常完成，请重试".to_string())?
+}
+
 /// 一键更新：更新到最新版并接回同席。
 ///
 /// DSH / Codex 有新版就走受管的隔离安装 + 切换（可回退）；Claude / OpenCode / Antigravity / Hermes

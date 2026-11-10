@@ -337,6 +337,48 @@ impl Runtime {
     fn emit(&self) {
         let _ = self.app.emit("dsh-state", crate::state_events::slim("dsh-state", &self.snapshot()));
     }
+    /// 开个空会话读模型目录、逐个问思考强度再关掉；连接和「刷新模型」共用。
+    fn read_catalog(&self, client: &Client) -> Result<(Vec<ModelOption>, Option<String>, Option<String>)> {
+        let cwd = self.directory.join("dsh-workspaces").join("catalog");
+        std::fs::create_dir_all(&cwd).map_err(|_| "DSH 目录创建失败")?;
+        let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+        let default_model = current_option(&catalog, "model");
+        let default_effort = current_option(&catalog, "reasoning_effort");
+        let mut models = models_from_response(&catalog);
+        let session_id = catalog["sessionId"].as_str().ok_or("DSH 未返回会话 ID")?;
+        for model in &mut models {
+            let response = client.rpc(
+                "session/set_config_option",
+                json!({"sessionId":session_id,"configId":"model","value":model.id}),
+            )?;
+            if let Some(capability) = models_from_response(&response)
+                .into_iter()
+                .find(|entry| entry.id == model.id)
+            {
+                model.efforts = capability.efforts;
+                model.default_effort = capability.default_effort;
+            }
+        }
+        client.rpc("session/close", json!({"sessionId":session_id}))?;
+        Ok((models, default_model, default_effort))
+    }
+    /// 不断开、不动正在跑的会话，只把模型目录重读一遍。
+    pub fn refresh_models(&self) -> Result<RuntimeSnapshot> {
+        let client = {
+            let inner = self.inner.lock().unwrap();
+            inner.client.clone().filter(|_| inner.connection == "connected").ok_or("DSH 未连接")?
+        };
+        let (models, default_model, default_effort) = self.read_catalog(&client)?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            crate::pricing::remember("dsh-win", &models);
+            inner.models = models;
+            inner.default_model = default_model;
+            inner.default_effort = default_effort;
+        }
+        self.emit();
+        Ok(self.snapshot())
+    }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         let node = self
             .node
@@ -402,27 +444,7 @@ impl Runtime {
             )?;
             self.inner.lock().unwrap().client = Some(client.clone());
             let initialized = client.rpc("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}}))?;
-            let cwd = self.directory.join("dsh-workspaces").join("catalog");
-            std::fs::create_dir_all(&cwd).map_err(|_| "DSH 目录创建失败")?;
-            let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
-            let default_model = current_option(&catalog, "model");
-            let default_effort = current_option(&catalog, "reasoning_effort");
-            let mut models = models_from_response(&catalog);
-            let session_id = catalog["sessionId"].as_str().ok_or("DSH 未返回会话 ID")?;
-            for model in &mut models {
-                let response = client.rpc(
-                    "session/set_config_option",
-                    json!({"sessionId":session_id,"configId":"model","value":model.id}),
-                )?;
-                if let Some(capability) = models_from_response(&response)
-                    .into_iter()
-                    .find(|entry| entry.id == model.id)
-                {
-                    model.efforts = capability.efforts;
-                    model.default_effort = capability.default_effort;
-                }
-            }
-            client.rpc("session/close", json!({"sessionId":session_id}))?;
+            let (models, default_model, default_effort) = self.read_catalog(&client)?;
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation || inner.connection != "connecting" {
                 return Err("DSH 连接已取消".into());

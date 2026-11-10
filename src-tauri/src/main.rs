@@ -1657,6 +1657,7 @@ fn main() {
             services::check_service_update,
             services::prepare_service_update,
             services::restart_service,
+            services::refresh_models,
             services::update_service,
             services::service_update_status,
             services::apply_service_update,

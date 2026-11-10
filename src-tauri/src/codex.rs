@@ -578,6 +578,24 @@ pub(crate) fn native_version(executable: &PathBuf) -> Option<String> {
         .and_then(|value| value.trim().strip_prefix("codex-cli ").map(str::to_owned))
 }
 
+/// 翻完 `model/list` 的所有页；连接和「刷新模型」共用。
+fn list_models(client: &Client) -> Result<Vec<ModelOption>> {
+    let mut models = Vec::new();
+    let mut cursor = Value::Null;
+    for _ in 0..16 {
+        let page = client.rpc(
+            "model/list",
+            json!({"limit":100,"cursor":cursor,"includeHidden":false}),
+        )?;
+        models.extend(codex_models(&page));
+        cursor = page["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    Ok(models)
+}
+
 impl Runtime {
     /// 只读列出 codex 自己的历史会话（app-server 的 thread/list）。
     pub fn list_sessions(&self) -> Result<Vec<NativeSession>> {
@@ -699,6 +717,18 @@ impl Runtime {
         let _ = self.app.emit("codex-state", crate::state_events::slim("codex-state", &self.snapshot()));
     }
 
+    /// 不断开、不动正在跑的会话，只把模型目录重读一遍。
+    pub fn refresh_models(&self) -> Result<RuntimeSnapshot> {
+        let client = {
+            let inner = self.inner.lock().unwrap();
+            inner.client.clone().filter(|_| inner.connection == "connected").ok_or("Codex 未连接")?
+        };
+        let models = list_models(&client)?;
+        crate::pricing::remember("codex-win", &models);
+        self.inner.lock().unwrap().models = models;
+        self.emit();
+        Ok(self.snapshot())
+    }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         // 每次连接都重新发现：受管槽位切换（启用候选 / 回退）之后重连就该用新槽，不留旧路径。
         let executable = discover_executable()
@@ -759,19 +789,7 @@ impl Runtime {
             }
             client.rpc("initialize", json!({"clientInfo":{"name":"personal_agent_hub","title":"同席 Agent Hub","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
             client.write(&json!({"method":"initialized","params":{}}))?;
-            let mut models = Vec::new();
-            let mut cursor = Value::Null;
-            for _ in 0..16 {
-                let page = client.rpc(
-                    "model/list",
-                    json!({"limit":100,"cursor":cursor,"includeHidden":false}),
-                )?;
-                models.extend(codex_models(&page));
-                cursor = page["nextCursor"].clone();
-                if cursor.is_null() {
-                    break;
-                }
-            }
+            let models = list_models(&client)?;
             // An ephemeral, unprompted thread reports the effective local defaults.
             let defaults = client.rpc(
                 "thread/start",

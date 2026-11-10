@@ -428,6 +428,7 @@ if (isTauri()) {
   // hud-url 契约：放进 hash 会被前端路由吃掉），窗口 label 作为兜底。
   if (new URLSearchParams(location.search).get('win') === 'hud' || window.label === 'hud') {
     document.documentElement.dataset.hud = '1';
+    document.querySelector('#splash')?.remove(); // HUD 是透明小窗，不要整屏加载页
     // HUD 有独立的 WebView2 数据目录，读不到主窗口的「当前会话」，靠事件同步。
     void listen<{ id: string }>('hud:select', event => { if (event.payload?.id) void selectConversation(event.payload.id); });
     void emit('hud:ready');
@@ -2596,6 +2597,21 @@ async function restartService(agentId: string, card: HTMLElement) {
   finally { if (button.isConnected) { button.disabled = false; button.textContent = '重启'; } }
 }
 
+// 出了新模型时用：不重启、不打断正在跑的对话，只让后端把这位成员的模型目录重读一遍。
+async function refreshModels(agentId: string, button: HTMLButtonElement) {
+  button.disabled = true;
+  button.textContent = '刷新中…';
+  try {
+    const before = new Set(runtimes[agentId].models.map(model => model.id));
+    const snapshot = await invoke<RuntimeSnapshot>('refresh_models', { serviceId: agentId });
+    adoptRuntime(snapshot, agentId);
+    updateRuntimeControls();
+    const added = snapshot.models.filter(model => !before.has(model.id)).map(model => model.name || model.id);
+    toast(`${member(agentId).name} 的模型已刷新：共 ${snapshot.models.length} 个${added.length ? `，新增 ${added.join('、')}` : '，没有新增'}`);
+  } catch (error) { toast(errorText(error), true); }
+  finally { if (button.isConnected) { button.disabled = false; button.textContent = '刷新模型'; } }
+}
+
 // DSH 的隔离更新状态只来自后端：卡片只显示真实版本，不渲染计划标识、磁盘槽路径或原始记录。
 const serviceUpdates: Record<string, ServiceUpdateStatus> = {};
 const servicePending: Record<string, 'update' | 'rollback' | null> = {};
@@ -2645,6 +2661,9 @@ function paintServiceCard(card: HTMLElement, agentId: string, info?: ServiceInfo
   restart.disabled = connection !== 'connected';
   restart.textContent = '重启';
   restart.onclick = () => void restartService(agentId, card);
+  const models = card.querySelector<HTMLButtonElement>('[data-service-models]')!;
+  models.hidden = connection !== 'connected';
+  models.onclick = () => void refreshModels(agentId, models);
   const upgrade = card.querySelector<HTMLButtonElement>('[data-service-upgrade]');
   if (upgrade) upgrade.onclick = () => void updateService(agentId);
   const revert = card.querySelector<HTMLButtonElement>('[data-service-rollback]');
@@ -2723,7 +2742,7 @@ function renderServices() {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
-    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div>${agent.id === 'hermes-win' && isTauri() ? '<form id="hermes-profile-form" class="hermes-profile"><label><span>默认 profile</span><select name="profile" aria-label="Hermes 默认 profile" title="没单独选 profile 的会话用这个；每个会话可以在会话设置栏里另选。换了会断开 Hermes，下次连接生效"><option value="">Hermes 默认</option></select></label><button class="secondary">切换</button></form>' : ''}<div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-upgrade class="secondary" title="更新到最新版本并重新接入同席">更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button data-service-check role="menuitem" title="只读核对安装、运行与发行版本，不改动安装">检查更新</button><button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
+    return `<article class="service-card" data-service-id="${escape(agent.id)}"><header class="service-card-head">${avatarPicker(`agent:${agent.id}`, avatar(agent, 'large', false))}<div class="service-card-title"><div class="service-name"><h3 data-agent-name>${escape(agent.name)}</h3><button type="button" class="rename-agent" data-rename-agent="${escape(agent.id)}" title="给这位成员改名（清空恢复默认）" aria-label="改名">✎</button></div><strong>${escape(agent.subtitle)}</strong></div><span class="service-location">${escape(agent.location)}</span></header><p class="service-role">${escape(agent.role)}</p><div class="service-facts">${setupLine(agent.id, escape)}<div class="service-status"><span class="status-dot muted"></span>待接入<span>版本未检测</span></div></div>${agent.id === 'hermes-win' && isTauri() ? '<form id="hermes-profile-form" class="hermes-profile"><label><span>默认 profile</span><select name="profile" aria-label="Hermes 默认 profile" title="没单独选 profile 的会话用这个；每个会话可以在会话设置栏里另选。换了会断开 Hermes，下次连接生效"><option value="">Hermes 默认</option></select></label><button class="secondary">切换</button></form>' : ''}<div class="service-actions"><button data-service-connect class="secondary" disabled>连接</button>${companion ? '' : `<button type="button" class="primary" data-agent-install="${escape(agent.id)}" hidden>下载安装</button>`}${companion ? '<button type="button" class="secondary" data-companion-config>配置陪伴</button>' : '<button data-service-upgrade class="secondary" title="更新到最新版本并重新接入同席">更新</button>'}<div class="service-more"><button type="button" class="secondary" data-service-more aria-expanded="false" aria-haspopup="menu">更多<span aria-hidden="true">⌄</span></button><div class="service-menu" role="menu"><button data-service-check role="menuitem" title="只读核对安装、运行与发行版本，不改动安装">检查更新</button><button data-service-models role="menuitem" hidden title="重新读取这位成员能用的模型，不打断正在进行的对话">刷新模型</button><button data-service-restart role="menuitem" hidden title="停掉本软件自己启动的原生子进程并重新连接，期间拒绝新消息与任务">重启</button>${companion ? '' : `<button type="button" role="menuitem" data-agent-setup="${escape(agent.id)}">登录 / 初次配置</button><a role="menuitem" data-agent-docs target="_blank" rel="noreferrer">官方说明</a>`}${managed ? `<button data-service-rollback role="menuitem" disabled title="只在存在可回退的上一版本时可用">回退上一版</button>` : ''}</div></div></div><div class="service-check-result" hidden></div>${managed ? '<div class="service-update" hidden></div>' : ''}</article>`;
   }).join('')}</div>${isTauri() ? remoteGatewayCard() : ''}<div class="storage-card"><div>${icon('settings')}<strong>独立的本地数据</strong><span>v${escape(info?.version || '0.1.0')}</span></div><p>会话与消息草稿保存到本机，现有 agent 的配置与服务不受影响。</p><code>${escape(info?.database_path || '')}</code></div></div>`;
   main.querySelector('#back-to-chat')!.addEventListener('click', () => { screen = 'chat'; if (selectedId) void selectConversation(selectedId); else renderChat(); });
   main.querySelector<HTMLButtonElement>('#update-all')!.addEventListener('click', async event => {
@@ -3132,4 +3151,9 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   }
 }
 
-void boot();
+// 启动加载页（index.html 的 #splash）：首屏画出来或报错后淡出；「重试」再跑 boot 时它已经不在了。
+void boot().finally(() => {
+  const splash = document.querySelector<HTMLElement>('#splash');
+  splash?.classList.add('done');
+  window.setTimeout(() => splash?.remove(), 320);
+});

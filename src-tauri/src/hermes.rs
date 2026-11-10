@@ -215,6 +215,51 @@ impl Runtime {
         let event = format!("{}-state", self.target.key());
         let _ = self.app.emit(&event, crate::state_events::slim(&event, &self.snapshot()));
     }
+    /// 开个空会话带回模型目录和默认模型；连接和「刷新模型」共用。
+    fn read_catalog(&self, client: &Client) -> Result<(Vec<ModelOption>, Option<String>)> {
+        let cwd = self
+            .directory
+            .join(format!("{}-workspaces", self.target.key()))
+            .join("catalog");
+        std::fs::create_dir_all(&cwd).map_err(|_| format!("{} 目录创建失败", self.target.name()))?;
+        let cwd = self.target.cwd(&cwd)?;
+        let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+        let models = models_from_response(&catalog);
+        // 同席自己定的默认模型优先（比如固定走某个提供商），目录里没有它才退回 harness 的默认。
+        let default_model = self
+            .store
+            .lock()
+            .unwrap()
+            .agent_default_model(self.target.id())
+            .filter(|model| models.iter().any(|entry| &entry.id == model))
+            .or_else(|| catalog["models"]["currentModelId"].as_str().map(String::from))
+            .or_else(|| crate::dsh::current_option(&catalog, "model"));
+        Ok((models, default_model))
+    }
+    /// 不断开、不动正在跑的会话，只把模型目录重读一遍。
+    pub fn refresh_models(&self) -> Result<RuntimeSnapshot> {
+        let client = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .client
+                .clone()
+                .filter(|_| inner.connection == "connected")
+                .ok_or_else(|| format!("{} 未连接", self.target.name()))?
+        };
+        // Antigravity 的桥只在 initialize 时跑 `agy models`，再发一次才会重读；真 ACP agent 不重复握手。
+        if matches!(self.target, crate::acp_transport::Target::Antigravity) {
+            client.rpc("initialize", json!({"protocolVersion":1}))?;
+        }
+        let (models, default_model) = self.read_catalog(&client)?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            crate::pricing::remember(self.target.id(), &models);
+            inner.models = models;
+            inner.default_model = default_model;
+        }
+        self.emit();
+        Ok(self.snapshot())
+    }
     pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
         let generation = Uuid::new_v4().to_string();
         {
@@ -252,13 +297,7 @@ impl Runtime {
             )?;
             self.inner.lock().unwrap().client = Some(client.clone());
             let initialized = client.rpc("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}}))?;
-            let cwd = self
-                .directory
-                .join(format!("{}-workspaces", self.target.key()))
-                .join("catalog");
-            std::fs::create_dir_all(&cwd).map_err(|_| format!("{} 目录创建失败", self.target.name()))?;
-            let cwd = self.target.cwd(&cwd)?;
-            let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+            let (models, default_model) = self.read_catalog(&client)?;
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation || inner.connection != "connecting" {
                 return Err(format!("{} 连接已取消", self.target.name()));
@@ -266,22 +305,9 @@ impl Runtime {
             inner.version = initialized["agentInfo"]["version"]
                 .as_str()
                 .map(String::from);
-            inner.models = models_from_response(&catalog);
-            crate::pricing::remember(self.target.id(), &inner.models);
-            inner.default_model = catalog["models"]["currentModelId"]
-                .as_str()
-                .map(String::from)
-                .or_else(|| crate::dsh::current_option(&catalog, "model"));
-            // 同席自己定的默认模型优先（比如固定走某个提供商），目录里没有它才退回 harness 的默认。
-            if let Some(preferred) = self
-                .store
-                .lock()
-                .unwrap()
-                .agent_default_model(self.target.id())
-                .filter(|model| inner.models.iter().any(|entry| &entry.id == model))
-            {
-                inner.default_model = Some(preferred);
-            }
+            crate::pricing::remember(self.target.id(), &models);
+            inner.models = models;
+            inner.default_model = default_model;
             inner.connection = "connected".into();
             Ok(())
         })();

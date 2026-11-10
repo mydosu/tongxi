@@ -224,9 +224,11 @@ async function handle(message) {
     case 'initialize': {
       const [models, about] = await Promise.all([run(['models']), run(['--version']).catch(() => '')]);
       // `agy models` 每行「id<TAB>名称」。
-      catalog = models.split(/\r?\n/).map(line => line.split('\t')).filter(parts => parts.length >= 2 && parts[0].trim())
+      // 「刷新模型」会再发一次 initialize：读不到就留着原来的目录。
+      const listed = models.split(/\r?\n/).map(line => line.split('\t')).filter(parts => parts.length >= 2 && parts[0].trim())
         .map(([value, name]) => ({ value: value.trim(), name: name.trim() }));
-      if (!catalog.length) throw new Error('Antigravity 模型目录读取失败（是否已登录 agy？）');
+      if (!listed.length) throw new Error('Antigravity 模型目录读取失败（是否已登录 agy？）');
+      catalog = listed;
       version = about.trim().split(/\s+/).pop() || null;
       return { protocolVersion: 1, agentInfo: { name: 'antigravity', title: 'Antigravity', version },
         agentCapabilities: { loadSession: true, promptCapabilities: { image: false, embeddedContext: true } }, authMethods: [] };
