@@ -306,7 +306,7 @@ impl Store {
         let chat: Option<String> = self
             .connection
             .query_row(
-                "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2",
+                "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2 AND project_id=(SELECT project_id FROM conversation_projects WHERE conversation_id=?1)",
                 params![room, seat],
                 |row| row.get(0),
             )
@@ -833,7 +833,7 @@ pub fn sync_brain_settings(store: &mut Store, room: &str) -> Result<()> {
     let chat: Option<String> = store
         .connection
         .query_row(
-            "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2",
+            "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2 AND project_id=(SELECT project_id FROM conversation_projects WHERE conversation_id=?1)",
             params![room, seat],
             |row| row.get(0),
         )
@@ -1014,8 +1014,9 @@ fn team(connection: &Connection, ctx: &Context) -> Result<Vec<(String, String)>>
         .and_then(|mut query| query.query_map([&ctx.room], |row| row.get(0))?.collect())
         .map_err(|_| "项目成员读取失败")?;
     let chats: Vec<(String, String)> = connection
-        .prepare("SELECT agent_id,conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 ORDER BY agent_id")
-        .and_then(|mut query| query.query_map([&ctx.room], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        // 群换绑过项目的，旧项目那套会话还留着（目录可能已不在），只认当前项目的。
+        .prepare("SELECT agent_id,conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND project_id=?2 ORDER BY agent_id")
+        .and_then(|mut query| query.query_map([&ctx.room, &ctx.project], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
         .map_err(|_| "成员会话读取失败")?;
     Ok(chats
         .into_iter()
@@ -1304,7 +1305,7 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             // 额度是几个项目共用的：列出别的项目的主脑正交给哪些成员在做。
             let elsewhere: Vec<Value> = connection
                 .prepare(
-                    "SELECT j.seat,j.model,(SELECT p.name FROM project_agent_chats c JOIN projects p ON p.id=c.project_id WHERE c.group_conversation_id=j.room LIMIT 1)
+                    "SELECT j.seat,j.model,(SELECT p.name FROM conversation_projects c JOIN projects p ON p.id=c.project_id WHERE c.conversation_id=j.room)
                      FROM brain_jobs j WHERE j.room<>?1 AND j.kind='task' AND j.status IN ('pending','running') ORDER BY j.created_at",
                 )
                 .and_then(|mut query| {
@@ -2258,7 +2259,7 @@ impl Courier {
                     store
                         .connection
                         .query_row(
-                            "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2",
+                            "SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2 AND project_id=(SELECT project_id FROM conversation_projects WHERE conversation_id=?1)",
                             params![room, seat],
                             |row| row.get(0),
                         )
@@ -2419,10 +2420,25 @@ mod tests {
         store.bind_project(&room, Some(&project)).unwrap();
         store.ensure_project_agent_chats(&room).unwrap();
         let chat = |store: &Store, seat: &str| -> String {
-            store.connection.query_row("SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2", params![room, seat], |row| row.get(0)).unwrap()
+            store.connection.query_row("SELECT conversation_id FROM project_agent_chats WHERE group_conversation_id=?1 AND agent_id=?2 AND project_id=(SELECT project_id FROM conversation_projects WHERE conversation_id=?1)", params![room, seat], |row| row.get(0)).unwrap()
         };
         let (brain, member) = (chat(&store, "claude-win-brain"), chat(&store, "claude-win"));
-        let say = |store: &mut Store, chat: &str, content: &str, sender: &str| -> String {
+        {
+            // 群换绑到另一个项目：派活名单和主脑会话都只认新项目那套，换回来又认回原来的。
+            let other_root = base.join("other");
+            std::fs::create_dir_all(&other_root).unwrap();
+            let other = store.register_project("换绑项目", other_root.to_str().unwrap()).unwrap().id;
+            store.bind_project(&room, Some(&other)).unwrap();
+            store.ensure_project_agent_chats(&room).unwrap();
+            let rebound = chat(&store, "claude-win-brain");
+            assert_ne!(rebound, brain);
+            let ctx = super::context(&store.connection, &rebound).unwrap();
+            let seats = super::team(&store.connection, &ctx).unwrap();
+            assert!(!seats.is_empty() && seats.iter().all(|(_, id)| *id != member), "不派到旧项目的会话");
+            store.bind_project(&room, Some(&project)).unwrap();
+            assert_eq!(chat(&store, "claude-win-brain"), brain);
+        }
+        let say =|store: &mut Store, chat: &str, content: &str, sender: &str| -> String {
             let id = Uuid::new_v4().to_string();
             store.save_delivered_message_from(chat, &id, content, sender).unwrap();
             id
