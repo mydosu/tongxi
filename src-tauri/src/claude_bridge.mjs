@@ -324,7 +324,8 @@ function prompt(id, params) {
   // resetsAt：最近一次 rate_limit_event：被限流时带上重置时间（Unix 秒），同席据此等到重置再继续。
   const turn = { id, result: null, wroteText: false, resetsAt: null, context: 0, spent: 0, counted: new Set(), resumed: true };
   session.cancelled = false;
-  session.steered = 0;
+  // 已写进 stdin、claude 还没采纳的插话（uuid）。claude 采纳时会把那条消息原样回显（--replay-user-messages）。
+  session.steered = new Set();
   // 上一回合留着等后台命令的进程还在：这条消息直接写进去，后台命令不被打断（模型、强度、权限档沿用那个进程的）。
   if (session.child) {
     session.turn = turn;
@@ -335,7 +336,7 @@ function prompt(id, params) {
   const tier = params.tongxiTier;
   const denied = ['AskUserQuestion', ...(tier === 'write' ? IRREVERSIBLE.flatMap(command => [`Bash(${command}:*)`, `PowerShell(${command}:*)`]) : [])];
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-    '--include-partial-messages', '--disallowedTools', ...denied];
+    '--include-partial-messages', '--replay-user-messages', '--disallowedTools', ...denied];
   if (session.model && session.model !== 'default') args.push('--model', session.model);
   if (session.effort) args.push('--effort', session.effort);
   turn.resumed = Boolean(session.started || transcript(params.sessionId));
@@ -399,6 +400,7 @@ function prompt(id, params) {
           kind: toolKind(block.name), status: 'in_progress', rawInput: block.input });
       }
     } else if (message.type === 'user') {
+      if (message.isReplay) session.steered.delete(message.uuid);
       const content = message.message?.content;
       for (const block of Array.isArray(content) ? content : []) {
         if (block.type !== 'tool_result') continue;
@@ -410,11 +412,11 @@ function prompt(id, params) {
       // 续会话时上一单没跑完的后台命令会先来一条通知，claude 为它出一个零轮的空结果，真正这一单还在后面。
       if (message.num_turns === 0 && !message.is_error) return;
       // 插话打断了前半段：claude 先报一个中止的结果，插进来的消息接着处理，回合还没完，不能在这里收尾。
-      if (session.steered && !session.cancelled && message.terminal_reason?.startsWith('aborted')) {
-        session.steered--;
-        return;
-      }
+      if (session.steered.size && !session.cancelled && message.terminal_reason?.startsWith('aborted')) return;
       turn.result = message;
+      // 插话到得晚（模型已在写最后一段）：claude 先报这一轮完成，再另起一轮处理插话。
+      // 这里收尾的话 20 秒后进程被杀，后一轮的回复就断在半截。等插话那轮的结果再收尾。
+      if (session.steered.size && !session.cancelled && !message.is_error) return;
       // 还有后台命令在跑：关了 stdin claude 就退出、后台命令跟着被杀。进程留着等它们跑完，这一回合先交回去。
       if (session.tasks.size && !session.cancelled && !message.is_error) {
         session.turn = null;
@@ -492,8 +494,9 @@ function steer(params) {
   if (!session?.turn || session.cancelled || !session.child.stdin.writable || session.child.stdin.writableEnded) {
     throw new Error('Claude 当前没有进行中的回复');
   }
-  session.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
-  session.steered = (session.steered || 0) + 1;
+  const uuid = randomUUID();
+  session.child.stdin.write(JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
+  session.steered.add(uuid);
   return {};
 }
 
