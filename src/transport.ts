@@ -118,12 +118,29 @@ function connect(): EventSource {
   source = stream;
   // SSE 断了浏览器自己会重连；只在掉线、连上各提示一次，免得手机上一直刷屏。
   let warned = false;
+  // 断开持续超过 3 秒才在页面顶部挂一条提示，瞬断不打扰；open 时收起。
+  let offlineTimer = 0;
+  let bar: HTMLElement | null = null;
   stream.addEventListener('open', () => {
+    clearTimeout(offlineTimer);
+    offlineTimer = 0;
+    bar?.remove();
+    bar = null;
     // 断线期间的事件收不到了：交给调用处重新取一遍完整状态（状态事件里没变的模型表不再重复带）。
     if (warned) for (const handler of reconnectHandlers) handler();
     warned = false;
   });
   stream.addEventListener('error', () => {
+    if (!offlineTimer && !bar) {
+      offlineTimer = window.setTimeout(() => {
+        offlineTimer = 0;
+        bar = document.createElement('div');
+        bar.className = 'offline-bar';
+        bar.setAttribute('role', 'status');
+        bar.textContent = '电脑离线，正在重连…';
+        document.body.append(bar);
+      }, 3000);
+    }
     if (warned) return;
     warned = true;
     console.warn('[同席] 实时事件流断开，正在重连；重连后接着收更新。');

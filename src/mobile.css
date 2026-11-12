@@ -1,6 +1,8 @@
 /* 手机布局（≤600px，只有远程页面会走到这里：桌面窗口最窄 920）。视觉沿用 theme.css，这里只改排布。
    首页是会话列表，选了会话才进会话页（html[data-mview]），成员面板变底部抽屉。 */
 .mobile-back { display: none; }
+/* 事件流断开超过 3 秒的小提示：固定在顶部、不拦点击，让开刘海。 */
+.offline-bar { position: fixed; top: calc(env(safe-area-inset-top) + 6px); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 5px 14px; border: 1px solid #ecd7d2; border-radius: 999px; background: #fff3f0; color: #a26d63; font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 60; box-shadow: 0 4px 14px rgba(36, 40, 45, .08); }
 html[data-remote] .window-controls, html[data-remote] .resize-edge { display: none; }
 
 @media (max-width: 600px) {

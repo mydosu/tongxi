@@ -8,6 +8,9 @@
 const STORAGE_KEY = 'tongxi.pair.url';
 /// 加载页停留这么久还没跳走，就把「重新配对」的出口显出来。
 const SLOW_AFTER = 8000;
+/// 探活单次超时 / 失败后重探间隔。
+const PROBE_TIMEOUT = 4000;
+const PROBE_RETRY = 3000;
 const NOT_PAIRING_CODE = '这不是同席的访问地址，请粘贴桌面「复制访问地址」得到的那条';
 
 const input = document.querySelector<HTMLInputElement>('#address')!;
@@ -95,11 +98,31 @@ function boot() {
   }
 
   if (previous) {
-    // 地址失效 / 不在同一个 Tailscale 网络时页面会一直停在加载页：8 秒后把「换一台电脑」
-    // 那个出口显出来。只改样式，不做探活——真去 ping 一次也判断不出是网关慢还是网络不通。
+    // Tailscale 没开时 WebView 直接导航会落到系统错误页、只能杀进程：先探活再跳。
+    // 地址仍可能失效（令牌换了）：8 秒还没跳走就显出「换一台电脑」出口。
     setTimeout(() => { document.documentElement.dataset.slow = '1'; }, SLOW_AFTER);
-    connect(previous);
-    return;
+    void probeAndConnect(previous);
+  }
+}
+
+/// 对地址的 origin 发一次 no-cors 请求：能 resolve 就说明网关可达（响应不透明、不读内容），
+/// reject/超时当连不上——显示提示、立刻亮出口，每 3 秒自动再探，通了自动跳。
+/// 薄壳页是 http://tauri.localhost（非安全上下文），只用 fetch / AbortController。
+async function probeAndConnect(url: string) {
+  const root = document.documentElement;
+  for (;;) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), PROBE_TIMEOUT);
+    try {
+      await fetch(new URL(url).origin + '/', { mode: 'no-cors', cache: 'no-store', signal: abort.signal });
+      connect(url);
+      return;
+    } catch {
+      root.dataset.offline = '1';
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise(resolve => setTimeout(resolve, PROBE_RETRY));
   }
 }
 
