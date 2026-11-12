@@ -52,7 +52,7 @@ function Resolve-First($value, $fallbacks, $probe) {
   throw "找不到需要的目录（探针 $probe）：$($candidates -join ', ')"
 }
 
-$javaHome = Resolve-First $env:JAVA_HOME @('C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot', 'C:\Program Files\Java\latest') 'bin\java.exe'
+$javaHome = Resolve-First $env:JAVA_HOME @('D:\Java\JDK21', 'C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot', 'C:\Program Files\Java\latest') 'bin\java.exe'
 $sdkDir = Resolve-First ($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT) @('D:\Android\Sdk') 'platform-tools'
 $ndkDir = $env:NDK_HOME
 if (-not $ndkDir -or -not (Test-Path $ndkDir)) {
