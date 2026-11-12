@@ -1,6 +1,6 @@
 [package]
 name = "tongxi-mobile"
-version = "3.8.19"
+version = "3.8.25"
 description = "同席手机薄壳：粘贴访问地址后整页打开桌面同席的网关地址"
 authors = ["同席"]
 edition = "2024"

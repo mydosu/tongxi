@@ -3448,7 +3448,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tongxi-mobile"
-version = "3.8.19"
+version = "3.8.25"
 dependencies = [
  "serde",
  "serde_json",
