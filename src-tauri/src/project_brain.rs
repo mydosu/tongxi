@@ -1365,7 +1365,8 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                 let tag = Uuid::new_v4().to_string();
                 let name = format!("{seat}-{}", short(&tag));
                 let branch = format!("tongxi/{name}");
-                let root = ctx.db.parent().ok_or("数据目录不可用")?.join("worktrees");
+                let fallback = ctx.db.parent().ok_or("数据目录不可用")?.join("worktrees");
+                let root = crate::project_worktree::worktree_root(&ctx.root, &fallback);
                 let path = crate::project_worktree::add(&ctx.root, &root, &name, &branch)?;
                 (Some(path.to_string_lossy().to_string()), Some(branch))
             } else {

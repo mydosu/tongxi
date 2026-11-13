@@ -351,6 +351,43 @@ fn is_secret_filename(name: &str) -> bool {
 }
 
 
+/// 用户选的文件夹 → 项目主仓库目录。空文件夹就在里面建 `<文件夹名>-main` 当主仓库，工作树随后落在
+/// 同级的 `<文件夹名>-worktrees`，项目的东西都收在用户选的文件夹里；之后再选到这个外层文件夹时认回
+/// 里面的主仓库。已有内容的文件夹原样返回。
+pub fn project_root(picked: &Path) -> Result<PathBuf> {
+    let Some(name) = picked.file_name() else {
+        return Ok(picked.to_path_buf());
+    };
+    let name = name.to_string_lossy();
+    let main = picked.join(format!("{name}-main"));
+    // 外层本身就是仓库时，里面碰巧叫 `xxx-main` 的子目录不算主仓库。
+    if main.is_dir() && !picked.join(".git").exists() {
+        return Ok(main);
+    }
+    let empty = picked.read_dir().is_ok_and(|mut entries| entries.next().is_none());
+    // 选到的是还空着的 `xxx-main` 本身（建好还没绑定）时不再往里套一层。
+    if empty && picked.is_absolute() && !name.ends_with("-main") {
+        std::fs::create_dir(&main).map_err(|_| "无法在项目文件夹里建主仓库目录".to_string())?;
+        return Ok(main);
+    }
+    Ok(picked.to_path_buf())
+}
+
+/// 工作树放在主仓库旁边：`<上级目录>/<仓库文件夹名去掉 -main>-worktrees`，跟项目同盘、按项目分开。
+/// 上级目录建不了文件夹（没权限等）时退回 `fallback`。
+pub fn worktree_root(root: &Path, fallback: &Path) -> PathBuf {
+    // 登记的项目目录是 canonicalize 出来的 `\\?\D:\…`，交给 git 和成员工具前换回普通盘符路径。
+    let root = crate::service_install::strip_verbatim_prefix(root.to_path_buf());
+    let sibling = root.parent().zip(root.file_name()).map(|(parent, name)| {
+        let name = name.to_string_lossy();
+        parent.join(format!("{}-worktrees", name.strip_suffix("-main").unwrap_or(&name)))
+    });
+    match sibling {
+        Some(dir) if std::fs::create_dir_all(&dir).is_ok() => dir,
+        _ => fallback.to_path_buf(),
+    }
+}
+
 /// 主脑派活用：从当前 HEAD 开一个工作树和新分支。主目录有没提交的改动也照开（它们不会带进工作树），由主脑自己掂量。
 pub fn add(root: &Path, worktree_root: &Path, name: &str, branch: &str) -> Result<PathBuf> {
     if !is_repo(root) {
@@ -711,6 +748,37 @@ mod tests {
         assert!(is_repo(&repo));
         // 嵌套在外层仓库里的子目录不算 git 项目，避免把整棵外层仓库当项目仓库。
         assert!(!is_repo(&nested));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn empty_folder_gets_a_main_repo_and_worktrees_sit_beside_the_repo() {
+        let Some(exe) = git_exe() else { return };
+        let base = temp_base();
+        let picked = base.join("Foo");
+        std::fs::create_dir_all(&picked).unwrap();
+        let main = project_root(&picked).unwrap();
+        assert_eq!(main, picked.join("Foo-main"), "空文件夹里建 Foo-main 当主仓库");
+        assert_eq!(project_root(&picked).unwrap(), main, "再选外层认回主仓库");
+        assert_eq!(project_root(&main).unwrap(), main, "直接选主仓库原样");
+        let fallback = base.join("fallback");
+        // 登记里存的是 canonicalize 过的路径（Windows 上带 \\?\），工作树目录要换回普通路径。
+        let canonical = main.canonicalize().unwrap();
+        let root = worktree_root(&canonical, &fallback);
+        assert!(!root.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(root.file_name().unwrap(), "Foo-worktrees");
+        assert_eq!(root.parent().unwrap().file_name().unwrap(), "Foo", "工作树和主仓库同在用户选的文件夹里");
+
+        assert!(init_repo(&exe, &main));
+        let path = add(&canonical, &root, "task", "hub/task").unwrap();
+        assert!(path.join("base.txt").is_file());
+        remove(&canonical, &path).unwrap();
+
+        let existing = base.join("WTFML-develop");
+        assert!(init_repo(&exe, &existing));
+        std::fs::create_dir_all(existing.join("WTFML-develop-main")).unwrap();
+        assert_eq!(project_root(&existing).unwrap(), existing, "已有仓库原样，里面同名 -main 子目录不算主仓库");
+        assert_eq!(worktree_root(&existing, &fallback), base.join("WTFML-develop-worktrees"), "已有仓库的工作树放在同级");
         let _ = std::fs::remove_dir_all(&base);
     }
 

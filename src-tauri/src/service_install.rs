@@ -105,7 +105,7 @@ pub(crate) fn root_for(data: &Path, layout: &Layout) -> Result<PathBuf, String> 
 }
 
 /// 去掉仅本地绝对盘符路径的 Windows verbatim 前缀；UNC 与其它形式原样返回。
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     if let Some(text) = path.to_str() {
         if let Some(rest) = text.strip_prefix(r"\\?\") {
             if rest.as_bytes().get(1) == Some(&b':') {

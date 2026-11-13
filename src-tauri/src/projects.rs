@@ -17,7 +17,8 @@ pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
 }
 #[tauri::command]
 pub fn register_project(state: State<'_, AppState>, name: String, root: String) -> Result<Project> {
-    locked(&state)?.register_project(&name, &root)
+    let root = crate::project_worktree::project_root(Path::new(&root))?;
+    locked(&state)?.register_project(&name, &root.to_string_lossy())
 }
 #[tauri::command]
 pub fn bind_project(
