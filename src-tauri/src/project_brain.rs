@@ -44,7 +44,10 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
            steps TEXT NOT NULL,archived_at INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS wake_inbox (
            id TEXT PRIMARY KEY,chat TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           agent TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL);",
+           agent TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS member_notes (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,chat TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           content TEXT NOT NULL,created_at INTEGER NOT NULL);",
     )
     .map_err(|_| "主脑结构迁移失败")?;
     crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
@@ -882,7 +885,7 @@ pub fn is_brain_chat(connection: &Connection, conversation_id: &str) -> bool {
 }
 
 /// 某个 agent 回合交回后，它放到后台的命令（或后台子 agent）才跑完：各运行时报上来，统一在这里安排唤醒。
-/// 主脑的记进主脑收件箱；成员的不打扰主脑，留在成员自己会话里；
+/// 主脑的记进主脑收件箱；成员的不打扰主脑，存进 member_notes 等下次派活附上；
 /// 私聊记进 wake_inbox，作为新消息发回那个会话。用户停掉的那一轮留下的不唤醒。
 /// 桥接（Claude、Hermes、DSH）报后台任务跑完用的扩展通知；是这条就处理掉并返回 true。
 pub(crate) fn background_notice(store: &Mutex<Store>, agent: &str, value: &Value) -> bool {
@@ -925,8 +928,11 @@ pub(crate) fn background_done(store: &Store, agent: &str, native_session: &str, 
         .ok()
         .flatten();
     let _ = match seat {
-        // 成员的不报主脑（频繁打扰）：结果已在成员自己的会话里，下次派活时它自己看得到。
-        Some((_, seat)) if !is_brain(&seat) => Ok(0),
+        // 成员的不报主脑（频繁打扰）：先存着，下次给它派活时附在任务前面。
+        Some((_, seat)) if !is_brain(&seat) => connection.execute(
+            "INSERT INTO member_notes(chat,content,created_at) VALUES(?1,?2,?3)",
+            params![chat, text, now()],
+        ),
         Some((room, _)) => connection.execute(
             "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
             params![
@@ -2078,8 +2084,13 @@ impl Courier {
                 if self.live(&agent, &job.chat) {
                     return false;
                 }
-                let (root, grants, tier) = {
+                let (root, grants, tier, notes) = {
                     let store = self.store.lock().unwrap();
+                    let notes: Vec<(i64, String)> = store
+                        .connection
+                        .prepare("SELECT id,content FROM member_notes WHERE chat=?1 ORDER BY id")
+                        .and_then(|mut query| query.query_map([&job.chat], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+                        .unwrap_or_default();
                     if job.model.is_some() || job.effort.is_some() {
                         let _ = store.connection.execute(
                             "UPDATE sessions SET model=COALESCE(?1,model),reasoning_effort=COALESCE(?2,reasoning_effort) WHERE conversation_id=?3 AND agent_id=?4",
@@ -2088,7 +2099,7 @@ impl Courier {
                     }
                     let root = store.conversation_project(&job.room).ok().flatten().map(|project| project.root).unwrap_or_default();
                     let grants = store.project_grants(&job.room);
-                    (root, grants, store.permission_tier(&job.room))
+                    (root, grants, store.permission_tier(&job.room), notes)
                 };
                 let cwd = job.worktree.clone().unwrap_or(root);
                 let mut content = format!("【主脑派活】任务 {}\n工作目录：{cwd}\n", short(&job.id));
@@ -2101,6 +2112,10 @@ impl Courier {
                 if !grants.trim().is_empty() {
                     content.push_str(&format!("项目长期授权：{}\n", grants.trim()));
                 }
+                if !notes.is_empty() {
+                    let texts: Vec<&str> = notes.iter().map(|(_, text)| text.as_str()).collect();
+                    content.push_str(&format!("\n你之前放到后台的任务跑完了（已看过的可忽略）：\n{}\n", texts.join("\n\n")));
+                }
                 content.push_str(&format!("\n{}\n\n---\n{}", job.content, crate::prompts::member()));
                 match self.send(&agent, &job.chat, &content, &self.brain(&job.room)) {
                     Ok(record) => {
@@ -2108,6 +2123,9 @@ impl Courier {
                             "UPDATE brain_jobs SET status='running',run_id=?1 WHERE id=?2",
                             params![record.id, job.id],
                         );
+                        if let Some((last, _)) = notes.last() {
+                            self.execute("DELETE FROM member_notes WHERE chat=?1 AND id<=?2", params![job.chat, last]);
+                        }
                         let first: String = job.content.lines().next().unwrap_or("").chars().take(80).collect();
                         self.post(&job.room, &format!("主脑 → {}：{first}", self.name(&job.room, &job.seat)));
                     }
@@ -3017,6 +3035,9 @@ B6 做完了"));
         let inbox = rows("SELECT content FROM brain_inbox WHERE delivered=0 ORDER BY rowid");
         assert_eq!(inbox.len(), 1, "只有主脑自己的进主脑收件箱，成员的不打扰主脑：{inbox:?}");
         assert!(inbox[0].contains("你上一回合") && inbox[0].contains("n-brain"));
+        let notes = rows("SELECT chat||' '||content FROM member_notes");
+        assert_eq!(notes.len(), 1, "成员的存着等下次派活：{notes:?}");
+        assert!(notes[0].starts_with(&member) && notes[0].contains("n-member"));
         let wakes = rows("SELECT chat||' '||content FROM wake_inbox");
         assert_eq!(wakes.len(), 1, "私聊发回原会话，用户停掉的那轮不唤醒：{wakes:?}");
         assert!(wakes[0].starts_with(&private) && wakes[0].contains("n-private"));
