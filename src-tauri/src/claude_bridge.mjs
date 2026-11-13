@@ -222,6 +222,8 @@ function listSessions() {
 // ACP 的 MCP 描述 → Claude --mcp-config。只接 stdio 形式，与同席注入的项目工具一致。
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent'];
 const IRREVERSIBLE = ['git push', 'gh release', 'gh pr merge'];
+// 进程跑着时 apply_flag_settings 能切到的思考强度（CLI 设置的 effortLevel 只认这几档）。
+const LIVE_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
 function mcpConfig(servers) {
   const mcpServers = {};
@@ -326,8 +328,18 @@ function prompt(id, params) {
   session.cancelled = false;
   // 已写进 stdin、claude 还没采纳的插话（uuid）。claude 采纳时会把那条消息原样回显（--replay-user-messages）。
   session.steered = new Set();
-  // 上一回合留着等后台命令的进程还在：这条消息直接写进去，后台命令不被打断（模型、强度、权限档沿用那个进程的）。
+  // 上一回合留着等后台命令的进程还在：这条消息直接写进去，后台命令不被打断（权限档沿用那个进程的）。
+  // 期间换过模型、强度：先在进程里切过去再写消息；强度清回默认这类进程内切不了的，结束旧进程重开。
+  if (session.child && session.effort !== session.childEffort && !LIVE_EFFORTS.includes(session.effort)) {
+    execFile('taskkill', ['/PID', String(session.child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+    session.child = null;
+  }
   if (session.child) {
+    const control = request => session.child.stdin.write(JSON.stringify({ type: 'control_request', request_id: randomUUID(), request }) + '\n');
+    if (session.model !== session.childModel) control({ subtype: 'set_model', model: session.model || 'default' });
+    if (session.effort !== session.childEffort) control({ subtype: 'apply_flag_settings', settings: { effortLevel: session.effort } });
+    session.childModel = session.model;
+    session.childEffort = session.effort;
     session.turn = turn;
     session.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: claudeContent(params.prompt) } }) + '\n');
     return;
@@ -348,6 +360,8 @@ function prompt(id, params) {
   if (mcp) args.push('--mcp-config', mcp);
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv() });
   session.child = child;
+  session.childModel = session.model;
+  session.childEffort = session.effort;
   session.turn = turn;
   // 这个进程里还在跑的后台命令（task_id → 描述），和回合交回后才跑完的那些。
   session.tasks = new Map();

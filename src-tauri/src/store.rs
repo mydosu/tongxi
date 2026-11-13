@@ -1007,6 +1007,24 @@ impl Store {
             }
             .map_err(|e| e.to_string())?;
         }
+        // 主脑会话里换模型就是换这个项目的主脑模型：项目设置和以后新开的主脑会话都跟着它，两边不会各说各的。
+        let brain_room: Option<String> = self
+            .connection
+            .query_row("SELECT group_conversation_id,agent_id FROM project_agent_chats WHERE conversation_id=?1", [id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .filter(|(_, seat)| crate::project_store::is_brain(seat))
+            .map(|(room, _)| room);
+        if let Some(room) = brain_room {
+            self.connection.execute(
+                "UPDATE project_coordinator_settings SET settings=json_object('agent',?1,'model',?2,'effort',?3) WHERE conversation_id=?4 AND json_extract(settings,'$.agent')=?1",
+                params![agent_id, model, reasoning_effort, room],
+            ).map_err(|e| e.to_string())?;
+            self.connection.execute(
+                "INSERT INTO metadata(key,value) SELECT 'brain_synced:'||?1||':'||?2,settings FROM project_coordinator_settings WHERE conversation_id=?1 AND json_extract(settings,'$.agent')=?3 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![room, id, agent_id],
+            ).map_err(|e| e.to_string())?;
+        }
         self.detail(id)
     }
 

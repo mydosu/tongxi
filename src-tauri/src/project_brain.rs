@@ -846,7 +846,8 @@ pub fn sync_brain_settings(store: &mut Store, room: &str) -> Result<()> {
     store
         .connection
         .execute(
-            "UPDATE sessions SET model=?1,reasoning_effort=?2 WHERE conversation_id=?3 AND agent_id=?4",
+            // 「沿用」（None）＝不改主脑会话自己的设置，别把它清成默认模型。
+            "UPDATE sessions SET model=COALESCE(?1,model),reasoning_effort=COALESCE(?2,reasoning_effort) WHERE conversation_id=?3 AND agent_id=?4",
             params![choice.model, choice.effort, chat, choice.agent],
         )
         .map_err(|_| "主脑设置保存失败")?;

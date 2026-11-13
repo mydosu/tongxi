@@ -619,6 +619,16 @@ mod tests {
         // 换绑项目会新开主脑会话：新会话也要用项目设置里的主脑模型。
         store.connection.execute("DELETE FROM project_agent_chats WHERE agent_id='claude-win-brain'", []).unwrap();
         assert_eq!(brain_model(&mut store).as_deref(), Some("fable"));
+        // 在主脑会话里换模型：项目设置跟着变，再新开的主脑会话也用它。
+        let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id;
+        store.set_session_settings(&chat, "claude-win", Some("opus".into()), Some("high".into())).unwrap();
+        assert_eq!(store.project_coordinator(&room).unwrap().unwrap().model.as_deref(), Some("opus"));
+        assert_eq!(brain_model(&mut store).as_deref(), Some("opus"), "自己的改动不被项目设置同步回去");
+        store.connection.execute("DELETE FROM project_agent_chats WHERE agent_id='claude-win-brain'", []).unwrap();
+        assert_eq!(brain_model(&mut store).as_deref(), Some("opus"));
+        // 项目设置选「沿用」：不把主脑会话清成默认模型。
+        store.set_project_coordinator(&room, &crate::project_store::RoleChoice { agent: "claude-win".into(), model: None, effort: None }).unwrap();
+        assert_eq!(brain_model(&mut store).as_deref(), Some("opus"));
         let _ = std::fs::remove_dir_all(base);
     }
 
