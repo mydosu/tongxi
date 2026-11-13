@@ -607,6 +607,22 @@ mod tests {
     }
 
     #[test]
+    fn a_new_brain_chat_gets_the_project_brain_model() {
+        let (mut store, room, base) = room();
+        store.replace_members(&room, &["codex-win".into(), "claude-win".into()]).unwrap();
+        store.set_project_coordinator(&room, &crate::project_store::RoleChoice { agent: "claude-win".into(), model: Some("fable".into()), effort: None }).unwrap();
+        let brain_model = |store: &mut crate::store::Store| {
+            let chat = store.ensure_project_agent_chats(&room).unwrap().into_iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id;
+            store.connection.query_row("SELECT model FROM sessions WHERE conversation_id=?1", [chat], |row| row.get::<_, Option<String>>(0)).unwrap()
+        };
+        assert_eq!(brain_model(&mut store).as_deref(), Some("fable"));
+        // 换绑项目会新开主脑会话：新会话也要用项目设置里的主脑模型。
+        store.connection.execute("DELETE FROM project_agent_chats WHERE agent_id='claude-win-brain'", []).unwrap();
+        assert_eq!(brain_model(&mut store).as_deref(), Some("fable"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn a_single_member_project_collaborates_through_its_own_sessions() {
         let base = std::env::temp_dir().join(format!("tongxi-solo-{}", Uuid::new_v4()));
         let root = base.join("project");

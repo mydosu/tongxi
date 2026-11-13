@@ -820,16 +820,6 @@ pub fn sync_brain_settings(store: &mut Store, room: &str) -> Result<()> {
     if base_agent(&seat) != choice.agent {
         return Ok(());
     }
-    let wanted = serde_json::to_string(&choice).map_err(|_| "主脑设置无效")?;
-    let key = format!("brain_synced:{room}");
-    let synced: Option<String> = store
-        .connection
-        .query_row("SELECT value FROM metadata WHERE key=?1", [&key], |row| row.get(0))
-        .optional()
-        .map_err(|_| "主脑设置读取失败")?;
-    if synced.as_deref() == Some(wanted.as_str()) {
-        return Ok(());
-    }
     let chat: Option<String> = store
         .connection
         .query_row(
@@ -842,6 +832,17 @@ pub fn sync_brain_settings(store: &mut Store, room: &str) -> Result<()> {
     let Some(chat) = chat else {
         return Ok(());
     };
+    // 按主脑会话记：换绑项目会新开主脑会话，按群记的话新会话永远同步不到，跑的是成员记住的模型。
+    let wanted = serde_json::to_string(&choice).map_err(|_| "主脑设置无效")?;
+    let key = format!("brain_synced:{room}:{chat}");
+    let synced: Option<String> = store
+        .connection
+        .query_row("SELECT value FROM metadata WHERE key=?1", [&key], |row| row.get(0))
+        .optional()
+        .map_err(|_| "主脑设置读取失败")?;
+    if synced.as_deref() == Some(wanted.as_str()) {
+        return Ok(());
+    }
     store
         .connection
         .execute(
