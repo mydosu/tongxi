@@ -882,7 +882,7 @@ pub fn is_brain_chat(connection: &Connection, conversation_id: &str) -> bool {
 }
 
 /// 某个 agent 回合交回后，它放到后台的命令（或后台子 agent）才跑完：各运行时报上来，统一在这里安排唤醒。
-/// 主脑、成员的记进主脑收件箱（成员的由主脑决定怎么接，免得成员自己接着干、结果没人收）；
+/// 主脑的记进主脑收件箱；成员的不打扰主脑，留在成员自己会话里；
 /// 私聊记进 wake_inbox，作为新消息发回那个会话。用户停掉的那一轮留下的不唤醒。
 /// 桥接（Claude、Hermes、DSH）报后台任务跑完用的扩展通知；是这条就处理掉并返回 true。
 pub(crate) fn background_notice(store: &Mutex<Store>, agent: &str, value: &Value) -> bool {
@@ -925,18 +925,17 @@ pub(crate) fn background_done(store: &Store, agent: &str, native_session: &str, 
         .ok()
         .flatten();
     let _ = match seat {
-        Some((room, seat)) => {
-            let note = if is_brain(&seat) {
-                format!("【同席】你上一回合放到后台的任务跑完了：\n{text}\n看结果接着做。")
-            } else {
-                let name = store.seat_name(&room, &seat);
-                format!("【同席】{name}上一回合放到后台的任务跑完了：\n{text}\n要它接着做就再派活。")
-            };
-            connection.execute(
-                "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
-                params![Uuid::new_v4().to_string(), room, note, now()],
-            )
-        }
+        // 成员的不报主脑（频繁打扰）：结果已在成员自己的会话里，下次派活时它自己看得到。
+        Some((_, seat)) if !is_brain(&seat) => Ok(0),
+        Some((room, _)) => connection.execute(
+            "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'hub')",
+            params![
+                Uuid::new_v4().to_string(),
+                room,
+                format!("【同席】你上一回合放到后台的任务跑完了：\n{text}\n看结果接着做。"),
+                now()
+            ],
+        ),
         None => connection.execute(
             "INSERT INTO wake_inbox(id,chat,agent,content,created_at) VALUES(?1,?2,?3,?4,?5)",
             params![
@@ -3016,9 +3015,8 @@ B6 做完了"));
             store.connection.prepare(sql).unwrap().query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
         };
         let inbox = rows("SELECT content FROM brain_inbox WHERE delivered=0 ORDER BY rowid");
-        assert_eq!(inbox.len(), 2, "主脑和成员的都进主脑收件箱，对不上席位的不算：{inbox:?}");
+        assert_eq!(inbox.len(), 1, "只有主脑自己的进主脑收件箱，成员的不打扰主脑：{inbox:?}");
         assert!(inbox[0].contains("你上一回合") && inbox[0].contains("n-brain"));
-        assert!(!inbox[1].contains("你上一回合") && inbox[1].contains("n-member"), "成员的写明是谁的：{}", inbox[1]);
         let wakes = rows("SELECT chat||' '||content FROM wake_inbox");
         assert_eq!(wakes.len(), 1, "私聊发回原会话，用户停掉的那轮不唤醒：{wakes:?}");
         assert!(wakes[0].starts_with(&private) && wakes[0].contains("n-private"));
