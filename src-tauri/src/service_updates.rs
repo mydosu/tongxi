@@ -375,7 +375,7 @@ pub(crate) fn check_hermes(repo: &Path) -> Result<(Option<String>, Option<bool>,
     Ok((installed, available, note))
 }
 
-/// 跑成员自己的更新命令（`claude update` 这类）：后台不弹窗、PATH 取最新、输出丢弃，10 分钟兜底。
+/// 跑成员自己的更新命令（`claude update` 这类）：后台不弹窗、PATH 取最新、输出丢弃，30 分钟兜底。
 pub(crate) fn run_self_update(command: &str) -> Result<(), String> {
     let script = format!(
         "$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); {command} *> $null; exit $LASTEXITCODE"
@@ -383,7 +383,8 @@ pub(crate) fn run_self_update(command: &str) -> Result<(), String> {
     run_capture(
         Path::new("powershell.exe"),
         &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script],
-        Duration::from_secs(600),
+        // 只防卡死：hermes update 拉完代码还要装 Node 依赖，实测超过 10 分钟，半路杀掉会留下装了一半的依赖。
+        Duration::from_secs(30 * 60),
     )
     .map(|_| ())
     .map_err(|error| format!("`{command}` 没跑成（{error}），可在终端里手动跑一次看原因"))
