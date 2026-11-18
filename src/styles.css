@@ -614,7 +614,7 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .plan-canvas { position: relative; }
 .plan-canvas svg { position: absolute; inset: 0; overflow: visible; }
 .plan-canvas svg path { fill: none; stroke: #c4c8d4; stroke-width: 1.4; transition: opacity .15s; }
-.plan-canvas svg path.done { stroke: rgb(165 152 216 / .55); }
+.plan-canvas svg path.done { stroke: #c4bce5; }
 .plan-canvas svg path.dim { opacity: .25; }
 .plan-canvas marker path { fill: #b4b9c6; stroke: none; }
 .plan-node, .plan-filter { --tone: var(--muted); }

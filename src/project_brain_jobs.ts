@@ -1,7 +1,7 @@
 import { ld } from './leader';
 import type { BrainJob, BrainOverview, JobUsage, LedgerRow, PlanDoc, PlanStep, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
-import dagre from '@dagrejs/dagre';
+import { layoutPlan } from './plan_layout';
 import { still } from './motion';
 
 type Escape = (value: string | number) => string;
@@ -151,30 +151,23 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
   const folded = filter === 'all' || filter === 'done' || all.every(step => step.status === 'done') ? [] : all.filter(step => step.status === 'done' && !feeds(step));
   const steps = all.filter(step => !folded.includes(step));
   const byId = new Map(steps.map(step => [step.id, step]));
-  // dagre 分层排版：跨列的长边经虚拟节点绕开卡片，逐层扫描减少交叉。
-  const graph = new dagre.graphlib.Graph();
-  graph.setGraph({ rankdir: 'LR', nodesep: NODE.gy, ranksep: NODE.gx, edgesep: 8 });
-  graph.setDefaultEdgeLabel(() => ({}));
-  for (const step of steps) graph.setNode(String(step.id), { width: NODE.w, height: NODE.h });
-  for (const step of steps) for (const id of step.depends) if (byId.has(id)) graph.setEdge(String(id), String(step.id));
-  dagre.layout(graph);
-  const at = new Map(steps.map(step => { const node = graph.node(String(step.id)); return [step.id, [node.x - NODE.w / 2, node.y - NODE.h / 2]] as const; }));
+  // 排版和走线见 plan_layout：列和次序照 dagre，连线只在列间空当里横平竖直地走，各占一条轨道。
+  const layout = layoutPlan(
+    steps.map(step => ({ id: String(step.id), w: NODE.w, h: NODE.h })),
+    steps.flatMap(step => step.depends.filter(id => byId.has(id)).map(id => [String(id), String(step.id)] as [string, string])),
+    { node: NODE.gy, rank: NODE.gx },
+  );
+  const at = new Map(steps.map(step => { const spot = layout.at.get(String(step.id))!; return [step.id, [spot.x, spot.y]] as const; }));
   // 「拖住 N 件」：后面还没做完的步骤，全都要等它。
   const blocked = (id: number, seen = new Set<number>()): Set<number> => {
     for (const next of steps) if (next.depends.includes(id) && next.status !== 'done' && !seen.has(next.id)) { seen.add(next.id); blocked(next.id, seen); }
     return seen;
   };
   const dim = (step: PlanStep) => filter && filter !== 'all' && stepKind(step) !== filter ? ' dim' : '';
-  const width = graph.graph().width!, height = graph.graph().height!;
-  // 连线从上游卡片右边中点出、进下游卡片左边中点，中间照 dagre 给的折点（列间空当）走，每段用水平切线的三次曲线连起来。
+  const { width, height } = layout;
   const edges = steps.flatMap(step => step.depends.filter(id => at.has(id)).map(id => {
-    const [x0, y0] = at.get(id)!, [x1, y1] = at.get(step.id)!;
-    const points = [{ x: x0 + NODE.w, y: y0 + NODE.h / 2 }, ...graph.edge(String(id), String(step.id)).points.slice(1, -1), { x: x1 - 1, y: y1 + NODE.h / 2 }];
-    const d = points.map((q, i) => {
-      if (!i) return `M${q.x} ${q.y}`;
-      const p = points[i - 1], half = (q.x - p.x) / 2;
-      return `C${p.x + half} ${p.y} ${q.x - half} ${q.y} ${q.x} ${q.y}`;
-    }).join(' ');
+    const d = layout.paths.get(`${id}>${step.id}`);
+    if (!d) return '';
     // 通向在做那一步的线流动起来：活正往那儿走。
     return `<path class="${byId.get(id)!.status === 'done' ? 'done' : ''}${stepKind(step) === 'doing' ? ' flow' : ''}${dim(step) && dim(byId.get(id)!)}" data-from="${id}" data-to="${step.id}" d="${d}" marker-end="url(#plan-arrow)"/>`;
   })).join('');
