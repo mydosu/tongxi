@@ -64,7 +64,7 @@ fn workspace_key(agent: &str) -> &'static str {
     }
 }
 
-fn shell() -> &'static str {
+pub(crate) fn shell() -> &'static str {
     let found = |name: &str| {
         std::env::var_os("PATH")
             .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))

@@ -57,7 +57,7 @@ pub fn tool_spec() -> (&'static str, &'static str, Value, Vec<&'static str>) {
     let boolean = json!({"type":"boolean"});
     (
         "hub_schedule",
-        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); you are woken only when its exit code or output differs from the previous run (the first run only records it), so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
+        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); you are woken only when its exit code or output differs from the previous run (the first run only records it; if it exits non-zero you are shown that output once to confirm), so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
         json!({"id":string,"note":string,"at":string,"in_minutes":integer,"every_minutes":integer,"until":string,"check":string,"once":boolean,"member":string,"pause":boolean,"resume":boolean,"remove":boolean}),
         vec![],
     )
@@ -514,6 +514,10 @@ pub(crate) fn fire(store: &Store, watch: &Watch, output: Option<Result<String>>,
             }
             Ok(text) if watch.baseline.is_none() => {
                 set("UPDATE brain_watches SET next_at=?1,baseline=?2,failures=0,last_at=?3,last_result='记下了现状，之后有变化才叫醒',updated_at=?3 WHERE id=?4", &[&next, &text, &at, &id]);
+                // 命令写坏了每次报一样的错，会被当成「没变化」永远不叫醒：第一次退出码不是 0 就给主脑看一眼。
+                if !text.starts_with("exit 0\n") {
+                    inbox(connection, &watch.room, &format!("【待机 {}】check 第一次跑出来退出码不是 0，记成了现状，之后和它不一样才叫醒你：\n```\n{text}\n```\n这正是要盯的现状就不用管；是命令写错了就用 hub_schedule(id=\"{}\", check=…) 改。", short(id), short(id)));
+                }
                 return true;
             }
             Ok(text) if watch.baseline.as_deref() == Some(text.as_str()) => {
@@ -625,7 +629,8 @@ pub fn quiet_hand_back(connection: &Connection, job: &str, watch: &str, hand_bac
 /// 在项目目录跑 check：PowerShell，60 秒，不弹窗。结果是「exit 退出码」加输出（出错时带上错误输出）。
 fn run_check(command: &str, root: &Path) -> Result<String> {
     use std::io::Read;
-    let mut process = std::process::Command::new("powershell.exe");
+    // Windows PowerShell 5.1 调外部程序会吞掉参数里的双引号（gh --jq '… "x" …' 就坏了），有 pwsh 就用 pwsh。
+    let mut process = std::process::Command::new(crate::cli_open::shell());
     process
         // 管道默认按系统代码页输出，中文会乱码，先切成 UTF-8。
         .args(["-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}")])
@@ -790,5 +795,23 @@ mod tests {
     fn check_reports_exit_code_and_chinese_output() {
         let out = run_check("Write-Output '构建通过'; exit 3", &std::env::temp_dir()).unwrap();
         assert_eq!(out, "exit 3\n构建通过");
+        // 外部程序拿到的参数里双引号要还在（5.1 会吞掉，gh --jq 就坏了）。
+        if crate::cli_open::shell() == "pwsh.exe" {
+            let quoted = run_check(r#"pwsh -NoProfile -Command 'Write-Output "a b"'"#, &std::env::temp_dir()).unwrap();
+            assert_eq!(quoted, "exit 0\na b");
+        }
+    }
+
+    #[test]
+    fn broken_first_check_is_shown_to_the_brain_once() {
+        let (base, store, room, chat) = brain_project("坏命令");
+        crate::project_brain::call(&store.connection, &chat, "hub_schedule", json!({"note":"CI 出结果","every_minutes":5,"check":"gh run view 1"})).unwrap();
+        let broken = "exit 1\n\nfunction not defined: completed/0";
+        fire(&store, &only(&store, &room), Some(Ok(broken.into())), now());
+        assert!(inbox(&store, &room).pop().unwrap().contains("function not defined"), "第一次报错要让主脑看到");
+        fire(&store, &only(&store, &room), Some(Ok(broken.into())), now() + 5 * MINUTE);
+        assert_eq!(inbox(&store, &room).len(), 1, "之后一样的输出不再打扰");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
     }
 }
