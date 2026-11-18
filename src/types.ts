@@ -25,6 +25,7 @@ export interface ConversationDetail {
   project_grants?: string;
   spend_cap?: Record<string, number>;
   permission_tier?: 'read' | 'write' | 'full';
+  project_accept?: 'accept' | 'ask' | 'deny';
   project_agent_chats: ProjectAgentChat[];
   project_team_messages: ProjectTeamMessage[];
   chat_questions?: ChatQuestion[];
@@ -75,7 +76,11 @@ export interface UsageSum { turns: number; input: number; cache_read: number; ca
 /** 派活页：主脑席位和会话、还没送进主脑的消息数、全部派活（最新的在前）。 */
 export interface PlanDoc { name: string; brief: boolean; text: string; modified: number; }
 export interface PlanStep { id: number; title: string; status: 'todo' | 'doing' | 'review' | 'waiting' | 'done'; owner: string | null; name: string | null; depends: number[]; note: string | null; wait_key: string | null; job: string | null; }
-export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; plans: PlanDoc[]; steps: PlanStep[]; history: { id: number; archived_at: number; steps: PlanStep[] }[]; usage: { brain_today: UsageSum; brain_total: UsageSum; context: number | null }; ledger: LedgerRow[]; }
+export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; plans: PlanDoc[]; steps: PlanStep[]; history: { id: number; archived_at: number; steps: PlanStep[] }[]; usage: { brain_today: UsageSum; brain_total: UsageSum; context: number | null }; ledger: LedgerRow[]; requests: ProjectRequest[]; watches: BrainWatch[]; }
+/// 和别的项目之间的需求：out 是本项目提给别人的，in 是别人提给本项目的。
+export interface ProjectRequest { id: string; direction: 'in' | 'out'; project: string; status: 'approving' | 'open' | 'done' | 'declined' | 'cancelled'; rounds: number; content: string; last: string | null; created_at: number; updated_at: number; }
+/// 主脑挂的定时提醒、状态监控。
+export interface BrainWatch { id: string; note: string; every_minutes: number | null; next_at: number; until_at: number | null; check_cmd: string | null; member: string | null; member_name: string | null; once: boolean; status: 'active' | 'paused' | 'done'; last_at: number | null; last_result: string | null; fired: number; created_at: number; }
 /// 项目总账一格：某天、某席位、某模型的回合合计；priced 少于 turns 说明有回合价格未知。
 export interface LedgerRow { day: string; name: string; model: string; turns: number; input: number; output: number; cost: number; priced: number; }
 export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }

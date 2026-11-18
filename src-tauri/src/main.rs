@@ -5,6 +5,8 @@ mod quota;
 mod state_events;
 mod project_inquiries;
 mod project_brain;
+mod brain_watch;
+mod project_requests;
 mod prompts;
 mod quota_reset;
 mod cli_open;
@@ -1093,6 +1095,20 @@ fn stop_brain_job(app: tauri::AppHandle, state: State<'_, AppState>, conversatio
     let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
     Ok(())
 }
+/// 用户在派活页停掉一件项目之间的需求（发起方、做事方都能停）。
+#[tauri::command]
+fn cancel_project_request(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, request_id: String) -> Result<(), String> {
+    with_store(&state, |store| project_requests::cancel_by_user(&store.connection, &conversation_id, &request_id))?;
+    let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
+    Ok(())
+}
+/// 用户在派活页对主脑挂的待机：pause / resume / run（现在跑一次）/ remove。
+#[tauri::command]
+fn brain_watch_action(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, watch_id: String, action: String) -> Result<(), String> {
+    with_store(&state, |store| brain_watch::user_action(&store.connection, &conversation_id, &watch_id, &action))?;
+    let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
+    Ok(())
+}
 #[tauri::command]
 fn create_conversation(
     state: State<'_, AppState>,
@@ -1566,6 +1582,8 @@ fn main() {
             brain_overview,
             brain_live_jobs,
             stop_brain_job,
+            cancel_project_request,
+            brain_watch_action,
             update_group_members,
             save_local_message,
             app_info,
@@ -1629,6 +1647,7 @@ fn main() {
             projects::set_project_grants,
             projects::set_project_spend_cap,
             projects::set_project_permission,
+            projects::set_project_accept,
             project_sessions::project_session_bindings,
             project_sessions::bind_project_sessions,
             project_sessions::add_project_seat,

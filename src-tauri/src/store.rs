@@ -233,6 +233,8 @@ pub struct ConversationDetail {
     pub spend_cap: std::collections::BTreeMap<String, f64>,
     /// 项目权限档：read / write / full。
     pub permission_tier: &'static str,
+    /// 别的项目来提需求时：accept / ask / deny。
+    pub project_accept: &'static str,
     pub project_agent_chats: Vec<crate::project_store::ProjectAgentChat>,
     pub project_team_messages: Vec<crate::project_store::TeamMessage>,
     pub chat_questions: Vec<crate::chat_questions::Question>,
@@ -621,6 +623,8 @@ impl Store {
         crate::chat_questions::migrate(&tx)?;
         crate::backgrounds::migrate(&tx)?;
         crate::project_brain::migrate(&tx)?;
+        crate::project_requests::migrate(&tx)?;
+        crate::brain_watch::migrate(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         let mut store = Self {
             connection,
@@ -841,6 +845,7 @@ impl Store {
             project_grants: self.project_grants(id),
             spend_cap: self.spend_cap(id),
             permission_tier: self.permission_tier(id),
+            project_accept: crate::project_requests::accept_mode(&self.connection, id),
             project_agent_chats: self.project_agent_chats(id)?,
             project_team_messages: self.team_messages(id)?,
             chat_questions: self.chat_questions(id)?,

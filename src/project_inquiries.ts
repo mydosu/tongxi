@@ -17,7 +17,7 @@ function openCard(item: Inquiry, escape: Escape, name: (agent: string) => string
     : '不可逆，回答前相关任务暂缓执行';
   const options = item.options.map(option => `<button type="button" class="inquiry-option" data-inquiry-option="${escape(option)}">${escape(option)}</button>`).join('');
   return `<article class="inquiry-card ${item.reversible ? '' : 'held'}" data-inquiry-id="${escape(item.id)}">
-    <header><strong>${escape(item.question)}</strong><small>${escape(item.asked_by === 'coordinator' ? '旧调度' : name(item.asked_by))} · ${escape(ago(item.created_at))}</small></header>
+    <header><strong>${escape(item.question)}</strong><small>${escape(item.asked_by === 'coordinator' ? '旧调度' : item.asked_by === 'hub' ? '同席' : name(item.asked_by))} · ${escape(ago(item.created_at))}</small></header>
     <p class="inquiry-meanwhile">${meanwhile}</p>
     ${item.background ? `<details class="inquiry-background"><summary>提问背景</summary><p>${escape(item.background)}</p></details>` : ''}
     ${options ? `<div class="inquiry-options">${options}</div>` : ''}

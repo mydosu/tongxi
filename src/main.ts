@@ -250,6 +250,34 @@ function brainJobsClick(event: MouseEvent) {
     card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
   } else if ((el = hit('data-stop-job'))) void stopBrainJob(el as HTMLButtonElement);
+  else if ((el = hit('data-watch-action'))) void watchAction(el as HTMLButtonElement);
+  else if ((el = hit('data-cancel-request'))) void cancelRequest(el as HTMLButtonElement);
+}
+/// 删除待机、停掉项目往来也要点两下：主脑挂的东西删了就没了。
+function armed(button: HTMLButtonElement, prompt: string) {
+  if (button.dataset.armed) return true;
+  button.dataset.armed = '1'; button.textContent = prompt; button.classList.add('danger');
+  return false;
+}
+const WATCH_DONE: Record<string, string> = { pause: '已暂停', resume: '已恢复', run: '马上跑一次', remove: '已删除' };
+async function watchAction(button: HTMLButtonElement) {
+  const action = button.dataset.watchAction!;
+  if (action === 'remove' && !armed(button, '确认删除？')) return;
+  button.disabled = true;
+  try {
+    await invoke('brain_watch_action', { conversationId: selectedId, watchId: button.dataset.watchId, action });
+    toast(`${WATCH_DONE[action]}，${ld(0, 1)}会收到说明`);
+  } catch (error) { toast(errorText(error), true); button.disabled = false; }
+  await refreshBrainJobs(selectedId);
+}
+async function cancelRequest(button: HTMLButtonElement) {
+  if (!armed(button, '确认停掉？')) return;
+  button.disabled = true;
+  try {
+    await invoke('cancel_project_request', { conversationId: selectedId, requestId: button.dataset.cancelRequest });
+    toast(`已停掉，两边的${ld(0, 1)}都会收到说明`);
+  } catch (error) { toast(errorText(error), true); button.disabled = false; }
+  await refreshBrainJobs(selectedId);
 }
 async function stopBrainJob(button: HTMLButtonElement) {
   // 点两下才停：成员做到一半的活停了就没了。

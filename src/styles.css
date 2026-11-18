@@ -594,6 +594,15 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-plans { display: grid; gap: 8px; padding: 14px 18px; border: 1px solid rgb(255 255 255 / .9); border-radius: 16px; background: rgb(255 255 255 / .55); }
 .brain-plans h2 { margin: 0; color: var(--ink); font-size: 13.5px; font-weight: 600; }
 .plan-head { display: flex; align-items: center; gap: 10px; }
+.brain-watch { display: grid; gap: 6px; padding: 10px 0 4px; border-top: 1px solid rgb(205 205 228 / .45); }
+.brain-watch-note + .brain-watch, .brain-watches h2 + .brain-watch { border-top: 0; padding-top: 2px; }
+.brain-watch header { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.brain-watch header strong { min-width: 0; overflow: hidden; color: var(--ink); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.brain-watch header small { margin-left: auto; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.brain-watch details summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.brain-watch details summary:hover { color: var(--accent-2); }
+.brain-watch-note { margin: 0; color: var(--faint); font-size: 12px; }
+.brain-watch-label { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .plan-history { min-width: 0; max-width: 260px; height: 28px; padding: 3px 8px; border: 1px solid rgb(205 205 228 / .8); border-radius: 8px; background: rgb(255 255 255 / .85); color: #44506a; font-size: 12px; }
 /* 屏幕外的任务卡片不排版不绘制，几十件活滚起来也不卡。 */
 .brain-jobs-content .brain-job { content-visibility: auto; contain-intrinsic-size: auto 150px; }

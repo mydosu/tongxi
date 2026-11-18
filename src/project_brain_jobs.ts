@@ -1,5 +1,5 @@
 import { ld } from './leader';
-import type { BrainJob, BrainOverview, JobUsage, LedgerRow, PlanDoc, PlanStep, UsageSum } from './types';
+import type { BrainJob, BrainOverview, BrainWatch, JobUsage, LedgerRow, PlanDoc, PlanStep, ProjectRequest, UsageSum } from './types';
 import { agentMarkdown } from './agent_markdown';
 import { layoutPlan } from './plan_layout';
 import { still } from './motion';
@@ -403,6 +403,60 @@ export function bindPlanFlow(root: ParentNode, key: string) {
   viewWatch.observe(flow);
 }
 
+/// 「每 30 分钟」「每小时」「每 2 天」。
+const every = (minutes: number) => {
+  const [count, unit] = minutes % 1440 === 0 ? [minutes / 1440, '天'] : minutes % 60 === 0 ? [minutes / 60, '小时'] : [minutes, '分钟'];
+  return count === 1 && unit !== '分钟' ? `每${unit}` : `每 ${count} ${unit}`;
+};
+
+/// 待机：主脑挂的定时提醒、状态监控。到点叫醒谁、下次什么时候、上次怎样；用户可以暂停、现在跑一次、删掉。
+function watchesSection(watches: BrainWatch[], escape: Escape, open: Set<string>) {
+  if (!watches.length) return '';
+  const rows = watches.map(watch => {
+    const [label, tone] = watch.status === 'active' ? ['待机中', 'running'] : watch.status === 'paused' ? ['已暂停', 'stopped'] : ['已结束', 'done'];
+    const title = watch.note.trim().split('\n')[0].slice(0, 80);
+    const cadence = watch.every_minutes ? watch.check_cmd ? `${every(watch.every_minutes)}看一次有没有变化` : every(watch.every_minutes) : '只一次';
+    const next = watch.status === 'active' ? `下次 ${when(watch.next_at)}` : watch.last_at ? `上次 ${when(watch.last_at)}` : '';
+    const key = `watch|${watch.id}`;
+    const detail = [
+      watch.note.trim() !== title ? `<p class="brain-watch-label">要做的事</p><div class="brain-job-text">${escape(watch.note.trim())}</div>` : '',
+      watch.check_cmd ? `<p class="brain-watch-label">每次跑的命令（输出变了才叫醒）</p><div class="brain-job-text">${escape(watch.check_cmd)}</div>` : '',
+    ].join('');
+    const button = (action: string, text: string, kind = 'secondary') => `<button type="button" class="${kind}" data-watch-action="${action}" data-watch-id="${escape(watch.id)}">${text}</button>`;
+    const actions = watch.status === 'done' ? '' : `${watch.status === 'active' ? button('pause', '暂停') : button('resume', '继续')}${button('run', '现在跑一次')}`;
+    return `<article class="brain-watch">
+      <header><strong>${escape(title)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(next)}</small></header>
+      <p class="brain-job-meta"><span>${escape(cadence)}${watch.until_at ? `，到 ${escape(when(watch.until_at))} 为止` : ''}</span><span>${watch.member_name ? `交给 ${escape(watch.member_name)} 去看` : `到点叫醒${ld(1, 0)}`}</span><span>已触发 ${watch.fired} 次</span>${watch.last_result ? `<span>${watch.last_at ? `${escape(when(watch.last_at))}：` : ''}${escape(watch.last_result)}</span>` : ''}</p>
+      ${detail ? `<details data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>详情</summary>${detail}</details>` : ''}
+      <div class="brain-job-actions">${actions}${button('remove', '删除', 'text-button')}</div>
+    </article>`;
+  }).join('');
+  return `<section class="brain-plans brain-watches"><h2>待机</h2><p class="brain-watch-note">${ld(0, 1)}挂的定时提醒和状态监控：到点由同席叫醒，不用一直开着等。同席关着时不跑，开了以后补一次。</p>${rows}</section>`;
+}
+
+const REQUEST_STATE: Record<ProjectRequest['status'], [string, string]> = { approving: ['等用户点头', 'pending'], open: ['进行中', 'running'], done: ['已交回', 'done'], declined: ['没接', 'failed'], cancelled: ['已撤销', 'stopped'] };
+
+/// 项目往来：本项目请别的项目做的、别的项目请本项目做的。
+function requestsSection(requests: ProjectRequest[], escape: Escape, open: Set<string>) {
+  if (!requests.length) return '';
+  const rows = requests.map(item => {
+    const [label, tone] = REQUEST_STATE[item.status];
+    const live = item.status === 'approving' || item.status === 'open';
+    const who = item.direction === 'out' ? `请「${item.project}」做` : `「${item.project}」请本项目做`;
+    const title = item.content.trim().split('\n')[0].slice(0, 100);
+    const wait = item.status === 'approving' ? (item.direction === 'in' ? '（到协作问答里决定接不接）' : '（等对方的用户决定接不接）') : '';
+    const key = `request|${item.id}`;
+    return `<article class="brain-watch">
+      <header><strong>${escape(who)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(when(item.updated_at))}</small></header>
+      <p class="brain-job-title">${escape(title)}${escape(wait)}</p>
+      <details data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>往来内容</summary><p class="brain-watch-label">需求</p><div class="brain-job-text markdown">${agentMarkdown(item.content.trim(), escape)}</div>${item.last ? `<p class="brain-watch-label">最近一条</p><div class="brain-job-text markdown">${agentMarkdown(item.last.trim(), escape)}</div>` : ''}</details>
+      <p class="brain-job-meta"><span>需求 ${escape(item.id.slice(0, 8))}</span><span>来回 ${item.rounds} 次</span></p>
+      ${live ? `<div class="brain-job-actions"><button type="button" class="secondary" data-cancel-request="${escape(item.id)}">停掉这件</button></div>` : ''}
+    </article>`;
+  }).join('');
+  return `<section class="brain-plans brain-watches"><h2>项目往来</h2>${rows}</section>`;
+}
+
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
 export function brainJobsPage(project: string, overview: BrainOverview | null, brainBusy: boolean, escape: Escape, avatar: (seat: string) => string, open: Set<string>, planFilter: string, planPick: number | null, planShow: number | null) {
   lazy.clear();
@@ -414,5 +468,5 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : ended.length ? '' : `<p class="inquiry-empty">${ld(0, 1)}尚未分配任务。在团队对话中提出需求后，${ld(0, 1)}会将任务分配给成员，已分配的任务列在此处。</p>`;
   const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${folded('ended', open, () => ended.map(job => card(job, escape, avatar, open)).join(''))}</details>` : '';
-  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${usageSection(overview.usage, overview.jobs, open)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
+  return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow)}${watchesSection(overview.watches || [], escape, open)}${requestsSection(overview.requests || [], escape, open)}${usageSection(overview.usage, overview.jobs, open)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

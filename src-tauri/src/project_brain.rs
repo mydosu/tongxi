@@ -19,7 +19,7 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, String>;
 
 /// 没指定主脑成员时按这个顺序挑。
-const BRAIN_PREFERENCE: [&str; 6] = ["claude-win", "codex-win", "hermes-win", "dsh-win", "opencode-win", "antigravity-win"];
+pub(crate) const BRAIN_PREFERENCE: [&str; 6] = ["claude-win", "codex-win", "hermes-win", "dsh-win", "opencode-win", "antigravity-win"];
 const REPORT_LIMIT: usize = 6000;
 /// 派活页里每件活的结果最多带这么多字，全文去成员会话看。
 const RESULT_LIMIT: usize = 8000;
@@ -117,6 +117,7 @@ pub(crate) struct FinishedJob {
     reply: Option<String>,
     run_id: Option<String>,
     resumed: bool,
+    watch: Option<String>,
 }
 
 impl Store {
@@ -126,7 +127,7 @@ impl Store {
         // 用户在成员会话里手动停、或插话（不支持原生插话的先停再发）不算交回：活继续挂着、跟到这个会话最新一轮，
         // 那轮完了再交回；只有主脑或派活页发过停止（kind='stop'）、或主脑已在同一会话派了新活，停下才报给主脑。
         let Ok(mut query) = self.connection.prepare(
-            "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed' FROM
+            "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed',j.watch FROM
              (SELECT b.*, EXISTS(SELECT 1 FROM brain_jobs k WHERE k.chat=b.chat AND k.created_at>=b.created_at AND k.id<>b.id
                 AND (k.kind='stop' OR k.kind='task')) AS ended FROM brain_jobs b
                 WHERE b.status='running' OR b.error LIKE '%自动继续%') j
@@ -153,6 +154,7 @@ impl Store {
                     reply: row.get(7)?,
                     run_id: row.get(8)?,
                     resumed: row.get(9)?,
+                    watch: row.get(10)?,
                 })
             })
             .map(|rows| rows.flatten().collect())
@@ -326,7 +328,7 @@ impl Store {
                         COALESCE(j.effort,(SELECT reasoning_effort FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
                         j.worktree,j.branch,j.status,j.error,r.status,m.content,j.created_at,j.finished_at,r.usage,r.agent_id,r.model
                  FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id
-                 WHERE j.room=?1 AND j.kind='task' ORDER BY j.created_at DESC",
+                 WHERE j.room=?1 AND j.kind='task' AND COALESCE(j.category,'')<>?2 ORDER BY j.created_at DESC",
             )
             .map_err(|_| "任务记录读取失败")?;
         // 主脑自己的模型：成员这件活要是交给主脑做，同样的用量要花多少。
@@ -340,7 +342,7 @@ impl Store {
             .optional()
             .map_err(|_| "主脑模型读取失败")?;
         let jobs = query
-            .query_map([room], |row| {
+            .query_map([room, crate::brain_watch::QUIET_CATEGORY], |row| {
                 let seat: String = row.get(1)?;
                 let status: String = row.get(8)?;
                 // 还在做的活结果不完整，做完了才带上。
@@ -411,7 +413,9 @@ impl Store {
         let steps = load_steps(&self.connection, room);
         let history = plan_history(&self.connection, room);
         let ledger = ledger(&self.connection, room)?;
-        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, history, usage, ledger })
+        let requests = crate::project_requests::rows(&self.connection, room);
+        let watches = crate::brain_watch::list(&self.connection, room);
+        Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, history, usage, ledger, requests, watches })
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -543,6 +547,10 @@ pub struct BrainOverview {
     history: Vec<PlanHistory>,
     usage: UsageStats,
     ledger: Vec<LedgerRow>,
+    /// 和别的项目之间的需求往来。
+    requests: Vec<crate::project_requests::RequestRow>,
+    /// 主脑挂的定时提醒和状态监控。
+    watches: Vec<crate::brain_watch::Watch>,
 }
 
 #[derive(serde::Serialize)]
@@ -866,10 +874,10 @@ pub fn sync_brain_settings(store: &mut Store, room: &str) -> Result<()> {
 
 // ---------- 工具进程这一侧：只有数据库连接 ----------
 
-struct Context {
-    project: String,
-    room: String,
-    seat: String,
+pub(crate) struct Context {
+    pub(crate) project: String,
+    pub(crate) room: String,
+    pub(crate) seat: String,
     root: PathBuf,
     db: PathBuf,
 }
@@ -985,7 +993,7 @@ fn metadata(connection: &Connection, key: &str) -> Option<String> {
         .flatten()
 }
 
-fn label(connection: &Connection, room: &str, seat: &str) -> String {
+pub(crate) fn label(connection: &Connection, room: &str, seat: &str) -> String {
     let base = base_agent(seat);
     let custom: Option<String> = if base == seat {
         connection
@@ -1036,7 +1044,7 @@ pub(crate) fn added_seat_key(room: &str, seat: &str) -> String {
     format!("brain_added_seat:{room}:{seat}")
 }
 
-fn find_member(connection: &Connection, ctx: &Context, member: &str) -> Result<(String, String)> {
+pub(crate) fn find_member(connection: &Connection, ctx: &Context, member: &str) -> Result<(String, String)> {
     let member = member.trim();
     team(connection, ctx)?
         .into_iter()
@@ -1060,7 +1068,7 @@ fn tier_note(tier: &str) -> &'static str {
     }
 }
 
-fn tier(connection: &Connection, room: &str) -> &'static str {
+pub(crate) fn tier(connection: &Connection, room: &str) -> &'static str {
     let saved = metadata(connection, &format!("permission:{room}"));
     TIERS.into_iter().find(|tier| saved.as_deref() == Some(*tier)).unwrap_or("full")
 }
@@ -1191,7 +1199,7 @@ fn busy(connection: &Connection, seat: &str, chat: &str) -> Option<String> {
         .map(|_| "（成员正在回复别的消息）".into())
 }
 
-fn short(id: &str) -> &str {
+pub(crate) fn short(id: &str) -> &str {
     &id[..8.min(id.len())]
 }
 
@@ -1218,7 +1226,7 @@ fn insert_job(connection: &Connection, ctx: &Context, seat: &str, chat: &str, ki
     Ok(id)
 }
 
-fn text_arg(args: &Value, name: &str, max: usize) -> Result<String> {
+pub(crate) fn text_arg(args: &Value, name: &str, max: usize) -> Result<String> {
     let text = args[name].as_str().unwrap_or("").trim().to_owned();
     if text.is_empty() || text.chars().count() > max {
         return Err(format!("{name} 需为 1–{max} 个字"));
@@ -1226,7 +1234,7 @@ fn text_arg(args: &Value, name: &str, max: usize) -> Result<String> {
     Ok(text)
 }
 
-fn optional_arg(args: &Value, name: &str) -> Option<String> {
+pub(crate) fn optional_arg(args: &Value, name: &str) -> Option<String> {
     args[name].as_str().map(str::trim).filter(|text| !text.is_empty()).map(String::from)
 }
 
@@ -1260,7 +1268,7 @@ fn session_state(connection: &Connection, seat: &str, chat: &str) -> (Option<i64
 pub fn tool_specs() -> Vec<Value> {
     let string = json!({"type":"string"});
     let definitions = [
-        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Each member also has context (tokens in its current session after its last turn; 0 = fresh, null = unknown) and idle_minutes (since its last job came back). Check this before delegating.", json!({}), vec![]),
+        ("hub_team", "List the members you can delegate to (seat id, name, base agent, busy or idle, current model), the models each base agent can use with their effort levels, current subscription quota (shared by all projects), and other_projects: which base agents (members, not your seats) other projects' brains have working right now, sharing the same quota, and track_record: over the last 30 days, per base agent × model × effort × category, how many delegated jobs were done, failed, failed on quota, stopped, and the average minutes of done ones. Each member also has context (tokens in its current session after its last turn; 0 = fresh, null = unknown) and idle_minutes (since its last job came back). projects: the other project groups you can ask with hub_ask_project (accepts: accept / ask = its user approves first / deny); requests: open cross-project requests in (asked of this project) and out (this project asked). Check this before delegating.", json!({}), vec![]),
         ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it. fresh=true starts the member in a new session (it forgets earlier jobs; write all the background it needs into task); default continues its current session. step: the hub_plan step this job does; the step turns doing with this member as owner, turns review when the job comes back, and the task gets the step and its upstream steps' notes prepended.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string,"fresh":{"type":"boolean"},"step":{"type":"integer"}}), vec!["member","task"]),
         ("hub_plan", "The project plan the user sees as a flow chart on the delegation page: numbered steps with dependencies. steps upserts by id (only the fields given change): title (short), status (todo / doing / review / waiting / done), owner (member seat, 主脑, or 你: a waiting step owned by 你 shows as waiting on the user, e.g. hands-on testing only the user can do), depends (ids of steps that must finish first), note (one line: the conclusion and commit when done, or what it waits for when waiting). remove deletes steps by id; clear=true starts a new plan. Delegating or asking the user with step moves status by itself; you mark review steps done (or back to todo) after checking. Call with no arguments to read the plan. Returns the whole plan.", json!({"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":string,"status":{"type":"string","enum":STEP_STATES},"owner":string,"depends":{"type":"array","items":{"type":"integer"}},"note":string},"required":["id"],"additionalProperties":false}},"remove":{"type":"array","items":{"type":"integer"}},"clear":{"type":"boolean"}}), vec![]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
@@ -1276,6 +1284,8 @@ pub fn tool_specs() -> Vec<Value> {
     ];
     let mut specs: Vec<Value> = definitions
         .into_iter()
+        .chain(crate::project_requests::tool_specs())
+        .chain([crate::brain_watch::tool_spec()])
         .map(|(name, description, properties, required)| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}))
         .collect();
     specs.extend(
@@ -1324,7 +1334,8 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota"),"other_projects":elsewhere,"track_record":track_record(connection)}))
+            let (projects, requests) = crate::project_requests::team_view(connection, &ctx.room);
+            Ok(json!({"members":members,"models":parse("brain_models"),"quota":parse("brain_quota"),"other_projects":elsewhere,"track_record":track_record(connection),"projects":projects,"requests":requests}))
         }
         "hub_delegate" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
@@ -1535,6 +1546,8 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
             team_message(connection, &ctx.project, &ctx.room, Some(&ctx.seat), &content)?;
             Ok(json!({"sent":true}))
         }
+        "hub_ask_project" | "hub_reply_project" => crate::project_requests::call(connection, &ctx, name, &args),
+        "hub_schedule" => crate::brain_watch::call(connection, &ctx, &args),
         name if name.starts_with("hub_memory_") => crate::project_memory::call(&ctx.project, &ctx.root, base_agent(&ctx.seat), name, args),
         _ => Err("主脑不支持这个工具".into()),
     }
@@ -1551,7 +1564,7 @@ fn unplanned_hint(connection: &Connection, room: &str) -> String {
     format!("。这件活没挂在计划上（计划里还有 {open} 步没做完），用户看的流程图不会动：它属于哪一步就用 hub_plan 改那一步的状态，计划外的新事就加一步")
 }
 
-fn team_message(connection: &Connection, project: &str, room: &str, sender: Option<&str>, content: &str) -> Result<()> {
+pub(crate) fn team_message(connection: &Connection, project: &str, room: &str, sender: Option<&str>, content: &str) -> Result<()> {
     connection
         .execute(
             "INSERT INTO project_team_messages(id,project_id,conversation_id,sender_agent,message_kind,content,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -1766,6 +1779,7 @@ struct Pending {
     effort: Option<String>,
     worktree: Option<String>,
     branch: Option<String>,
+    watch: Option<String>,
 }
 
 impl Courier {
@@ -1778,6 +1792,7 @@ impl Courier {
         claude: Arc<crate::claude::Runtime>,
         opencode: Arc<crate::hermes::Runtime>,
     ) -> Arc<Self> {
+        crate::brain_watch::start(app.clone(), store.clone());
         let courier = Arc::new(Self { app, store, codex, hermes, dsh, claude, opencode });
         let watcher = courier.clone();
         let handle = courier.clone();
@@ -2017,7 +2032,8 @@ impl Courier {
             }
         }
         self.wake_chats();
-        for room in self.collect_finished().into_iter().chain(self.collect_answers()).chain(self.deliver()) {
+        let approvals = crate::project_requests::collect_approvals(&self.store.lock().unwrap().connection);
+        for room in approvals.into_iter().chain(self.collect_finished()).chain(self.collect_answers()).chain(self.deliver()) {
             if !rooms.contains(&room) {
                 rooms.push(room);
             }
@@ -2028,7 +2044,7 @@ impl Courier {
     fn pending(&self) -> Vec<Pending> {
         let store = self.store.lock().unwrap();
         let Ok(mut query) = store.connection.prepare(
-            "SELECT id,room,seat,chat,kind,content,model,effort,worktree,branch FROM brain_jobs WHERE status='pending' ORDER BY created_at",
+            "SELECT id,room,seat,chat,kind,content,model,effort,worktree,branch,watch FROM brain_jobs WHERE status='pending' ORDER BY created_at",
         ) else {
             return Vec::new();
         };
@@ -2045,6 +2061,7 @@ impl Courier {
                     effort: row.get(7)?,
                     worktree: row.get(8)?,
                     branch: row.get(9)?,
+                    watch: row.get(10)?,
                 })
             })
             .map(|rows| rows.flatten().collect())
@@ -2127,8 +2144,11 @@ impl Courier {
                         if let Some((last, _)) = notes.last() {
                             self.execute("DELETE FROM member_notes WHERE chat=?1 AND id<=?2", params![job.chat, last]);
                         }
-                        let first: String = job.content.lines().next().unwrap_or("").chars().take(80).collect();
-                        self.post(&job.room, &format!("主脑 → {}：{first}", self.name(&job.room, &job.seat)));
+                        // 待机到点的例行查看不刷群，有新情况交回时才出现。
+                        if job.watch.is_none() {
+                            let first: String = job.content.lines().next().unwrap_or("").chars().take(80).collect();
+                            self.post(&job.room, &format!("主脑 → {}：{first}", self.name(&job.room, &job.seat)));
+                        }
                     }
                     Err(error) if error.contains("正在处理") => return false,
                     Err(error) => self.fail(job, &error),
@@ -2142,8 +2162,17 @@ impl Courier {
     fn collect_finished(&self) -> Vec<String> {
         let rows = self.store.lock().unwrap().finished_brain_jobs();
         let mut rooms = Vec::new();
-        for FinishedJob { id, room, seat, worktree, branch, status, error, reply, run_id, resumed } in rows {
+        for FinishedJob { id, room, seat, worktree, branch, status, error, reply, run_id, resumed, watch } in rows {
             let status = status.unwrap_or_else(|| "failed".into());
+            // 待机派的例行查看，成员说没新情况就不叫醒主脑，只记在待机上。
+            if let Some(watch) = watch.as_deref().filter(|_| status == "completed") {
+                let quiet = crate::brain_watch::quiet_hand_back(&self.store.lock().unwrap().connection, &id, watch, reply.as_deref().unwrap_or(""));
+                if quiet {
+                    self.execute("UPDATE brain_jobs SET status='done',finished_at=?1,run_id=COALESCE(?2,run_id) WHERE id=?3", params![now(), run_id, id]);
+                    rooms.push(room);
+                    continue;
+                }
+            }
             let state = match status.as_str() {
                 "completed" if resumed => "额度恢复后接着做完了".to_owned(),
                 "completed" => "做完了".to_owned(),

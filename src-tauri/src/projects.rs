@@ -85,6 +85,17 @@ pub fn set_project_permission(state: State<'_, AppState>, conversation_id: Strin
     store.detail(&conversation_id)
 }
 
+/// 别的项目的主脑来提需求时怎么办：accept 直接接、ask 先问我、deny 不接。
+#[tauri::command]
+pub fn set_project_accept(state: State<'_, AppState>, conversation_id: String, mode: String) -> Result<ConversationDetail> {
+    let store = locked(&state)?;
+    if store.conversation_project(&conversation_id)?.is_none() {
+        return Err("请先绑定项目".into());
+    }
+    crate::project_requests::set_accept_mode(&store.connection, &conversation_id, &mode)?;
+    store.detail(&conversation_id)
+}
+
 /// 项目里各成员每天的花费上限（成员 → 美元），没列的成员不限。
 #[tauri::command]
 pub fn set_project_spend_cap(state: State<'_, AppState>, conversation_id: String, caps: std::collections::BTreeMap<String, f64>) -> Result<ConversationDetail> {
