@@ -878,7 +878,7 @@ pub(crate) struct Context {
     pub(crate) project: String,
     pub(crate) room: String,
     pub(crate) seat: String,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     db: PathBuf,
 }
 

@@ -57,7 +57,7 @@ pub fn tool_spec() -> (&'static str, &'static str, Value, Vec<&'static str>) {
     let boolean = json!({"type":"boolean"});
     (
         "hub_schedule",
-        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); you are woken only when its exit code or output differs from the previous run (the first run only records it; if it exits non-zero you are shown that output once to confirm), so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
+        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); it runs once right away and this call returns what it printed (check_now) as the baseline, so make sure that shows what you mean to watch, not an error or nothing; after that you are woken only when its exit code or output differs from the previous run, so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
         json!({"id":string,"note":string,"at":string,"in_minutes":integer,"every_minutes":integer,"until":string,"check":string,"once":boolean,"member":string,"pause":boolean,"resume":boolean,"remove":boolean}),
         vec![],
     )
@@ -294,19 +294,39 @@ fn create(connection: &Connection, ctx: &Context, args: &Value) -> Result<Value>
         member,
     };
     validate(connection, ctx, &plan)?;
+    let (baseline, check_now) = plan.check.as_deref().map(|command| first_run(command, &ctx.root)).unzip();
+    let baseline = baseline.flatten();
+    let mut next_at = plan.next_at;
+    if baseline.is_some() && next_at <= now() {
+        next_at = now() + plan.every.unwrap_or(0) * MINUTE;
+    }
     let id = Uuid::new_v4().to_string();
     connection
         .execute(
-            "INSERT INTO brain_watches(id,room,note,every_minutes,next_at,until_at,check_cmd,member,once,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?10)",
-            params![id, ctx.room, plan.note, plan.every, plan.next_at, plan.until_at, plan.check, plan.member, plan.once, now()],
+            "INSERT INTO brain_watches(id,room,note,every_minutes,next_at,until_at,check_cmd,member,once,status,baseline,last_at,last_result,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?12,?13,?11,?11)",
+            params![id, ctx.room, plan.note, plan.every, next_at, plan.until_at, plan.check, plan.member, plan.once, baseline, now(), baseline.as_ref().map(|_| now()), baseline.as_ref().map(|_| "记下了现状，之后有变化才叫醒")],
         )
         .map_err(|_| "待机保存失败")?;
-    post(connection, &ctx.room, &format!("主脑挂了待机（{}）：{}", cadence(connection, plan.every, plan.next_at, plan.check.is_some()), brief(&plan.note)));
+    post(connection, &ctx.room, &format!("主脑挂了待机（{}）：{}", cadence(connection, plan.every, next_at, plan.check.is_some()), brief(&plan.note)));
     Ok(json!({
         "id": short(&id),
-        "next": local(connection, plan.next_at),
-        "note": if plan.check.is_some() { "到点在项目目录跑 check，第一次只记下现状，之后输出变了才叫你；不用等也不用查" } else { "到点会作为新消息发给你；不用等也不用查" },
+        "next": local(connection, next_at),
+        "check_now": check_now,
+        "note": if plan.check.is_some() { "到点在项目目录跑 check，和 check_now 里记下的现状不一样才叫你；不用等也不用查" } else { "到点会作为新消息发给你；不用等也不用查" },
     }))
+}
+
+/// 挂上或改了 check 时当场跑一次记成现状，结果当场回给主脑：命令写错了（没输出、报错、没对上）每次都一样，会被当成「没变化」永远不叫醒。
+fn first_run(command: &str, root: &Path) -> (Option<String>, String) {
+    match run_check(command, root) {
+        Ok(text) => {
+            let empty = text.lines().skip(1).all(|line| line.trim().is_empty());
+            let hint = if empty { "没有任何输出，之后只有退出码变了才会叫醒你；多半是命令没对上。" } else { "" };
+            let seen = format!("check 现在跑出来是：\n```\n{text}\n```\n{hint}这就是记下的现状，之后和它不一样才叫醒你。不是你要盯的东西就马上用 id 改 check。");
+            (Some(text), seen)
+        }
+        Err(error) => (None, format!("check 现在跑不成：{error}。到点会再跑，连续 {CHECK_FAILURES} 次跑不成就暂停；命令写错了就马上用 id 改。")),
+    }
 }
 
 fn update(connection: &Connection, ctx: &Context, watch: Watch, args: &Value) -> Result<Value> {
@@ -364,15 +384,24 @@ fn update(connection: &Connection, ctx: &Context, watch: Watch, args: &Value) ->
         return Err("这个待机已经结束了；要接着用就 resume=true 并给新的时间".into());
     }
     validate(connection, ctx, &plan)?;
-    let baseline = if plan.check == watch.check_cmd { watch.baseline.clone() } else { None };
+    let (baseline, check_now) = match &plan.check {
+        Some(command) if plan.check != watch.check_cmd => {
+            let (baseline, seen) = first_run(command, &ctx.root);
+            (baseline, Some(seen))
+        }
+        _ => (watch.baseline.clone().filter(|_| plan.check.is_some()), None),
+    };
     connection
         .execute(
             "UPDATE brain_watches SET note=?1,every_minutes=?2,next_at=?3,until_at=?4,check_cmd=?5,member=?6,once=?7,status=?8,baseline=?9,failures=0,updated_at=?10 WHERE id=?11",
             params![plan.note, plan.every, plan.next_at, plan.until_at, plan.check, plan.member, plan.once, status, baseline, now(), watch.id],
         )
         .map_err(|_| "待机保存失败")?;
-    let updated = load(connection, &ctx.room, &watch.id)?;
-    Ok(describe(connection, &updated))
+    let mut updated = describe(connection, &load(connection, &ctx.room, &watch.id)?);
+    if let Some(seen) = check_now {
+        updated["check_now"] = seen.into();
+    }
+    Ok(updated)
 }
 
 /// 用户在派活页点的：暂停、继续、现在跑一次、删除。
@@ -514,10 +543,8 @@ pub(crate) fn fire(store: &Store, watch: &Watch, output: Option<Result<String>>,
             }
             Ok(text) if watch.baseline.is_none() => {
                 set("UPDATE brain_watches SET next_at=?1,baseline=?2,failures=0,last_at=?3,last_result='记下了现状，之后有变化才叫醒',updated_at=?3 WHERE id=?4", &[&next, &text, &at, &id]);
-                // 命令写坏了每次报一样的错，会被当成「没变化」永远不叫醒：第一次退出码不是 0 就给主脑看一眼。
-                if !text.starts_with("exit 0\n") {
-                    inbox(connection, &watch.room, &format!("【待机 {}】check 第一次跑出来退出码不是 0，记成了现状，之后和它不一样才叫醒你：\n```\n{text}\n```\n这正是要盯的现状就不用管；是命令写错了就用 hub_schedule(id=\"{}\", check=…) 改。", short(id), short(id)));
-                }
+                // 挂上时当场没跑成，主脑还没见过它的输出：补给它看一眼，命令写错了别一直当成「没变化」。
+                inbox(connection, &watch.room, &format!("【待机 {}】check 这回才跑成，记成了现状，之后和它不一样才叫醒你：\n```\n{text}\n```\n这正是要盯的现状就不用管；是命令写错了就用 hub_schedule(id=\"{}\", check=…) 改。", short(id), short(id)));
                 return true;
             }
             Ok(text) if watch.baseline.as_deref() == Some(text.as_str()) => {
@@ -704,15 +731,13 @@ mod tests {
         let call = |args: Value| crate::project_brain::call(&store.connection, &chat, "hub_schedule", args);
         assert!(call(json!({"note":"看看","every_minutes":10})).unwrap_err().contains("30"), "纯定时不能太密");
         assert!(call(json!({"note":"看看","check":"git status"})).unwrap_err().contains("every_minutes"));
-        call(json!({"note":"CI 挂了就修","every_minutes":5,"check":"gh run list -L 1"})).unwrap();
-        let watch = only(&store, &room);
-        assert!(watch.next_at <= now(), "带 check 的马上跑一次记现状");
-
-        let at = now();
-        fire(&store, &watch, Some(Ok("exit 0\n通过".into())), at);
-        assert!(inbox(&store, &room).is_empty(), "第一次只记现状");
+        let made = call(json!({"note":"CI 挂了就修","every_minutes":5,"check":"Write-Output 通过"})).unwrap();
+        assert!(made["check_now"].as_str().unwrap().contains("exit 0\n通过"), "挂上就当场跑一次、输出回给主脑：{made}");
         let watch = only(&store, &room);
         assert_eq!(watch.baseline.as_deref(), Some("exit 0\n通过"));
+        assert!(watch.next_at > now(), "当场跑过了，下一次隔一个周期");
+
+        let at = now();
         fire(&store, &watch, Some(Ok("exit 0\n通过".into())), at + 5 * MINUTE);
         assert!(inbox(&store, &room).is_empty(), "没变化不叫醒");
         // 额度快见底：推迟，不记新现状，下次照样能看到变化。
@@ -803,13 +828,23 @@ mod tests {
     }
 
     #[test]
-    fn broken_first_check_is_shown_to_the_brain_once() {
+    fn broken_check_is_shown_to_the_brain_right_away() {
         let (base, store, room, chat) = brain_project("坏命令");
-        crate::project_brain::call(&store.connection, &chat, "hub_schedule", json!({"note":"CI 出结果","every_minutes":5,"check":"gh run view 1"})).unwrap();
-        let broken = "exit 1\n\nfunction not defined: completed/0";
-        fire(&store, &only(&store, &room), Some(Ok(broken.into())), now());
-        assert!(inbox(&store, &room).pop().unwrap().contains("function not defined"), "第一次报错要让主脑看到");
-        fire(&store, &only(&store, &room), Some(Ok(broken.into())), now() + 5 * MINUTE);
+        let call = |args: Value| crate::project_brain::call(&store.connection, &chat, "hub_schedule", args);
+        // gh run list --commit 写短 SHA 就是这样：什么都不打印、退出码 0，每次都一样，主脑永远等不到变化。
+        let made = call(json!({"note":"CI 出结果","every_minutes":5,"check":"exit 0"})).unwrap();
+        assert!(made["check_now"].as_str().unwrap().contains("没有任何输出"), "{made}");
+        // 改了 check 当场重跑、换现状。
+        let fixed = call(json!({"id":made["id"],"check":"Write-Output 'in_progress'; exit 1"})).unwrap();
+        assert!(fixed["check_now"].as_str().unwrap().contains("exit 1\nin_progress"), "{fixed}");
+        assert_eq!(only(&store, &room).baseline.as_deref(), Some("exit 1\nin_progress"));
+        assert!(call(json!({"id":made["id"],"note":"CI 出结果了"})).unwrap()["check_now"].is_null(), "check 没改不重跑");
+        assert!(inbox(&store, &room).is_empty());
+        // 当场没跑成的：之后第一次跑成时补给主脑看一眼，再一样就不打扰。
+        store.connection.execute("UPDATE brain_watches SET baseline=NULL", []).unwrap();
+        fire(&store, &only(&store, &room), Some(Ok("exit 0\n".into())), now());
+        assert!(inbox(&store, &room).pop().unwrap().contains("这回才跑成"));
+        fire(&store, &only(&store, &room), Some(Ok("exit 0\n".into())), now() + 5 * MINUTE);
         assert_eq!(inbox(&store, &room).len(), 1, "之后一样的输出不再打扰");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
