@@ -125,7 +125,8 @@ impl Store {
     /// 那一回合跑完也算这件活的交回；成员会话之后又被派了新活就不认。
     pub(crate) fn finished_brain_jobs(&self) -> Vec<FinishedJob> {
         // 用户在成员会话里手动停、或插话（不支持原生插话的先停再发）不算交回：活继续挂着、跟到这个会话最新一轮，
-        // 那轮完了再交回；只有主脑或派活页发过停止（kind='stop'）、或主脑已在同一会话派了新活，停下才报给主脑。
+        // 那轮完了再交回；只有派活页发过停止（kind='stop'）、或主脑已在同一会话派了新活，停下才报给主脑。
+        // 主脑自己 hub_stop_member 的活在工具里当场收尾，不走到这里。
         let Ok(mut query) = self.connection.prepare(
             "SELECT j.id,j.room,j.seat,j.worktree,j.branch,r.status,r.error,m.content,r.id,j.status='failed',j.watch FROM
              (SELECT b.*, EXISTS(SELECT 1 FROM brain_jobs k WHERE k.chat=b.chat AND k.created_at>=b.created_at AND k.id<>b.id
@@ -1272,8 +1273,8 @@ pub fn tool_specs() -> Vec<Value> {
         ("hub_delegate", "Hand a task to a member. Returns immediately with a job id; the member works in its own session and its result arrives later as a new message to you. Write the task concretely: goal, where to change, what counts as done, what to hand back. model/effort are optional (default: the member session's current setting). worktree=true gives the member its own git worktree and branch from the current HEAD; use it for code changes, not for read-only, test or deploy work. category: a short label of the kind of work (e.g. 实现, 排查, 测试构建, 审查, 文档, 部署); keep using the same labels, track_record in hub_team is grouped by it. fresh=true starts the member in a new session (it forgets earlier jobs; write all the background it needs into task); default continues its current session. step: the hub_plan step this job does; the step turns doing with this member as owner, turns review when the job comes back, and the task gets the step and its upstream steps' notes prepended.", json!({"member":string,"task":string,"model":string,"effort":string,"worktree":{"type":"boolean"},"category":string,"fresh":{"type":"boolean"},"step":{"type":"integer"}}), vec!["member","task"]),
         ("hub_plan", "The project plan the user sees as a flow chart on the delegation page: numbered steps with dependencies. steps upserts by id (only the fields given change): title (short), status (todo / doing / review / waiting / done), owner (member seat, 主脑, or 你: a waiting step owned by 你 shows as waiting on the user, e.g. hands-on testing only the user can do), depends (ids of steps that must finish first), note (one line: the conclusion and commit when done, or what it waits for when waiting). remove deletes steps by id; clear=true starts a new plan. Delegating or asking the user with step moves status by itself; you mark review steps done (or back to todo) after checking. Call with no arguments to read the plan. Returns the whole plan.", json!({"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":string,"status":{"type":"string","enum":STEP_STATES},"owner":string,"depends":{"type":"array","items":{"type":"integer"}},"note":string},"required":["id"],"additionalProperties":false}},"remove":{"type":"array","items":{"type":"integer"}},"clear":{"type":"boolean"}}), vec![]),
         ("hub_member", "Look at one member: whether it is busy, its recent jobs and the tail of its last reply.", json!({"member":string}), vec!["member"]),
-        ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Only works while the member is replying; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
-        ("hub_stop_member", "Stop a member's reply in progress.", json!({"member":string}), vec!["member"]),
+        ("hub_tell_member", "Interject into a member's reply that is in progress (to correct course or add information). Works for every member: those without native interjection are stopped and get this as a new message in the same session (cache stays warm); the task keeps going and is handed back when done. Only while the member is working on your task; to continue with an idle member, use hub_delegate again (same session, it remembers what it did).", json!({"member":string,"content":string}), vec!["member","content"]),
+        ("hub_stop_member", "Stop a member's reply in progress and close its task (no hand-back follows). Returns once it has stopped, so you can hub_delegate a new task right away.", json!({"member":string}), vec!["member"]),
         ("hub_finish_worktree", "Close out a finished job that had a worktree: action=merge merges its branch into the project's current branch and removes the worktree; action=discard throws the work away. On merge conflicts the merge is left in the project directory for you to resolve.", json!({"job":string,"action":{"type":"string","enum":["merge","discard"]}}), vec!["job","action"]),
         ("hub_ask_user", "Put a question on the user's Q&A panel (does not wait). Only for what to build, or unauthorized outward actions that can't be undone; decide everything else yourself. key identifies the matter (same key = same question). For reversible matters, give default and go ahead with it meanwhile; for irreversible ones set reversible=false and work on something else. The answer arrives later as a new message. step: the hub_plan step that can't go on until the user answers; it shows as waiting on the user and turns back to todo when answered.", json!({"key":string,"question":string,"background":string,"options":{"type":"array","items":string},"default":string,"reversible":{"type":"boolean"},"step":{"type":"integer"}}), vec!["question"]),
         ("hub_withdraw_question", "Take back a question you put on the Q&A panel that is still unanswered (it no longer matters, or you found the answer yourself). key: the question's key. A plan step waiting on it turns back to todo.", json!({"key":string}), vec!["key"]),
@@ -1446,8 +1447,39 @@ pub fn call(connection: &Connection, conversation_id: &str, name: &str, args: Va
         }
         "hub_stop_member" => {
             let (seat, chat) = find_member(connection, &ctx, args["member"].as_str().unwrap_or(""))?;
-            insert_job(connection, &ctx, &seat, &chat, "stop", "", (None, None, None, None))?;
-            Ok(json!({"queued":true}))
+            let live = || {
+                connection
+                    .query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND status IN ('starting','running','cancelling'))", [&chat], |row| row.get::<_, bool>(0))
+                    .unwrap_or(false)
+            };
+            if live() {
+                insert_job(connection, &ctx, &seat, &chat, "stop", "", (None, None, None, None))?;
+            }
+            // 主脑自己叫停的不再交回（它知道是自己停的）：活当场收尾、计划步退回待做，席位腾出来。
+            let job: Option<String> = connection
+                .query_row("SELECT id FROM brain_jobs WHERE seat=?1 AND chat=?2 AND kind='task' AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1", params![seat, chat], |row| row.get(0))
+                .optional()
+                .map_err(|_| "成员任务读取失败")?;
+            if let Some(id) = &job {
+                connection
+                    .execute(
+                        "UPDATE brain_jobs SET status='failed',error='主脑叫停',finished_at=?1,
+                         run_id=COALESCE((SELECT id FROM runs WHERE conversation_id=?2 ORDER BY rowid DESC LIMIT 1),run_id) WHERE id=?3",
+                        params![now(), chat, id],
+                    )
+                    .map_err(|_| "任务保存失败")?;
+                connection
+                    .execute("UPDATE brain_steps SET status='todo',updated_at=?1 WHERE job=?2 AND status='doing'", params![now(), id])
+                    .map_err(|_| "计划保存失败")?;
+            }
+            // 等它停稳再返回，紧接着 hub_delegate 重新交代不会被「正在回复」挡回去。
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while live() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            let stopped = !live();
+            let note = if stopped { "停下了，不会再另行交回；要看它停在哪用 hub_member，要接着做就 hub_delegate 重新交代" } else { "还没停稳，过一会再派" };
+            Ok(json!({"stopped":stopped,"job":job.as_deref().map(short),"note":note}))
         }
         "hub_finish_worktree" => {
             let arg: FinishArg = serde_json::from_value(args).map_err(|_| "参数无效：要 job 和 action（merge / discard）")?;
@@ -1896,7 +1928,7 @@ impl Courier {
         match agent {
             "codex-win" => self.codex.steer(chat, content, &message),
             "claude-win" => self.claude.steer(chat, content, &message),
-            _ => return Err("这位成员不支持回复中插话，可以先 hub_stop_member 再重新派活".into()),
+            _ => return Err("这位成员不支持回复中插话".into()),
         }?;
         self.store.lock().unwrap().save_delivered_message_from(chat, &message, content, sender)?;
         Ok(())
@@ -2068,10 +2100,52 @@ impl Courier {
             .unwrap_or_default()
     }
 
+    /// 不支持回复中插话的成员：先停下这一轮，停稳后在同一会话把插话作为新消息发（会话没换，缓存还热）。
+    /// 停下的那轮不算交回，原来的活跟到新那轮做完再交回（见 finished_brain_jobs）。还在停就返回 false 等下一轮。
+    fn interject_by_restart(&self, job: &Pending, agent: &str) -> bool {
+        let working: bool = self
+            .store
+            .lock()
+            .unwrap()
+            .connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM brain_jobs WHERE chat=?1 AND kind='task' AND status='running')", [&job.chat], |row| row.get(0))
+            .unwrap_or(false);
+        if !working {
+            self.fail(job, "成员手上没有你派的活；要它接着做就用 hub_delegate 再交代一次（同一个会话，它记得做过什么）");
+            return true;
+        }
+        let status = self.snapshot(agent).and_then(|snapshot| {
+            snapshot
+                .runs
+                .into_iter()
+                .find(|run| run.record.conversation_id == job.chat && matches!(run.record.status.as_str(), "starting" | "running" | "cancelling"))
+                .map(|run| run.record.status)
+        });
+        match status.as_deref() {
+            Some("cancelling") => return false,
+            Some(_) => {
+                if let Err(error) = self.cancel(agent, &job.chat) {
+                    self.fail(job, &error);
+                    return true;
+                }
+                return false;
+            }
+            None => {}
+        }
+        let content = format!("【主脑插话】{}\n\n（你不支持回复中插话，同席先停下了你刚才那一轮；看完接着做原来的活，做完照常交回。）", job.content);
+        match self.send(agent, &job.chat, &content, &self.brain(&job.room)) {
+            Ok(_) => self.execute("UPDATE brain_jobs SET status='done',finished_at=?1 WHERE id=?2", params![now(), job.id]),
+            Err(error) if error.contains("正在处理") => return false,
+            Err(error) => self.fail(job, &error),
+        }
+        true
+    }
+
     /// 处理一条待发的活；还要等（成员没连上、正在回复别的）就返回 false 留到下一轮。
     fn start_job(&self, job: &Pending) -> bool {
         let agent = base_agent(&job.seat).to_owned();
         match job.kind.as_str() {
+            "steer" if !matches!(agent.as_str(), "codex-win" | "claude-win") => self.interject_by_restart(job, &agent),
             "steer" => {
                 if !self.live(&agent, &job.chat) {
                     self.fail(job, "成员现在没在回复；要它接着做就用 hub_delegate 再交代一次（同一个会话，它记得做过什么）");
@@ -2083,7 +2157,10 @@ impl Courier {
                 true
             }
             "stop" => {
-                if let Err(error) = self.cancel(&agent, &job.chat) {
+                // 发停止前它已经自己回完了，就没什么可停的。
+                if !self.live(&agent, &job.chat) {
+                    self.execute("UPDATE brain_jobs SET status='done',finished_at=?1 WHERE id=?2", params![now(), job.id]);
+                } else if let Err(error) = self.cancel(&agent, &job.chat) {
                     self.fail(job, &error);
                 } else {
                     self.execute("UPDATE brain_jobs SET status='done',finished_at=?1 WHERE id=?2", params![now(), job.id]);
@@ -2854,7 +2931,40 @@ B6 做完了"));
             .execute("INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('stop-1',?1,'codex-win',?2,'stop','','done',?3)", params![room, chat, now() + 1])
             .unwrap();
         let jobs = store.finished_brain_jobs();
-        assert_eq!((jobs.len(), jobs[0].status.as_deref()), (1, Some("interrupted")), "主脑或派活页停的照样报");
+        assert_eq!((jobs.len(), jobs[0].status.as_deref()), (1, Some("interrupted")), "派活页停的照样报");
+        drop(store);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_brain_stop_closes_the_task_on_the_spot_without_a_hand_back() {
+        let base = std::env::temp_dir().join(format!("tongxi-brain-brainstop-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut store = Store::open(&base.join("data").join("hub.db")).unwrap();
+        let room = store.create("项目群", "group", &["claude-win".into(), "dsh-win".into()]).unwrap().id;
+        let project = store.register_project("叫停项目", root.to_str().unwrap()).unwrap().id;
+        store.bind_project(&room, Some(&project)).unwrap();
+        let chats = store.ensure_project_agent_chats(&room).unwrap();
+        let brain = chats.iter().find(|chat| chat.agent_id == "claude-win-brain").unwrap().conversation_id.clone();
+        let chat = chats.iter().find(|chat| chat.agent_id == "dsh-win").unwrap().conversation_id.clone();
+        super::call(&store.connection, &brain, "hub_plan", serde_json::json!({"clear":true,"steps":[{"id":1,"title":"做事"}]})).unwrap();
+        super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"dsh-win","task":"做事","step":1})).unwrap();
+        let mut run = store.begin_agent_run(&chat, &Uuid::new_v4().to_string(), "做事", "dsh-win").unwrap();
+        store.connection.execute("UPDATE brain_jobs SET status='running',run_id=?1 WHERE kind='task'", [&run.id]).unwrap();
+        run.status = "interrupted".into();
+        store.checkpoint(&run, "做了一半", "").unwrap();
+
+        let out = super::call(&store.connection, &brain, "hub_stop_member", serde_json::json!({"member":"dsh-win"})).unwrap();
+        assert_eq!(out["stopped"], true);
+        let (status, error): (String, String) = store.connection.query_row("SELECT status,error FROM brain_jobs WHERE kind='task'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), error.as_str()), ("failed", "主脑叫停"));
+        let step: String = store.connection.query_row("SELECT status FROM brain_steps WHERE room=?1", [&room], |row| row.get(0)).unwrap();
+        assert_eq!(step, "todo", "计划步退回待做");
+        let stops: i64 = store.connection.query_row("SELECT COUNT(*) FROM brain_jobs WHERE kind='stop'", [], |row| row.get(0)).unwrap();
+        assert_eq!(stops, 0, "已经没在回复就不用再发停止");
+        assert!(store.finished_brain_jobs().is_empty(), "主脑自己停的不交回");
+        super::call(&store.connection, &brain, "hub_delegate", serde_json::json!({"member":"dsh-win","task":"换个方向"})).unwrap();
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }
