@@ -135,6 +135,13 @@ function attempt(id, params, session, text, left, turn) {
   const child = spawn(exe, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   session.child = child;
   let stderr = '', result = null;
+  // agy 等后台命令（长计算、并行测试）跑完时一行不出，后面的步骤也按顺序压着不发；
+  // 有工具没结束就隔一分钟报个平安，免得同席 30 分钟静默判卡住把回合掐掉。没有工具在跑时照旧判。
+  const running = new Set();
+  const alive = setInterval(() => { if (running.size) update(params.sessionId, { sessionUpdate: 'keepalive' }); }, 60000);
+  // 不用 close：后台命令继承了输出管道时，agy 退出后 close 还会拖很久；启动失败则只有 error 没有 exit。
+  const stopAlive = () => clearInterval(alive);
+  child.on('exit', stopAlive).on('error', stopAlive);
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   createInterface({ input: child.stdout }).on('line', line => {
     let message;
@@ -150,6 +157,8 @@ function attempt(id, params, session, text, left, turn) {
       } else if (step.step_type === 'tool') {
         const info = step.tool_info || { name: step.tool_name };
         const toolCallId = `${conversationOf(params.sessionId) || params.sessionId}-${step.step_index}`;
+        if (step.state === 'ACTIVE') running.add(step.step_index);
+        else running.delete(step.step_index);
         if (step.state === 'ACTIVE') update(params.sessionId, { sessionUpdate: 'tool_call', toolCallId, title: toolTitle(info), kind: toolKind(info.name), status: 'in_progress', rawInput: info.parameters });
         else {
           const text = info.error?.message || (typeof info.output === 'string' ? info.output : info.output ? JSON.stringify(info.output) : '');
