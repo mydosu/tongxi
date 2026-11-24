@@ -80,7 +80,7 @@ export interface BrainOverview { seat: string; chat: string | null; waiting: num
 /// 和别的项目之间的需求：out 是本项目提给别人的，in 是别人提给本项目的。
 export interface ProjectRequest { id: string; direction: 'in' | 'out'; project: string; status: 'approving' | 'open' | 'done' | 'declined' | 'cancelled'; rounds: number; content: string; last: string | null; created_at: number; updated_at: number; }
 /// 主脑挂的定时提醒、状态监控。
-export interface BrainWatch { id: string; note: string; every_minutes: number | null; next_at: number; until_at: number | null; check_cmd: string | null; member: string | null; member_name: string | null; once: boolean; status: 'active' | 'paused'; last_at: number | null; last_result: string | null; fired: number; created_at: number; }
+export interface BrainWatch { id: string; note: string; every_minutes: number | null; next_at: number; until_at: number | null; check_cmd: string | null; member: string | null; member_name: string | null; once: boolean; status: 'active' | 'paused' | 'done'; last_at: number | null; last_result: string | null; fired: number; created_at: number; }
 /// 项目总账一格：某天、某席位、某模型的回合合计；priced 少于 turns 说明有回合价格未知。
 export interface LedgerRow { day: string; name: string; model: string; turns: number; input: number; output: number; cost: number; priced: number; }
 export interface Inquiry { id: string; conversation_id: string; workflow_id: string | null; key: string; asked_by: string; question: string; background: string; options: string[]; default_choice: string | null; reversible: boolean; status: 'open' | 'answered' | 'withdrawn'; answer: string | null; seen: boolean; created_at: number; answered_at: number | null; }

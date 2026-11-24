@@ -266,7 +266,7 @@ async function watchAction(button: HTMLButtonElement) {
   button.disabled = true;
   try {
     await invoke('brain_watch_action', { conversationId: selectedId, watchId: button.dataset.watchId, action });
-    toast(`${WATCH_DONE[action]}，${ld(0, 1)}会收到说明`);
+    toast(WATCH_DONE[action]);
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }

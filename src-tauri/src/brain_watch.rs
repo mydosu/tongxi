@@ -57,7 +57,7 @@ pub fn tool_spec() -> (&'static str, &'static str, Value, Vec<&'static str>) {
     let boolean = json!({"type":"boolean"});
     (
         "hub_schedule",
-        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); it runs once right away and this call returns what it printed (check_now) as the baseline, so make sure that shows what you mean to watch, not an error or nothing; after that you are woken only when its exit code or output differs from the previous run, so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. Remove a watch as soon as it has served its purpose; ended or removed ones leave the list and can be brought back by id with resume=true for 7 days. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
+        "Standby: timers and watches that wake you (or a member) later, so you never stay awake polling or sleep-waiting. Create: note (what to do when it fires; it comes back to you as a message) plus timing: at (local time 'YYYY-MM-DD HH:MM', or 'HH:MM' for its next occurrence) or in_minutes for the first firing, every_minutes to repeat (pure timers at least 30; with check at least 5), until (local time) to stop repeating. check: a PowerShell command run in the project directory each time (60 s limit, needs the full permission tier); it runs once right away and this call returns what it printed (check_now) as the baseline, so make sure that shows what you mean to watch, not an error or nothing; after that you are woken only when its exit code or output differs from the previous run, so make it print just what matters, no timestamps or counters; once=true ends the watch at its first change. member: hand each firing to that member as a delegated job instead of waking you (cheaper for routine looks); if its hand-back is just 无变化 you are not woken. Update: id plus the fields to change; pause=true, resume=true, remove=true. No arguments: list this project's watches with the current local time. Nothing runs while the app is closed; missed firings run once on restart, marked late.",
         json!({"id":string,"note":string,"at":string,"in_minutes":integer,"every_minutes":integer,"until":string,"check":string,"once":boolean,"member":string,"pause":boolean,"resume":boolean,"remove":boolean}),
         vec![],
     )
@@ -153,28 +153,15 @@ fn row(connection: &Connection) -> impl Fn(&rusqlite::Row<'_>) -> rusqlite::Resu
     }
 }
 
-/// 还挂着的待机。结束的、主脑撤掉的不列，留 7 天给主脑按编号挂回来。
+/// 派活页的「待机」：还在的全列，结束的留最近 5 个。
 pub fn list(connection: &Connection, room: &str) -> Vec<Watch> {
-    connection
-        .prepare(&format!("SELECT {COLUMNS} FROM brain_watches WHERE room=?1 AND status<>'done' ORDER BY status='paused',next_at"))
+    let mut rows: Vec<Watch> = connection
+        .prepare(&format!("SELECT {COLUMNS} FROM brain_watches WHERE room=?1 ORDER BY status='done',status='paused',next_at"))
         .and_then(|mut query| query.query_map([room], row(connection))?.collect())
-        .unwrap_or_default()
-}
-
-/// 待机叫醒主脑的消息末尾带上还挂着哪些，让它做完顺手清掉用不着的，不然越挂越多。ended：这次刚结束的，不列。
-pub fn tidy_hint(connection: &Connection, room: &str, ended: Option<&str>) -> String {
-    let left: Vec<String> = list(connection, room)
-        .iter()
-        .filter(|watch| ended != Some(watch.id.as_str()))
-        .map(|watch| {
-            let state = if watch.status == "paused" { "已暂停".into() } else { cadence(connection, watch.every_minutes, watch.next_at, watch.check_cmd.is_some()) };
-            format!("- {}（{state}，触发过 {} 次）{}", short(&watch.id), watch.fired, brief(&watch.note).chars().take(40).collect::<String>())
-        })
-        .collect();
-    if left.is_empty() {
-        return String::new();
-    }
-    format!("\n\n【同席】做完这次的事，顺手把用不着的待机撤掉（hub_schedule 给 id 和 remove=true）：要等的等到了、事情已经结束、被后来挂的代替了的。还用得着的、用户暂停的、拿不准的留着。现在挂着：\n{}", left.join("\n"))
+        .unwrap_or_default();
+    let mut ended = 0;
+    rows.retain(|watch| watch.status != "done" || { ended += 1; ended <= 5 });
+    rows
 }
 
 fn load(connection: &Connection, room: &str, id: &str) -> Result<Watch> {
@@ -226,10 +213,8 @@ pub fn call(connection: &Connection, ctx: &Context, args: &Value) -> Result<Valu
     };
     let watch = load(connection, &ctx.room, &id)?;
     if flag("remove") {
-        if watch.status != "done" {
-            connection.execute("UPDATE brain_watches SET status='done',last_result='主脑撤掉了',updated_at=?1 WHERE id=?2", params![now(), watch.id]).map_err(|_| "待机删除失败")?;
-            post(connection, &ctx.room, &format!("主脑撤掉了待机：{}", brief(&watch.note)));
-        }
+        connection.execute("DELETE FROM brain_watches WHERE id=?1", [&watch.id]).map_err(|_| "待机删除失败")?;
+        post(connection, &ctx.room, &format!("主脑撤掉了待机：{}", brief(&watch.note)));
         return Ok(json!({"removed": short(&watch.id)}));
     }
     update(connection, ctx, watch, args)
@@ -419,7 +404,7 @@ fn update(connection: &Connection, ctx: &Context, watch: Watch, args: &Value) ->
     Ok(updated)
 }
 
-/// 用户在派活页点的：暂停、继续、现在跑一次、删除。
+/// 用户在派活页点的：暂停、继续、现在跑一次、删除。不告诉主脑：每点一下都会叫醒它、花额度。
 pub fn user_action(connection: &Connection, room: &str, id: &str, action: &str) -> Result<()> {
     let watch = load(connection, room, id)?;
     let sql = match action {
@@ -433,17 +418,6 @@ pub fn user_action(connection: &Connection, room: &str, id: &str, action: &str) 
         return Err("这个待机已经结束了".into());
     }
     connection.execute(sql, params![watch.id, now()]).map_err(|_| "待机保存失败")?;
-    // 用户动了主脑挂的东西，告诉主脑一声，免得它以为还在。
-    let what = match action {
-        "pause" => "暂停了",
-        "resume" => "恢复了",
-        "run" => "让它现在跑一次",
-        _ => "删掉了",
-    };
-    let _ = connection.execute(
-        "INSERT INTO brain_inbox(id,room,content,created_at,sender) VALUES(?1,?2,?3,?4,'user')",
-        params![Uuid::new_v4().to_string(), room, format!("【同席】用户在派活页把待机 {}「{}」{what}。", short(&watch.id), brief(&watch.note)), now()],
-    );
     Ok(())
 }
 
@@ -495,9 +469,7 @@ pub fn tick(store: &Arc<Mutex<Store>>) -> Vec<String> {
     let due: Vec<Watch> = {
         let store = store.lock().unwrap();
         let connection = &store.connection;
-        let week_ago = now() - 7 * 24 * 60 * MINUTE;
-        let _ = connection.execute("DELETE FROM brain_watch_log WHERE at<?1", [week_ago]);
-        let _ = connection.execute("DELETE FROM brain_watches WHERE status='done' AND updated_at<?1", [week_ago]);
+        let _ = connection.execute("DELETE FROM brain_watch_log WHERE at<?1", [now() - 7 * 24 * 60 * MINUTE]);
         connection
             .prepare(&format!("SELECT {COLUMNS} FROM brain_watches WHERE status='active' AND next_at<=?1 ORDER BY next_at"))
             .and_then(|mut query| query.query_map([now()], row(connection))?.collect())
@@ -531,13 +503,12 @@ pub(crate) fn fire(store: &Store, watch: &Watch, output: Option<Result<String>>,
         let _ = connection.execute(sql, values);
     };
     let id = watch.id.as_str();
-    // 跑 check 的工夫里被撤掉或暂停了：这一拍不叫醒，也别在下面把它写回待机中。
+    // 跑 check 的工夫里被删掉或暂停了：这一拍不叫醒，也别在下面把它写回待机中。
     if !connection.query_row("SELECT status='active' FROM brain_watches WHERE id=?1", [id], |row| row.get(0)).unwrap_or(false) {
         return false;
     }
     if watch.until_at.is_some_and(|until| at > until) {
         set("UPDATE brain_watches SET status='done',last_result='到了 until，结束',updated_at=?1 WHERE id=?2", &[&at, &id]);
-        post(connection, &watch.room, &format!("待机到了截止时间，已结束：{}", brief(&watch.note)));
         return true;
     }
     let late = at - watch.next_at;
@@ -605,7 +576,6 @@ pub(crate) fn fire(store: &Store, watch: &Watch, output: Option<Result<String>>,
     if let Some(text) = &changed {
         head.push_str(&format!("\ncheck 的结果变了：\n```\n{text}\n```"));
     }
-    let done = watch.once && (changed.is_some() || watch.check_cmd.is_none()) || watch.every_minutes.is_none() || watch.until_at.is_some_and(|until| next > until);
     let member_chat = watch.member.as_deref().and_then(|seat| seat_chat(connection, &watch.room, seat).map(|chat| (seat, chat)));
     let result = match member_chat {
         Some((seat, chat)) => {
@@ -628,12 +598,12 @@ pub(crate) fn fire(store: &Store, watch: &Watch, output: Option<Result<String>>,
             if let Some(seat) = &watch.member {
                 head.push_str(&format!("\n（原本交给 {seat}，它已经不在项目里了，改送给你）"));
             }
-            head.push_str(&tidy_hint(connection, &watch.room, done.then_some(id)));
             inbox(connection, &watch.room, &head);
             "叫醒了主脑".to_owned()
         }
     };
     let _ = connection.execute("INSERT INTO brain_watch_log(watch,room,at) VALUES(?1,?2,?3)", params![id, watch.room, at]);
+    let done = watch.once && (changed.is_some() || watch.check_cmd.is_none()) || watch.every_minutes.is_none() || watch.until_at.is_some_and(|until| next > until);
     set(
         "UPDATE brain_watches SET next_at=?1,status=?2,baseline=COALESCE(?3,baseline),failures=0,fired=fired+1,last_at=?4,last_result=?5,updated_at=?4 WHERE id=?6",
         &[&next, &if done { "done" } else { "active" }, &changed, &at, &result, &id],
@@ -780,10 +750,17 @@ mod tests {
         assert!(late.contains("晚了") && late.contains("错过 25 次"), "{late}");
         assert_eq!((only(&store, &room).next_at - watch.next_at) % (5 * MINUTE), 0);
 
-        // 用户在派活页撤掉，主脑收到一声。
+        // 用户在派活页暂停、继续、现在跑、删除都不叫醒主脑；跑 check 的工夫里删掉或暂停的，这一拍也不叫醒。
+        let woken = inbox(&store, &room).len();
+        for action in ["pause", "resume", "run", "pause"] {
+            user_action(&store.connection, &room, short(&watch.id), action).unwrap();
+        }
+        assert!(!fire(&store, &watch, Some(Ok("exit 1\n又失败".into())), now()));
+        assert_eq!(only(&store, &room).status, "paused", "没被写回待机中");
         user_action(&store.connection, &room, short(&watch.id), "remove").unwrap();
+        assert!(!fire(&store, &watch, Some(Ok("exit 1\n又失败".into())), now()));
         assert!(list(&store.connection, &room).is_empty());
-        assert!(inbox(&store, &room).pop().unwrap().contains("删掉了"));
+        assert_eq!(inbox(&store, &room).len(), woken);
 
         // 交给成员的：到点派一件活，成员手上有活就往后推。
         let made = call(json!({"note":"看一眼 issue","every_minutes":60,"member":"codex-win"})).unwrap();
@@ -803,49 +780,8 @@ mod tests {
         call(json!({"note":"提醒用户续费","in_minutes":30})).unwrap();
         let watch = only(&store, &room);
         fire(&store, &watch, None, watch.next_at);
-        assert!(list(&store.connection, &room).is_empty(), "一次性的到点就不再列着");
-        assert!(!inbox(&store, &room).pop().unwrap().contains("现在挂着"), "别的都没挂，不用提醒清理");
+        assert_eq!(only(&store, &room).status, "done");
         assert!(call(json!({})).unwrap()["now"].is_string(), "不带参数列出待机和现在时间");
-        drop(store);
-        let _ = std::fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn ended_watches_clear_and_the_brain_sees_what_is_left() {
-        let (base, store, room, chat) = brain_project("清理");
-        let call = |args: Value| crate::project_brain::call(&store.connection, &chat, "hub_schedule", args);
-        let add = |args: Value| load(&store.connection, &room, call(args).unwrap()["id"].as_str().unwrap()).unwrap();
-        let patrol = add(json!({"note":"每天巡查","every_minutes":1440}));
-        let reply = add(json!({"note":"等客户回话","every_minutes":60}));
-        call(json!({"id":reply.id,"pause":true})).unwrap();
-        let once = add(json!({"note":"提醒续费","in_minutes":30}));
-
-        // 叫醒主脑时带上还挂着的；这次刚结束的不列。
-        fire(&store, &once, None, once.next_at);
-        let woke = inbox(&store, &room).pop().unwrap();
-        let (_, left) = woke.split_once("现在挂着").expect("带上清理提醒");
-        assert!(left.contains("每天巡查") && left.contains("已暂停") && left.contains("等客户回话") && !left.contains("提醒续费"), "{woke}");
-
-        // 主脑撤掉的不再列着；跑 check 的工夫里被撤的，这一拍不叫醒、也不复活。
-        call(json!({"id":patrol.id,"remove":true})).unwrap();
-        let before = inbox(&store, &room).len();
-        assert!(!fire(&store, &patrol, None, patrol.next_at));
-        assert_eq!((inbox(&store, &room).len(), only(&store, &room).note.as_str()), (before, "等客户回话"));
-        // 撤错了按原来的 id 挂得回来。
-        call(json!({"id":patrol.id,"resume":true})).unwrap();
-        assert_eq!(load(&store.connection, &room, &patrol.id).unwrap().status, "active");
-
-        // 到了 until 的也清掉；结束满 7 天才真删。
-        store.connection.execute("UPDATE brain_watches SET until_at=1 WHERE id=?1", [&patrol.id]).unwrap();
-        fire(&store, &load(&store.connection, &room, &patrol.id).unwrap(), None, now());
-        assert_eq!(only(&store, &room).note, "等客户回话");
-        let store = Arc::new(Mutex::new(store));
-        let count = || store.lock().unwrap().connection.query_row("SELECT COUNT(*) FROM brain_watches", [], |row| row.get::<_, i64>(0)).unwrap();
-        tick(&store);
-        assert_eq!(count(), 3);
-        store.lock().unwrap().connection.execute("UPDATE brain_watches SET updated_at=1", []).unwrap();
-        tick(&store);
-        assert_eq!(count(), 1, "没结束的不动");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

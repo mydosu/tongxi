@@ -413,7 +413,7 @@ const every = (minutes: number) => {
 function watchesSection(watches: BrainWatch[], escape: Escape, open: Set<string>) {
   if (!watches.length) return '';
   const rows = watches.map(watch => {
-    const [label, tone] = watch.status === 'active' ? ['待机中', 'running'] : ['已暂停', 'stopped'];
+    const [label, tone] = watch.status === 'active' ? ['待机中', 'running'] : watch.status === 'paused' ? ['已暂停', 'stopped'] : ['已结束', 'done'];
     const title = watch.note.trim().split('\n')[0].slice(0, 80);
     const cadence = watch.every_minutes ? watch.check_cmd ? `${every(watch.every_minutes)}看一次有没有变化` : every(watch.every_minutes) : '只一次';
     const next = watch.status === 'active' ? `下次 ${when(watch.next_at)}` : watch.last_at ? `上次 ${when(watch.last_at)}` : '';
@@ -423,7 +423,7 @@ function watchesSection(watches: BrainWatch[], escape: Escape, open: Set<string>
       watch.check_cmd ? `<p class="brain-watch-label">每次跑的命令（输出变了才叫醒）</p><div class="brain-job-text">${escape(watch.check_cmd)}</div>` : '',
     ].join('');
     const button = (action: string, text: string, kind = 'secondary') => `<button type="button" class="${kind}" data-watch-action="${action}" data-watch-id="${escape(watch.id)}">${text}</button>`;
-    const actions = `${watch.status === 'active' ? button('pause', '暂停') : button('resume', '继续')}${button('run', '现在跑一次')}`;
+    const actions = watch.status === 'done' ? '' : `${watch.status === 'active' ? button('pause', '暂停') : button('resume', '继续')}${button('run', '现在跑一次')}`;
     return `<article class="brain-watch">
       <header><strong>${escape(title)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(next)}</small></header>
       <p class="brain-job-meta"><span>${escape(cadence)}${watch.until_at ? `，到 ${escape(when(watch.until_at))} 为止` : ''}</span><span>${watch.member_name ? `交给 ${escape(watch.member_name)} 去看` : `到点叫醒${ld(1, 0)}`}</span><span>已触发 ${watch.fired} 次</span>${watch.last_result ? `<span>${watch.last_at ? `${escape(when(watch.last_at))}：` : ''}${escape(watch.last_result)}</span>` : ''}</p>
