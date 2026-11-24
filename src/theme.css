@@ -192,8 +192,11 @@ html:not([data-hud]) .chat-layout.members-open .members-panel { opacity: 1; tran
 .members-body fieldset > label { flex: none; }
 .members-body legend { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
 .members-body label:not(.member-option) { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--faint); }
+.members-body :is(.project-grant-settings label, .roster-option) { flex-direction: row; gap: 8px; color: var(--ink-2); }
+.members-body .project-grant-settings label { align-items: baseline; }
 .members-body select, .members-body input:not([type=checkbox]):not([type=radio]), .members-body textarea { width: 100%; min-width: 0; }
-.members-body small { font-size: 12px; line-height: 1.6; color: var(--faint); }
+.members-body .project-grant-settings input[type=number] { flex: none; width: 120px; }
+.members-body small { flex-basis: auto; font-size: 12px; line-height: 1.6; color: var(--faint); }
 .members-body .seat-row legend .avatar { width: 22px; height: 22px; font-size: 11px; }
 .members-body .seat-name { flex: 1; min-width: 0; }
 .seat-session { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--faint); }
@@ -354,9 +357,10 @@ html:not([data-hud]) details.instant::details-content { transition: none; }
 .project-seat-settings { display: grid; gap: 8px; border: 1px solid rgb(255 255 255 / .85); border-radius: var(--r-m); padding: 12px 14px 14px; margin: 2px 0 16px; background: rgb(255 255 255 / .45); }
 .project-seat-settings legend { color: var(--ink-2); font-size: 13px; font-weight: 600; padding: 0 5px; }
 .project-seat-settings small { color: var(--faint); font-size: 12px; line-height: 1.6; }
-.seat-add-row { display: flex; gap: 8px; align-items: center; }
+.seat-add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .seat-add-row select, .seat-add-row input { height: 36px; border: 1px solid rgb(205 205 228 / .8); border-radius: var(--r-s); background: rgb(255 255 255 / .85); padding: 0 10px; color: var(--ink-2); font: inherit; font-size: 12px; min-width: 0; }
 .seat-add-row input { flex: 1; }
+.seat-add-row button { flex: none; }
 .project-member-settings-row.seat-row legend { display: flex; align-items: center; gap: 10px; }
 .project-member-settings-row.seat-row legend .text-button { font-size: 12px; color: #a06a6a; }
 

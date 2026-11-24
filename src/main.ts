@@ -289,7 +289,7 @@ async function cancelRequest(button: HTMLButtonElement) {
   button.disabled = true;
   try {
     await invoke('cancel_project_request', { conversationId: selectedId, requestId: button.dataset.cancelRequest });
-    toast(`已停掉，两边的${ld(0, 1)}都会收到说明`);
+    toast(`已停掉，两边的${ld(1, 1)}都会收到说明`);
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }
@@ -2792,7 +2792,7 @@ function renderServices() {
   const keepTop = main.dataset.view === 'services' ? main.querySelector('.services-content')?.scrollTop ?? 0 : 0;
   ++detailGeneration; screen = 'services'; setMobileView('chat'); renderList(); enterView('services');
   // 「导出诊断」写到电脑的「下载」文件夹并在资源管理器里选中它：手机上没意义，入口只给桌面窗口。
-  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button>${isRemote ? '' : '<button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button>'}<button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\Work" spellcheck="false" aria-label="默认工作文件夹">${folderButton('选择默认工作文件夹')}<button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
+  main.innerHTML =`<header class="chat-header"><div><h1>成员与服务</h1></div><div class="header-actions"><button id="update-all" class="secondary" title="把已安装的成员依次更新到最新版并重新接入（阿尔比恩除外）">全部更新</button>${isRemote ? '' : '<button id="export-diagnostics" class="secondary" title="把成员连接与版本、最近 7 天的失败原因脱敏后存到「下载」文件夹，不含会话内容">导出诊断</button>'}<button id="back-to-chat" class="secondary">${icon('chat')}返回会话</button></div></header><div class="services-content">${setupBanner(escape)}<div class="self-avatar-row">${avatarPicker('user', ownFace('large'), '换你的头像')}<div><strong>你的头像</strong><span>在私聊、群聊和项目里代表你</span></div></div><form id="workspace-form" class="self-avatar-row workspace-row"><div><strong>默认工作文件夹</strong><span>私聊没单独指定文件夹时，各成员各会话在这里分开建子文件夹；留空用同席数据目录</span></div><input name="root" placeholder="例如 D:\\Work" spellcheck="false" aria-label="默认工作文件夹">${folderButton('选择默认工作文件夹')}<button class="secondary">保存</button></form><div class="service-grid">${agents.map(agent => {
     const companion = agent.id === 'albion-wsl';
     const managed = ['dsh-win', 'codex-win'].includes(agent.id);
     // 每张卡同样的结构：标题（可改名）· 说明 · 状态块 · 三个主按钮（连接/安装、检查更新或配置陪伴、更多）。
