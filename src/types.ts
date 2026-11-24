@@ -74,7 +74,7 @@ export interface BrainJob { id: string; seat: string; name: string; chat: string
 export interface JobUsage { usage: { inputTokens?: number; cachedReadTokens?: number; cachedWriteTokens?: number; outputTokens?: number }; cost: number | null; brain_cost: number | null; }
 export interface UsageSum { turns: number; input: number; cache_read: number; cache_write: number; output: number; cost: number | null; }
 /** 派活页：主脑席位和会话、还没送进主脑的消息数、全部派活（最新的在前）。 */
-export interface PlanDoc { name: string; brief: boolean; text: string; modified: number; }
+export interface PlanDoc { name: string; file: string; brief: boolean; text: string; modified: number; }
 export interface PlanStep { id: number; title: string; status: 'todo' | 'doing' | 'review' | 'waiting' | 'done'; owner: string | null; name: string | null; depends: number[]; note: string | null; wait_key: string | null; job: string | null; }
 export interface BrainOverview { seat: string; chat: string | null; waiting: number; jobs: BrainJob[]; plans: PlanDoc[]; steps: PlanStep[]; history: { id: number; archived_at: number; steps: PlanStep[] }[]; usage: { brain_today: UsageSum; brain_total: UsageSum; context: number | null }; ledger: LedgerRow[]; requests: ProjectRequest[]; watches: BrainWatch[]; }
 /// 和别的项目之间的需求：out 是本项目提给别人的，in 是别人提给本项目的。

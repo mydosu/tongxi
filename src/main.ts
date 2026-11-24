@@ -153,7 +153,9 @@ function scheduleInquiryRefresh(groupId: string) {
 const liveBrainJobs = new Map<string, number>();
 let brainOverview: BrainOverview | null = null;
 let brainJobsTimer = 0;
-const openJobFolds = new Set<string>();
+/// 任务页哪几块（section|…）开着记到下次打开；没记过就只展开计划流程图。
+const OPEN_BLOCKS = 'hub.brain-blocks';
+const openJobFolds = (() => { try { return new Set<string>(JSON.parse(localStorage.getItem(OPEN_BLOCKS) ?? '["section|plan"]')); } catch { return new Set(['section|plan']); } })();
 let planFilter = '';
 let planPick: number | null = null;
 // 流程图看的是哪份旧计划（null 看当前的）。
@@ -205,6 +207,7 @@ function renderBrainJobs(force = false) {
     const fold = event.target;
     if (!(fold instanceof HTMLDetailsElement) || !fold.dataset.jobFold) return;
     if (fold.open) { fillFold(fold); openJobFolds.add(fold.dataset.jobFold); } else openJobFolds.delete(fold.dataset.jobFold);
+    if (fold.dataset.jobFold.startsWith('section|')) try { localStorage.setItem(OPEN_BLOCKS, JSON.stringify([...openJobFolds].filter(key => key.startsWith('section|')))); } catch { /* 存不下就只记到关窗口 */ }
   }, true);
   content?.addEventListener('change', event => {
     const select = (event.target as Element).closest<HTMLSelectElement>('[data-plan-show]');
@@ -218,7 +221,7 @@ function renderBrainJobs(force = false) {
 function repaintPlan() {
   const section = main.querySelector('.plan-flow-section');
   if (!section || !brainOverview) return renderBrainJobs(true);
-  section.outerHTML = planSection(brainOverview, escape, planFilter, planPick, planShow);
+  section.outerHTML = planSection(brainOverview, escape, planFilter, planPick, planShow, openJobFolds);
   bindPlanFlow(main, `${selectedId}|${planShow ?? ''}`);
 }
 function brainJobsClick(event: MouseEvent) {
@@ -252,8 +255,9 @@ function brainJobsClick(event: MouseEvent) {
   } else if ((el = hit('data-stop-job'))) void stopBrainJob(el as HTMLButtonElement);
   else if ((el = hit('data-watch-action'))) void watchAction(el as HTMLButtonElement);
   else if ((el = hit('data-cancel-request'))) void cancelRequest(el as HTMLButtonElement);
+  else if ((el = hit('data-remove'))) void removeItems(el as HTMLButtonElement);
 }
-/// 删除待机、停掉项目往来也要点两下：主脑挂的东西删了就没了。
+/// 删除待机、任务书、项目往来，停掉项目往来，都要点两下：主脑挂的东西删了就没了。
 function armed(button: HTMLButtonElement, prompt: string) {
   if (button.dataset.armed) return true;
   button.dataset.armed = '1'; button.textContent = prompt; button.classList.add('danger');
@@ -276,6 +280,18 @@ async function cancelRequest(button: HTMLButtonElement) {
   try {
     await invoke('cancel_project_request', { conversationId: selectedId, requestId: button.dataset.cancelRequest });
     toast(`已停掉，两边的${ld(0, 1)}都会收到说明`);
+  } catch (error) { toast(errorText(error), true); button.disabled = false; }
+  await refreshBrainJobs(selectedId);
+}
+/// 删任务书、计划，或删结束了的项目往来；按钮上带着要删哪几份。
+async function removeItems(button: HTMLButtonElement) {
+  if (!armed(button, button.dataset.confirm!)) return;
+  button.disabled = true;
+  const docs = button.dataset.remove === 'docs', ids: string[] = JSON.parse(button.dataset.ids!);
+  try {
+    if (docs) await invoke('remove_plan_docs', { conversationId: selectedId, files: ids });
+    else await invoke('remove_project_requests', { conversationId: selectedId, ids });
+    toast(docs ? '已删除，原文件挪到项目的 .tongxi/已删除/' : '已删除');
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }

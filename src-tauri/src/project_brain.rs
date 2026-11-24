@@ -385,16 +385,7 @@ impl Store {
             .map_err(|_| "任务记录读取失败")?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| "任务记录读取失败")?;
-        let root: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT p.root FROM conversation_projects cp JOIN projects p ON p.id=cp.project_id WHERE cp.conversation_id=?1",
-                [room],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|_| "项目目录读取失败")?;
-        let plans = root.map(|root| plan_docs(Path::new(&root))).unwrap_or_default();
+        let plans = room_root(&self.connection, room)?.map(|root| plan_docs(Path::new(&root))).unwrap_or_default();
         let brain_runs = "FROM runs r JOIN messages m ON m.id=r.assistant_message_id WHERE r.conversation_id=?1";
         let target = chat.clone().unwrap_or_default();
         let usage = UsageStats {
@@ -417,6 +408,21 @@ impl Store {
         let requests = crate::project_requests::rows(&self.connection, room);
         let watches = crate::brain_watch::list(&self.connection, room);
         Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, history, usage, ledger, requests, watches })
+    }
+    /// 用户在派活页删任务书、计划：挪进 .tongxi/已删除/，删错了能自己挪回来。只认页面上列着的，已经不在的当作删过了。
+    pub fn remove_plan_docs(&self, room: &str, files: &[String]) -> Result<()> {
+        let root = room_root(&self.connection, room)?.ok_or("这个会话没有绑项目")?;
+        let dir = Path::new(&root).join(".tongxi");
+        let bin = dir.join("已删除");
+        std::fs::create_dir_all(&bin).map_err(|error| format!("建不了 {}：{error}", bin.display()))?;
+        for doc in plan_docs(Path::new(&root)).iter().filter(|doc| files.contains(&doc.file)) {
+            let mut to = bin.join(format!("{}.md", doc.name));
+            if to.exists() {
+                to = bin.join(format!("{}-{}.md", doc.name, now()));
+            }
+            std::fs::rename(dir.join(&doc.file), &to).map_err(|error| format!("「{}」删不掉：{error}", doc.name))?;
+        }
+        Ok(())
     }
     /// 用户在派活页停掉一件活：还没开始的直接取消，正在做的叫停成员；都告诉主脑一声。
     pub fn stop_brain_job(&self, room: &str, job: &str) -> Result<()> {
@@ -778,19 +784,30 @@ fn step_brief(steps: &[PlanStep], step: &PlanStep) -> String {
 #[derive(serde::Serialize)]
 pub struct PlanDoc {
     name: String,
+    /// 在 .tongxi 里的相对路径，删的时候按它认。
+    file: String,
     /// 任务书（.tongxi/任务书/*.md）还是长期计划（.tongxi/计划.md）。
     brief: bool,
     text: String,
     modified: i64,
 }
 
+/// 项目群绑的项目目录，没绑就没有。
+fn room_root(connection: &Connection, room: &str) -> Result<Option<String>> {
+    connection
+        .query_row("SELECT p.root FROM conversation_projects cp JOIN projects p ON p.id=cp.project_id WHERE cp.conversation_id=?1", [room], |row| row.get(0))
+        .optional()
+        .map_err(|_| "项目目录读取失败".into())
+}
+
 /// 派活页的「计划与任务书」：只读主脑写在项目里的文件，最近改过的任务书在前，计划放最后。
 fn plan_docs(root: &Path) -> Vec<PlanDoc> {
+    let dir = root.join(".tongxi");
     let read = |path: &Path, brief: bool| -> Option<PlanDoc> {
         let modified = path.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
-        Some(PlanDoc { name: path.file_stem()?.to_string_lossy().into(), brief, text: std::fs::read_to_string(path).ok()?, modified })
+        let name: String = path.file_stem()?.to_string_lossy().into();
+        Some(PlanDoc { file: format!("{}{name}.md", if brief { "任务书/" } else { "" }), name, brief, text: std::fs::read_to_string(path).ok()?, modified })
     };
-    let dir = root.join(".tongxi");
     let mut docs: Vec<PlanDoc> = std::fs::read_dir(dir.join("任务书"))
         .into_iter()
         .flatten()
@@ -2523,6 +2540,19 @@ mod tests {
         let plans = store.brain_overview(&room).unwrap().plans;
         let names: Vec<(&str, bool)> = plans.iter().map(|doc| (doc.name.as_str(), doc.brief)).collect();
         assert_eq!(names, [("删旧", true), ("计划", false)], "只列 .md 任务书，计划放最后");
+
+        // 删任务书：只认页面上列着的，挪进已删除；同名的再删一次不盖掉前一份。
+        std::fs::write(root.join("外面.md"), "别动").unwrap();
+        for _ in 0..2 {
+            std::fs::write(root.join(".tongxi/任务书/删旧.md"), "旧").unwrap();
+            store.remove_plan_docs(&room, &["任务书/删旧.md".into(), "../外面.md".into(), "任务书/没有.md".into()]).unwrap();
+        }
+        assert!(root.join("外面.md").exists(), "没列在页面上的不删");
+        assert_eq!(std::fs::read_dir(root.join(".tongxi/已删除")).unwrap().count(), 2, "两份都留着");
+        let left: Vec<String> = store.brain_overview(&room).unwrap().plans.into_iter().map(|doc| doc.file).collect();
+        assert_eq!(left, ["计划.md"], "没点到的计划留着，删掉的不再列");
+        store.remove_plan_docs(&room, &left).unwrap();
+        assert!(store.brain_overview(&room).unwrap().plans.is_empty());
 
         store.stop_brain_job(&room, "job-new").unwrap();
         let overview = store.brain_overview(&room).unwrap();
