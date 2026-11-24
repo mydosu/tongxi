@@ -2271,6 +2271,9 @@ impl Courier {
             if !hint.is_empty() {
                 report.push_str(&format!("\n\n【同席】{}", hint.trim_start_matches('。')));
             }
+            if watch.is_some() {
+                report.push_str(&crate::brain_watch::tidy_hint(&self.store.lock().unwrap().connection, &room, None));
+            }
             self.inbox(&room, &report, &seat);
             let job_status = if status == "completed" { "done" } else { "failed" };
             self.execute(
