@@ -782,6 +782,14 @@ mod tests {
         fire(&store, &watch, None, watch.next_at);
         assert_eq!(only(&store, &room).status, "done");
         assert!(call(json!({})).unwrap()["now"].is_string(), "不带参数列出待机和现在时间");
+
+        // 一次删掉结束了的待机：还在等的不动。
+        let done = only(&store, &room).id;
+        call(json!({"note":"明天再看","in_minutes":30})).unwrap();
+        let all: Vec<String> = list(&store.connection, &room).into_iter().map(|watch| watch.id).collect();
+        assert!(all.len() == 2 && all.contains(&done));
+        store.remove_brain_items(&room, "watches", &all).unwrap();
+        assert_eq!(only(&store, &room).status, "active");
         drop(store);
         let _ = std::fs::remove_dir_all(base);
     }

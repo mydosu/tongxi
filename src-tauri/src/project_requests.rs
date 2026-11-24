@@ -475,17 +475,6 @@ pub fn cancel_by_user(connection: &Connection, room: &str, id: &str) -> Result<(
     Ok(())
 }
 
-/// 用户在派活页删掉已经结束的需求：两边共用一条记录，对方项目那边也跟着不列了。
-/// 收件里的文件、项目群里的消息都留着，也不叫醒谁。
-pub fn remove_ended(connection: &Connection, room: &str, ids: &[String]) -> Result<()> {
-    for id in ids {
-        connection
-            .execute("DELETE FROM project_requests WHERE id=?2 AND (from_room=?1 OR to_room=?1) AND status NOT IN ('approving','open')", params![room, id])
-            .map_err(|_| "删除失败")?;
-    }
-    Ok(())
-}
-
 /// 投递线程每轮看一眼：「先问我」的需求，用户在问答面板答了就按答复接或不接。返回有变化的项目群。
 pub fn collect_approvals(connection: &Connection) -> Vec<String> {
     let answered: Vec<(String, String, String, String)> = connection
@@ -594,9 +583,9 @@ mod tests {
         let live = call(&chat_a, "hub_ask_project", json!({"project":"宣传项目","content":"再做一张"})).unwrap()["request"].as_str().unwrap().to_owned();
         let mail = (inbox(&store, &room_a).len(), inbox(&store, &room_b).len());
         let all: Vec<String> = super::rows(&store.connection, &room_a).into_iter().map(|row| row.id).collect();
-        super::remove_ended(&store.connection, "别的项目群", &all).unwrap();
+        store.remove_brain_items("别的项目群", "requests", &all).unwrap();
         assert_eq!(super::rows(&store.connection, &room_a).len(), 2);
-        super::remove_ended(&store.connection, &room_a, &all).unwrap();
+        store.remove_brain_items(&room_a, "requests", &all).unwrap();
         for room in [&room_a, &room_b] {
             let left = super::rows(&store.connection, room);
             assert!(left.len() == 1 && left[0].id.starts_with(&live) && left[0].status == "open", "只剩没结束的");

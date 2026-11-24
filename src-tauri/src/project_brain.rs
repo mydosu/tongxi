@@ -51,6 +51,8 @@ pub fn migrate(tx: &Transaction<'_>) -> Result<()> {
     )
     .map_err(|_| "主脑结构迁移失败")?;
     crate::project_store::add_column(tx, "brain_jobs", "category", "TEXT")?;
+    // 用户在派活页删掉的活：只是不列了，记录还在（合并工作树、按成员统计成绩、算用量都要用）。
+    crate::project_store::add_column(tx, "brain_jobs", "hidden", "INTEGER NOT NULL DEFAULT 0")?;
     // 谁送来的（成员席位 / user / hub），送进主脑会话时记在他名下，不混成用户的话。
     crate::project_store::add_column(tx, "brain_inbox", "sender", "TEXT")
 }
@@ -325,9 +327,9 @@ impl Store {
         let mut query = self
             .connection
             .prepare(
-                "SELECT j.id,j.seat,j.chat,j.content,COALESCE(j.model,(SELECT model FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
+                "SELECT j.id,j.seat,j.chat,IIF(j.hidden,'',j.content),COALESCE(j.model,(SELECT model FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
                         COALESCE(j.effort,(SELECT reasoning_effort FROM sessions WHERE conversation_id=j.chat LIMIT 1)),
-                        j.worktree,j.branch,j.status,j.error,r.status,m.content,j.created_at,j.finished_at,r.usage,r.agent_id,r.model
+                        j.worktree,j.branch,j.status,j.error,r.status,IIF(j.hidden,NULL,m.content),j.created_at,j.finished_at,r.usage,r.agent_id,r.model,j.hidden
                  FROM brain_jobs j LEFT JOIN runs r ON r.id=j.run_id LEFT JOIN messages m ON m.id=r.assistant_message_id
                  WHERE j.room=?1 AND j.kind='task' AND COALESCE(j.category,'')<>?2 ORDER BY j.created_at DESC",
             )
@@ -365,6 +367,7 @@ impl Store {
                     result: result.map(|text| tail(text.trim(), RESULT_LIMIT)),
                     created_at,
                     finished_at: row.get(13)?,
+                    hidden: row.get(17)?,
                     usage: row
                         .get::<_, Option<String>>(14)?
                         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -409,8 +412,21 @@ impl Store {
         let watches = crate::brain_watch::list(&self.connection, room);
         Ok(BrainOverview { seat, chat, waiting, jobs, plans, steps, history, usage, ledger, requests, watches })
     }
-    /// 用户在派活页删任务书、计划：挪进 .tongxi/已删除/，删错了能自己挪回来。只认页面上列着的，已经不在的当作删过了。
-    pub fn remove_plan_docs(&self, room: &str, files: &[String]) -> Result<()> {
+    /// 用户在派活页删东西，不叫醒主脑。项目往来两边共用一条记录，删了对方那边也不列；收到的文件、群里的消息都留着。
+    pub fn remove_brain_items(&self, room: &str, kind: &str, ids: &[String]) -> Result<()> {
+        let sql = match kind {
+            "docs" => return self.remove_plan_docs(room, ids),
+            "jobs" => "UPDATE brain_jobs SET hidden=1 WHERE room=?1 AND status IN ('done','failed') AND id IN (SELECT value FROM json_each(?2))",
+            "plans" => "DELETE FROM brain_plan_history WHERE room=?1 AND id IN (SELECT value FROM json_each(?2))",
+            "watches" => "DELETE FROM brain_watches WHERE room=?1 AND status='done' AND id IN (SELECT value FROM json_each(?2))",
+            "requests" => "DELETE FROM project_requests WHERE (from_room=?1 OR to_room=?1) AND status NOT IN ('approving','open') AND id IN (SELECT value FROM json_each(?2))",
+            _ => return Err("不认识的操作".into()),
+        };
+        self.connection.execute(sql, params![room, json!(ids).to_string()]).map_err(|_| "删除失败")?;
+        Ok(())
+    }
+    /// 任务书、计划：挪进 .tongxi/已删除/，删错了能自己挪回来。只认页面上列着的，已经不在的当作删过了。
+    fn remove_plan_docs(&self, room: &str, files: &[String]) -> Result<()> {
         let root = room_root(&self.connection, room)?.ok_or("这个会话没有绑项目")?;
         let dir = Path::new(&root).join(".tongxi");
         let bin = dir.join("已删除");
@@ -483,6 +499,8 @@ pub struct BrainJob {
     result: Option<String>,
     created_at: i64,
     finished_at: Option<i64>,
+    /// 用户从页面上删掉了：不列，只留着算用量，任务书和结果都不带。
+    hidden: bool,
     /// 这件活那一回合的用量（runs.usage），外加 brain_cost：同样用量按主脑模型折多少钱。
     usage: Option<Value>,
 }
@@ -569,7 +587,7 @@ pub struct PlanHistory {
 
 fn plan_history(connection: &Connection, room: &str) -> Vec<PlanHistory> {
     connection
-        .prepare("SELECT id,archived_at,steps FROM brain_plan_history WHERE room=?1 ORDER BY id DESC LIMIT 30")
+        .prepare("SELECT id,archived_at,steps FROM brain_plan_history WHERE room=?1 ORDER BY id DESC")
         .and_then(|mut query| {
             query
                 .query_map([room], |row| Ok(PlanHistory { id: row.get(0)?, archived_at: row.get(1)?, steps: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default() }))?
@@ -2545,13 +2563,13 @@ mod tests {
         std::fs::write(root.join("外面.md"), "别动").unwrap();
         for _ in 0..2 {
             std::fs::write(root.join(".tongxi/任务书/删旧.md"), "旧").unwrap();
-            store.remove_plan_docs(&room, &["任务书/删旧.md".into(), "../外面.md".into(), "任务书/没有.md".into()]).unwrap();
+            store.remove_brain_items(&room, "docs", &["任务书/删旧.md".into(), "../外面.md".into(), "任务书/没有.md".into()]).unwrap();
         }
         assert!(root.join("外面.md").exists(), "没列在页面上的不删");
         assert_eq!(std::fs::read_dir(root.join(".tongxi/已删除")).unwrap().count(), 2, "两份都留着");
         let left: Vec<String> = store.brain_overview(&room).unwrap().plans.into_iter().map(|doc| doc.file).collect();
         assert_eq!(left, ["计划.md"], "没点到的计划留着，删掉的不再列");
-        store.remove_plan_docs(&room, &left).unwrap();
+        store.remove_brain_items(&room, "docs", &left).unwrap();
         assert!(store.brain_overview(&room).unwrap().plans.is_empty());
 
         store.stop_brain_job(&room, "job-new").unwrap();
@@ -2561,6 +2579,26 @@ mod tests {
         assert_eq!(overview.waiting, 1, "主脑会收到一条说明");
         assert_eq!(store.brain_live_jobs(&room).unwrap(), 0, "停掉后不再算在做");
         assert!(store.stop_brain_job(&room, "job-old").is_err(), "已经结束的活不能再停");
+
+        // 删做完的活：只是不列，记录和用量留着；在做的、别的群的删不动。
+        store.connection.execute("UPDATE brain_jobs SET status='running' WHERE id='job-new'", []).unwrap();
+        let both = ["job-new".to_owned(), "job-old".to_owned()];
+        store.remove_brain_items("别的群", "jobs", &both).unwrap();
+        assert!(store.brain_overview(&room).unwrap().jobs.iter().all(|job| !job.hidden));
+        store.remove_brain_items(&room, "jobs", &both).unwrap();
+        let jobs: Vec<(String, bool, String)> = store.brain_overview(&room).unwrap().jobs.into_iter().map(|job| (job.id, job.hidden, job.content)).collect();
+        assert_eq!(jobs, [("job-new".into(), false, "跑测试".into()), ("job-old".into(), true, String::new())]);
+
+        // 删旧计划：编号在页面上是文字，点到的才删。
+        for steps in ["[]", "[]", "[]"] {
+            store.connection.execute("INSERT INTO brain_plan_history(room,steps,archived_at) VALUES(?1,?2,1)", params![room, steps]).unwrap();
+        }
+        let ids: Vec<String> = store.brain_overview(&room).unwrap().history.iter().map(|plan| plan.id.to_string()).collect();
+        store.remove_brain_items("别的群", "plans", &ids).unwrap();
+        store.remove_brain_items(&room, "plans", &ids[1..]).unwrap();
+        let left: Vec<String> = store.brain_overview(&room).unwrap().history.iter().map(|plan| plan.id.to_string()).collect();
+        assert_eq!(left, ids[..1]);
+        assert!(store.remove_brain_items(&room, "别的", &ids).is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 

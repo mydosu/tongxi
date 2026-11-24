@@ -26,9 +26,21 @@ function block(name: string, title: string, glance: string, open: Set<string>, b
   return `<details class="brain-plans${kind}" data-job-fold="${key}" ${open.has(key) ? 'open' : ''}><summary><h2>${title}</h2><small>${glance}</small></summary>${typeof body === 'string' ? wrap(body) : folded(key, open, () => wrap(body()))}</details>`;
 }
 
+/// 后端 remove_brain_items 认的几种。
+type Removable = 'docs' | 'jobs' | 'plans' | 'watches' | 'requests';
+const removeButton = (escape: Escape, remove: Removable, ids: string[], confirm: string, label = '删除') => `<button type="button" class="text-button" data-remove="${remove}" data-ids="${escape(JSON.stringify(ids))}" data-confirm="${escape(confirm)}">${label}</button>`;
+
 /// 一行一份、点开看全文的条目，右边挂删除（点两下）；删除不放进标题行，免得点它把条目带开。
-function foldRow(key: string, summary: string, body: () => string, open: Set<string>, escape: Escape, remove: 'docs' | 'requests', ids: string[], confirm: string, label = '删除') {
-  return `<div class="brain-plan-row"><details class="brain-plan" data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>${summary}</summary>${folded(key, open, body)}</details><button type="button" class="text-button" data-remove="${remove}" data-ids="${escape(JSON.stringify(ids))}" data-confirm="${escape(confirm)}">${label}</button></div>`;
+function foldRow(key: string, summary: string, body: () => string, open: Set<string>, escape: Escape, remove: Removable, ids: string[], confirm: string, label?: string) {
+  return `<div class="brain-plan-row"><details class="brain-plan" data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>${summary}</summary>${folded(key, open, body)}</details>${removeButton(escape, remove, ids, confirm, label)}</div>`;
+}
+
+/// 任务书、做完的任务只摆最近几条。
+const RECENT = 8;
+/// 前 keep 行直接摆，其余收成一条、能一次删掉；收起来只有一行就不收。文案里的 # 换成行数。
+function foldRest<T>(items: T[], keep: number, row: (item: T) => string, id: (item: T) => string, remove: Removable, title: string, confirm: string, open: Set<string>, escape: Escape) {
+  const rest = items.length > keep + 1 ? items.slice(keep) : [], count = (text: string) => text.replace('#', String(rest.length));
+  return items.slice(0, items.length - rest.length).map(row).join('') + (rest.length ? foldRow(`${remove}|rest`, `<strong>${count(title)}</strong>`, () => `<div class="brain-section">${rest.map(row).join('')}</div>`, open, escape, remove, rest.map(id), count(confirm), '全部删除') : '');
 }
 
 /// 「4 分钟」「2 小时 5 分」：一件活做了多久（没做完就算到现在）。
@@ -109,24 +121,36 @@ export function modelText(model: string | null) {
   return model;
 }
 
-function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, open: Set<string>) {
-  const [label, tone] = state(job);
-  const title = job.content.trim().split('\n')[0].slice(0, 120);
-  const long = job.content.trim() !== title;
-  const timing = jobLive(job) ? `${when(job.created_at)} 派发 · 已进行 ${span(job.created_at, Date.now())}` : `${when(job.created_at)} 派发 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`;
+const jobTitle = (job: BrainJob) => job.content.trim().split('\n')[0].replace(/^【所在步骤】/, '').slice(0, 120);
+/// 哪个模型、在哪棵工作树、花了多少、为什么失败。
+function jobMeta(job: BrainJob, escape: Escape, timing = '') {
   const tree = job.branch ? `<span title="${escape(job.worktree || '')}">工作树 ${escape(job.branch)}${job.worktree ? '' : '（已合并或丢弃）'}</span>` : '<span>在项目目录中执行</span>';
-  // 任务原文照原样显示；交回的结果是成员的回复，按 Markdown 排版。
-  const fold = (key: string, summary: string, body: string) => `<details data-job-fold="${escape(`${job.id}|${key}`)}" ${open.has(`${job.id}|${key}`) ? 'open' : ''}><summary>${summary}</summary>${folded(`${job.id}|${key}`, open, () => `<div class="brain-job-text${key === 'result' ? ' markdown' : ''}">${key === 'result' ? agentMarkdown(body, escape) : escape(body)}</div>`)}</details>`;
-  return `<article class="brain-job ${tone}" data-job-id="${escape(job.id)}">
-    <header>${avatar(job.seat)}<strong>${escape(job.name)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(timing)}</small></header>
-    <p class="brain-job-title">${escape(title)}</p>
-    ${long ? fold('task', '任务全文', job.content.trim()) : ''}
-    <p class="brain-job-meta"><span>${escape(modelText(job.model))}${job.effort ? ` · ${escape(job.effort)}` : ''}</span>${tree}<span>任务 ${escape(job.id.slice(0, 8))}</span></p>
+  return `<p class="brain-job-meta">${timing}<span>${escape(modelText(job.model))}${job.effort ? ` · ${escape(job.effort)}` : ''}</span>${tree}<span>任务 ${escape(job.id.slice(0, 8))}</span></p>
     ${job.usage ? `<p class="brain-job-meta"><span>${escape(jobBill(job.usage))}</span></p>` : ''}
-    ${job.error && job.error !== '你在派活页取消了' ? `<p class="brain-job-error">${escape(job.error)}</p>` : ''}
-    ${job.result ? fold('result', '提交的结果', job.result) : ''}
-    <div class="brain-job-actions">${jobLive(job) ? `<button type="button" class="secondary" data-stop-job="${escape(job.id)}">${job.status === 'pending' ? '取消' : '停止'}</button>` : ''}<button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>
+    ${job.error && job.error !== '你在派活页取消了' ? `<p class="brain-job-error">${escape(job.error)}</p>` : ''}`;
+}
+const openSeat = (job: BrainJob, escape: Escape) => `<button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button>`;
+
+/// 排队和在做的活摆成卡片。
+function card(job: BrainJob, escape: Escape, avatar: (seat: string) => string, open: Set<string>) {
+  const [label, tone] = state(job), title = jobTitle(job), key = `${job.id}|task`;
+  return `<article class="brain-job ${tone}" data-job-id="${escape(job.id)}">
+    <header>${avatar(job.seat)}<strong>${escape(job.name)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(`${when(job.created_at)} 派发 · 已进行 ${span(job.created_at, Date.now())}`)}</small></header>
+    <p class="brain-job-title">${escape(title)}</p>
+    ${job.content.trim() !== title ? `<details data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>任务全文</summary>${folded(key, open, () => `<div class="brain-job-text">${escape(job.content.trim())}</div>`)}</details>` : ''}
+    ${jobMeta(job, escape)}
+    <div class="brain-job-actions"><button type="button" class="secondary" data-stop-job="${escape(job.id)}">${job.status === 'pending' ? '取消' : '停止'}</button>${openSeat(job, escape)}</div>
   </article>`;
+}
+
+/// 做完的活一行一件，点开看全文和结果。任务原文照原样显示；交回的结果是成员的回复，按 Markdown 排版。
+function endedRow(job: BrainJob, escape: Escape, open: Set<string>) {
+  const [label, tone] = state(job);
+  return foldRow(`job|${job.id}`, `<strong>${escape(`${job.name} · ${jobTitle(job)}`)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(when(job.finished_at || job.created_at))}</small>`, () => `<div class="brain-section">
+    ${jobMeta(job, escape, `<span>${escape(`${when(job.created_at)} 派发 · 用时 ${span(job.created_at, job.finished_at || job.created_at)}`)}</span>`)}
+    <p class="brain-watch-label">任务全文</p><div class="brain-job-text">${escape(job.content.trim())}</div>
+    ${job.result ? `<p class="brain-watch-label">提交的结果</p><div class="brain-job-text markdown">${agentMarkdown(job.result, escape)}</div>` : ''}
+    <div class="brain-job-actions">${openSeat(job, escape)}</div></div>`, open, escape, 'jobs', [job.id], '确认删除？');
 }
 
 /// 任务书里的勾选框：数出做了几步，显示时换成看得懂的符号。
@@ -141,13 +165,9 @@ function planDoc(doc: PlanDoc, escape: Escape, open: Set<string>) {
   return foldRow(key, `<strong>${doc.brief ? `任务书 · ${escape(doc.name)}` : '长期计划'}</strong>${progress}<small>${escape(when(doc.modified))} 更新</small>`, () => `<div class="brain-job-text markdown">${agentMarkdown(text, escape)}</div>`, open, escape, 'docs', [doc.file], doc.brief ? '确认删除？' : `${ld(0, 1)}的长期结论，确认删除？`);
 }
 
-/// 任务书只摆最近改过的几份，更早的收成一条，能一次删掉。
-const RECENT_DOCS = 8;
 function plansSection(plans: PlanDoc[], escape: Escape, open: Set<string>) {
-  const briefs = plans.filter(doc => doc.brief), older = briefs.length > RECENT_DOCS + 1 ? briefs.slice(RECENT_DOCS) : [];
-  const rows = (docs: PlanDoc[]) => docs.map(doc => planDoc(doc, escape, open)).join('');
-  const rest = () => older.length ? foldRow('plan|older', `<strong>更早的 ${older.length} 份任务书</strong>`, () => `<div class="brain-section">${rows(older)}</div>`, open, escape, 'docs', older.map(doc => doc.file), `确认删除这 ${older.length} 份？`, '全部删除') : '';
-  const body = () => plans.length ? `${rows(briefs.slice(0, briefs.length - older.length))}${rows(plans.filter(doc => !doc.brief))}${rest()}`
+  const briefs = plans.filter(doc => doc.brief), row = (doc: PlanDoc) => planDoc(doc, escape, open);
+  const body = () => plans.length ? plans.filter(doc => !doc.brief).map(row).join('') + foldRest(briefs, RECENT, row, doc => doc.file, 'docs', '更早的 # 份任务书', '确认删除这 # 份？', open, escape)
     : `<p class="inquiry-empty">${ld(0, 1)}尚未制定计划。较长或较复杂的任务，${ld(0, 1)}会先在 .tongxi/任务书/ 中编写任务书并随进度勾选，需要长期保留的内容写入 .tongxi/计划.md，均显示在此处。</p>`;
   return block('docs', '计划与任务书', briefs.length ? `${briefs.length} 份任务书 · 最近 ${escape(when(briefs[0].modified))} 更新` : plans.length ? '长期计划' : '尚未制定', open, body);
 }
@@ -219,7 +239,9 @@ export function planSection(overview: BrainOverview, escape: Escape, filter: str
   const old = overview.history.find(plan => plan.id === show);
   const options = overview.history.map(plan => `<option value="${plan.id}"${plan === old ? ' selected' : ''}>${escape(when(plan.archived_at))} 换下的计划（${plan.steps.length} 步）</option>`).join('');
   const picker = options ? `<select class="plan-history" data-plan-show aria-label="选择要查看的计划"><option value="">当前计划（${overview.steps.length} 步）</option>${options}</select>` : '';
-  return planFlow(old?.steps || overview.steps, overview.jobs, escape, filter, pick, picker, open);
+  const ids = overview.history.map(plan => String(plan.id));
+  const drop = old ? removeButton(escape, 'plans', [String(old.id)], '删了找不回，确认？', '删除这份') + (ids.length > 1 ? removeButton(escape, 'plans', ids, `${ids.length} 份旧计划都删，找不回，确认？`, '删除全部旧计划') : '') : '';
+  return planFlow(old?.steps || overview.steps, overview.jobs, escape, filter, pick, picker + drop, open);
 }
 
 /// 点开的一步：全文、谁负责、先要等哪几步、卡住几件；有派出去的活就能跳过去看、打开那位成员的会话。
@@ -233,7 +255,7 @@ function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: E
     job?.usage ? `<p><strong>用量</strong><span>${escape(jobBill(job.usage))}</span></p>` : '',
     held ? `<p><strong>阻塞</strong><span>${held} 个未完成的后续步骤依赖此步骤</span></p>` : '',
   ].join('');
-  const actions = job ? `<div class="brain-job-actions"><button type="button" class="secondary" data-show-job="${escape(job.id)}">查看任务</button><button type="button" class="text-button" data-open-seat="${escape(job.seat)}">打开 ${escape(job.name)} 的会话</button></div>` : '';
+  const actions = job ? `<div class="brain-job-actions">${job.hidden ? '' : `<button type="button" class="secondary" data-show-job="${escape(job.id)}">查看任务</button>`}${openSeat(job, escape)}</div>` : '';
   return `<article class="plan-detail ${kind}"><header><span class="plan-chip"><span aria-hidden="true">${icon}</span>${word}</span><strong>#${step.id} ${escape(step.title)}</strong><button type="button" class="icon-button" data-plan-pick="${step.id}" aria-label="收起">×</button></header>
     ${step.note ? `<p class="plan-detail-note">${escape(step.note)}</p>` : ''}${rows ? `<div class="plan-detail-rows">${rows}</div>` : ''}${actions}</article>`;
 }
@@ -427,31 +449,32 @@ const every = (minutes: number) => {
   return count === 1 && unit !== '分钟' ? `每${unit}` : `每 ${count} ${unit}`;
 };
 
-/// 待机：主脑挂的定时提醒、状态监控。到点叫醒谁、下次什么时候、上次怎样；用户可以暂停、现在跑一次、删掉。
+/// 待机：主脑挂的定时提醒、状态监控。到点叫醒谁、下次什么时候、上次怎样；用户可以暂停、现在跑一次、删掉。结束了的一行一个。
 function watchesSection(watches: BrainWatch[], escape: Escape, open: Set<string>) {
   if (!watches.length) return '';
-  const rows = () => watches.map(watch => {
-    const [label, tone] = watch.status === 'active' ? ['待机中', 'running'] : watch.status === 'paused' ? ['已暂停', 'stopped'] : ['已结束', 'done'];
-    const title = watch.note.trim().split('\n')[0].slice(0, 80);
+  const titleOf = (watch: BrainWatch) => watch.note.trim().split('\n')[0].slice(0, 80);
+  const note = (watch: BrainWatch) => `<p class="brain-watch-label">要做的事</p><div class="brain-job-text">${escape(watch.note.trim())}</div>`;
+  const check = (watch: BrainWatch) => watch.check_cmd ? `<p class="brain-watch-label">每次跑的命令（输出变了才叫醒）</p><div class="brain-job-text">${escape(watch.check_cmd)}</div>` : '';
+  const meta = (watch: BrainWatch) => {
     const cadence = watch.every_minutes ? watch.check_cmd ? `${every(watch.every_minutes)}看一次有没有变化` : every(watch.every_minutes) : '只一次';
+    return `<p class="brain-job-meta"><span>${escape(cadence)}${watch.until_at ? `，到 ${escape(when(watch.until_at))} 为止` : ''}</span><span>${watch.member_name ? `交给 ${escape(watch.member_name)} 去看` : `到点叫醒${ld(1, 0)}`}</span><span>已触发 ${watch.fired} 次</span>${watch.last_result ? `<span>${watch.last_at ? `${escape(when(watch.last_at))}：` : ''}${escape(watch.last_result)}</span>` : ''}</p>`;
+  };
+  const card = (watch: BrainWatch) => {
+    const title = titleOf(watch), key = `watch|${watch.id}`, detail = `${watch.note.trim() !== title ? note(watch) : ''}${check(watch)}`;
+    const [label, tone] = watch.status === 'active' ? ['待机中', 'running'] : ['已暂停', 'stopped'];
     const next = watch.status === 'active' ? `下次 ${when(watch.next_at)}` : watch.last_at ? `上次 ${when(watch.last_at)}` : '';
-    const key = `watch|${watch.id}`;
-    const detail = [
-      watch.note.trim() !== title ? `<p class="brain-watch-label">要做的事</p><div class="brain-job-text">${escape(watch.note.trim())}</div>` : '',
-      watch.check_cmd ? `<p class="brain-watch-label">每次跑的命令（输出变了才叫醒）</p><div class="brain-job-text">${escape(watch.check_cmd)}</div>` : '',
-    ].join('');
     const button = (action: string, text: string, kind = 'secondary') => `<button type="button" class="${kind}" data-watch-action="${action}" data-watch-id="${escape(watch.id)}">${text}</button>`;
-    const actions = watch.status === 'done' ? '' : `${watch.status === 'active' ? button('pause', '暂停') : button('resume', '继续')}${button('run', '现在跑一次')}`;
     return `<article class="brain-watch">
       <header><strong>${escape(title)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(next)}</small></header>
-      <p class="brain-job-meta"><span>${escape(cadence)}${watch.until_at ? `，到 ${escape(when(watch.until_at))} 为止` : ''}</span><span>${watch.member_name ? `交给 ${escape(watch.member_name)} 去看` : `到点叫醒${ld(1, 0)}`}</span><span>已触发 ${watch.fired} 次</span>${watch.last_result ? `<span>${watch.last_at ? `${escape(when(watch.last_at))}：` : ''}${escape(watch.last_result)}</span>` : ''}</p>
+      ${meta(watch)}
       ${detail ? `<details data-job-fold="${escape(key)}" ${open.has(key) ? 'open' : ''}><summary>详情</summary>${detail}</details>` : ''}
-      <div class="brain-job-actions">${actions}${button('remove', '删除', 'text-button')}</div>
+      <div class="brain-job-actions">${watch.status === 'active' ? button('pause', '暂停') : button('resume', '继续')}${button('run', '现在跑一次')}${button('remove', '删除', 'text-button')}</div>
     </article>`;
-  }).join('');
-  const active = watches.filter(watch => watch.status === 'active'), paused = watches.filter(watch => watch.status === 'paused').length, over = watches.length - active.length - paused;
-  const glance = [active.length && `待机中 ${active.length}`, paused && `已暂停 ${paused}`, over && `已结束 ${over}`, active.length && `下次 ${escape(when(Math.min(...active.map(watch => watch.next_at))))}`].filter(Boolean).join(' · ');
-  return block('watches', '待机', glance, open, () => `<p class="brain-watch-note">${ld(0, 1)}挂的定时提醒和状态监控：到点由同席叫醒，不用一直开着等。同席关着时不跑，开了以后补一次。</p>${rows()}`);
+  };
+  const row = (watch: BrainWatch) => foldRow(`watch|${watch.id}`, `<strong>${escape(titleOf(watch))}</strong><span class="brain-job-state done">已结束</span><small>${watch.last_at ? `上次 ${escape(when(watch.last_at))}` : ''}</small>`, () => `<div class="brain-section">${meta(watch)}${note(watch)}${check(watch)}</div>`, open, escape, 'watches', [watch.id], '确认删除？');
+  const active = watches.filter(watch => watch.status === 'active'), paused = watches.filter(watch => watch.status === 'paused'), over = watches.filter(watch => watch.status === 'done');
+  const glance = [active.length && `待机中 ${active.length}`, paused.length && `已暂停 ${paused.length}`, over.length && `已结束 ${over.length}`, active.length && `下次 ${escape(when(Math.min(...active.map(watch => watch.next_at))))}`].filter(Boolean).join(' · ');
+  return block('watches', '待机', glance, open, () => `<p class="brain-watch-note">${ld(0, 1)}挂的定时提醒和状态监控：到点由同席叫醒，不用一直开着等。同席关着时不跑，开了以后补一次。</p>${[...active, ...paused].map(card).join('')}${foldRest(over, 0, row, watch => watch.id, 'watches', '已结束的 # 个', '确认删除这 # 个？', open, escape)}`);
 }
 
 const REQUEST_STATE: Record<ProjectRequest['status'], [string, string]> = { approving: ['等用户点头', 'pending'], open: ['进行中', 'running'], done: ['已交回', 'done'], declined: ['没接', 'failed'], cancelled: ['已撤销', 'stopped'] };
@@ -468,7 +491,7 @@ function requestsSection(requests: ProjectRequest[], escape: Escape, open: Set<s
     const key = `request|${item.id}`;
     const text = () => `<p class="brain-watch-label">需求</p><div class="brain-job-text markdown">${agentMarkdown(item.content.trim(), escape)}</div>${item.last ? `<p class="brain-watch-label">最近一条</p><div class="brain-job-text markdown">${agentMarkdown(item.last.trim(), escape)}</div>` : ''}`;
     const meta = `<p class="brain-job-meta"><span>需求 ${escape(item.id.slice(0, 8))}</span><span>来回 ${item.rounds} 次</span></p>`;
-    if (!live.includes(item)) return foldRow(key, `<strong>${escape(`${who}：${title}`)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(when(item.updated_at))}</small>`, () => `${text()}${meta}`, open, escape, 'requests', [item.id], '两边一起删，确认？');
+    if (!live.includes(item)) return foldRow(key, `<strong>${escape(`${who}：${title}`)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(when(item.updated_at))}</small>`, () => `<div class="brain-section">${meta}${text()}</div>`, open, escape, 'requests', [item.id], '两边一起删，确认？');
     return `<article class="brain-watch">
       <header><strong>${escape(who)}</strong><span class="brain-job-state ${tone}">${label}</span><small>${escape(when(item.updated_at))}</small></header>
       <p class="brain-job-title">${escape(title)}${escape(wait)}</p>
@@ -478,8 +501,7 @@ function requestsSection(requests: ProjectRequest[], escape: Escape, open: Set<s
     </article>`;
   };
   const glance = [live.length && `进行中 ${live.length}`, ended.length && `已结束 ${ended.length}`].filter(Boolean).join(' · ');
-  const rest = () => ended.length > 1 ? foldRow('request|ended', `<strong>已结束的 ${ended.length} 件</strong>`, () => `<div class="brain-section">${ended.map(row).join('')}</div>`, open, escape, 'requests', ended.map(item => item.id), `两边一起删这 ${ended.length} 件，确认？`, '全部删除') : ended.map(row).join('');
-  return block('requests', '项目往来', glance, open, () => `${live.map(row).join('')}${rest()}`);
+  return block('requests', '项目往来', glance, open, () => live.map(row).join('') + foldRest(ended, 0, row, item => item.id, 'requests', '已结束的 # 件', '两边一起删这 # 件，确认？', open, escape));
 }
 
 /// 主脑派活：主脑现在在干嘛、派出去的每件活。在做的在上面，做完的收在下面。
@@ -487,11 +509,11 @@ export function brainJobsPage(project: string, overview: BrainOverview | null, b
   lazy.clear();
   const head = `<header class="chat-header"><div><h1>${ld(0, 1)}任务</h1><p>${escape(project)} · ${ld(0, 1)}的计划与分配给成员的任务</p></div><div class="header-actions"><button class="secondary" data-project-return-team>团队对话</button>${overview?.chat ? `<button class="secondary" data-open-seat="${escape(overview.seat)}">${ld(0, 1)}会话</button>` : ''}</div></header>`;
   if (!overview) return `${head}<div class="project-progress-content brain-jobs-content"><p class="inquiry-empty wait-pill">正在读取…</p></div>`;
-  const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job));
+  const live = overview.jobs.filter(jobLive), ended = overview.jobs.filter(job => !jobLive(job) && !job.hidden);
   const status = `<section class="brain-status"><span class="brain-status-dot ${brainBusy ? 'busy' : ''}"></span><strong>${ld(0, 1)}${brainBusy ? '正在回复' : '空闲'}</strong><small>${live.length ? `${live.length} 项任务进行中` : '暂无进行中的任务'}${overview.waiting ? ` · ${overview.waiting} 条结果或回答待送达${ld(1, 0)}` : ''}</small></section>`;
   const body = live.length
     ? live.map(job => card(job, escape, avatar, open)).join('')
     : ended.length ? '' : `<p class="inquiry-empty">${ld(0, 1)}尚未分配任务。在团队对话中提出需求后，${ld(0, 1)}会将任务分配给成员，已分配的任务列在此处。</p>`;
-  const history = ended.length ? `<details class="brain-jobs-ended" data-job-fold="ended" ${open.has('ended') ? 'open' : ''}><summary>已结束（${ended.length}）</summary>${folded('ended', open, () => ended.map(job => card(job, escape, avatar, open)).join(''))}</details>` : '';
+  const history = ended.length ? block('ended', '已结束的任务', `${ended.length} 件 · 最近 ${escape(when(Math.max(...ended.map(job => job.finished_at || job.created_at))))}`, open, () => foldRest(ended, RECENT, job => endedRow(job, escape, open), job => job.id, 'jobs', '更早的 # 件', '确认删除这 # 件？', open, escape)) : '';
   return `${head}<div class="project-progress-content brain-jobs-content">${status}${planSection(overview, escape, planFilter, planPick, planShow, open)}${watchesSection(overview.watches || [], escape, open)}${requestsSection(overview.requests || [], escape, open)}${usageSection(overview.usage, overview.jobs, open)}${ledgerSection(overview.ledger, escape, open)}${plansSection(overview.plans, escape, open)}${body}${history}</div>`;
 }

@@ -191,15 +191,19 @@ function renderBrainJobs(force = false) {
   if (!force && stamp === brainJobsPaint && main.querySelector('.brain-jobs-content')) return;
   brainJobsPaint = stamp;
   const scroll = main.querySelector('.brain-jobs-content')?.scrollTop || 0;
-  // 展开的计划、结果框自己也能滚，重绘后按折叠键放回原处。
-  const inner = new Map([...main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text')].map(box => [box.parentElement!.dataset.jobFold!, box.scrollTop]));
+  // 展开的计划、结果框自己也能滚，重绘后按折叠键（一条里有几个框就再按第几个）放回原处。
+  const boxes = () => [...main.querySelectorAll<HTMLElement>('[data-job-fold] .brain-job-text')].map(box => {
+    const fold = box.closest<HTMLElement>('[data-job-fold]')!;
+    return [`${fold.dataset.jobFold}|${[...fold.querySelectorAll('.brain-job-text')].indexOf(box)}`, box] as const;
+  });
+  const inner = new Map(boxes().map(([key, box]) => [key, box.scrollTop]));
   if (planFor !== selectedId) { planFor = selectedId; planFilter = ''; planPick = null; planShow = null; }
-  if (planShow !== null && !overview?.history.some(plan => plan.id === planShow)) planShow = null;
+  if (planShow !== null && !overview?.history.some(plan => plan.id === planShow)) { planShow = null; planFilter = ''; planPick = null; }
   main.innerHTML = brainJobsPage(detail.project.name, overview, brainBusy, escape, seat => avatar(member(seat), 'brain-job-avatar'), openJobFolds, planFilter, planPick, planShow);
   const content = main.querySelector<HTMLElement>('.brain-jobs-content');
   if (content) content.scrollTop = scroll;
   bindPlanFlow(main, `${selectedId}|${planShow ?? ''}`);
-  main.querySelectorAll<HTMLElement>('[data-job-fold] > .brain-job-text').forEach(box => { box.scrollTop = inner.get(box.parentElement!.dataset.jobFold!) || 0; });
+  for (const [key, box] of boxes()) box.scrollTop = inner.get(key) || 0;
   // 页面里的按钮都在这两处委托：收着的折叠框点开才补内容，补进来的按钮不用再一个个绑。
   for (const part of main.children) part.addEventListener('click', brainJobsClick as EventListener);
   // toggle 不冒泡，在捕获阶段接。
@@ -244,13 +248,19 @@ function brainJobsClick(event: MouseEvent) {
     repaintPlan();
     revealPlanNode(main, id, planPick === id);
   } else if ((el = hit('data-show-job'))) {
-    // 从流程图跳到那件活：收在「已结束」里的先展开，滚过去闪一下。
-    const ended = main.querySelector<HTMLDetailsElement>('details[data-job-fold="ended"]');
-    const find = () => main.querySelector<HTMLElement>(`.brain-job[data-job-id="${CSS.escape(el!.dataset.showJob!)}"]`);
-    if (!find() && ended && !ended.open) { fillFold(ended); openInstantly(ended, true); }
-    const card = find();
+    // 从流程图跳到那件活：收在「已结束的任务」里的先一层层展开，滚过去闪一下。
+    const id = CSS.escape(el.dataset.showJob!), at = (key: string) => main.querySelector<HTMLDetailsElement>(`details[data-job-fold="${key}"]`);
+    const show = (fold: HTMLDetailsElement | null) => { if (fold && !fold.open) { fillFold(fold); openInstantly(fold, true); } };
+    let card = main.querySelector<HTMLElement>(`.brain-job[data-job-id="${id}"]`);
+    if (!card) {
+      show(at('section|ended'));
+      if (!at(`job|${id}`)?.checkVisibility()) show(at('jobs|rest'));
+      show(at(`job|${id}`));
+      card = at(`job|${id}`);
+    }
     if (!card) return;
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 展开的一件比一屏还长，对准标题行，不对准正中。
+    (card instanceof HTMLDetailsElement ? card.firstElementChild! : card).scrollIntoView({ behavior: 'smooth', block: 'center' });
     card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
   } else if ((el = hit('data-stop-job'))) void stopBrainJob(el as HTMLButtonElement);
   else if ((el = hit('data-watch-action'))) void watchAction(el as HTMLButtonElement);
@@ -283,15 +293,14 @@ async function cancelRequest(button: HTMLButtonElement) {
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }
-/// 删任务书、计划，或删结束了的项目往来；按钮上带着要删哪几份。
+/// 删任务书、旧计划、做完的任务、结束了的待机和项目往来；按钮上带着删哪一种、哪几份。
 async function removeItems(button: HTMLButtonElement) {
   if (!armed(button, button.dataset.confirm!)) return;
   button.disabled = true;
-  const docs = button.dataset.remove === 'docs', ids: string[] = JSON.parse(button.dataset.ids!);
+  const kind = button.dataset.remove!;
   try {
-    if (docs) await invoke('remove_plan_docs', { conversationId: selectedId, files: ids });
-    else await invoke('remove_project_requests', { conversationId: selectedId, ids });
-    toast(docs ? '已删除，原文件挪到项目的 .tongxi/已删除/' : '已删除');
+    await invoke('remove_brain_items', { conversationId: selectedId, kind, ids: JSON.parse(button.dataset.ids!) });
+    toast(kind === 'docs' ? '已删除，原文件挪到项目的 .tongxi/已删除/' : '已删除');
   } catch (error) { toast(errorText(error), true); button.disabled = false; }
   await refreshBrainJobs(selectedId);
 }

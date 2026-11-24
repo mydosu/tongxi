@@ -1102,17 +1102,10 @@ fn cancel_project_request(app: tauri::AppHandle, state: State<'_, AppState>, con
     let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
     Ok(())
 }
-/// 用户在派活页删掉结束了的项目往来。
+/// 用户在派活页删东西（kind 见 Store::remove_brain_items），不叫醒主脑。
 #[tauri::command]
-fn remove_project_requests(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, ids: Vec<String>) -> Result<(), String> {
-    with_store(&state, |store| project_requests::remove_ended(&store.connection, &conversation_id, &ids))?;
-    let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
-    Ok(())
-}
-/// 用户在派活页删任务书、计划（挪进项目的 .tongxi/已删除/）。
-#[tauri::command]
-fn remove_plan_docs(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, files: Vec<String>) -> Result<(), String> {
-    with_store(&state, |store| store.remove_plan_docs(&conversation_id, &files))?;
+fn remove_brain_items(app: tauri::AppHandle, state: State<'_, AppState>, conversation_id: String, kind: String, ids: Vec<String>) -> Result<(), String> {
+    with_store(&state, |store| store.remove_brain_items(&conversation_id, &kind, &ids))?;
     let _ = tauri::Emitter::emit(&app, "brain-state", conversation_id);
     Ok(())
 }
@@ -1597,8 +1590,7 @@ fn main() {
             brain_live_jobs,
             stop_brain_job,
             cancel_project_request,
-            remove_project_requests,
-            remove_plan_docs,
+            remove_brain_items,
             brain_watch_action,
             update_group_members,
             save_local_message,

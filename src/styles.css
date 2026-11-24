@@ -542,8 +542,8 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .inquiry-answer textarea:focus { outline: none; border-color: rgb(165 152 216 / .7); box-shadow: 0 0 0 3px rgb(165 152 216 / .16); }
 .inquiry-answer .primary { padding: 9px 18px; }
 .inquiry-empty { margin: 4px 0; padding: 22px 4px; color: var(--muted); font-size: 13px; line-height: 1.8; }
-.inquiry-answered summary, .brain-jobs-ended > summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 13px; padding: 8px 0; }
-.inquiry-answered summary:hover, .brain-jobs-ended > summary:hover { color: var(--accent-2); }
+.inquiry-answered summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 13px; padding: 8px 0; }
+.inquiry-answered summary:hover { color: var(--accent-2); }
 .inquiry-answered ul { display: grid; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
 .inquiry-answered li { display: grid; gap: 4px; padding: 11px 14px; border-radius: 12px; background: rgb(255 255 255 / .5); border: 1px solid rgb(255 255 255 / .75); font-size: 12.5px; }
 .inquiry-answered li strong { color: #4f5878; font-weight: 600; }
@@ -562,9 +562,6 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-status-dot.busy { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 159 123 / .18); animation: member-pulse 1.6s ease-in-out infinite; }
 .brain-job.running { --tone: var(--ok); }
 .brain-job.pending { --tone: var(--queue); }
-.brain-job.failed { --tone: var(--err); }
-.brain-job.stopped { --tone: var(--warn); }
-.brain-job.done { --tone: rgb(165 152 216 / .7); }
 .brain-job header { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .brain-job header strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
 .brain-job header small { margin-left: auto; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
@@ -585,12 +582,11 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-job-text.markdown ul, .brain-job-text.markdown ol { padding-left: 20px; margin: 4px 0 8px; }
 .brain-job-actions { display: flex; align-items: center; gap: 12px; padding-top: 2px; }
 .brain-job-actions .secondary { padding: 6px 14px; font-size: 12px; }
-:is(.brain-job-actions, .brain-plan-row) .text-button { font-size: 12px; color: var(--muted); }
-:is(.brain-job-actions, .brain-plan-row) .text-button:hover { color: var(--accent-2); }
-:is(.brain-job-actions, .brain-plan-row) .text-button.danger { color: var(--err); }
+.brain-job-actions > .text-button:first-child { padding-left: 0; }
+:is(.brain-job-actions, .brain-plan-row, .plan-filters) .text-button { font-size: 12px; color: var(--muted); }
+:is(.brain-job-actions, .brain-plan-row, .plan-filters) .text-button:hover { color: var(--accent-2); }
+:is(.brain-job-actions, .brain-plan-row, .plan-filters) .text-button.danger { color: var(--err); }
 .brain-job-actions .secondary.danger { color: var(--err); border-color: rgb(176 99 79 / .35); background: rgb(255 246 243 / .8); }
-.brain-jobs-ended[open] { display: grid; gap: 10px; }
-.brain-jobs-ended .brain-job { background: rgb(255 255 255 / .48); box-shadow: none; }
 .brain-plans { padding: 12px 18px; border: 1px solid rgb(255 255 255 / .9); border-radius: 16px; background: rgb(255 255 255 / .55); }
 .brain-plans h2 { margin: 0; color: var(--ink); font-size: 13.5px; font-weight: 600; }
 .brain-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding-top: 10px; }
@@ -600,6 +596,15 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-plan-row > .brain-plan > summary { padding-right: 40px; }
 .brain-plan-row:has(> .danger) > .brain-plan > summary > :not(strong) { visibility: hidden; }
 .brain-plan > .brain-section { padding-left: 18px; }
+.brain-section > :is(.brain-watch-label, .brain-job-text) { margin-top: 0; }
+/* 状态标签跟日期一起靠右，上下对齐。 */
+.brain-plan > summary .brain-job-state { margin-left: auto; }
+.brain-plan > summary .brain-job-state + small { margin-left: 0; }
+/* 窄屏把地方让给标题：这里列的都是结束了的，正常做完的不再标，失败、停下的照标。 */
+@media (max-width: 600px) {
+  .brain-plan > summary .brain-job-state.done { display: none; }
+  .brain-plan > summary .brain-job-state.done + small { margin-left: auto; }
+}
 .brain-watch { display: grid; gap: 6px; padding: 10px 0 4px; border-top: 1px solid rgb(205 205 228 / .45); }
 .brain-watch-note + .brain-watch, .brain-section > .brain-watch:first-child { border-top: 0; padding-top: 2px; }
 .brain-watch header { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -612,10 +617,12 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .plan-history { min-width: 0; max-width: 260px; height: 28px; padding: 3px 8px; border: 1px solid rgb(205 205 228 / .8); border-radius: 8px; background: rgb(255 255 255 / .85); color: #44506a; font-size: 12px; }
 /* 屏幕外的任务卡片不排版不绘制，几十件活滚起来也不卡。 */
 .brain-jobs-content .brain-job { content-visibility: auto; contain-intrinsic-size: auto 150px; }
-:is(.brain-plan, .brain-plans) > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 4px 0; color: var(--muted); font-size: 12.5px; }
-:is(.brain-plan, .brain-plans) > summary::-webkit-details-marker { display: none; }
-:is(.brain-plan, .brain-plans) > summary::before { content: '▸'; flex: none; color: var(--faint); transition: transform .15s; }
-:is(.brain-plan, .brain-plans)[open] > summary::before { transform: rotate(90deg); }
+/* 协作几页的展开箭头都是同一种小箭头，不用浏览器默认的大黑三角。 */
+:is(.inquiry-background, .inquiry-answered, .brain-watch details, .brain-job details, .brain-plan, .brain-plans) > summary { display: flex; align-items: center; gap: 10px; list-style: none; }
+:is(.inquiry-background, .inquiry-answered, .brain-watch details, .brain-job details, .brain-plan, .brain-plans) > summary::-webkit-details-marker { display: none; }
+:is(.inquiry-background, .inquiry-answered, .brain-watch details, .brain-job details, .brain-plan, .brain-plans) > summary::before { content: '▸'; flex: none; color: var(--faint); transition: transform .15s; }
+:is(.inquiry-background, .inquiry-answered, .brain-watch details, .brain-job details, .brain-plan, .brain-plans)[open] > summary::before { transform: rotate(90deg); }
+:is(.brain-plan, .brain-plans) > summary { cursor: pointer; padding: 4px 0; color: var(--muted); font-size: 12.5px; }
 .brain-plan > summary strong { min-width: 0; overflow: hidden; color: var(--ink); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .brain-plan > summary:hover strong, .brain-plans > summary:hover h2 { color: var(--accent-2); }
 :is(.brain-plan, .brain-plans) > summary small { margin-left: auto; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
@@ -625,6 +632,7 @@ html[data-hud] #hud-model:hover, html[data-hud] [data-hud-exit]:hover { backgrou
 .brain-plan-progress { flex: none; padding: 1px 9px; border-radius: 999px; background: rgb(108 134 182 / .13); color: var(--queue); font-size: 11.5px; }
 .brain-plan-progress.done { background: rgb(74 159 123 / .13); color: var(--ok); }
 .plan-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.plan-filters .text-button { padding: 2px 4px; }
 .plan-filter { --tone: var(--muted); padding: 2px 10px; border: 1px solid transparent; border-radius: 999px; background: rgb(198 201 216 / .22); color: var(--tone); font-size: 11.5px; cursor: pointer; }
 .plan-filter.on { border-color: var(--tone); background: #fff; }
 .plan-folded { color: var(--faint); font-size: 11.5px; }
