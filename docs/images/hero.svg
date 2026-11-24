@@ -172,10 +172,10 @@
         <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.15;.20;.88;.94;1" dur="13s" repeatCount="indefinite"/>
         <animateTransform attributeName="transform" type="translate" values="0 10;0 10;0 0;0 0;0 0;0 10" keyTimes="0;.15;.20;.88;.94;1" dur="13s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;0 0 1 1;0 0 1 1"/>
         <circle cx="832" cy="214" r="14" fill="#d98a6c"/><text x="827" y="219" font-size="13" fill="#fff">C</text>
-        <text x="856" y="200" font-size="12" fill="#8a90b0">Claude 1号 · 调度主脑</text>
+        <text x="856" y="200" font-size="12" fill="#8a90b0">Claude · Leader</text>
         <rect x="856" y="206" width="330" height="62" rx="14" fill="#fff" fill-opacity=".92" filter="url(#soft)"/>
         <text x="872" y="232">拆成 3 项：T1 交给 Codex（high），</text>
-        <text x="872" y="256">T2 交给 DSH，验收交给 GPT Luna。</text>
+        <text x="872" y="256">T2 交给 DSH，验收交给 Hermes。</text>
       </g>
       <g>
         <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.30;.35;.88;.94;1" dur="13s" repeatCount="indefinite"/>
@@ -195,7 +195,7 @@
         <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.60;.65;.88;.94;1" dur="13s" repeatCount="indefinite"/>
         <animateTransform attributeName="transform" type="translate" values="0 10;0 10;0 0;0 0;0 0;0 10" keyTimes="0;.60;.65;.88;.94;1" dur="13s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;0 0 1 1;0 0 1 1"/>
         <circle cx="832" cy="420" r="14" fill="#8fd3b6"/><text x="826" y="425" font-size="13" fill="#fff">验</text>
-        <text x="856" y="406" font-size="12" fill="#8a90b0">验证 · GPT Luna · 新会话</text>
+        <text x="856" y="406" font-size="12" fill="#8a90b0">验收 · Hermes · 新会话</text>
         <rect x="856" y="412" width="250" height="40" rx="14" fill="#fff" fill-opacity=".92" filter="url(#soft)"/>
         <text x="872" y="437">复核通过 10 / 0，可以合并 ✓</text>
       </g>

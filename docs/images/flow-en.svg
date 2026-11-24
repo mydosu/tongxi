@@ -38,8 +38,8 @@
     </style>
   </defs>
   <rect width="1280" height="500" rx="28" fill="url(#bg)"/>
-  <text class="h" x="40" y="58">Project collaboration: one sentence to the lead</text>
-  <text class="s" x="40" y="88">The lead splits the work into steps for members to run in parallel. In "Brain jobs" this map appears: running steps shimmer, waiting ones breathe.</text>
+  <text class="h" x="40" y="58">Projects: one sentence to the Leader</text>
+  <text class="s" x="40" y="88">The Leader splits the work into steps for members to run in parallel. "Leader tasks" shows this map: running steps shimmer, waiting ones breathe.</text>
 
   <!-- 图例：卡片颜色对应真实状态分类 -->
   <g class="k">
@@ -57,12 +57,12 @@
 
   <!-- 连线：上游做完了是淡紫，通向在做那一步的流动，其余灰 -->
   <path class="e" d="M252 280H297" stroke="#a598d8" marker-end="url(#a-lilac)"/>
-  <path class="e" d="M496 280C520 280 518 184 541 184" stroke="#4a9f7b" stroke-dasharray="5 7" marker-end="url(#a-ok)"><animate attributeName="stroke-dashoffset" values="0;-12" dur="1.1s" repeatCount="indefinite"/></path>
+  <path class="e" d="M496 280H511Q519 280 519 272V192Q519 184 527 184H541" stroke="#4a9f7b" stroke-dasharray="5 7" marker-end="url(#a-ok)"><animate attributeName="stroke-dashoffset" values="0;-12" dur="1.1s" repeatCount="indefinite"/></path>
   <path class="e" d="M496 280H541" stroke="#4a9f7b" stroke-dasharray="5 7" marker-end="url(#a-ok)"><animate attributeName="stroke-dashoffset" values="0;-12" dur="1.1s" repeatCount="indefinite"/></path>
-  <path class="e" d="M496 280C520 280 518 376 541 376" stroke="#a598d8" marker-end="url(#a-lilac)"/>
-  <path class="e" d="M740 184C764 184 762 280 785 280" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
+  <path class="e" d="M496 280H511Q519 280 519 288V368Q519 376 527 376H541" stroke="#a598d8" marker-end="url(#a-lilac)"/>
+  <path class="e" d="M740 184H755Q763 184 763 192V272Q763 280 771 280H785" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
   <path class="e" d="M740 280H785" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
-  <path class="e" d="M740 376C764 376 762 280 785 280" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
+  <path class="e" d="M740 376H755Q763 376 763 368V288Q763 280 771 280H785" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
   <path class="e" d="M984 280H1029" stroke="#c9cbe0" marker-end="url(#a-gray)"/>
 
   <!-- 下一件事：回到开头 -->
@@ -75,12 +75,12 @@
     <rect width="196" height="80" rx="14" fill="url(#t-done)" stroke="#fff" stroke-opacity=".8"/>
     <circle cx="26" cy="28" r="9.5" fill="#e9e7f2"/><path d="M22 28.2 25 31 30.5 25" fill="none" stroke="#7f74b4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
     <text class="t done" x="44" y="34">You say it</text>
-    <text class="f" x="18" y="62">In the group or lead chat</text>
+    <text class="f" x="18" y="62">Just say it in team chat</text>
   </g>
   <g transform="translate(300 240)">
     <rect width="196" height="80" rx="14" fill="url(#t-done)" stroke="#fff" stroke-opacity=".8"/>
     <circle cx="26" cy="28" r="9.5" fill="#e9e7f2"/><path d="M22 28.2 25 31 30.5 25" fill="none" stroke="#7f74b4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    <text class="t done" x="44" y="34">Lead plans</text>
+    <text class="t done" x="44" y="34">Leader plans</text>
     <text class="f" x="18" y="62">Writes a brief, splits steps</text>
   </g>
 
@@ -113,7 +113,7 @@
   <g transform="translate(788 240)">
     <rect width="196" height="80" rx="14" fill="url(#t-todo)" stroke="#fff" filter="url(#card)"/>
     <circle cx="26" cy="28" r="9.5" fill="#ecedf3"/><circle cx="26" cy="28" r="3.6" fill="none" stroke="#8a90b0" stroke-width="1.5"/>
-    <text class="t" x="44" y="34">Lead review</text>
+    <text class="t" x="44" y="34">Leader review</text>
     <text class="f" x="18" y="62">Checks results</text>
     <rect x="124" y="49" width="60" height="20" rx="10" fill="#b0634f" fill-opacity=".1"/>
     <text x="154" y="63" text-anchor="middle" font-size="12" fill="#b0634f">blocks 1</text>
