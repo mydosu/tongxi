@@ -231,7 +231,7 @@ function planFlow(all: PlanStep[], jobs: BrainJob[], escape: Escape, filter: str
   const glance = [`已完成 ${count('done')}/${all.length}`, count('doing') && `进行中 ${count('doing')}`, count('you') && `待你处理 ${count('you')}`].filter(Boolean).join(' · ');
   return show(glance, `<div class="plan-filters">${picker}${bar}${hint}${zoom}</div>
     <div class="plan-stage"><div class="plan-flow"><div class="plan-canvas" data-w="${width}" data-h="${height}" style="width:${width}px;height:${height}px">
-      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div><div class="plan-tip" hidden></div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}`);
+      <svg width="${width}" height="${height}"><defs><marker id="plan-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1.5 1.5 8 5 1.5 8.5"/></marker></defs>${edges}</svg>${nodes}</div></div></div>${picked ? stepDetail(picked, all, jobs, escape, picked.status === 'done' ? 0 : blocked(picked.id).size) : ''}`);
 }
 
 /// 计划流程图这一块：show 是选中的旧计划（null 看当前的）。切分类、点步骤只重画这一块，不动整页。
@@ -265,7 +265,11 @@ function stepDetail(step: PlanStep, all: PlanStep[], jobs: BrainJob[], escape: E
 const ZOOM_STEPS = [0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
 const MIN = ZOOM_STEPS[0], MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
 const view = { key: '', mode: 'auto' as 'auto' | 'fit' | 'manual', scale: 1, left: 0, top: 0 };
-let viewWatch: ResizeObserver | undefined, viewFrame = 0;
+let viewWatch: ResizeObserver | undefined, viewFrame = 0, tipTimer = 0;
+// 卡片上的全文提示挂在 body 上：计划块在 <details> 里（展开动画要 overflow: clip），卡片少、画布矮时挂在里面会被截掉。
+const tip = Object.assign(document.createElement('div'), { className: 'plan-tip', hidden: true });
+const hideTip = () => { clearTimeout(tipTimer); tip.hidden = true; };
+addEventListener('scroll', hideTip, true);
 
 /// 点开一步：它要是在画布视野外就把画布挪过去（只在点开时，重绘不乱挪）。
 export function revealPlanNode(root: ParentNode, id: number, scroll: boolean) {
@@ -277,10 +281,10 @@ export function revealPlanNode(root: ParentNode, id: number, scroll: boolean) {
 /// 指到一步就亮出它前面要等的、后面被它卡住的整条链，其余淡下去；字被截掉的浮出全文。
 /// 按住拖着看（卡片上也能拖，挪过几像素才算拖，不然算点），滚轮或右上角按钮缩放，双击空白处适应窗口。
 export function bindPlanFlow(root: ParentNode, key: string) {
-  viewWatch?.disconnect(); cancelAnimationFrame(viewFrame);
+  viewWatch?.disconnect(); cancelAnimationFrame(viewFrame); hideTip();
   const stage = root.querySelector<HTMLElement>('.plan-stage'), flow = stage?.querySelector<HTMLElement>('.plan-flow'), canvas = flow?.querySelector<HTMLElement>('.plan-canvas');
   if (!stage || !flow || !canvas) return;
-  const tip = stage.querySelector<HTMLElement>('.plan-tip')!, tools = root.querySelector<HTMLElement>('.plan-zoom')!, level = tools.querySelector<HTMLButtonElement>('[data-zoom="reset"]')!;
+  const tools = root.querySelector<HTMLElement>('.plan-zoom')!, level = tools.querySelector<HTMLButtonElement>('[data-zoom="reset"]')!;
   const zoomOut = tools.querySelector<HTMLButtonElement>('[data-zoom="out"]')!, zoomIn = tools.querySelector<HTMLButtonElement>('[data-zoom="in"]')!;
   const w = Number(canvas.dataset.w), h = Number(canvas.dataset.h), pad = 24, tall = 520;
   const fits = () => Math.min(1, (flow.clientWidth - pad) / w, (tall - pad) / h);
@@ -332,19 +336,17 @@ export function bindPlanFlow(root: ParentNode, key: string) {
     viewFrame = requestAnimationFrame(step);
   };
 
-  let tipTimer = 0;
-  const hideTip = () => { clearTimeout(tipTimer); tip.hidden = true; };
   const showTip = (node: HTMLElement) => {
     const title = node.querySelector('strong')!, line = node.querySelector('small')!;
     if (!canvas.classList.contains('far') && title.scrollHeight <= title.clientHeight + 1 && line.scrollWidth <= line.clientWidth + 1) return;
     const foot = [...node.querySelector('.plan-foot')!.children].map(item => item.textContent).filter(Boolean).join(' · ');
     tip.replaceChildren(Object.assign(document.createElement('strong'), { textContent: `#${node.dataset.planPick} ${node.querySelector('.plan-name')!.textContent}` }),
       ...(foot ? [Object.assign(document.createElement('small'), { textContent: foot })] : []));
+    document.body.append(tip);
     tip.hidden = false;
-    const box = stage.getBoundingClientRect(), at = node.getBoundingClientRect();
-    const above = at.top - box.top - tip.offsetHeight - 8;
-    tip.style.left = `${Math.max(8, Math.min(at.left - box.left + at.width / 2 - tip.offsetWidth / 2, box.width - tip.offsetWidth - 8))}px`;
-    tip.style.top = `${above >= 4 ? above : at.bottom - box.top + 8}px`;
+    const at = node.getBoundingClientRect(), above = at.top - tip.offsetHeight - 8;
+    tip.style.left = `${Math.max(8, Math.min(at.left + at.width / 2 - tip.offsetWidth / 2, innerWidth - tip.offsetWidth - 8))}px`;
+    tip.style.top = `${above >= 4 ? above : at.bottom + 8}px`;
   };
 
   const edges = [...canvas.querySelectorAll<SVGPathElement>('path[data-from]')];
