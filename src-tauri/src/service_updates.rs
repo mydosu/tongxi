@@ -645,8 +645,8 @@ const TREE_HASH_HEX_LEN: usize = 64;
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(900);
 /// 候选原生预检（跑候选槽里的 exe 报版本）的超时。
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(60);
-/// 预演之后重复封印校验的超时。
-const VERIFY_TIMEOUT: Duration = Duration::from_secs(90);
+/// 预演之后重复封印校验的超时。只防卡死：DSH 0.2.2 约 10 万个文件 / 1.3 GB，实测一次封印 54 秒。
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 严格按十六进制字符校验指纹：长度必须是 64 且全部为 hex，不接受截断或前缀。
 fn is_tree_hash(value: &str) -> bool {
@@ -866,6 +866,25 @@ pub(crate) fn prepare_member(
     }
 
     let id = uuid::Uuid::new_v4().to_string();
+    let plan = prepare_candidate(data, layout, &id, metadata, baseline, base_manifest_sha256);
+    if plan.is_err() {
+        // 没成计划的候选谁也用不到：删掉，免得每失败一次留下一整份依赖（DSH 0.2.2 约 1.3 GB）。
+        if let Ok(slot) = service_install::slot_root_for(data, layout, &id) {
+            let _ = std::fs::remove_dir_all(slot);
+        }
+    }
+    plan
+}
+
+fn prepare_candidate(
+    data: &Path,
+    layout: &service_install::Layout,
+    id: &str,
+    metadata: PackageMetadata,
+    baseline: service_install::InstallState,
+    base_manifest_sha256: String,
+) -> Result<service_plans::UpdatePlan, String> {
+    let id = id.to_string();
     let root = service_install::root_for(data, layout)?; // root_for 已确认无 reparse 点
     std::fs::create_dir_all(&root).map_err(|_| "无法创建更新根目录".to_string())?;
 

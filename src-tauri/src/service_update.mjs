@@ -236,8 +236,9 @@ export async function prepareCandidate(root, slotId, meta) {
   return { slot_id: slotId, version, slot, ...fingerprint };
 }
 
-const MAX_FINGERPRINT_FILES = 100000;
-const MAX_FINGERPRINT_BYTES = 2 * 1024 * 1024 * 1024;
+// 只防失控的包，不卡正常增长：DSH 0.2.1 约 6.9 万条 / 0.8 GB，0.2.2 已到 10.2 万条 / 1.3 GB，旧的 10 万 / 2 GB 卡死了更新。
+const MAX_FINGERPRINT_FILES = 500000;
+const MAX_FINGERPRINT_BYTES = 8 * 1024 * 1024 * 1024;
 const FINGERPRINT_MARKER = 'candidate_modified';
 const failFingerprint = () => { throw new Error(FINGERPRINT_MARKER); };
 
