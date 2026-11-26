@@ -9,6 +9,10 @@ pub enum Target {
     OpenCode,
     /// Antigravity 的 `agy` 没有 ACP：经 `antigravity_bridge.mjs` 把 `agy -p` 的 stream-json 转成 ACP。
     Antigravity,
+    /// DSH：受管安装目录里的 `@deepseek-ai/dsh-acp`，经 `dsh_bridge.mjs` 起。
+    Dsh,
+    /// Claude Code：本机的 `claude` CLI，经 `claude_bridge.mjs` 转成 ACP。
+    Claude,
     /// 旧 ACP 通路（WSL Hermes）。Hermes 已从 WSL 删除，同席现在走 `albion_openai`（见 albion.rs）；
     /// 这个变体暂时没人构造，留着只为回退时按 README 装回 WSL Hermes 再用。
     #[allow(dead_code, reason = "ACP 回退分支，MVP 已换 OpenAI 通路")]
@@ -119,6 +123,8 @@ impl Target {
             Self::Windows(_) => "hermes-win",
             Self::OpenCode => "opencode-win",
             Self::Antigravity => "antigravity-win",
+            Self::Dsh => "dsh-win",
+            Self::Claude => crate::claude::AGENT_ID,
             Self::Albion { .. } => "albion-wsl",
         }
     }
@@ -127,6 +133,8 @@ impl Target {
             Self::Windows(_) => "hermes",
             Self::OpenCode => "opencode",
             Self::Antigravity => "antigravity",
+            Self::Dsh => "dsh",
+            Self::Claude => "claude",
             Self::Albion { .. } => "albion",
         }
     }
@@ -135,8 +143,25 @@ impl Target {
             Self::Windows(_) => "Hermes",
             Self::OpenCode => "OpenCode",
             Self::Antigravity => "Antigravity",
+            Self::Dsh => "DSH",
+            Self::Claude => "Claude",
             Self::Albion { .. } => "阿尔比恩",
         }
+    }
+    /// 桥只在 initialize 时读模型目录（Claude 跑 CLI、Antigravity 跑 `agy models`）：刷新模型要再握一次手。
+    pub fn catalog_on_initialize(&self) -> bool {
+        matches!(self, Self::Claude | Self::Antigravity)
+    }
+    /// 版本不信 initialize 报的：DSH 的 agentInfo 是 ACP 适配层自己的号，以安装目录的 package.json 为准。
+    pub fn version(&self, directory: &Path) -> Option<String> {
+        let Self::Dsh = self else { return None };
+        let manifest = std::fs::read(crate::service_install::dsh_path(directory).ok()?.join("package.json")).ok()?;
+        serde_json::from_slice::<serde_json::Value>(&manifest).ok()?["version"].as_str().map(String::from)
+    }
+    /// 一轮出错时补在错误后面的提示。
+    pub fn error_hint(&self) -> Option<&'static str> {
+        // DSH 只用它自己的配置，最常见的原因是还没在 DSH 里配好模型和 Key。
+        matches!(self, Self::Dsh).then_some("DSH 用的是它自己的模型和 Key：还没配的话，到「成员与服务 → DSH → 登录 / 初次配置」打开 dsh web，在 Models 里填好后重新连接")
     }
     pub fn executable(&self) -> Option<String> {
         match self {
@@ -146,6 +171,8 @@ impl Target {
                 .map(|path| path.to_string_lossy().into()),
             Self::OpenCode => Self::opencode_exe().map(|path| path.to_string_lossy().into()),
             Self::Antigravity => Self::antigravity_exe().map(|path| path.to_string_lossy().into()),
+            Self::Dsh => crate::dsh::discover().map(|path| path.to_string_lossy().into()),
+            Self::Claude => crate::claude::discover_executable().map(|path| path.to_string_lossy().into()),
             Self::Albion {
                 launcher, python, ..
             } => Some(format!("{} → {python}", launcher.display())),
@@ -153,7 +180,7 @@ impl Target {
     }
     pub fn cwd(&self, path: &Path) -> Result<String> {
         match self {
-            Self::Windows(_) | Self::OpenCode | Self::Antigravity => Ok(path.to_string_lossy().into()),
+            Self::Windows(_) | Self::OpenCode | Self::Antigravity | Self::Dsh | Self::Claude => Ok(path.to_string_lossy().into()),
             Self::Albion {
                 distro, profile, ..
             } => {
@@ -193,6 +220,37 @@ impl Target {
                 let node = crate::claude::discover_node().ok_or("未找到 Node 运行时，Antigravity 的桥要用 Node")?;
                 let mut command = Command::new(node);
                 command.args(["--input-type=module", "-e", include_str!("antigravity_bridge.mjs")]).arg(exe).arg(data);
+                Ok(command)
+            }
+            Self::Dsh => {
+                let node = crate::dsh::discover().ok_or("未找到 Windows DSH Node 环境，请检查安装或 AGENT_HUB_DSH_NODE")?;
+                let installation = crate::service_install::dsh_path(directory)?;
+                if !installation.is_absolute() || !installation.join("package.json").is_file() {
+                    return Err("DSH 安装目录不可用，请检查 AGENT_HUB_DSH_INSTALLATION".into());
+                }
+                let mut command = Command::new(node);
+                command.args(["--input-type=module", "-e", include_str!("dsh_bridge.mjs")]).arg(installation).arg(data);
+                command.current_dir(directory);
+                command.env_remove("AGENT_HUB_DSH_PROJECT_MODE");
+                // 共用她自己的 DSH 家目录（同一个会话库）：外层设了就照用（测试隔离），
+                // 否则指向真实的 ~/.dsh；库不存在时不给变量，桥回退到同席隔离目录。
+                if let Some(home) = crate::dsh::resolved_dsh_home() {
+                    command.env("AGENT_HUB_DSH_HOME", home);
+                }
+                Ok(command)
+            }
+            Self::Claude => {
+                // 每次连接现查：用户装完 Node 不用重启同席。
+                let node = crate::claude::discover_node()
+                    .ok_or("同席连 Claude 需要 Node.js：请在「成员」页点安装，或装好 Node.js 后重新连接")?;
+                let executable = crate::claude::discover_executable()
+                    .ok_or("未找到 Claude Code，请检查 PATH 或 AGENT_HUB_CLAUDE_EXE")?;
+                let mut command = Command::new(node);
+                command.args(["--input-type=module", "-e", include_str!("claude_bridge.mjs")]).arg(executable).arg(data);
+                command.current_dir(directory);
+                for name in crate::claude::nested_session_markers() {
+                    command.env_remove(name);
+                }
                 Ok(command)
             }
             Self::Windows(python) => {

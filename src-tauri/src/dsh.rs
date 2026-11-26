@@ -1,49 +1,26 @@
-use crate::codex::{
-    busy_ids, busy_in, headline, insert_run, live_in, run_mut, RunSnapshot, RuntimeSnapshot,
-};
+//! DSH 成员：受管安装目录里的 `@deepseek-ai/dsh-acp`，经 `dsh_bridge.mjs` 接入共用的 ACP 运行时（hermes.rs）。
+//! 这里只留 DSH 自己的东西：配置项解析、会话日志里的用量、会话标题、权限表。
 use crate::models::ModelOption;
-use crate::rpc::Client;
-use crate::store::{RunRecord, Store};
 use serde_json::{json, Value};
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
-};
-use std::time::{Duration, Instant};
-use tauri::Emitter;
-use uuid::Uuid;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 type Result<T> = std::result::Result<T, String>;
-struct Inner {
-    connection: String,
-    generation: String,
-    client: Option<Arc<Client>>,
-    version: Option<String>,
-    error: Option<String>,
-    runs: Vec<RunSnapshot>,
-    models: Vec<ModelOption>,
-    default_model: Option<String>,
-    default_effort: Option<String>,
-    loaded: HashSet<String>,
-    last_checkpoint: Instant,
+
+/// 状态身份：和别的 ACP 成员共用运行时类型，按这层包装区分；方法经 Deref 直接用。
+pub struct Runtime(Arc<crate::hermes::Runtime>);
+impl Runtime {
+    pub fn new(app: tauri::AppHandle, store: Arc<Mutex<crate::store::Store>>, directory: PathBuf) -> Arc<Self> {
+        Arc::new(Self(crate::hermes::Runtime::with_target(app, store, directory, crate::acp_transport::Target::Dsh)))
+    }
 }
-pub struct Runtime {
-    app: tauri::AppHandle,
-    store: Arc<Mutex<Store>>,
-    directory: PathBuf,
-    node: Option<PathBuf>,
-    inner: Mutex<Inner>,
-    revision: AtomicU64,
+impl std::ops::Deref for Runtime {
+    type Target = Arc<crate::hermes::Runtime>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
-fn busy(run: &RunSnapshot) -> bool {
-    matches!(
-        run.record.status.as_str(),
-        "starting" | "running" | "cancelling"
-    )
-}
+
 pub(crate) fn current_option(response: &Value, id: &str) -> Option<String> {
     response["configOptions"]
         .as_array()?
@@ -144,18 +121,34 @@ pub(crate) fn resolved_dsh_home() -> Option<PathBuf> {
 /// 真实用量（未命中缓存的输入、缓存读写、输出）。把 since（毫秒）之后的加起来，就是这一回合的用量，
 /// 按 ACP 回包的样子返回，和别家一样交给 record_usage。
 /// 日志在 `<DSH 家目录>/sessions/<目录>/<会话>/session.v4.jsonl[.zstd]`，zstd 版是一帧帧追加的。
-fn session_usage(session_id: &str, since: i64) -> Option<Value> {
+/// 回合结束后 DSH 要过一两秒才把最后一次调用落盘（实测），所以等这一回合的 `turn/end` 写进去（最多 10 秒）再算，
+/// 不然短回合读不到、长回合少算最后一步。会阻塞，放后台调。
+pub(crate) fn session_usage(session_id: &str, since: i64) -> Option<Value> {
     let sessions = resolved_dsh_home()?.join("sessions");
     let folder = std::fs::read_dir(&sessions)
         .ok()?
         .flatten()
         .map(|entry| entry.path().join(session_id))
         .find(|path| path.is_dir())?;
-    let text = match std::fs::read(folder.join("session.v4.jsonl.zstd")) {
-        Ok(bytes) => decode_frames(&bytes),
-        Err(_) => std::fs::read_to_string(folder.join("session.v4.jsonl")).ok()?,
+    let read = || match std::fs::read(folder.join("session.v4.jsonl.zstd")) {
+        Ok(bytes) => Some(decode_frames(&bytes)),
+        Err(_) => std::fs::read_to_string(folder.join("session.v4.jsonl")).ok(),
     };
+    let mut text = read()?;
+    for _ in 0..50 {
+        if turn_ended(&text, since) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        text = read()?;
+    }
     usage_since(&text, since)
+}
+
+fn turn_ended(text: &str, since: i64) -> bool {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|event| event["type"] == "turn/end" && event["time"].as_i64().is_some_and(|time| time >= since))
 }
 
 /// 解开一帧帧追加的 zstd 数据；坏帧跳过。
@@ -211,7 +204,7 @@ fn usage_since(text: &str, since: i64) -> Option<Value> {
 /// 从 DSH 的会话投影缓存里取会话标题：优先会话已定下来的标题，
 /// 没有就用会话里第一句用户输入；都没有返回 None（不编、不猜）。
 /// 会话 id 两种写法（`session-<uuid>` / 裸 `<uuid>`）都指向同一个 `session-<uuid>.json`。
-fn projected_title(home: &std::path::Path, session_id: &str) -> Option<String> {
+fn projected_title(home: &Path, session_id: &str) -> Option<String> {
     let uuid = session_id.strip_prefix("session-").unwrap_or(session_id);
     if uuid.is_empty() || uuid.contains('/') || uuid.contains('\\') {
         return None;
@@ -251,656 +244,38 @@ pub(crate) fn discover() -> Option<PathBuf> {
             .is_some_and(|name| name.eq_ignore_ascii_case("node.exe")))
     .then_some(path)
 }
-impl Runtime {
-    /// 只读列出该 agent 自己的原生会话（ACP session/list，ACP 标准方法）。
-    pub fn list_sessions(&self) -> Result<Vec<crate::codex::NativeSession>> {
-        let client = {
-            let inner = self.inner.lock().unwrap();
-            inner
-                .client
-                .clone()
-                .ok_or_else(|| "DSH 未连接".to_string())?
-        };
-        let response = client.rpc_timeout(
-            "session/list",
-            serde_json::json!({}),
-            std::time::Duration::from_secs(20),
-        )?;
-        // 同席每次连接都会在 dsh-workspaces/catalog 开一个空会话读模型目录，这些不是用户会话，不列出。
-        let catalog = self
-            .directory
-            .join("dsh-workspaces")
-            .join("catalog")
-            .to_string_lossy()
-            .to_lowercase();
-        let mut sessions: Vec<_> = crate::codex::native_sessions_from_acp(&response)
-            .into_iter()
-            .filter(|session| {
-                session
-                    .cwd
-                    .as_deref()
-                    .is_none_or(|cwd| cwd.trim_end_matches(['\\', '/']).to_lowercase() != catalog)
-            })
-            .collect();
-        // 面板标题：尽量用 DSH 自己的投影缓存补上（已定标题 > 首句用户输入），
-        // 读不到就保持原样，绝不编造。隔离模式下 home 是隔离目录，不碰真实 ~/.dsh。
-        let home = resolved_dsh_home().unwrap_or_else(|| self.directory.join("dsh-native"));
-        for session in &mut sessions {
-            if session
-                .title
-                .as_deref()
-                .is_none_or(|title| title.trim().is_empty())
-            {
-                session.title = projected_title(&home, &session.id);
-            }
-        }
-        Ok(sessions)
-    }
 
-    pub fn new(app: tauri::AppHandle, store: Arc<Mutex<Store>>, directory: PathBuf) -> Arc<Self> {
-        Arc::new(Self {
-            app,
-            store,
-            directory,
-            node: discover(),
-            revision: AtomicU64::new(1),
-            inner: Mutex::new(Inner {
-                connection: "disconnected".into(),
-                generation: String::new(),
-                client: None,
-                version: None,
-                error: None,
-                runs: Vec::new(),
-                models: vec![],
-                default_model: None,
-                default_effort: None,
-                loaded: HashSet::new(),
-                last_checkpoint: Instant::now(),
-            }),
-        })
-    }
-    pub fn snapshot(&self) -> RuntimeSnapshot {
-        let inner = self.inner.lock().unwrap();
-        RuntimeSnapshot {
-            revision: self.revision.fetch_add(1, Ordering::Relaxed),
-            connection: inner.connection.clone(),
-            executable: self.node.as_ref().map(|path| path.to_string_lossy().into()),
-            version: inner.version.clone(),
-            error: inner.error.clone(),
-            active: headline(&inner.runs),
-            runs: inner.runs.clone(),
-            models: inner.models.clone(),
-            default_model: inner.default_model.clone(),
-            default_effort: inner.default_effort.clone(),
+/// 面板标题：尽量用 DSH 自己的投影缓存补上（已定标题 > 首句用户输入），读不到就保持原样，绝不编造。
+/// 隔离模式下 home 是隔离目录，不碰真实 ~/.dsh。
+pub(crate) fn fill_titles(directory: &Path, sessions: &mut [crate::codex::NativeSession]) {
+    let home = resolved_dsh_home().unwrap_or_else(|| directory.join("dsh-native"));
+    for session in sessions {
+        if session.title.as_deref().is_none_or(|title| title.trim().is_empty()) {
+            session.title = projected_title(&home, &session.id);
         }
-    }
-    fn emit(&self) {
-        let _ = self.app.emit("dsh-state", crate::state_events::slim("dsh-state", &self.snapshot()));
-    }
-    /// 开个空会话读模型目录、逐个问思考强度再关掉；连接和「刷新模型」共用。
-    fn read_catalog(&self, client: &Client) -> Result<(Vec<ModelOption>, Option<String>, Option<String>)> {
-        let cwd = self.directory.join("dsh-workspaces").join("catalog");
-        std::fs::create_dir_all(&cwd).map_err(|_| "DSH 目录创建失败")?;
-        let catalog = client.rpc("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
-        let default_model = current_option(&catalog, "model");
-        let default_effort = current_option(&catalog, "reasoning_effort");
-        let mut models = models_from_response(&catalog);
-        let session_id = catalog["sessionId"].as_str().ok_or("DSH 未返回会话 ID")?;
-        for model in &mut models {
-            let response = client.rpc(
-                "session/set_config_option",
-                json!({"sessionId":session_id,"configId":"model","value":model.id}),
-            )?;
-            if let Some(capability) = models_from_response(&response)
-                .into_iter()
-                .find(|entry| entry.id == model.id)
-            {
-                model.efforts = capability.efforts;
-                model.default_effort = capability.default_effort;
-            }
-        }
-        client.rpc("session/close", json!({"sessionId":session_id}))?;
-        Ok((models, default_model, default_effort))
-    }
-    /// 不断开、不动正在跑的会话，只把模型目录重读一遍。
-    pub fn refresh_models(&self) -> Result<RuntimeSnapshot> {
-        let client = {
-            let inner = self.inner.lock().unwrap();
-            inner.client.clone().filter(|_| inner.connection == "connected").ok_or("DSH 未连接")?
-        };
-        let (models, default_model, default_effort) = self.read_catalog(&client)?;
-        {
-            let mut inner = self.inner.lock().unwrap();
-            crate::pricing::remember("dsh-win", &models);
-            inner.models = models;
-            inner.default_model = default_model;
-            inner.default_effort = default_effort;
-        }
-        self.emit();
-        Ok(self.snapshot())
-    }
-    pub fn connect(self: &Arc<Self>) -> Result<RuntimeSnapshot> {
-        let node = self
-            .node
-            .as_ref()
-            .ok_or("未找到 Windows DSH Node 环境，请检查安装或 AGENT_HUB_DSH_NODE")?;
-        let installation = crate::service_install::dsh_path(&self.directory)?;
-        if !installation.is_absolute() || !installation.join("package.json").is_file() {
-            return Err("DSH 安装目录不可用，请检查 AGENT_HUB_DSH_INSTALLATION".into());
-        }
-        let generation = Uuid::new_v4().to_string();
-        {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.connection == "connected" {
-                drop(inner);
-                return Ok(self.snapshot());
-            }
-            if inner.connection == "connecting" {
-                return Err("DSH 正在连接".into());
-            }
-            inner.connection = "connecting".into();
-            inner.error = None;
-            inner.generation = generation.clone();
-        }
-        self.emit();
-        let result: Result<()> = (|| {
-            let mut command = Command::new(node);
-            command
-                .args(["--input-type=module", "-e", include_str!("dsh_bridge.mjs")])
-                .arg(&installation)
-                .arg(self.directory.join("dsh-native"));
-            command.current_dir(&self.directory);
-            command.env_remove("AGENT_HUB_DSH_PROJECT_MODE");
-            // 共用她自己的 DSH 家目录（同一个会话库）：外层设了就照用（测试隔离），
-            // 否则指向真实的 ~/.dsh；库不存在时不给变量，桥回退到同席隔离目录。
-            let dsh_home = std::env::var_os("AGENT_HUB_DSH_HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("USERPROFILE")
-                        .or_else(|| std::env::var_os("HOME"))
-                        .map(|value| PathBuf::from(value).join(".dsh"))
-                        .filter(|path| path.is_dir())
-                });
-            if let Some(home) = dsh_home {
-                command.env("AGENT_HUB_DSH_HOME", home);
-            }
-            let weak = Arc::downgrade(self);
-            let exit = weak.clone();
-            let message_generation = generation.clone();
-            let exit_generation = generation.clone();
-            let client = Client::spawn_command(
-                command,
-                move |value| {
-                    if let Some(runtime) = weak.upgrade() {
-                        runtime.notification(&message_generation, value);
-                    }
-                },
-                move || {
-                    if let Some(runtime) = exit.upgrade() {
-                        runtime.lost(&exit_generation);
-                    }
-                },
-            )?;
-            self.inner.lock().unwrap().client = Some(client.clone());
-            let initialized = client.rpc("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"personal-agent-hub","version":env!("CARGO_PKG_VERSION")}}))?;
-            let (models, default_model, default_effort) = self.read_catalog(&client)?;
-            let mut inner = self.inner.lock().unwrap();
-            if inner.generation != generation || inner.connection != "connecting" {
-                return Err("DSH 连接已取消".into());
-            }
-            inner.version = std::fs::read(installation.join("package.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|manifest| manifest["version"].as_str().map(String::from))
-                .or_else(|| {
-                    initialized["agentInfo"]["version"]
-                        .as_str()
-                        .map(String::from)
-                });
-            crate::pricing::remember("dsh-win", &models);
-            inner.models = models;
-            inner.default_model = default_model;
-            inner.default_effort = default_effort;
-            inner.loaded.clear();
-            inner.connection = "connected".into();
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.stop();
-            self.inner.lock().unwrap().error = Some(error.clone());
-            self.emit();
-            return Err(error);
-        }
-        self.emit();
-        Ok(self.snapshot())
-    }
-    pub fn guard<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
-        let inner = self.inner.lock().map_err(|_| "DSH 状态不可用")?;
-        if busy_in(&inner.runs, id) {
-            return Err("DSH 正在回复，请完成或停止后再修改会话".into());
-        }
-        action()
-    }
-    pub fn send(
-        self: &Arc<Self>,
-        conversation_id: &str,
-        message_id: &str,
-        content: &str,
-    ) -> Result<RunRecord> {
-        let mut inner = self.inner.lock().unwrap();
-        let existing = self.store.lock().unwrap().run_for_message(message_id)?;
-        self.store
-            .lock()
-            .unwrap()
-            .validate_private_target(conversation_id, "dsh-win")?;
-        if let Some(record) = existing {
-            self.store
-                .lock()
-                .unwrap()
-                .save_message(conversation_id, message_id, content)?;
-            return Ok(record);
-        }
-        if inner.connection != "connected" {
-            return Err("请先连接 DSH".into());
-        }
-        if busy_in(&inner.runs, conversation_id) {
-            return Err("DSH 正在处理这个会话的上一条消息，请等待或停止".into());
-        }
-        let client = inner.client.clone().ok_or("DSH 接口不可用")?;
-        let record = self.store.lock().unwrap().begin_agent_run(
-            conversation_id,
-            message_id,
-            content,
-            "dsh-win",
-        )?;
-        insert_run(
-            &mut inner.runs,
-            RunSnapshot {
-                record: record.clone(),
-                text: String::new(),
-                thought: String::new(),
-                tool_events: Vec::new(),
-            },
-        );
-        drop(inner);
-        self.emit();
-        let runtime = self.clone();
-        let run_id = record.id.clone();
-        let text = content.trim().to_owned();
-        std::thread::spawn(move || {
-            if let Err(error) = runtime.prompt(&client, &run_id, &text) {
-                runtime.finish(&run_id, "failed", Some(error));
-            }
-        });
-        Ok(record)
-    }
-    pub(crate) fn send_discussion(
-        self: &Arc<Self>,
-        discussion: &str,
-        round: u32,
-    ) -> Result<RunRecord> {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.connection != "connected" {
-            return Err("DSH 尚未连接".into());
-        }
-        let client = inner.client.clone().ok_or("DSH 接口不可用")?;
-        let (record, text) = self
-            .store
-            .lock()
-            .unwrap()
-            .begin_discussion_turn(discussion, "dsh-win", round)?;
-        insert_run(
-            &mut inner.runs,
-            RunSnapshot {
-                record: record.clone(),
-                text: String::new(),
-                thought: String::new(),
-                tool_events: Vec::new(),
-            },
-        );
-        drop(inner);
-        self.emit();
-        let runtime = self.clone();
-        let run_id = record.id.clone();
-        std::thread::spawn(move || {
-            if let Err(error) = runtime.prompt(&client, &run_id, &text) {
-                runtime.finish(&run_id, "failed", Some(error));
-            }
-        });
-        Ok(record)
-    }
-
-    /// 桥按 dsh-native/permissions.json 收紧会话的沙箱：只读、只改工作树档写进去，全权和私聊不写（照旧不限）。
-    fn permit(&self, conversation_id: &str, session_id: &str) -> Result<()> {
-        let access = crate::project_brain::access(&self.store.lock().unwrap().connection, conversation_id);
-        let _guard = self.inner.lock().unwrap();
-        let table = self.directory.join("dsh-native").join("permissions.json");
-        let mut rules: serde_json::Map<String, Value> =
-            std::fs::read_to_string(&table).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        let rule = match access {
-            Some(("read", _)) => Some(json!({"mode":"read-only"})),
-            Some(("write", worktree)) => Some(json!({"mode":"workspace-write","root":worktree})),
-            _ => None,
-        };
-        if rules.get(session_id) == rule.as_ref() {
-            return Ok(());
-        }
-        match rule {
-            Some(rule) => rules.insert(session_id.into(), rule),
-            None => rules.remove(session_id),
-        };
-        std::fs::write(&table, Value::Object(rules).to_string()).map_err(|_| "DSH 权限档写入失败".into())
-    }
-
-    fn prompt(&self, client: &Client, run_id: &str, content: &str) -> Result<()> {
-        let conversation_id = crate::codex::run_ref(&self.inner.lock().unwrap().runs, run_id)
-            .ok_or("运行已结束")?
-            .record
-            .conversation_id
-            .clone();
-        let mut settings = self
-            .store
-            .lock()
-            .unwrap()
-            .detail(&conversation_id)?
-            .sessions
-            .into_iter()
-            .find(|session| session.agent_id == "dsh-win")
-            .ok_or("DSH 会话不存在")?;
-        {
-            let inner = self.inner.lock().unwrap();
-            let record = &crate::codex::run_ref(&inner.runs, run_id)
-                .ok_or("运行已结束")?
-                .record;
-            settings.model = record.model.clone();
-            settings.reasoning_effort = record.reasoning_effort.clone();
-            crate::models::validate_selection(
-                &inner.models,
-                settings.model.as_deref(),
-                settings.reasoning_effort.as_deref(),
-                inner.default_model.as_deref(),
-            )?;
-        }
-        // 接入的原生会话要回到它自己的目录：DSH 按 cwd 分桶存会话，换目录 resume 会被拒。
-        let cwd = match settings.native_cwd.as_deref() {
-            Some(native) => std::path::PathBuf::from(native),
-            None => {
-                let local = self.store.lock().unwrap().fallback_cwd(&self.directory, &conversation_id, "dsh-win", "dsh", settings.native_session_id.is_some());
-                std::fs::create_dir_all(&local).map_err(|_| "DSH 会话目录创建失败")?;
-                local
-            }
-        };
-        let project_db = self.store.lock().unwrap().path.clone();
-        let mcp_servers =
-            crate::project_tools::project_chat_mcp_server(&project_db, &conversation_id)?
-                .map_or_else(|| json!([]), |server| json!([server]));
-        let response = if let Some(session_id) = settings.native_session_id.as_ref() {
-            let loaded = self.inner.lock().unwrap().loaded.contains(session_id);
-            if loaded {
-                Value::Null
-            } else {
-                client.rpc(
-                    "session/resume",
-                    json!({"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers}),
-                )?
-            }
-        } else {
-            client.rpc("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))?
-        };
-        let session_id = settings
-            .native_session_id
-            .clone()
-            .or_else(|| response["sessionId"].as_str().map(String::from))
-            .ok_or("DSH 未返回原生会话 ID")?;
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.loaded.insert(session_id.clone());
-            let run = run_mut(&mut inner.runs, run_id)
-                .filter(|run| busy(run))
-                .ok_or("运行已结束")?;
-            self.store
-                .lock()
-                .unwrap()
-                .bind_thread(&mut run.record, &session_id)?;
-            if run.record.status == "cancelling" {
-                drop(inner);
-                self.finish(run_id, "interrupted", None);
-                return Ok(());
-            }
-        }
-        let (model, effort) = {
-            let inner = self.inner.lock().unwrap();
-            let model = settings
-                .model
-                .clone()
-                .or_else(|| inner.default_model.clone())
-                .ok_or("DSH 默认模型不可用")?;
-            let effort = settings.reasoning_effort.clone().or_else(|| {
-                inner
-                    .models
-                    .iter()
-                    .find(|entry| entry.id == model)
-                    .and_then(|entry| entry.default_effort.clone())
-            });
-            (model, effort)
-        };
-        client.rpc(
-            "session/set_config_option",
-            json!({"sessionId":session_id,"configId":"model","value":model}),
-        )?;
-        let applied = if let Some(effort) = &effort {
-            client.rpc(
-                "session/set_config_option",
-                json!({"sessionId":session_id,"configId":"reasoning_effort","value":effort}),
-            )?
-        } else {
-            json!({"configOptions":[]})
-        };
-        {
-            let mut inner = self.inner.lock().unwrap();
-            let run = run_mut(&mut inner.runs, run_id)
-                .filter(|run| busy(run))
-                .ok_or("运行已结束")?;
-            if run.record.status == "cancelling" {
-                drop(inner);
-                self.finish(run_id, "interrupted", None);
-                return Ok(());
-            }
-            self.store.lock().unwrap().record_model(
-                &mut run.record,
-                Some(model),
-                current_option(&applied, "reasoning_effort"),
-            )?;
-            self.store
-                .lock()
-                .unwrap()
-                .mark_turn(&mut run.record, run_id)?;
-        }
-        self.emit();
-        self.permit(&conversation_id, &session_id)?;
-        let input = crate::attachments::prompt(&project_db, &conversation_id, content, false)?;
-        let started = crate::store::now();
-        let result = client.rpc_while_alive(
-            "session/prompt",
-            json!({"sessionId":session_id,"prompt":input}),
-            crate::rpc::QUIET_LIMIT,
-        );
-        match result {
-            Ok(value) => {
-                if let Some(usage) = session_usage(&session_id, started) {
-                    self.store.lock().unwrap().record_usage(run_id, &usage);
-                }
-                let (status, error) = completion_from_stop_reason(value["stopReason"].as_str());
-                self.finish(run_id, status, error.map(str::to_owned));
-            }
-            Err(error) => {
-                // DSH 只用它自己的配置，最常见的原因是还没在 DSH 里配好模型和 Key。
-                let error = format!("{error}。DSH 用的是它自己的模型和 Key：还没配的话，到「成员与服务 → DSH → 登录 / 初次配置」打开 dsh web，在 Models 里填好后重新连接");
-                self.finish(run_id, "failed", Some(error.clone()));
-                self.stop();
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-    fn notification(&self, generation: &str, value: Value) {
-        if crate::project_brain::background_notice(&self.store, "dsh-win", &value) {
-            return;
-        }
-        if value["method"] != "session/update" {
-            return;
-        }
-        let params = &value["params"];
-        let mut inner = self.inner.lock().unwrap();
-        if inner.generation != generation {
-            return;
-        }
-        let checkpoint = inner.last_checkpoint.elapsed() >= Duration::from_millis(350);
-        let Some(run) = inner.runs.iter_mut().find(|run| {
-            busy(run) && run.record.native_thread_id.as_deref() == params["sessionId"].as_str()
-        }) else {
-            return;
-        };
-        let update = &params["update"];
-        if let Some(event) = crate::codex::acp_tool_event(update) {
-            let event = crate::codex::upsert_tool_event(&mut run.tool_events, &event);
-            crate::store::push_tool(&mut run.thought, &run.text, &event.event_id);
-            let _ = self
-                .store
-                .lock()
-                .unwrap()
-                .append_tool_event(&run.record, &event);
-            drop(inner);
-            self.emit();
-            return;
-        }
-        if update["content"]["type"] != "text" {
-            return;
-        }
-        let text = update["content"]["text"].as_str().unwrap_or("");
-        // ACP 把「思考」和「正文」分成两种 chunk：思考进可折叠的思考块，正文进气泡。
-        match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_thought_chunk" => crate::store::push_thought(&mut run.thought, &run.text, text),
-            "agent_message_chunk" => append_stream_chunk(&mut run.text, text),
-            _ => return,
-        }
-        if checkpoint {
-            let _ = self
-                .store
-                .lock()
-                .unwrap()
-                .checkpoint(&run.record, &run.text, &run.thought);
-            inner.last_checkpoint = Instant::now();
-        }
-        drop(inner);
-        self.emit();
-    }
-    fn finish(&self, id: &str, status: &str, error: Option<String>) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(run) = run_mut(&mut inner.runs, id).filter(|run| busy(run)) {
-            run.record.status = status.into();
-            run.record.error = error;
-            let _ = self
-                .store
-                .lock()
-                .unwrap()
-                .checkpoint(&run.record, &run.text, &run.thought);
-        }
-        drop(inner);
-        self.emit();
-    }
-    /// 把会话交给 CLI 前从桥里卸下这条会话；下次续聊重新载入，接上 CLI 里的新对话。
-    pub(crate) fn release_native(&self, session_id: &str) {
-        let client = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.loaded.remove(session_id);
-            inner.client.clone()
-        };
-        if let Some(client) = client {
-            let _ = client.rpc("session/close", json!({"sessionId":session_id}));
-        }
-    }
-    pub fn cancel(&self, conversation_id: &str) -> Result<RuntimeSnapshot> {
-        self.cancel_expected(conversation_id, None)
-    }
-    pub(crate) fn cancel_expected(
-        &self,
-        conversation_id: &str,
-        expected: Option<&str>,
-    ) -> Result<RuntimeSnapshot> {
-        let (client, session) = {
-            let mut inner = self.inner.lock().unwrap();
-            let client = inner.client.clone().ok_or("DSH 已断开")?;
-            let run = live_in(&mut inner.runs, conversation_id)
-                .filter(|run| expected.is_none_or(|id| run.record.id == id))
-                .ok_or("这个会话没有正在进行的回复")?;
-            run.record.status = "cancelling".into();
-            self.store
-                .lock()
-                .unwrap()
-                .checkpoint(&run.record, &run.text, &run.thought)?;
-            (client, run.record.native_thread_id.clone())
-        };
-        self.emit();
-        if let Some(session_id) = session {
-            client.write(&json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}}))?;
-        }
-        Ok(self.snapshot())
-    }
-    fn lost(&self, generation: &str) {
-        let id = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.generation != generation {
-                return;
-            }
-            inner.connection = "disconnected".into();
-            inner.client = None;
-            busy_ids(&inner.runs)
-        };
-        for id in id {
-            self.finish(&id, "interrupted", Some("DSH 原生连接已断开".into()));
-        }
-        self.emit();
-    }
-    pub fn stop(&self) {
-        self.stop_expected(None);
-    }
-    pub(crate) fn stop_expected(&self, expected: Option<&str>) {
-        let (client, active) = {
-            let mut inner = self.inner.lock().unwrap();
-            if expected.is_some_and(|id| !crate::codex::run_ref(&inner.runs, id).is_some_and(busy))
-            {
-                return;
-            }
-            inner.generation = Uuid::new_v4().to_string();
-            inner.connection = "disconnected".into();
-            (inner.client.take(), busy_ids(&inner.runs))
-        };
-        if let Some(client) = client {
-            client.stop();
-        }
-        for id in active {
-            self.finish(&id, "interrupted", None);
-        }
-        self.emit();
     }
 }
 
-fn append_stream_chunk(target: &mut String, chunk: &str) {
-    target.push_str(chunk);
-}
-
-fn completion_from_stop_reason(reason: Option<&str>) -> (&'static str, Option<&'static str>) {
-    match reason {
-        Some("cancelled") => ("interrupted", None),
-        Some("end_turn" | "max_turn_requests" | "refusal") => ("completed", None),
-        Some("max_tokens") => (
-            "failed",
-            Some("DSH 输出达到上游 token 上限，返回内容可能不完整"),
-        ),
-        _ => ("failed", Some("DSH 未返回正常完成状态")),
+/// 桥按 dsh-native/permissions.json 收紧会话的沙箱：只读、只改工作树档写进去，全权和私聊不写（照旧不限）。
+pub(crate) fn permit(directory: &Path, session_id: &str, access: Option<(&str, Option<String>)>) -> Result<()> {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _guard = WRITING.lock().unwrap();
+    let table = directory.join("dsh-native").join("permissions.json");
+    let mut rules: serde_json::Map<String, Value> =
+        std::fs::read_to_string(&table).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let rule = match access {
+        Some(("read", _)) => Some(json!({"mode":"read-only"})),
+        Some(("write", worktree)) => Some(json!({"mode":"workspace-write","root":worktree})),
+        _ => None,
+    };
+    if rules.get(session_id) == rule.as_ref() {
+        return Ok(());
     }
+    match rule {
+        Some(rule) => rules.insert(session_id.into(), rule),
+        None => rules.remove(session_id),
+    };
+    std::fs::write(&table, Value::Object(rules).to_string()).map_err(|_| "DSH 权限档写入失败".into())
 }
 
 #[cfg(test)]
@@ -924,6 +299,9 @@ mod session_usage_tests {
         assert_eq!(usage["usage"]["outputTokens"], 199);
         assert_eq!(usage["_meta"]["contextTokens"], 11100);
         assert!(super::usage_since(&log, 1000).is_none());
+        assert!(!super::turn_ended(&log, 150));
+        assert!(super::turn_ended(&format!("{log}
+{}", r#"{"type":"turn/end","time":310}"#), 150));
     }
 }
 
@@ -934,7 +312,7 @@ mod tests {
     /// `projected_title` 的取值顺序：已定标题 > 会话说第一句 > None；带路径分隔的 id 一律拒绝。
     #[test]
     fn projected_title_prefers_stored_title_then_first_input() {
-        let root = std::env::temp_dir().join(format!("dsh-projcache-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("dsh-projcache-{}", uuid::Uuid::new_v4()));
         let dir = root
             .join("storages")
             .join("session_projcache")
@@ -993,38 +371,5 @@ mod tests {
         assert!(!bridge.contains("apiKey ="));
         assert!(!bridge.contains("maxTokens: 16384"));
         assert!(!bridge.contains("max_tokens: 16384"));
-    }
-
-    #[test]
-    fn streamed_text_is_accumulated_past_the_legacy_numeric_threshold() {
-        let chunk = "text ".repeat(4096);
-        let mut streamed = String::new();
-        for _ in 0..5 {
-            append_stream_chunk(&mut streamed, &chunk);
-        }
-
-        // More than 16,384 characters cross the old configured value by size;
-        // this verifies local chunk accumulation, not a runtime token allowance.
-        assert!(streamed.chars().count() > 16_384);
-        assert_eq!(streamed, chunk.repeat(5));
-    }
-
-    #[test]
-    fn max_tokens_is_reported_as_incomplete_instead_of_success() {
-        assert_eq!(
-            completion_from_stop_reason(Some("max_tokens")),
-            (
-                "failed",
-                Some("DSH 输出达到上游 token 上限，返回内容可能不完整")
-            )
-        );
-        assert_eq!(
-            completion_from_stop_reason(Some("end_turn")),
-            ("completed", None)
-        );
-        assert_eq!(
-            completion_from_stop_reason(Some("cancelled")),
-            ("interrupted", None)
-        );
     }
 }
