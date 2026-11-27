@@ -11,7 +11,7 @@ use crate::models::ModelOption;
 use crate::store::{RunRecord, Store};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, State};
+use tauri::State;
 
 const ID: &str = "albion-wsl";
 const KEY: &str = "albion";
@@ -53,7 +53,7 @@ impl Brain {
     }
 
     fn emit(&self) {
-        let _ = self.app.emit(&format!("{KEY}-state"), crate::state_events::slim(&format!("{KEY}-state"), &self.snapshot()));
+        crate::state_events::notify(&self.app, &format!("{KEY}-state"));
     }
 
     fn name(&self) -> String {

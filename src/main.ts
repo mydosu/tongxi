@@ -371,12 +371,10 @@ function adoptDiscussion(job: Discussion) {
 const runBusy = () => busyIn(currentRuntime(), selectedId);
 const nativeChat = () => detail?.conversation.kind === 'direct' && ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl'].includes(currentAgentId());
 const connectionLabel = () => currentRuntime().connection === 'connected' ? '接口已连接' : currentRuntime().connection === 'connecting' ? '正在连接' : '未连接';
-/// 状态事件里的模型表没变就不带（后端 state_events），缺省时沿用上一份。
-type RuntimeEvent = Omit<RuntimeSnapshot, 'models'> & { models?: RuntimeSnapshot['models'] };
-function adoptRuntime(incoming: RuntimeEvent, agentId = currentAgentId()) {
+const pullRuntime: Record<string, () => void> = {};
+function adoptRuntime(snapshot: RuntimeSnapshot, agentId = currentAgentId()) {
   const old = runtimes[agentId];
-  if (old && incoming.revision < old.revision) return false;
-  const snapshot: RuntimeSnapshot = incoming.models ? incoming as RuntimeSnapshot : { ...incoming, models: old?.models ?? [] };
+  if (old && snapshot.revision < old.revision) return false;
   const before = busyProjectChats();
   runtimes[agentId] = snapshot;
   // 侧栏的成员活动灯只在重绘列表时更新：谁忙谁闲变了就重绘，不然灯会停在旧状态。
@@ -3122,12 +3120,20 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
   try {
     if (!eventSubscribed) {
       for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl']) {
-        await listen<RuntimeEvent>(`${harnessKey(agentId)}-state`, event => {
+        // 状态事件只是「有变化」的通知（后端 state_events），快照自己取：同一成员只留一个请求在路上，路上又来通知就取完再取一次。
+        let pulling: 'idle' | 'busy' | 'again' = 'idle';
+        const pull = () => {
+          if (pulling !== 'idle') { pulling = 'again'; return; }
+          pulling = 'busy';
+          void invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`).then(onState).catch(() => {}).finally(() => { const again = pulling === 'again'; pulling = 'idle'; if (again) pull(); });
+        };
+        pullRuntime[agentId] = pull;
+        const onState = (snapshot: RuntimeSnapshot) => {
           const old = runtimes[agentId];
-          if (!adoptRuntime(event.payload, agentId)) return;
+          if (!adoptRuntime(snapshot, agentId)) return;
           updateRuntimeControls();
-          if (screen === 'services' && old.connection !== event.payload.connection) renderServices();
-          for (const active of runsOf(event.payload)) {
+          if (screen === 'services' && old.connection !== snapshot.connection) renderServices();
+          for (const active of runsOf(snapshot)) {
             if (detail?.project_agent_chats?.some(chat => chat.conversation_id === active.conversation_id)) {
               const completed = (active.tool_events || []).filter(tool => tool.status !== 'running');
               const stamp = `${active.id}:${active.status}:${completed.map(tool => `${tool.event_id}:${tool.status}:${tool.output?.length}`).join('|')}`;
@@ -3147,7 +3153,8 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
             }
           }
           lastFinalSeeded.add(agentId);
-        });
+        };
+        await listen(`${harnessKey(agentId)}-state`, pull);
       }
       await listen<{ conversation_id: string; agent_id: string }[]>('cli-handoffs', event => adoptCliHandoffs(event.payload));
       await listen<{ conversation_id: string; agent_id: string; imported: number }>('cli-returned', event => cliReturned(event.payload.conversation_id, event.payload.agent_id, event.payload.imported));
@@ -3167,7 +3174,7 @@ async function boot() {  const controls = document.querySelectorAll<HTMLButtonEl
         if (screen === 'chat' && selectedId === event.payload && detail?.project && activeProjectModule === 'team') void selectConversation(selectedId).catch(error => toast(errorText(error), true));
       });
       // 手机断线重连后补一次完整状态：断线期间的事件（包括模型表的变化）收不到了。
-      onRemoteReconnect(() => { for (const agentId of ['codex-win', 'hermes-win', 'dsh-win', 'claude-win', 'opencode-win', 'antigravity-win', 'albion-wsl']) void invoke<RuntimeSnapshot>(`${harnessKey(agentId)}_status`).then(snapshot => { adoptRuntime(snapshot, agentId); updateRuntimeControls(); }).catch(() => {}); });
+      onRemoteReconnect(() => Object.values(pullRuntime).forEach(pull => pull()));
       eventSubscribed = true;
     }
     // 这些读取互不依赖：并行发出去，手机上每个串行往返都是几十到几百毫秒。

@@ -11,7 +11,6 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
@@ -714,7 +713,7 @@ impl Runtime {
     }
 
     fn emit(&self) {
-        let _ = self.app.emit("codex-state", crate::state_events::slim("codex-state", &self.snapshot()));
+        crate::state_events::notify(&self.app, "codex-state");
     }
 
     /// 不断开、不动正在跑的会话，只把模型目录重读一遍。

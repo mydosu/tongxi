@@ -18,7 +18,6 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
@@ -277,8 +276,7 @@ impl Runtime {
         }
     }
     fn emit(&self) {
-        let event = format!("{}-state", self.target.key());
-        let _ = self.app.emit(&event, crate::state_events::slim(&event, &self.snapshot()));
+        crate::state_events::notify(&self.app, &format!("{}-state", self.target.key()));
     }
     /// 版本：DSH 以安装目录的 package.json 为准，其余用 initialize 报的。
     fn version(&self, initialized: &Value) -> Option<String> {

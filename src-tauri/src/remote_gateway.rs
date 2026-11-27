@@ -59,11 +59,6 @@ const EVENTS: &[&str] = &[
     "brain-state",
 ];
 
-/// 运行状态事件：每个都是带版本号的完整快照（含模型表和全部在跑回复的全文），流式回复时一秒几十个，
-/// 手机上每个都是上百 KB。网关只把最新的一份按这个间隔发出去，前端本来就只认版本号最大的。
-const COALESCED: &[&str] = &["codex-state", "hermes-state", "dsh-state", "claude-state", "opencode-state", "antigravity-state", "albion-state", "discussion-state"];
-const COALESCE_EVERY: Duration = Duration::from_millis(100);
-
 /// 远程只读白名单：只读数据或只读探测（版本、安装状态、更新检查），不改库、不改配置。
 /// （get_conversation 会按需补建项目成员私聊的空行，和桌面打开项目时一样，不改已有内容。）
 const READ_COMMANDS: &[&str] = &[
@@ -228,41 +223,6 @@ struct Client {
     id: u64,
     tx: SyncSender<Arc<str>>,
     alive: Arc<AtomicBool>,
-}
-
-/// 每种事件只留最新一帧，等下一个发送时机一起放出。
-/// 状态事件的模型表没变就不带（见 state_events）：被替换掉的那帧要是带着模型表而新这帧没有，要把模型表并进新帧，不然改动丢了。
-#[derive(Default)]
-struct Latest {
-    payloads: Mutex<Vec<(&'static str, String)>>,
-}
-
-fn keep_models(old: &str, new: String) -> String {
-    if !old.contains("\"models\"") {
-        return new;
-    }
-    let (Ok(Value::Object(old)), Ok(Value::Object(mut fresh))) = (serde_json::from_str::<Value>(old), serde_json::from_str::<Value>(&new)) else { return new };
-    match (old.get("models"), fresh.contains_key("models")) {
-        (Some(models), false) => {
-            fresh.insert("models".into(), models.clone());
-            Value::Object(fresh).to_string()
-        }
-        _ => new,
-    }
-}
-
-impl Latest {
-    fn put(&self, name: &'static str, payload: &str) {
-        let Ok(mut payloads) = self.payloads.lock() else { return };
-        match payloads.iter_mut().find(|(have, _)| *have == name) {
-            Some(slot) => slot.1 = keep_models(&slot.1, payload.to_string()),
-            None => payloads.push((name, payload.to_string())),
-        }
-    }
-
-    fn take(&self) -> Vec<String> {
-        self.payloads.lock().map(|mut payloads| payloads.drain(..).map(|(name, payload)| sse_frame(name, &payload)).collect()).unwrap_or_default()
-    }
 }
 
 /// SSE 广播：每条连接一个有界 channel，写不进去（满了/断了）就摘掉。
@@ -883,22 +843,11 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         }
     };
     let events = Arc::new(Events::default());
-    let latest = Arc::new(Latest::default());
+    // 状态事件在源头（state_events）已经按 100ms 合并、不带快照，这里原样转发。
     for name in EVENTS {
-        let (events, latest) = (events.clone(), latest.clone());
-        if COALESCED.contains(name) {
-            app.listen_any(*name, move |event| latest.put(name, event.payload()));
-        } else {
-            app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
-        }
+        let events = events.clone();
+        app.listen_any(*name, move |event| events.broadcast(&sse_frame(name, event.payload())));
     }
-    let flush = events.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(COALESCE_EVERY);
-        for frame in latest.take() {
-            flush.broadcast(&frame);
-        }
-    });
     let gateway = Gateway { events, token: Arc::new(Mutex::new(token)), running: Mutex::new(Running::default()) };
     if meta_get(app, ENABLED_KEY).as_deref() == Some("1") {
         gateway.start(app);
@@ -1071,35 +1020,6 @@ mod tests {
         for command in READ_COMMANDS.iter().chain(WRITE_COMMANDS) {
             assert!(source.contains(&format!("\"{command}\" => ")), "{command} 在白名单里，但没有分派代码");
         }
-    }
-
-    #[test]
-    fn latest_keeps_only_newest_frame_per_event() {
-        let latest = Latest::default();
-        for revision in 0..50 {
-            latest.put("claude-state", &format!("{{\"revision\":{revision}}}"));
-        }
-        latest.put("codex-state", "{\"revision\":1}");
-        latest.put("claude-state", "{\"revision\":50}");
-        assert_eq!(latest.take(), vec![sse_frame("claude-state", "{\"revision\":50}"), sse_frame("codex-state", "{\"revision\":1}")]);
-        assert!(latest.take().is_empty(), "放出去的不会再发第二遍");
-        assert!(COALESCED.iter().all(|name| EVENTS.contains(name)));
-        assert!(!COALESCED.contains(&"brain-state"), "brain-state 载荷是各自不同的会话 id，不是快照，不能合并");
-    }
-
-    #[test]
-    fn coalescing_never_loses_a_models_change() {
-        let latest = Latest::default();
-        latest.put("claude-state", r#"{"revision":1,"models":[{"id":"new"}],"runs":[]}"#);
-        latest.put("claude-state", r#"{"revision":2,"runs":[{"text":"提到 \"models\" 的回复"}]}"#);
-        let frame = latest.take().pop().unwrap();
-        let data: Value = serde_json::from_str(frame.lines().find(|line| line.starts_with("data: ")).unwrap().trim_start_matches("data: ")).unwrap();
-        assert_eq!(data["revision"], 2, "留最新一帧");
-        assert_eq!(data["models"][0]["id"], "new", "被覆盖那帧带的模型表要并进来");
-        latest.put("claude-state", r#"{"revision":3,"models":[{"id":"newer"}]}"#);
-        latest.put("claude-state", r#"{"revision":4,"models":[{"id":"newest"}]}"#);
-        assert!(latest.take().pop().unwrap().contains("newest"), "后一帧自己带模型表就用它的");
-        assert_eq!(keep_models(r#"{"a":1}"#, r#"{"b":2}"#.into()), r#"{"b":2}"#, "旧帧没有模型表就原样");
     }
 
     #[test]
