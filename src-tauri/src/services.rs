@@ -412,7 +412,11 @@ pub fn acquire<'a>(
         let mut store_guard = store
             .lock()
             .map_err(|_| "项目状态暂不可用，请重启软件".to_string())?;
-        store_guard.begin_service_maintenance(service_id)?;
+        if operation == "connect" {
+            store_guard.begin_service_connect(service_id)?;
+        } else {
+            store_guard.begin_service_maintenance(service_id)?;
+        }
     }
     // 标记成功写入后 guard 才接管 store，`Drop` 才会负责清理它。
     guard.store = Some(store);

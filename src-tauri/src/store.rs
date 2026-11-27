@@ -1708,6 +1708,14 @@ impl Store {
         Ok(())
     }
 
+    /// 连接只和维护互斥，不看手上的活：没连上的成员不可能有在跑的回合（真在跑的由 `services::acquire` 查运行时挡住），
+    /// 派给它、还没交回的活和讨论（同席重启或崩溃后留下的）正等着它连上接着做，拿它们挡连接就谁都动不了。
+    pub(crate) fn begin_service_connect(&mut self, agent: &str) -> Result<()> {
+        self.guard_service_maintenance(agent)?;
+        self.service_maintenance.insert(agent.to_owned());
+        Ok(())
+    }
+
     /// 显式断开：仍允许停止本软件自己的 private run，
     /// 但不允许停止正在群聊或项目任务中工作的成员。
     pub(crate) fn begin_service_shutdown(&mut self, agent: &str) -> Result<()> {
@@ -2086,6 +2094,24 @@ mod tests {
         assert!(store.begin_service_maintenance("dsh-win").is_err());
         store.guard_service_maintenance("dsh-win").unwrap();
         assert!(store.begin_service_maintenance("hermes-win").is_ok());
+    }
+
+    #[test]
+    fn connect_is_not_blocked_by_work_waiting_for_the_member() {
+        let mut store = memory();
+        let room = store.list("", false).unwrap().remove(0).id;
+        store
+            .connection
+            .execute(
+                "INSERT INTO brain_jobs(id,room,seat,chat,kind,content,status,created_at) VALUES('j',?1,'claude-win-3',?1,'task','活','running','1')",
+                [&room],
+            )
+            .unwrap();
+        assert!(store.begin_service_maintenance("claude-win").is_err(), "更新、重启照旧要等派活交回");
+        store.begin_service_connect("claude-win").unwrap();
+        assert!(store.begin_service_connect("claude-win").is_err(), "连接和维护仍然互斥");
+        store.end_service_maintenance("claude-win").unwrap();
+        store.guard_service_maintenance("claude-win").unwrap();
     }
 
     #[test]
